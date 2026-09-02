@@ -137,29 +137,6 @@
       <div><span class="legend-swatch" style="background:#2EE6B8"></span> geometrisch dazugekommenes Stück</div>
       <div><span class="legend-swatch" style="background:#E0507A"></span> geometrisch weggefallenes Stück</div>
     </div>
-
-    <div class="export-buttons" id="compare-export-buttons">
-      <button class="export-btn" data-export="csv" data-target="compare">CSV</button>
-      <button class="export-btn" data-export="xlsx" data-target="compare">Excel</button>
-      <button class="export-btn" data-export="pdf" data-target="compare">PDF</button>
-    </div>
-
-    <div id="compare-table-wrap">
-      <table id="compare-table">
-        <thead>
-          <tr>
-            <th>Status</th>
-            <th>Nr.</th>
-            <th>Name</th>
-            <th>Größe A</th>
-            <th>Größe B</th>
-            <th>Δ ha</th>
-            <th>Kultur A → B</th>
-          </tr>
-        </thead>
-        <tbody id="compare-table-body"></tbody>
-      </table>
-    </div>
   </div>
   <div id="compare-map-wrap">
     <div id="compare-map"></div>
@@ -170,7 +147,37 @@
         <button class="cvt-btn" data-mode="onlyA">Nur Jahr A</button>
         <button class="cvt-btn" data-mode="onlyB">Nur Jahr B</button>
       </div>
+      <button id="compare-btn-table">Tabelle</button>
       <button id="compare-btn-basemap">Basiskarte: Standard</button>
+    </div>
+    <div id="compare-table-panel">
+      <div id="compare-table-resize-handle"></div>
+      <div id="compare-table-head">
+        <span class="title">Vergleichsergebnisse (<span id="compare-table-count">0</span>)</span>
+        <div class="export-buttons" id="compare-export-buttons">
+          <button class="export-btn" data-export="csv" data-target="compare">CSV</button>
+          <button class="export-btn" data-export="xlsx" data-target="compare">Excel</button>
+          <button class="export-btn" data-export="pdf" data-target="compare">PDF</button>
+        </div>
+        <button id="compare-table-minimize" title="Minimieren">▁</button>
+        <button id="compare-table-close" title="Schließen">✕</button>
+      </div>
+      <div id="compare-table-body-wrap">
+        <table id="compare-table">
+          <thead>
+            <tr>
+              <th>Status</th>
+              <th>Nr.</th>
+              <th>Name</th>
+              <th>Größe A</th>
+              <th>Größe B</th>
+              <th>Δ ha</th>
+              <th>Kultur A → B</th>
+            </tr>
+          </thead>
+          <tbody id="compare-table-body"></tbody>
+        </table>
+      </div>
     </div>
   </div>
 </div>

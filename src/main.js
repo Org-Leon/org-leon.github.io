@@ -402,10 +402,7 @@ function highlightTableRow(idx) {
 // Öffnet/holt die Tabellen-Bodenleiste nach vorn und markiert die Zeile der
 // angeklickten Fläche — ersetzt das frühere separate Attribut-Panel.
 function selectFeatureInTable(entry) {
-  tablePanelEl.classList.remove('minimized');
-  tablePanelEl.style.height = tableLastExpandedHeight + 'px';
-  document.getElementById('table-minimize').textContent = '▁';
-  tablePanelEl.classList.add('open');
+  featureTablePanel.open();
   renderFeatureTable();
   const row = document.querySelector('#feature-table-body tr[data-idx="' + entry.idx + '"]');
   if (row) row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -427,71 +424,86 @@ function selectFeatureFromTable(idx) {
 
 document.getElementById('table-include-teilflaechen').addEventListener('change', renderFeatureTable);
 
-const tablePanelEl = document.getElementById('table-panel');
 const TABLE_DEFAULT_HEIGHT = 320;
 const TABLE_MIN_HEIGHT = 140;
-let tableLastExpandedHeight = TABLE_DEFAULT_HEIGHT;
 
-document.getElementById('btn-table').addEventListener('click', () => {
-  renderFeatureTable();
-  tablePanelEl.classList.remove('minimized');
-  tablePanelEl.style.height = tableLastExpandedHeight + 'px';
-  document.getElementById('table-minimize').textContent = '▁';
-  tablePanelEl.classList.add('open');
-});
-document.getElementById('table-close').addEventListener('click', () => {
-  tablePanelEl.classList.remove('open');
-});
+// Verkabelt ein Bodenleisten-Panel (Viewer-Tabelle & Vergleichs-Tabelle nutzen
+// exakt dasselbe Verhalten: auf-/zuklappen, minimieren, per Ziehgriff
+// größenändern) — als Fabrik statt Duplikat, damit beide Panels garantiert
+// gleich funktionieren.
+function initResizablePanel({ panel, handle, minimizeBtn, closeBtn, boundsWrap, minHeight, defaultHeight }) {
+  let lastExpandedHeight = defaultHeight;
 
-document.getElementById('table-minimize').addEventListener('click', () => {
-  const minimizing = !tablePanelEl.classList.contains('minimized');
-  if (minimizing) {
-    tableLastExpandedHeight = tablePanelEl.getBoundingClientRect().height;
-    tablePanelEl.classList.add('minimized');
-    document.getElementById('table-minimize').textContent = '▲';
-  } else {
-    tablePanelEl.classList.remove('minimized');
-    tablePanelEl.style.height = tableLastExpandedHeight + 'px';
-    document.getElementById('table-minimize').textContent = '▁';
+  function open() {
+    panel.classList.remove('minimized');
+    panel.style.height = lastExpandedHeight + 'px';
+    minimizeBtn.textContent = '▁';
+    panel.classList.add('open');
   }
-});
 
-// Ziehgriff zum Größenändern (Maus + Touch)
-(function setupTableResize() {
-  const handle = document.getElementById('table-resize-handle');
+  closeBtn.addEventListener('click', () => panel.classList.remove('open'));
+
+  minimizeBtn.addEventListener('click', () => {
+    const minimizing = !panel.classList.contains('minimized');
+    if (minimizing) {
+      lastExpandedHeight = panel.getBoundingClientRect().height;
+      panel.classList.add('minimized');
+      minimizeBtn.textContent = '▲';
+    } else {
+      panel.classList.remove('minimized');
+      panel.style.height = lastExpandedHeight + 'px';
+      minimizeBtn.textContent = '▁';
+    }
+  });
+
+  // Ziehgriff zum Größenändern (Maus + Touch)
   let dragging = false;
-
   function startDrag(e) {
-    if (tablePanelEl.classList.contains('minimized')) return;
+    if (panel.classList.contains('minimized')) return;
     dragging = true;
-    tablePanelEl.classList.add('dragging');
+    panel.classList.add('dragging');
     e.preventDefault();
   }
   function moveDrag(clientY) {
     if (!dragging) return;
-    const wrapRect = document.getElementById('map-wrap').getBoundingClientRect();
+    const wrapRect = boundsWrap.getBoundingClientRect();
     const maxHeight = wrapRect.height * 0.85;
     let newHeight = wrapRect.bottom - clientY;
-    newHeight = Math.max(TABLE_MIN_HEIGHT, Math.min(maxHeight, newHeight));
-    tablePanelEl.style.height = newHeight + 'px';
-    tableLastExpandedHeight = newHeight;
+    newHeight = Math.max(minHeight, Math.min(maxHeight, newHeight));
+    panel.style.height = newHeight + 'px';
+    lastExpandedHeight = newHeight;
   }
   function endDrag() {
     if (!dragging) return;
     dragging = false;
-    tablePanelEl.classList.remove('dragging');
+    panel.classList.remove('dragging');
   }
-
   handle.addEventListener('mousedown', startDrag);
   window.addEventListener('mousemove', (e) => moveDrag(e.clientY));
   window.addEventListener('mouseup', endDrag);
-
   handle.addEventListener('touchstart', (e) => startDrag(e), { passive: false });
   window.addEventListener('touchmove', (e) => {
     if (dragging && e.touches[0]) moveDrag(e.touches[0].clientY);
   }, { passive: true });
   window.addEventListener('touchend', endDrag);
-})();
+
+  return { open };
+}
+
+const featureTablePanel = initResizablePanel({
+  panel: document.getElementById('table-panel'),
+  handle: document.getElementById('table-resize-handle'),
+  minimizeBtn: document.getElementById('table-minimize'),
+  closeBtn: document.getElementById('table-close'),
+  boundsWrap: document.getElementById('map-wrap'),
+  minHeight: TABLE_MIN_HEIGHT,
+  defaultHeight: TABLE_DEFAULT_HEIGHT
+});
+
+document.getElementById('btn-table').addEventListener('click', () => {
+  renderFeatureTable();
+  featureTablePanel.open();
+});
 
 // ---------- Standort (GPS) ----------
 let locationMarker = null;
@@ -616,6 +628,18 @@ document.querySelectorAll('.cvt-btn').forEach(btn => {
   });
 });
 
+const compareTablePanel = initResizablePanel({
+  panel: document.getElementById('compare-table-panel'),
+  handle: document.getElementById('compare-table-resize-handle'),
+  minimizeBtn: document.getElementById('compare-table-minimize'),
+  closeBtn: document.getElementById('compare-table-close'),
+  boundsWrap: document.getElementById('compare-map-wrap'),
+  minHeight: TABLE_MIN_HEIGHT,
+  defaultHeight: TABLE_DEFAULT_HEIGHT
+});
+
+document.getElementById('compare-btn-table').addEventListener('click', () => compareTablePanel.open());
+
 function showCompareError(msg) {
   const el = document.getElementById('compare-error-toast');
   el.textContent = msg;
@@ -731,6 +755,7 @@ function runComparison() {
   renderCompareSummary(records);
   renderCompareTable(records);
   renderCompareMapLayers(records);
+  compareTablePanel.open();
 }
 
 document.getElementById('btn-compare-run').addEventListener('click', runComparison);
@@ -768,6 +793,7 @@ function renderCompareSummary(records) {
 
 function renderCompareTable(records) {
   const tbody = document.getElementById('compare-table-body');
+  document.getElementById('compare-table-count').textContent = records.length;
   if (!records.length) {
     tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted); padding:14px;">Keine gemeinsamen oder abweichenden Flächennummern gefunden.</td></tr>';
     return;
