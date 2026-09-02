@@ -1,0 +1,17 @@
+{
+  "code-runner.executorMap": {
+    "html": "npx.cmd vite --open"
+  },
+  "code-runner.runInTerminal": true,
+  "code-runner.saveFileBeforeRun": true,
+  "code-runner.clearPreviousOutput": true,
+  "code-runner.ignoreSelection": true,
+
+  "VsCodeTaskButtons.tasks": [
+    {
+      "label": "$(rocket) Vite Dev Server",
+      "task": "vite: dev",
+      "tooltip": "Startet den Vite Dev-Server (http://localhost:5173)"
+    }
+  ]
+}
