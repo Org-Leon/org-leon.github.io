@@ -42,7 +42,8 @@ const basemaps = {
   }),
   satellite: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
     attribution: 'Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
-    maxZoom: 19
+    maxZoom: 19,
+    crossOrigin: true // nötig, damit html2canvas die Kartenkacheln beim Flächenkarten-Export auslesen darf
   })
 };
 const basemapLabels = { osm: 'Standard', topo: 'Topografisch', satellite: 'Satellit' };
@@ -50,12 +51,16 @@ const basemapOrder = ['osm', 'topo', 'satellite'];
 let currentBasemap = 'osm';
 basemaps.osm.addTo(map);
 
-document.getElementById('btn-basemap').addEventListener('click', () => {
+function setBasemap(key) {
   basemaps[currentBasemap].remove();
-  const nextIdx = (basemapOrder.indexOf(currentBasemap) + 1) % basemapOrder.length;
-  currentBasemap = basemapOrder[nextIdx];
+  currentBasemap = key;
   basemaps[currentBasemap].addTo(map);
   document.getElementById('btn-basemap').textContent = 'Basiskarte: ' + basemapLabels[currentBasemap];
+}
+
+document.getElementById('btn-basemap').addEventListener('click', () => {
+  const nextIdx = (basemapOrder.indexOf(currentBasemap) + 1) % basemapOrder.length;
+  setBasemap(basemapOrder[nextIdx]);
 });
 
 document.getElementById('btn-fit').addEventListener('click', fitAllLayers);
@@ -1064,6 +1069,121 @@ document.querySelectorAll('.export-btn').forEach(btn => {
     else exportCompareTable(type);
   });
 });
+
+// ---------- Flächenkarten exportieren (Screenshot + Infos, eine Fläche pro PDF-Seite) ----------
+function delay(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
+
+function waitForTilesLoaded(layer, timeoutMs) {
+  return new Promise((resolve) => {
+    let done = false;
+    function finish() { if (done) return; done = true; layer.off('load', finish); resolve(); }
+    layer.once('load', finish);
+    setTimeout(finish, timeoutMs);
+  });
+}
+
+async function exportFlaechenkarten() {
+  if (typeof html2canvas === 'undefined') { showError('Flächenkarten-Export nicht verfügbar (html2canvas konnte nicht geladen werden).'); return; }
+  if (typeof window.jspdf === 'undefined') { showError('Flächenkarten-Export nicht verfügbar (jsPDF konnte nicht geladen werden).'); return; }
+  const rows = getVisibleFeatureRows();
+  if (!rows.length) { showError('Keine Flächen zum Exportieren geladen.'); return; }
+
+  const btn = document.getElementById('btn-export-flaechenkarten');
+  btn.disabled = true;
+
+  // Ausgangszustand merken, um ihn nach dem Export exakt wiederherzustellen.
+  const wasViewerActive = document.getElementById('view-viewer').classList.contains('active');
+  if (!wasViewerActive) document.querySelector('.tab-btn[data-view="viewer"]').click();
+  const savedCenter = map.getCenter();
+  const savedZoom = map.getZoom();
+  const savedBasemap = currentBasemap;
+  const visibleLayerIds = Object.keys(layers).filter(id => layers[id].visible);
+
+  visibleLayerIds.forEach(id => map.removeLayer(layers[id].leafletLayer));
+  if (currentBasemap !== 'satellite') setBasemap('satellite');
+  map.removeControl(map.zoomControl);
+
+  const doc = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const margin = 12;
+
+  try {
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      setStatus(`Exportiere Flächenkarten … (${i + 1}/${rows.length})`);
+
+      // Fläche als schlichter weißer Umriss auf dem Luftbild — ohne Füllung,
+      // damit (wie auf einem klassischen Feldstück-Ausdruck) der Untergrund
+      // durchscheint. Wichtig: als eigener Canvas-Layer statt den bestehenden
+      // (SVG-basierten) row.leafletLayer zu verwenden/umzustylen — html2canvas
+      // berechnet die CSS-Transform-Verschiebung von Leaflets SVG-Overlay-Pane
+      // beim Screenshot falsch und rendert den Umriss dadurch versetzt zu den
+      // Kacheln. Ein <canvas>-Layer wird von html2canvas als reines Pixelbild
+      // kopiert und bleibt exakt an der richtigen Stelle.
+      const highlightLayer = L.geoJSON(row.leafletLayer.feature, {
+        renderer: L.canvas(),
+        style: { color: '#ffffff', weight: 3, opacity: 1, fillOpacity: 0 }
+      }).addTo(map);
+      const bounds = highlightLayer.getBounds();
+      if (bounds.isValid()) {
+        map.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
+      }
+
+      await waitForTilesLoaded(basemaps.satellite, 4000);
+      await delay(250); // kurzer Puffer, damit der letzte Frame sicher gemalt ist
+
+      let canvas;
+      try {
+        canvas = await html2canvas(document.getElementById('map'), { useCORS: true, logging: false });
+      } catch (err) {
+        console.error('Kartenbild-Erfassung fehlgeschlagen für', row.nummer, err);
+        showError('Kartenbild konnte nicht erfasst werden (evtl. CORS-Einschränkung der Kachel-Quelle).');
+        map.removeLayer(highlightLayer);
+        break;
+      }
+
+      map.removeLayer(highlightLayer);
+
+      if (i > 0) doc.addPage('a4', 'landscape');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(15);
+      doc.text(String(row.nummer || '–') + (row.featName ? ' – ' + row.featName : ''), margin, margin + 4);
+
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(11);
+      const num = parseFloat(String(row.groesse).replace(',', '.'));
+      const groesseText = isFinite(num)
+        ? num.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ha'
+        : (row.groesse || '–');
+      doc.text('Größe: ' + groesseText + '    ·    Kulturart: ' + (row.kultur || '–'), margin, margin + 11);
+
+      const imageTop = margin + 18;
+      const maxW = pageW - margin * 2;
+      const maxH = pageH - imageTop - margin;
+      const scale = Math.min(maxW / canvas.width, maxH / canvas.height);
+      const imgW = canvas.width * scale;
+      const imgH = canvas.height * scale;
+      const imgX = (pageW - imgW) / 2;
+      doc.addImage(canvas.toDataURL('image/jpeg', 0.85), 'JPEG', imgX, imageTop, imgW, imgH);
+    }
+
+    const ts = new Date().toISOString().slice(0, 10);
+    doc.save(`flaechenkarten_${ts}.pdf`);
+    setStatus('Flächenkarten exportiert.');
+  } finally {
+    // Ursprünglichen Kartenzustand vollständig wiederherstellen.
+    map.zoomControl.addTo(map);
+    if (currentBasemap !== savedBasemap) setBasemap(savedBasemap);
+    visibleLayerIds.forEach(id => layers[id] && layers[id].leafletLayer.addTo(map));
+    map.setView(savedCenter, savedZoom);
+    if (!wasViewerActive) document.querySelector('.tab-btn[data-view="compare"]').click();
+    btn.disabled = false;
+  }
+}
+
+document.getElementById('btn-export-flaechenkarten').addEventListener('click', exportFlaechenkarten);
 
 // ---------- Dev-Tooling: Jahresvergleich-Inputs aus test-shapes/ vorbefüllen ----------
 if (import.meta.env.DEV) {
