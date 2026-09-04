@@ -6,6 +6,17 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Shapefile-Viewer</title>
+<script>
+  // Gespeicherte Theme-Wahl synchron vor dem ersten Rendern anwenden, damit
+  // beim Neuladen im Hellmodus nicht kurz der Dunkelmodus aufblitzt.
+  (function () {
+    try {
+      if (localStorage.getItem('oekoviewer-theme') === 'light') {
+        document.documentElement.setAttribute('data-theme', 'light');
+      }
+    } catch (err) {}
+  })();
+</script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
@@ -26,6 +37,11 @@
   <button class="tab-btn active" data-view="viewer">Viewer</button>
   <button class="tab-btn" data-view="compare">Jahresvergleich</button>
   <button class="tab-btn" data-view="zeichner">Flächenzeichner</button>
+  <button id="theme-toggle" title="Hell-/Dunkelmodus umschalten" aria-label="Hell-/Dunkelmodus umschalten">
+    <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2" fill="currentColor"/><g stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="12" y1="1.5" x2="12" y2="4.5"/><line x1="12" y1="19.5" x2="12" y2="22.5"/><line x1="1.5" y1="12" x2="4.5" y2="12"/><line x1="19.5" y1="12" x2="22.5" y2="12"/><line x1="4.4" y1="4.4" x2="6.5" y2="6.5"/><line x1="17.5" y1="17.5" x2="19.6" y2="19.6"/><line x1="4.4" y1="19.6" x2="6.5" y2="17.5"/><line x1="17.5" y1="6.5" x2="19.6" y2="4.4"/></g></svg>
+    <span class="theme-thumb"></span>
+    <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z" fill="currentColor"/></svg>
+  </button>
 </div>
 
 <div id="views">

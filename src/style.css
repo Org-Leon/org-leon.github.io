@@ -5,11 +5,38 @@
     --border: #2A3038;
     --text: #DCE1E6;
     --muted: #7C8794;
-    --accent: #4FB8AF;
-    --accent-dim: #2E5D58;
-    --warn: #D97757;
+    /* Markenfarben von ökop.de (aus deren CSS ausgelesen): Marken-Grün
+       #87AA63/#607E60 und Koralle/Rot #EB5C4E. Dark-Mode-Hintergründe bleiben
+       die bisherige Ansicht — unverändert und weiterhin Standard. */
+    --accent: #8CB26B;
+    --accent-dim: #3F5233;
+    /* --accent-tint: helle/dunkle Flächen für "ausgewählt"-Zustände (Toggle an,
+       markierte Tabellenzeile, aktiver Vergleichs-Button) — im Dark Mode
+       bewusst identisch zu --accent-dim (keine optische Änderung), im Light
+       Mode dagegen ein heller Grünton, da dort helle Flächen + dunkler Text
+       gebraucht werden statt dunkler Flächen + hellem Text. */
+    --accent-tint: #3F5233;
+    /* --on-accent: Textfarbe auf vollflächig grün eingefärbten Buttons
+       (Rest-Zustand --accent-dim, Hover-Zustand --accent) — im Dark Mode
+       identisch zu --text (keine Änderung), im Light Mode dagegen fest hell,
+       weil die grüne Fläche dort immer dunkler bleibt als der Seitenhintergrund. */
+    --on-accent: #DCE1E6;
+    --warn: #EB5C4E;
     --mono: 'IBM Plex Mono', 'SF Mono', Menlo, monospace;
     --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+  /* ---------- Light Mode (Basis: ökop.de) ---------- */
+  :root[data-theme="light"] {
+    --bg: #F6F1ED;
+    --panel: #FFFFFF;
+    --panel-2: #F2EDE7;
+    --border: #E1DAD1;
+    --text: #6D5845;
+    --muted: #8B8580;
+    --accent: #607E60;
+    --accent-dim: #4C6349;
+    --accent-tint: #E6ECDC;
+    --on-accent: #F5FAF2;
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
@@ -21,6 +48,7 @@
     flex-direction: column;
     height: 100vh;
     overflow: hidden;
+    transition: background-color .15s, color .15s;
   }
 
   /* ---------- Reiter (Viewer / Jahresvergleich) ---------- */
@@ -42,6 +70,42 @@
   }
   #tabbar button.active { color: var(--text); border-bottom-color: var(--accent); }
   #tabbar button:hover { color: var(--text); }
+
+  #tabbar button#theme-toggle {
+    margin: auto 14px auto auto;
+    padding: 0 5px;
+    width: 52px;
+    height: 26px;
+    flex-shrink: 0;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    cursor: pointer;
+  }
+  #tabbar button#theme-toggle:hover { border-color: var(--accent); }
+  .theme-icon { width: 13px; height: 13px; position: relative; z-index: 1; }
+  /* Das Icon, über dem der Thumb gerade sitzt, braucht Kontrastfarbe zum
+     (grünen) Thumb statt dessen eigener Farbe — sonst verschwindet es davor. */
+  .theme-icon-sun { color: var(--muted); }
+  .theme-icon-moon { color: var(--on-accent); }
+  :root[data-theme="light"] .theme-icon-sun { color: var(--on-accent); }
+  :root[data-theme="light"] .theme-icon-moon { color: var(--muted); }
+  .theme-thumb {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--accent);
+    transform: translateX(26px);
+    transition: transform .2s ease, background-color .15s;
+  }
+  :root[data-theme="light"] .theme-thumb { transform: translateX(0); }
 
   #views { flex: 1; position: relative; overflow: hidden; }
   .view { position: absolute; inset: 0; display: none; }
@@ -179,7 +243,7 @@
     align-items: center;
     justify-content: center;
   }
-  .vis-toggle.on { background: var(--accent-dim); border-color: var(--accent); }
+  .vis-toggle.on { background: var(--accent-tint); border-color: var(--accent); color: var(--accent); }
   .vis-toggle svg { width: 10px; height: 10px; display: none; }
   .vis-toggle.on svg { display: block; }
 
@@ -238,7 +302,7 @@
     margin: 4px 14px 14px;
     background: var(--accent-dim);
     border: 1px solid var(--accent);
-    color: var(--text);
+    color: var(--on-accent);
     padding: 9px 0;
     border-radius: 6px;
     font-size: 13px;
@@ -391,7 +455,7 @@
   }
   #feature-table tbody tr { cursor: pointer; }
   #feature-table tbody tr:hover td { background: var(--panel-2); }
-  #feature-table tbody tr.row-selected td { background: var(--accent-dim); }
+  #feature-table tbody tr.row-selected td { background: var(--accent-tint); }
   .table-route-link {
     color: var(--accent);
     text-decoration: none;
@@ -455,7 +519,7 @@
     margin: 16px 14px 4px;
     background: var(--accent-dim);
     border: 1px solid var(--accent);
-    color: var(--text);
+    color: var(--on-accent);
     padding: 9px 0;
     border-radius: 6px;
     font-size: 13px;
@@ -574,7 +638,7 @@
   }
   .cvt-btn:last-child { border-right: none; }
   .cvt-btn:hover { color: var(--text); }
-  .cvt-btn.active { background: var(--accent-dim); color: var(--text); }
+  .cvt-btn.active { background: var(--accent-tint); color: var(--text); }
   #compare-error-toast {
     position: absolute;
     top: 12px;
@@ -611,7 +675,7 @@
     margin: 14px 14px 4px;
     background: var(--accent-dim);
     border: 1px solid var(--accent);
-    color: var(--text);
+    color: var(--on-accent);
     padding: 9px 0;
     border-radius: 6px;
     font-size: 13px;
@@ -683,7 +747,7 @@
     margin: 4px 14px 14px;
     background: var(--accent-dim);
     border: 1px solid var(--accent);
-    color: var(--text);
+    color: var(--on-accent);
     padding: 9px 0;
     border-radius: 6px;
     font-size: 13px;

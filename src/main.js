@@ -1,3 +1,18 @@
+// ---------- Hell-/Dunkelmodus ----------
+// Die eigentliche Anwendung des gespeicherten Themes passiert schon synchron
+// im <head> (index.html), damit beim Neuladen nichts falsch aufblitzt — hier
+// nur noch der Umschalt-Klick.
+document.getElementById('theme-toggle').addEventListener('click', () => {
+  const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+  if (isLight) {
+    document.documentElement.removeAttribute('data-theme');
+    localStorage.setItem('oekoviewer-theme', 'dark');
+  } else {
+    document.documentElement.setAttribute('data-theme', 'light');
+    localStorage.setItem('oekoviewer-theme', 'light');
+  }
+});
+
 const COLORS = ['#4FB8AF', '#D97757', '#8AA6D9', '#C9A24F', '#B287D9', '#6FBF73', '#E08FA8', '#5FA8C4'];
 let colorIdx = 0;
 const layers = {}; // id -> { name, geojson, leafletLayer, color, visible }
@@ -408,7 +423,7 @@ function renderLayerList() {
     item.innerHTML = `
       <div class="layer-row">
         <div class="vis-toggle ${l.visible ? 'on' : ''}" data-id="${id}" data-action="toggle">
-          <svg viewBox="0 0 12 12"><path d="M2 6l3 3 5-6" stroke="#4FB8AF" stroke-width="1.6" fill="none"/></svg>
+          <svg viewBox="0 0 12 12"><path d="M2 6l3 3 5-6" stroke="currentColor" stroke-width="1.6" fill="none"/></svg>
         </div>
         <div class="swatch" style="background:${l.color}"></div>
         <div class="layer-name" title="${l.name}">${l.name}</div>
@@ -655,10 +670,10 @@ function onLocationFound(e) {
   const radius = e.accuracy / 2;
   if (!locationMarker) {
     locationMarker = L.circleMarker(e.latlng, {
-      radius: 7, color: '#ffffff', weight: 2, fillColor: '#4FB8AF', fillOpacity: 1
+      radius: 7, color: '#ffffff', weight: 2, fillColor: '#2E86FF', fillOpacity: 1
     }).addTo(map);
     locationCircle = L.circle(e.latlng, {
-      radius, color: '#4FB8AF', weight: 1, fillColor: '#4FB8AF', fillOpacity: 0.12
+      radius, color: '#2E86FF', weight: 1, fillColor: '#2E86FF', fillOpacity: 0.12
     }).addTo(map);
   } else {
     locationMarker.setLatLng(e.latlng);
@@ -1375,7 +1390,7 @@ function initZeichnerMap() {
   }
 
   const drawPolygon = new L.Draw.Polygon(zeichnerMap, {
-    shapeOptions: { color: '#4FB8AF', weight: 1.8, fillColor: '#4FB8AF', fillOpacity: 0.22 },
+    shapeOptions: { color: '#8CB26B', weight: 1.8, fillColor: '#8CB26B', fillOpacity: 0.22 },
     showArea: true,
     metric: true,
     allowIntersection: false
