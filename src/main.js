@@ -817,12 +817,16 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     document.getElementById('view-viewer').classList.toggle('active', target === 'viewer');
     document.getElementById('view-compare').classList.toggle('active', target === 'compare');
     document.getElementById('view-zeichner').classList.toggle('active', target === 'zeichner');
+    document.getElementById('view-obstbaum').classList.toggle('active', target === 'obstbaum');
     if (target === 'compare') {
       initCompareMap();
       setTimeout(() => compareMap && compareMap.invalidateSize(), 50);
     } else if (target === 'zeichner') {
       initZeichnerMap();
       setTimeout(() => zeichnerMap && zeichnerMap.invalidateSize(), 50);
+    } else if (target === 'obstbaum') {
+      initObstbaumMap();
+      setTimeout(() => obstbaumMap && obstbaumMap.invalidateSize(), 50);
     } else {
       setTimeout(() => map.invalidateSize(), 50);
     }
@@ -1674,6 +1678,534 @@ async function exportZeichnerFlaechenkarten() {
 }
 
 document.getElementById('btn-export-zeichner-flaechenkarten').addEventListener('click', exportZeichnerFlaechenkarten);
+
+// ---------- Obstbaumkataster ----------
+// Eigener Tab: Obstbäume als farbige Punkte erfassen. Die 6 häufigsten
+// Obstarten in Deutschland (Streuobst-Kontext) sind als Standard-Favoriten
+// direkt als Buttons wählbar, alle weiteren über die "Sonstige"-Liste. Jede
+// Art hat eine feste Farbe, die konsistent für Kartenpunkte, Tabellen-Chips,
+// Summen und die PDF-Legende verwendet wird. Welche Arten als Favoriten
+// angezeigt werden, ist per Drag&Drop änderbar (siehe favoriteFruitKeys).
+const FRUIT_TYPES_TOP6 = [
+  { key: 'apfel', label: 'Apfel', color: '#D6483C' },
+  { key: 'birne', label: 'Birne', color: '#C7B23A' },
+  { key: 'suesskirsche', label: 'Süßkirsche', color: '#8E2A4B' },
+  { key: 'sauerkirsche', label: 'Sauerkirsche', color: '#B23A5E' },
+  { key: 'pflaume', label: 'Pflaume/Zwetschge', color: '#5B4B8A' },
+  { key: 'walnuss', label: 'Walnuss', color: '#8A6238' }
+];
+const FRUIT_TYPES_SONSTIGE = [
+  { key: 'mirabelle', label: 'Mirabelle', color: '#E0B23D' },
+  { key: 'reneklode', label: 'Renekloden', color: '#7A9B4E' },
+  { key: 'quitte', label: 'Quitte', color: '#C9A227' },
+  { key: 'aprikose', label: 'Aprikose', color: '#E08A3C' },
+  { key: 'pfirsich', label: 'Pfirsich', color: '#E68F82' },
+  { key: 'haselnuss', label: 'Haselnuss', color: '#A47449' },
+  { key: 'esskastanie', label: 'Esskastanie', color: '#6B4A32' },
+  { key: 'holunder', label: 'Holunder', color: '#3C4A6B' },
+  { key: 'mispel', label: 'Mispel', color: '#7C6A4E' },
+  { key: 'sonstige', label: 'Sonstige/Unbekannt', color: '#6B7280' }
+];
+const FRUIT_TYPES = [...FRUIT_TYPES_TOP6, ...FRUIT_TYPES_SONSTIGE];
+const FRUIT_BY_KEY = Object.fromEntries(FRUIT_TYPES.map(f => [f.key, f]));
+function fruitOf(key) { return FRUIT_BY_KEY[key] || { key, label: key, color: '#6B7280' }; }
+
+const OBSTBAUM_FAVORITES_KEY = 'oekoviewer-obstbaum-favorites';
+function loadFavoriteFruits() {
+  try {
+    const arr = JSON.parse(localStorage.getItem(OBSTBAUM_FAVORITES_KEY));
+    if (Array.isArray(arr) && arr.length === FRUIT_TYPES_TOP6.length && arr.every(k => FRUIT_BY_KEY[k])) return arr;
+  } catch (err) {}
+  return null;
+}
+function saveFavoriteFruits() {
+  try { localStorage.setItem(OBSTBAUM_FAVORITES_KEY, JSON.stringify(favoriteFruitKeys)); } catch (err) {}
+}
+
+let favoriteFruitKeys = loadFavoriteFruits() || FRUIT_TYPES_TOP6.map(f => f.key);
+let obstbaumMap = null;
+let obstbaumBasemaps = null;
+let currentObstbaumBasemap = 'osm';
+let obstbaumLayerGroup = null;
+let obstbaumTablePanel = null;
+const obstbaumTrees = []; // { id, nummer, art, latlng, marker }
+let obstbaumTreeCounter = 0;
+let activeFruitKey = null;
+
+function setObstbaumStatus(msg) { document.getElementById('obstbaum-status').textContent = msg; }
+
+function showObstbaumError(msg) {
+  const el = document.getElementById('obstbaum-error-toast');
+  el.textContent = msg;
+  el.style.display = 'block';
+  clearTimeout(showObstbaumError._t);
+  showObstbaumError._t = setTimeout(() => el.style.display = 'none', 6000);
+}
+
+function setActiveFruitKey(key) {
+  activeFruitKey = (activeFruitKey === key) ? null : key;
+  document.querySelectorAll('.fruit-btn, .fruit-list-row').forEach(el => {
+    el.classList.toggle('active', el.getAttribute('data-key') === activeFruitKey);
+  });
+  document.getElementById('obstbaum-map').classList.toggle('placing', !!activeFruitKey);
+  setObstbaumStatus(activeFruitKey
+    ? `${fruitOf(activeFruitKey).label} aktiv — auf die Karte klicken, um Bäume zu setzen.`
+    : 'Bereit.');
+}
+
+// Baumpunkte als L.marker (mit farbigem DivIcon) statt L.circleMarker, weil
+// nur "echte" Marker in Leaflet nativ per Drag verschiebbar sind
+// (draggable: true) — bei einem Path wie circleMarker gäbe es das nicht ohne
+// Zusatz-Plugin.
+function createTreeIcon(color) {
+  return L.divIcon({
+    className: 'tree-marker-icon',
+    html: `<span style="background:${color}"></span>`,
+    iconSize: [16, 16],
+    iconAnchor: [8, 8]
+  });
+}
+
+function addTree(key, latlng) {
+  const fruit = fruitOf(key);
+  obstbaumTreeCounter++;
+  const entry = { id: 'baum-' + obstbaumTreeCounter, nummer: obstbaumTreeCounter, art: key, latlng, marker: null };
+
+  const marker = L.marker(latlng, { icon: createTreeIcon(fruit.color), draggable: true });
+  marker.bindTooltip(fruit.label, { direction: 'top', offset: [0, -10] });
+  marker.on('click', (e) => { L.DomEvent.stopPropagation(e); zoomToTree(entry.id); });
+  marker.on('dragend', () => { entry.latlng = marker.getLatLng(); });
+  marker.addTo(obstbaumLayerGroup);
+  entry.marker = marker;
+
+  obstbaumTrees.push(entry);
+  renderObstbaumSummary();
+  renderObstbaumTable();
+  setObstbaumStatus(`${fruit.label} gesetzt (${obstbaumTrees.length} insgesamt).`);
+  return entry;
+}
+
+function removeTree(id) {
+  const idx = obstbaumTrees.findIndex(t => t.id === id);
+  if (idx === -1) return;
+  obstbaumLayerGroup.removeLayer(obstbaumTrees[idx].marker);
+  obstbaumTrees.splice(idx, 1);
+  renderObstbaumSummary();
+  renderObstbaumTable();
+}
+
+function zoomToTree(id) {
+  const t = obstbaumTrees.find(x => x.id === id);
+  if (!t) return;
+  obstbaumMap.setView(t.latlng, Math.max(obstbaumMap.getZoom(), 18));
+}
+
+function fitObstbaumTrees() {
+  if (!obstbaumTrees.length) return;
+  const bounds = L.latLngBounds(obstbaumTrees.map(t => t.latlng));
+  if (bounds.isValid()) obstbaumMap.fitBounds(bounds, { padding: [40, 40], maxZoom: 18 });
+}
+
+function fruitChipHtml(key, extra) {
+  const fruit = fruitOf(key);
+  return `<span class="fruit-chip"><span class="fruit-dot" style="background:${fruit.color}"></span>${escapeHtml(fruit.label)}${extra || ''}</span>`;
+}
+
+function renderObstbaumSummary() {
+  const el = document.getElementById('obstbaum-summary-row');
+  document.getElementById('obstbaum-table-count').textContent = obstbaumTrees.length;
+  const counts = new Map();
+  obstbaumTrees.forEach(t => counts.set(t.art, (counts.get(t.art) || 0) + 1));
+  if (!counts.size) {
+    el.innerHTML = '<span style="color:var(--muted); font-size:11.5px;">Noch keine Bäume erfasst.</span>';
+    return;
+  }
+  el.innerHTML = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([key, n]) => fruitChipHtml(key, ` <span class="n">${n}</span>`))
+    .join('');
+}
+
+function renderObstbaumTable() {
+  const tbody = document.getElementById('obstbaum-table-body');
+  if (!obstbaumTrees.length) {
+    tbody.innerHTML = '<tr><td colspan="3" style="color:var(--muted); padding:14px;">Noch keine Bäume erfasst.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = obstbaumTrees.map(t => `<tr data-id="${t.id}">
+      <td>${t.nummer}</td>
+      <td>${fruitChipHtml(t.art)}</td>
+      <td><button data-id="${t.id}" data-action="remove" class="table-remove-btn">Entfernen</button></td>
+    </tr>`).join('');
+  tbody.querySelectorAll('tr[data-id]').forEach(tr => {
+    tr.addEventListener('click', (e) => {
+      if (e.target.closest('[data-action="remove"]')) return;
+      zoomToTree(tr.getAttribute('data-id'));
+    });
+  });
+  tbody.querySelectorAll('[data-action="remove"]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      removeTree(btn.getAttribute('data-id'));
+    });
+  });
+}
+
+function initObstbaumMap() {
+  if (obstbaumMap) return;
+  obstbaumMap = L.map('obstbaum-map', { zoomControl: true, attributionControl: true }).setView([51.16, 10.45], 6);
+  obstbaumBasemaps = createBasemaps();
+  obstbaumBasemaps.osm.addTo(obstbaumMap);
+
+  document.getElementById('obstbaum-btn-basemap').addEventListener('click', () => {
+    obstbaumBasemaps[currentObstbaumBasemap].remove();
+    const nextIdx = (basemapOrder.indexOf(currentObstbaumBasemap) + 1) % basemapOrder.length;
+    currentObstbaumBasemap = basemapOrder[nextIdx];
+    obstbaumBasemaps[currentObstbaumBasemap].addTo(obstbaumMap);
+    document.getElementById('obstbaum-btn-basemap').textContent = 'Basiskarte: ' + basemapLabels[currentObstbaumBasemap];
+  });
+
+  obstbaumLayerGroup = L.featureGroup().addTo(obstbaumMap);
+
+  obstbaumMap.on('click', (e) => {
+    if (!activeFruitKey) return;
+    addTree(activeFruitKey, e.latlng);
+  });
+
+  obstbaumTablePanel = initResizablePanel({
+    panel: document.getElementById('obstbaum-table-panel'),
+    handle: document.getElementById('obstbaum-table-resize-handle'),
+    minimizeBtn: document.getElementById('obstbaum-table-minimize'),
+    closeBtn: document.getElementById('obstbaum-table-close'),
+    boundsWrap: document.getElementById('obstbaum-map-wrap'),
+    minHeight: TABLE_MIN_HEIGHT,
+    defaultHeight: TABLE_DEFAULT_HEIGHT
+  });
+  document.getElementById('btn-obstbaum-table').addEventListener('click', () => {
+    renderObstbaumTable();
+    renderObstbaumSummary();
+    obstbaumTablePanel.open();
+  });
+}
+
+// Obstart-Buttons (Favoriten) + "Sonstige"-Liste aufbauen — unabhängig vom
+// (erst beim ersten Tab-Wechsel lazy initialisierten) Kartenobjekt.
+// Welche Arten oben als Favoriten erscheinen, ist per Drag&Drop editierbar:
+// eine Sonstige-Art auf einen Favoriten-Button ziehen tauscht die beiden,
+// ein Favorit auf die Sonstige-Liste gezogen stuft ihn wieder zurück (die
+// frei werdende Stelle im Raster wird automatisch mit der nächsten
+// Sonstige-Art aufgefüllt, damit die Anzahl der Favoriten konstant bleibt).
+function makeFruitDraggable(el, key) {
+  el.draggable = true;
+  el.addEventListener('dragstart', (e) => {
+    e.dataTransfer.setData('text/plain', key);
+    e.dataTransfer.effectAllowed = 'move';
+  });
+}
+
+function promoteToFavorite(draggedKey, targetKey) {
+  if (!draggedKey || draggedKey === targetKey || !FRUIT_BY_KEY[draggedKey]) return;
+  const draggedIdx = favoriteFruitKeys.indexOf(draggedKey);
+  const targetIdx = favoriteFruitKeys.indexOf(targetKey);
+  if (targetIdx === -1) return;
+  if (draggedIdx === -1) {
+    favoriteFruitKeys[targetIdx] = draggedKey; // kam aus "Sonstige" -> ersetzt das Ziel
+  } else {
+    [favoriteFruitKeys[draggedIdx], favoriteFruitKeys[targetIdx]] = [favoriteFruitKeys[targetIdx], favoriteFruitKeys[draggedIdx]];
+  }
+  saveFavoriteFruits();
+  renderFruitPicker();
+}
+
+function demoteFromFavorite(draggedKey) {
+  const idx = favoriteFruitKeys.indexOf(draggedKey);
+  if (idx === -1) return; // war schon nicht (mehr) Favorit
+  const replacement = FRUIT_TYPES.map(f => f.key).find(k => k !== draggedKey && !favoriteFruitKeys.includes(k));
+  if (!replacement) return;
+  favoriteFruitKeys[idx] = replacement;
+  saveFavoriteFruits();
+  renderFruitPicker();
+}
+
+function renderFruitPicker() {
+  const grid = document.getElementById('obstbaum-fruit-grid');
+  grid.innerHTML = '';
+  favoriteFruitKeys.forEach(key => {
+    const fruit = fruitOf(key);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'fruit-btn';
+    btn.setAttribute('data-key', key);
+    btn.innerHTML = `<span class="fruit-dot" style="background:${fruit.color}"></span>${escapeHtml(fruit.label)}`;
+    btn.classList.toggle('active', key === activeFruitKey);
+    btn.addEventListener('click', () => setActiveFruitKey(key));
+    makeFruitDraggable(btn, key);
+    btn.addEventListener('dragover', (e) => { e.preventDefault(); btn.classList.add('drag-over'); });
+    btn.addEventListener('dragleave', () => btn.classList.remove('drag-over'));
+    btn.addEventListener('drop', (e) => {
+      e.preventDefault();
+      btn.classList.remove('drag-over');
+      promoteToFavorite(e.dataTransfer.getData('text/plain'), key);
+    });
+    grid.appendChild(btn);
+  });
+
+  const list = document.getElementById('obstbaum-sonstige-list');
+  list.innerHTML = '';
+  FRUIT_TYPES
+    .filter(f => !favoriteFruitKeys.includes(f.key))
+    .forEach(fruit => {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'fruit-list-row';
+      row.setAttribute('data-key', fruit.key);
+      row.innerHTML = `<span class="fruit-dot" style="background:${fruit.color}"></span>${escapeHtml(fruit.label)}`;
+      row.classList.toggle('active', fruit.key === activeFruitKey);
+      row.addEventListener('click', () => setActiveFruitKey(fruit.key));
+      makeFruitDraggable(row, fruit.key);
+      list.appendChild(row);
+    });
+}
+renderFruitPicker();
+
+const sonstigeList = document.getElementById('obstbaum-sonstige-list');
+sonstigeList.addEventListener('dragover', (e) => { e.preventDefault(); sonstigeList.classList.add('drag-over'); });
+sonstigeList.addEventListener('dragleave', () => sonstigeList.classList.remove('drag-over'));
+sonstigeList.addEventListener('drop', (e) => {
+  e.preventDefault();
+  sonstigeList.classList.remove('drag-over');
+  demoteFromFavorite(e.dataTransfer.getData('text/plain'));
+});
+
+const sonstigeToggle = document.getElementById('obstbaum-sonstige-toggle');
+sonstigeToggle.addEventListener('click', () => {
+  const willOpen = sonstigeList.hidden;
+  sonstigeList.hidden = !willOpen;
+  sonstigeToggle.classList.toggle('open', willOpen);
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && activeFruitKey) setActiveFruitKey(null);
+});
+
+// ---------- Baumkataster laden/speichern (Format: GeoJSON) ----------
+// Speichert/lädt als reguläres GeoJSON (Punkte + Obstart-Eigenschaft) —
+// von Hand editierbares JSON (z.B. um Koordinaten oder Obstart nachträglich
+// zu korrigieren) und gleichzeitig mit jedem Standard-GIS-Tool kompatibel.
+async function loadBaumkatasterFile(file) {
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+    const features = data.features || [];
+    let added = 0;
+    features.forEach(f => {
+      if (!f.geometry || f.geometry.type !== 'Point') return;
+      const [lng, lat] = f.geometry.coordinates;
+      if (!isFinite(lat) || !isFinite(lng)) return;
+      const props = f.properties || {};
+      const key = FRUIT_BY_KEY[props.art] ? props.art : 'sonstige';
+      addTree(key, L.latLng(lat, lng));
+      added++;
+    });
+    document.getElementById('obstbaum-file-name').textContent = file.name;
+    document.getElementById('obstbaum-drop').classList.add('filled');
+    setObstbaumStatus(`${added} Baum/Bäume aus ${file.name} geladen.`);
+    if (added) fitObstbaumTrees();
+  } catch (err) {
+    console.error(err);
+    showObstbaumError(file.name + ': Konnte Kataster nicht lesen — ' + (err.message || 'unbekannter Fehler'));
+  }
+}
+document.getElementById('obstbaum-file-input').addEventListener('change', (e) => {
+  if (e.target.files[0]) loadBaumkatasterFile(e.target.files[0]);
+});
+
+function exportBaumkataster() {
+  if (!obstbaumTrees.length) { showObstbaumError('Noch keine Bäume erfasst.'); return; }
+  const fc = {
+    type: 'FeatureCollection',
+    features: obstbaumTrees.map(t => ({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [t.latlng.lng, t.latlng.lat] },
+      properties: { nummer: t.nummer, art: t.art, label: fruitOf(t.art).label }
+    }))
+  };
+  const ts = new Date().toISOString().slice(0, 10);
+  downloadBlob(JSON.stringify(fc, null, 2), `baumkataster_${ts}.geojson`, 'application/geo+json');
+  setObstbaumStatus('Baumkataster gespeichert.');
+}
+document.getElementById('btn-export-baumkataster').addEventListener('click', exportBaumkataster);
+
+// ---------- Flächenkarten exportieren (PDF mit Legende + Summen) ----------
+function hexToRgb(hex) {
+  const clean = hex.replace('#', '');
+  return {
+    r: parseInt(clean.slice(0, 2), 16),
+    g: parseInt(clean.slice(2, 4), 16),
+    b: parseInt(clean.slice(4, 6), 16)
+  };
+}
+
+function treeDistanceMeters(a, b) {
+  return turf.distance([a.latlng.lng, a.latlng.lat], [b.latlng.lng, b.latlng.lat], { units: 'meters' });
+}
+
+// Gruppiert nahe beieinanderstehende Bäume (z.B. eine Streuobstwiese) auf
+// eine gemeinsame Flächenkarten-Seite, statt stur eine Seite pro Baum zu
+// erzeugen — sonst wären bei eng stehenden Bäumen unnötig viele, fast
+// identische Seiten die Folge. Single-Linkage: ein Baum gehört zu einer
+// Gruppe, sobald er innerhalb des Radius zu IRGENDEINEM Baum der Gruppe
+// liegt — so bleiben auch länglich angeordnete Baumreihen zusammenhängend.
+function clusterTrees(trees, radiusMeters) {
+  const clusters = [];
+  const visited = new Set();
+  trees.forEach(t => {
+    if (visited.has(t.id)) return;
+    const cluster = [t];
+    visited.add(t.id);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      trees.forEach(other => {
+        if (visited.has(other.id)) return;
+        if (cluster.some(c => treeDistanceMeters(c, other) <= radiusMeters)) {
+          cluster.push(other);
+          visited.add(other.id);
+          grew = true;
+        }
+      });
+    }
+    clusters.push(cluster);
+  });
+  return clusters;
+}
+
+async function exportObstbaumFlaechenkarten() {
+  if (typeof html2canvas === 'undefined') { showObstbaumError('Export nicht verfügbar (html2canvas konnte nicht geladen werden).'); return; }
+  if (typeof window.jspdf === 'undefined') { showObstbaumError('Export nicht verfügbar (jsPDF konnte nicht geladen werden).'); return; }
+  if (!obstbaumTrees.length) { showObstbaumError('Noch keine Bäume erfasst.'); return; }
+
+  const btn = document.getElementById('btn-export-obstbaum-flaechenkarten');
+  btn.disabled = true;
+
+  const tab = ensureTabActive('obstbaum');
+  const savedCenter = obstbaumMap.getCenter();
+  const savedZoom = obstbaumMap.getZoom();
+  const savedBasemap = currentObstbaumBasemap;
+
+  if (currentObstbaumBasemap !== 'satellite') {
+    obstbaumBasemaps[currentObstbaumBasemap].remove();
+    currentObstbaumBasemap = 'satellite';
+    obstbaumBasemaps.satellite.addTo(obstbaumMap);
+    document.getElementById('obstbaum-btn-basemap').textContent = 'Basiskarte: ' + basemapLabels.satellite;
+  }
+  obstbaumMap.removeControl(obstbaumMap.zoomControl);
+
+  const clusters = clusterTrees(obstbaumTrees, 120);
+  const grandTotal = new Map();
+
+  const doc = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const margin = 12;
+
+  try {
+    for (let i = 0; i < clusters.length; i++) {
+      const cluster = clusters[i];
+      setObstbaumStatus(`Exportiere Flächenkarten … (${i + 1}/${clusters.length})`);
+
+      const bounds = L.latLngBounds(cluster.map(t => t.latlng));
+      obstbaumMap.fitBounds(bounds, { padding: [60, 60], maxZoom: 19 });
+
+      await waitForTilesLoaded(obstbaumBasemaps.satellite, 6000);
+      await delay(400);
+
+      let canvas;
+      try {
+        canvas = await html2canvas(document.getElementById('obstbaum-map'), { useCORS: true, logging: false });
+      } catch (err) {
+        console.error('Kartenbild-Erfassung fehlgeschlagen für Gruppe', i + 1, err);
+        showObstbaumError('Kartenbild konnte nicht erfasst werden (evtl. CORS-Einschränkung der Kachel-Quelle).');
+        break;
+      }
+
+      if (i > 0) doc.addPage('a4', 'landscape');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(15);
+      doc.text(`Gruppe ${i + 1} (${cluster.length} Baum/Bäume)`, margin, margin + 4);
+
+      // Zählung je Obstart auf dieser Seite — der Farbpunkt davor dient
+      // zugleich als Legende (Farbe -> Obstart), extra Legendenblock nicht nötig.
+      const pageCounts = new Map();
+      cluster.forEach(t => pageCounts.set(t.art, (pageCounts.get(t.art) || 0) + 1));
+      pageCounts.forEach((n, key) => grandTotal.set(key, (grandTotal.get(key) || 0) + n));
+
+      doc.setFontSize(10);
+      let legendX = margin;
+      let legendY = margin + 11;
+      [...pageCounts.entries()].forEach(([key, n]) => {
+        const fruit = fruitOf(key);
+        const rgb = hexToRgb(fruit.color);
+        const label = `${fruit.label}: ${n}`;
+        if (legendX + doc.getTextWidth(label) + 6 > pageW - margin) { legendX = margin; legendY += 5.5; }
+        doc.setFillColor(rgb.r, rgb.g, rgb.b);
+        doc.circle(legendX + 1.3, legendY - 1.2, 1.3, 'F');
+        doc.setFont('helvetica', 'normal');
+        doc.text(label, legendX + 4, legendY);
+        legendX += doc.getTextWidth(label) + 10;
+      });
+
+      const imageTop = legendY + 6;
+      const maxW = pageW - margin * 2;
+      const maxH = pageH - imageTop - margin;
+      const scale = Math.min(maxW / canvas.width, maxH / canvas.height);
+      const imgW = canvas.width * scale;
+      const imgH = canvas.height * scale;
+      const imgX = (pageW - imgW) / 2;
+      doc.addImage(canvas.toDataURL('image/jpeg', 0.85), 'JPEG', imgX, imageTop, imgW, imgH);
+    }
+
+    // Abschlussseite: Gesamtsumme je Obstart über alle Gruppen hinweg.
+    doc.addPage('a4', 'landscape');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(16);
+    doc.text('Gesamtübersicht', margin, margin + 6);
+
+    let y = margin + 20;
+    let total = 0;
+    [...grandTotal.entries()].sort((a, b) => b[1] - a[1]).forEach(([key, n]) => {
+      const fruit = fruitOf(key);
+      const rgb = hexToRgb(fruit.color);
+      doc.setFillColor(rgb.r, rgb.g, rgb.b);
+      doc.rect(margin, y - 3.2, 4, 4, 'F');
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(11.5);
+      doc.text(`${fruit.label}: ${n}`, margin + 8, y);
+      total += n;
+      y += 7.5;
+    });
+    doc.setFont('helvetica', 'bold');
+    doc.text(`Gesamt: ${total} Bäume`, margin, y + 5);
+
+    const ts = new Date().toISOString().slice(0, 10);
+    doc.save(`obstbaumkataster_flaechenkarten_${ts}.pdf`);
+    setObstbaumStatus('Flächenkarten exportiert.');
+  } finally {
+    obstbaumMap.zoomControl.addTo(obstbaumMap);
+    if (currentObstbaumBasemap !== savedBasemap) {
+      obstbaumBasemaps[currentObstbaumBasemap].remove();
+      currentObstbaumBasemap = savedBasemap;
+      obstbaumBasemaps[currentObstbaumBasemap].addTo(obstbaumMap);
+      document.getElementById('obstbaum-btn-basemap').textContent = 'Basiskarte: ' + basemapLabels[currentObstbaumBasemap];
+    }
+    obstbaumMap.setView(savedCenter, savedZoom);
+    tab.restore();
+    btn.disabled = false;
+  }
+}
+
+document.getElementById('btn-export-obstbaum-flaechenkarten').addEventListener('click', exportObstbaumFlaechenkarten);
 
 // ---------- Dev-Tooling: Jahresvergleich-Inputs aus test-shapes/ vorbefüllen ----------
 // Vorerst deaktiviert: test-shapes/ enthält jetzt 16 einzelne Bundesland-

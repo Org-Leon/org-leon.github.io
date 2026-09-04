@@ -37,6 +37,7 @@
   <button class="tab-btn active" data-view="viewer">Viewer</button>
   <button class="tab-btn" data-view="compare">Jahresvergleich</button>
   <button class="tab-btn" data-view="zeichner">Flächenzeichner</button>
+  <button class="tab-btn" data-view="obstbaum">Obstbaumkataster</button>
   <button id="theme-toggle" title="Hell-/Dunkelmodus umschalten" aria-label="Hell-/Dunkelmodus umschalten">
     <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2" fill="currentColor"/><g stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="12" y1="1.5" x2="12" y2="4.5"/><line x1="12" y1="19.5" x2="12" y2="22.5"/><line x1="1.5" y1="12" x2="4.5" y2="12"/><line x1="19.5" y1="12" x2="22.5" y2="12"/><line x1="4.4" y1="4.4" x2="6.5" y2="6.5"/><line x1="17.5" y1="17.5" x2="19.6" y2="19.6"/><line x1="4.4" y1="19.6" x2="6.5" y2="17.5"/><line x1="17.5" y1="6.5" x2="19.6" y2="4.4"/></g></svg>
     <span class="theme-thumb"></span>
@@ -235,6 +236,71 @@
     <div id="zeichner-error-toast"></div>
     <div id="zeichner-topbar">
       <button id="zeichner-btn-basemap">Basiskarte: Standard</button>
+    </div>
+  </div>
+</div>
+
+<div id="view-obstbaum" class="view">
+  <div id="obstbaum-sidebar">
+    <div id="obstbaum-brand">
+      <h1>Obstbaumkataster</h1>
+      <p>Obstbäume als farbige Punkte auf der Karte erfassen</p>
+    </div>
+
+    <div id="obstbaum-picker">
+      <label class="compare-label">Obstart zum Setzen wählen</label>
+      <div id="obstbaum-fruit-grid"></div>
+      <button type="button" id="obstbaum-sonstige-toggle">Sonstige Obstart <span class="chev">▾</span></button>
+      <div id="obstbaum-sonstige-list" hidden></div>
+    </div>
+    <div class="empty-hint" id="obstbaum-placement-hint">Obstart anklicken, dann auf die Karte klicken, um dort einen Baum zu setzen — bleibt aktiv für mehrere Bäume derselben Art. Erneuter Klick auf die aktive Obstart (oder Esc) beendet das Setzen. Gesetzte Punkte lassen sich auf der Karte per Drag verschieben. Tipp: Eine Obstart aus „Sonstige" auf einen der Buttons oben ziehen, um sie dorthin zu holen.</div>
+
+    <div class="compare-upload">
+      <label class="compare-label">Baumkataster laden</label>
+      <div class="dropzone-mini" id="obstbaum-drop">
+        <span id="obstbaum-file-name">.geojson auswählen…</span>
+        <input type="file" id="obstbaum-file-input" accept=".geojson,.json">
+      </div>
+    </div>
+
+    <button id="btn-obstbaum-table">Tabelle</button>
+
+    <div id="obstbaum-spacer"></div>
+
+    <div class="export-buttons" id="obstbaum-export-buttons">
+      <button id="btn-export-baumkataster" class="export-btn">Kataster speichern</button>
+    </div>
+    <button id="btn-export-obstbaum-flaechenkarten">Flächenkarten exportieren</button>
+
+    <div id="obstbaum-status">Bereit.</div>
+  </div>
+
+  <div id="obstbaum-map-wrap">
+    <div id="obstbaum-map"></div>
+    <div id="obstbaum-error-toast"></div>
+    <div id="obstbaum-topbar">
+      <button id="obstbaum-btn-basemap">Basiskarte: Standard</button>
+    </div>
+    <div id="obstbaum-table-panel">
+      <div id="obstbaum-table-resize-handle"></div>
+      <div id="obstbaum-table-head">
+        <span class="title">Bäume (<span id="obstbaum-table-count">0</span>)</span>
+        <button id="obstbaum-table-minimize" title="Minimieren">▁</button>
+        <button id="obstbaum-table-close" title="Schließen">✕</button>
+      </div>
+      <div id="obstbaum-summary-row"></div>
+      <div id="obstbaum-table-body-wrap">
+        <table id="obstbaum-table">
+          <thead>
+            <tr>
+              <th>Nr.</th>
+              <th>Obstart</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="obstbaum-table-body"></tbody>
+        </table>
+      </div>
     </div>
   </div>
 </div>
