@@ -1,2 +1,95 @@
 
-CLEAR BUTTON
+CLEAR BUTTON Compare
+
+=== Bundesland-Kompatibilität Testdaten (test-shapes/) — Stand 2026-09-03 ===
+Neu geordnet nach Bundesland-Ordnern, mit echten Betriebs-Zips (statt der alten
+Sammel-Testdateien). Alle 13 Ordner mit Playwright live durchgetestet (Upload →
+Tabelle → Konsole geprüft). Vorbild/Referenz für "vollständig" = Sachsen-Anhalt:
+Nummer, Name, Größe, Kulturart im Klartext UND Flächenidentifikator (FLIK) sind
+dort alle vorhanden. Fehlende Punkte unten = im Rohdatensatz selbst nicht
+vorhanden bzw. technisch nicht auslesbar, keine Mapping-Lücke mehr.
+
+✓ VOLLSTÄNDIG (wie Sachsen-Anhalt: Nummer/Name/Größe/Kulturart-Klartext/Flächenidentifikator)
+  - Sachsen-Anhalt (Referenz)
+  - Schleswig-Holstein
+  - Mecklenburg-Vorpommern
+  - Saarland
+
+✓ FUNKTIONIERT, Kulturart nur als Code (kein Klartext im Datensatz enthalten —
+  keine erfundene Übersetzung, Code wird angezeigt)
+  - Baden-Württemberg ("fiona"-Format) — kein Flächenidentifikator im Datensatz
+  - Brandenburg (Parzellen-Ebene: Kulturart-Klartext vorhanden; Flächenidentifikator
+    nur auf Teilflächen-Ebene, da Parzellen selbst kein FLIK führen)
+  - Hessen ("Antragsschläge"-Format)
+  - Rheinland-Pfalz ("SchlaegeExport"-Format, Größe stand in m² → jetzt auf ha
+    umgerechnet)
+  - Sachsen ("Schlaege_..."-Format, SC_HA_CODE als Kulturart-Code ergänzt)
+
+✓ Bayern — "Feldstueck"+"Nutzung" (2 getrennte, geometrisch identische
+  Shapefiles) werden jetzt per mergeFeldstueckNutzung() (Verknüpfung über FID)
+  zu einer Ebene zusammengeführt → Name UND Kulturart-Code erscheinen in einer
+  Zeile. Live mit Playwright bestätigt (Andreas Bollwein: "1 Ebene(n) geladen"
+  statt 2, Zeile zeigt Nummer+Name+FLIK+Größe+Kulturart komplett).
+  [ ] Kulturart nur als Code, kein Klartext im Datensatz
+  [ ] Falls ein Zip zusätzlich "Landschaftselement.shp" enthält (z.B. Anton
+      Mosandl), bleibt das als eigene, standardmäßig sichtbare Ebene stehen —
+      analog zu Teilflächen wäre ein automatisches Ausblenden denkbar, aber
+      bisher nicht umgesetzt (kein Teil dieser Aufgabe).
+
+⚠ LÜCKENHAFT — Daten fehlen im Rohdatensatz selbst
+  Niedersachsen ("teilschlaege"-Format)
+    [ ] Größe fehlt komplett (kein Flächen-Feld in der DBF)
+    [ ] Flächenname fehlt komplett
+    [ ] Kulturart fehlt komplett (nicht mal ein Nutzungscode enthalten)
+    (Nummer über SCHLAG_NR, Flächenidentifikator über FLIK funktionieren)
+
+  Nordrhein-Westfalen ("TS_"/"BLE_"-Format)
+    [ ] Größe fehlt in der Teilschlag-Ebene (TS_*.dbf hat kein Flächen-Feld);
+        die BLE_-Referenzebene hätte FLNETTO, ist in beiden Testdateien aber
+        leer (0 Datensätze)
+    [ ] Kulturart fehlt komplett (kein Nutzungscode-Feld überhaupt vorhanden)
+    (Nummer über SCHLAGNR, Flächenidentifikator über FLIK funktionieren;
+    SCHLAGBEZ als Name ist vorhanden, aber in unseren Testdaten oft leer)
+
+⚠ TECHNISCH BEGRENZT — nicht per Feldnamen-Mapping lösbar
+  Thüringen ("Antragsflächen Hauptnutzung"-Format, GEOWD_*-Felder)
+    [ ] Flächenname fehlt im Datensatz
+    [ ] Kulturart fehlt im Datensatz (nur Förderkulissen-Kürzel wie "DZ,ÖL2GL,ÖR4")
+    [ ] Flächenidentifikator technisch nicht auslesbar: Die DBF hat mehrere
+        Felder, die beim 10-Zeichen-Kürzen alle "GEOWD_GEO_"/"GEOWD_FREE"
+        heißen (Kollision). Unsere Feldnamen-Suche sieht nur den JEWEILS
+        LETZTEN gleichnamigen Wert (zufällig die Größe) — der FLIK-ähnliche
+        Code geht verloren. Bräuchte einen eigenen, positionsbasierten
+        DBF-Parser statt shp.js' Feldnamen-Objekt — größerer Umbau, nicht in
+        dieser Iteration umgesetzt.
+
+=== Erledigt (diese Runde) ===
+[x] Alle 13 Bundesland-Ordner mit den neu geordneten, echten Testdateien per
+    Playwright-Feedback-Loop (Upload → Tabelle → Konsole) live durchgetestet
+    statt nur simuliert.
+[x] Bayern: Feldstueck+Nutzung-Zusammenführung implementiert
+    (mergeFeldstueckNutzung() in src/main.js, greift in handleFiles() und
+    loadCompareFile()).
+[x] Neue FIELD_CANDIDATES/GROESSE_CANDIDATES für die neu geordneten Dateien:
+    LAGE_BEZ (Name, Saarland), GR (Größe, Saarland), SCHLAGFLAE (Größe in m²,
+    Rheinland-Pfalz, Skalierung 0.0001), KTA_AJ (Kulturart-Code, Rheinland-
+    Pfalz), SC_HA_CODE (Kulturart-Code, Sachsen), NCODE (Kulturart-Code-
+    Fallback, Saarland).
+[x] Umlaut-Encoding bei UTF-8-Datensätzen ohne funktionierende .cpg-Auswertung
+    (Baden-Württemberg "fiona"-Format) live bestätigt korrekt ("Große Wiese"
+    statt "GroÃe Wiese").
+
+=== Bereits aus vorheriger Runde (weiterhin gültig) ===
+[x] __MACOSX/._-Metadatendateien (macOS-Zip-Artefakte) werden beim Einlesen
+    übersprungen statt Fehler-Toasts zu zeigen.
+[x] Encoding-Autoerkennung (detectDbfEncoding()): Datensätze ohne .cpg werden
+    jetzt korrekt als UTF-8 oder windows-1252 erkannt statt fest verdrahtet.
+[x] Tabellenspalte "Flächenidentifikator" (FLEK/FLIK/FB_BEZEICH/FID/...) in
+    Tabelle, CSV/Excel/PDF-Export und Flächenkarten-PDF-Export.
+
+=== Bekannte, nicht-kritische Nebenbefunde ===
+[ ] Leere "hinweispunkte"-Ebenen (0 Datensätze, z.B. Brandenburg, NRW BLE_)
+    lösen beim Einlesen einen Konsolenfehler + Fehler-Toast aus ("I don't know
+    shp type '0'") statt einfach übersprungen zu werden. Funktional
+    unkritisch (Ebene wird korrekt ausgelassen, alle anderen Ebenen laden
+    normal), aber unschön für den Nutzer.

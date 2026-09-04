@@ -216,9 +216,36 @@
     border-radius: 6px;
     cursor: pointer;
     font-family: var(--sans);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
   }
   #topbar button:hover { border-color: var(--accent); }
   #topbar button.active { border-color: var(--accent); color: var(--accent); }
+
+  #topbar button#btn-locate {
+    background: transparent;
+    border: none;
+    padding: 2px;
+    border-radius: 50%;
+    transition: transform .15s, filter .15s;
+  }
+  #topbar button#btn-locate:hover { border-color: transparent; transform: scale(1.08); }
+  #topbar button#btn-locate.active { filter: drop-shadow(0 0 6px rgba(46,134,255,0.75)); }
+  .gps-icon { flex-shrink: 0; display: block; }
+
+  #btn-export-flaechenkarten {
+    margin: 4px 14px 14px;
+    background: var(--accent-dim);
+    border: 1px solid var(--accent);
+    color: var(--text);
+    padding: 9px 0;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    font-family: var(--sans);
+  }
+  #btn-export-flaechenkarten:hover { background: var(--accent); }
 
   #coord-readout {
     position: absolute;
@@ -549,6 +576,139 @@
   .cvt-btn:hover { color: var(--text); }
   .cvt-btn.active { background: var(--accent-dim); color: var(--text); }
   #compare-error-toast {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    z-index: 1001;
+    background: #2A1A16;
+    border: 1px solid var(--warn);
+    color: #F2C4B0;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    max-width: 340px;
+    display: none;
+  }
+
+  /* ---------- Flächenzeichner ---------- */
+  #zeichner-sidebar {
+    width: 300px;
+    min-width: 300px;
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+  }
+  #zeichner-brand {
+    padding: 16px 18px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  #zeichner-brand h1 { font-size: 15px; font-weight: 600; margin: 0 0 2px; letter-spacing: 0.2px; }
+  #zeichner-brand p { margin: 0; font-size: 12px; color: var(--muted); }
+
+  #btn-zeichner-draw {
+    margin: 14px 14px 4px;
+    background: var(--accent-dim);
+    border: 1px solid var(--accent);
+    color: var(--text);
+    padding: 9px 0;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    font-family: var(--sans);
+  }
+  #btn-zeichner-draw:hover { background: var(--accent); }
+  #btn-zeichner-draw.active { background: var(--warn); border-color: var(--warn); }
+
+  #zeichner-section { flex: 1; overflow-y: auto; padding: 4px 0 10px; }
+  #zeichner-section h2 {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--muted);
+    font-weight: 600;
+    margin: 12px 14px 6px;
+  }
+
+  .parcel-item {
+    margin: 0 10px 6px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 9px 10px;
+  }
+  .parcel-row { display: flex; align-items: center; gap: 8px; }
+  .parcel-nummer {
+    flex-shrink: 0;
+    font-size: 11px;
+    font-family: var(--mono);
+    color: var(--muted);
+  }
+  .parcel-name {
+    flex: 1;
+    min-width: 0;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid transparent;
+    color: var(--text);
+    font-size: 12.5px;
+    font-family: var(--sans);
+    padding: 2px 0;
+  }
+  .parcel-name:focus { outline: none; border-bottom-color: var(--accent); }
+  .parcel-name::placeholder { color: var(--muted); }
+  .parcel-size {
+    flex-shrink: 0;
+    font-size: 10.5px;
+    color: var(--muted);
+    font-family: var(--mono);
+  }
+  .parcel-kultur {
+    width: 100%;
+    display: block;
+    margin-top: 6px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font-size: 11.5px;
+    font-family: var(--sans);
+    padding: 4px 6px;
+  }
+  .parcel-kultur:focus { outline: none; border-color: var(--accent); }
+  .parcel-kultur::placeholder { color: var(--muted); }
+
+  #btn-export-zeichner-flaechenkarten {
+    margin: 4px 14px 14px;
+    background: var(--accent-dim);
+    border: 1px solid var(--accent);
+    color: var(--text);
+    padding: 9px 0;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    font-family: var(--sans);
+  }
+  #btn-export-zeichner-flaechenkarten:hover { background: var(--accent); }
+
+  #zeichner-status {
+    padding: 8px 14px;
+    font-size: 11px;
+    color: var(--muted);
+    border-top: 1px solid var(--border);
+    font-family: var(--mono);
+  }
+
+  #zeichner-map-wrap { flex: 1; position: relative; height: 100%; }
+  #zeichner-map { width: 100%; height: 100%; background: #0D0F13; }
+  #zeichner-topbar { position: absolute; top: 12px; right: 12px; z-index: 1000; display: flex; gap: 8px; }
+  #zeichner-topbar button {
+    background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    font-size: 12px; padding: 6px 11px; border-radius: 6px; cursor: pointer; font-family: var(--sans);
+  }
+  #zeichner-topbar button:hover { border-color: var(--accent); }
+  #zeichner-error-toast {
     position: absolute;
     top: 12px;
     left: 12px;
