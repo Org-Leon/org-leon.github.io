@@ -352,7 +352,7 @@
   }
   .feature-label::before { display: none; }
 
-  #table-panel, #compare-table-panel {
+  #table-panel, #compare-table-panel, #obstbaum-table-panel {
     position: absolute;
     left: 0;
     right: 0;
@@ -366,19 +366,21 @@
     overflow: hidden;
     box-shadow: 0 -6px 20px rgba(0,0,0,0.35);
   }
-  #table-panel.open, #compare-table-panel.open { display: flex; }
-  #table-panel.minimized, #compare-table-panel.minimized { height: auto !important; }
+  #table-panel.open, #compare-table-panel.open, #obstbaum-table-panel.open { display: flex; }
+  #table-panel.minimized, #compare-table-panel.minimized, #obstbaum-table-panel.minimized { height: auto !important; }
   #table-panel.minimized #table-body-wrap,
-  #compare-table-panel.minimized #compare-table-body-wrap { display: none; }
-  #table-panel.dragging, #compare-table-panel.dragging { user-select: none; }
-  #table-resize-handle, #compare-table-resize-handle {
+  #compare-table-panel.minimized #compare-table-body-wrap,
+  #obstbaum-table-panel.minimized #obstbaum-table-body-wrap,
+  #obstbaum-table-panel.minimized #obstbaum-summary-row { display: none; }
+  #table-panel.dragging, #compare-table-panel.dragging, #obstbaum-table-panel.dragging { user-select: none; }
+  #table-resize-handle, #compare-table-resize-handle, #obstbaum-table-resize-handle {
     flex-shrink: 0;
     height: 7px;
     cursor: ns-resize;
     position: relative;
     background: transparent;
   }
-  #table-resize-handle::after, #compare-table-resize-handle::after {
+  #table-resize-handle::after, #compare-table-resize-handle::after, #obstbaum-table-resize-handle::after {
     content: '';
     position: absolute;
     left: 50%; top: 50%;
@@ -390,10 +392,13 @@
   #table-resize-handle:hover::after,
   #table-panel.dragging #table-resize-handle::after,
   #compare-table-resize-handle:hover::after,
-  #compare-table-panel.dragging #compare-table-resize-handle::after { background: var(--accent); }
+  #compare-table-panel.dragging #compare-table-resize-handle::after,
+  #obstbaum-table-resize-handle:hover::after,
+  #obstbaum-table-panel.dragging #obstbaum-table-resize-handle::after { background: var(--accent); }
   #table-panel.minimized #table-resize-handle,
-  #compare-table-panel.minimized #compare-table-resize-handle { cursor: default; }
-  #table-head, #compare-table-head {
+  #compare-table-panel.minimized #compare-table-resize-handle,
+  #obstbaum-table-panel.minimized #obstbaum-table-resize-handle { cursor: default; }
+  #table-head, #compare-table-head, #obstbaum-table-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -401,8 +406,8 @@
     border-bottom: 1px solid var(--border);
     font-size: 12.5px;
   }
-  #table-head .title, #compare-table-head .title { color: var(--text); font-weight: 500; }
-  #table-head, #compare-table-head { gap: 14px; flex-wrap: wrap; }
+  #table-head .title, #compare-table-head .title, #obstbaum-table-head .title { color: var(--text); font-weight: 500; }
+  #table-head, #compare-table-head, #obstbaum-table-head { gap: 14px; flex-wrap: wrap; }
   #table-teilflaechen-toggle {
     margin-left: auto;
     display: flex;
@@ -427,15 +432,15 @@
     font-family: var(--sans);
   }
   .export-btn:hover { border-color: var(--accent); color: var(--text); }
-  #table-head button, #compare-table-head button {
+  #table-head button, #compare-table-head button, #obstbaum-table-head button {
     background: transparent;
     border: none;
     color: var(--muted);
     cursor: pointer;
     font-size: 15px;
   }
-  #table-head button:hover, #compare-table-head button:hover { color: var(--text); }
-  #table-body-wrap, #compare-table-body-wrap { overflow: auto; flex: 1; min-height: 0; }
+  #table-head button:hover, #compare-table-head button:hover, #obstbaum-table-head button:hover { color: var(--text); }
+  #table-body-wrap, #compare-table-body-wrap, #obstbaum-table-body-wrap { overflow: auto; flex: 1; min-height: 0; }
   #feature-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   #feature-table thead th {
     position: sticky;
@@ -785,4 +790,211 @@
     font-size: 12px;
     max-width: 340px;
     display: none;
+  }
+
+  /* ---------- Obstbaumkataster ---------- */
+  #obstbaum-sidebar {
+    width: 300px;
+    min-width: 300px;
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+  }
+  #obstbaum-brand { padding: 16px 18px 14px; border-bottom: 1px solid var(--border); }
+  #obstbaum-brand h1 { font-size: 15px; font-weight: 600; margin: 0 0 2px; letter-spacing: 0.2px; }
+  #obstbaum-brand p { margin: 0; font-size: 12px; color: var(--muted); }
+
+  #obstbaum-picker { padding: 14px 14px 0; }
+  #obstbaum-fruit-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+    margin-bottom: 6px;
+  }
+  .fruit-btn, .fruit-list-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 5px;
+    padding: 5px 6px;
+    font-size: 10.5px;
+    line-height: 1.25;
+    font-family: var(--sans);
+    cursor: grab;
+    text-align: left;
+    white-space: normal;
+    overflow-wrap: break-word;
+  }
+  .fruit-btn:hover, .fruit-list-row:hover { border-color: var(--accent); }
+  .fruit-btn.active, .fruit-list-row.active { border-color: var(--accent); background: var(--accent-tint); }
+  .fruit-btn.drag-over, #obstbaum-sonstige-list.drag-over {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-tint) inset;
+  }
+  .fruit-btn .fruit-dot, .fruit-chip .fruit-dot, .fruit-list-row .fruit-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    border: 1px solid rgba(255,255,255,0.25);
+  }
+  #obstbaum-sonstige-toggle {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    width: 100%;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    border-radius: 5px;
+    padding: 5px 8px;
+    font-size: 11px;
+    font-family: var(--sans);
+    cursor: pointer;
+  }
+  #obstbaum-sonstige-toggle:hover { border-color: var(--accent); color: var(--text); }
+  #obstbaum-sonstige-toggle .chev { transition: transform .15s; margin-left: auto; }
+  #obstbaum-sonstige-toggle.open .chev { transform: rotate(180deg); }
+  #obstbaum-sonstige-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px;
+    margin-top: 6px;
+    padding: 6px;
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    max-height: 140px;
+    overflow-y: auto;
+    transition: border-color .15s;
+  }
+
+  #obstbaum-spacer { flex: 1; }
+
+  #btn-obstbaum-table {
+    margin: 12px 14px 4px;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 0;
+    border-radius: 6px;
+    font-size: 12.5px;
+    cursor: pointer;
+    font-family: var(--sans);
+  }
+  #btn-obstbaum-table:hover { border-color: var(--accent); }
+
+  #obstbaum-export-buttons { margin: 4px 14px 0; }
+  #obstbaum-export-buttons .export-btn { flex: 1; text-align: center; padding: 7px 0; }
+
+  #btn-export-obstbaum-flaechenkarten {
+    margin: 8px 14px 14px;
+    background: var(--accent-dim);
+    border: 1px solid var(--accent);
+    color: var(--on-accent);
+    padding: 9px 0;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    font-family: var(--sans);
+  }
+  #btn-export-obstbaum-flaechenkarten:hover { background: var(--accent); }
+
+  #obstbaum-status {
+    padding: 8px 14px;
+    font-size: 11px;
+    color: var(--muted);
+    border-top: 1px solid var(--border);
+    font-family: var(--mono);
+  }
+
+  #obstbaum-map-wrap { flex: 1; position: relative; height: 100%; }
+  #obstbaum-map { width: 100%; height: 100%; background: #0D0F13; }
+  #obstbaum-map.placing { cursor: crosshair; }
+  #obstbaum-topbar { position: absolute; top: 12px; right: 12px; z-index: 1000; display: flex; gap: 8px; }
+  #obstbaum-topbar button {
+    background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    font-size: 12px; padding: 6px 11px; border-radius: 6px; cursor: pointer; font-family: var(--sans);
+  }
+  #obstbaum-topbar button:hover { border-color: var(--accent); }
+  #obstbaum-error-toast {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    z-index: 1001;
+    background: #2A1A16;
+    border: 1px solid var(--warn);
+    color: #F2C4B0;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    max-width: 340px;
+    display: none;
+  }
+
+  #obstbaum-summary-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .fruit-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 3px 9px 3px 7px;
+    font-size: 11px;
+    color: var(--text);
+    white-space: nowrap;
+  }
+  .fruit-chip .n { font-family: var(--mono); color: var(--muted); }
+  #obstbaum-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  #obstbaum-table thead th {
+    position: sticky;
+    top: 0;
+    background: var(--panel-2);
+    text-align: left;
+    padding: 9px 14px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+  }
+  #obstbaum-table tbody td { padding: 8px 14px; border-bottom: 1px solid var(--border); }
+  #obstbaum-table tbody tr { cursor: pointer; }
+  #obstbaum-table tbody tr:hover td { background: var(--panel-2); }
+  .table-remove-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    border-radius: 4px;
+    padding: 4px 9px;
+    font-size: 11px;
+    cursor: pointer;
+    font-family: var(--sans);
+  }
+  .table-remove-btn:hover { border-color: var(--warn); color: var(--warn); }
+
+  /* Baumpunkt-Icon (L.divIcon) — ersetzt Leaflets Standard-DivIcon-Look
+     (weißer Kasten mit grauem Rand) durch einen schlichten farbigen Punkt,
+     optisch identisch zum vorherigen circleMarker. draggable macht Leaflet
+     per Cursor/Klasse selbst kenntlich, kein zusätzliches CSS nötig dafür. */
+  .tree-marker-icon { background: transparent; border: none; }
+  .tree-marker-icon span {
+    display: block;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 1.5px solid #ffffff;
+    box-shadow: 0 0 0 1px rgba(0,0,0,0.35), 0 1px 3px rgba(0,0,0,0.4);
   }

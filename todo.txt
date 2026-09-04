@@ -1,6 +1,9 @@
 
 CLEAR BUTTON Compare
 KatasterMaster
+config fruit tree color selector
+delete data type BAUMKATASTER. geojson suffices
+
 Bienen Flugkarte
 Routenplanung
 
