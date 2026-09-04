@@ -1,5 +1,8 @@
 
 CLEAR BUTTON Compare
+KatasterMaster
+Bienen Flugkarte
+Routenplanung
 
 === Bundesland-Kompatibilität Testdaten (test-shapes/) — Stand 2026-09-03 ===
 Neu geordnet nach Bundesland-Ordnern, mit echten Betriebs-Zips (statt der alten
