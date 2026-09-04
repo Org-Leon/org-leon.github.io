@@ -7,7 +7,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Shapefile-Viewer</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/shpjs/6.2.0/shp.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.22.0/proj4.min.js"></script>
@@ -23,6 +25,7 @@
 <div id="tabbar">
   <button class="tab-btn active" data-view="viewer">Viewer</button>
   <button class="tab-btn" data-view="compare">Jahresvergleich</button>
+  <button class="tab-btn" data-view="zeichner">Flächenzeichner</button>
 </div>
 
 <div id="views">
@@ -45,6 +48,8 @@
     <div class="empty-hint" id="empty-hint">Noch keine Ebene geladen. Ein Shapefile besteht meist aus .shp, .shx und .dbf — am einfachsten alle Dateien zusammen als .zip hochladen.</div>
   </div>
 
+  <button id="btn-export-flaechenkarten">Flächenkarten exportieren</button>
+
   <div id="status">Bereit.</div>
 </div>
 
@@ -54,9 +59,13 @@
   <div id="topbar">
     <button id="btn-basemap">Basiskarte: Standard</button>
     <button id="btn-fit">Auf Inhalt zoomen</button>
-    <button id="btn-table">Tabelle</button>
-    <button id="btn-export-flaechenkarten">Flächenkarten exportieren</button>
-    <button id="btn-locate">📍 Mein Standort</button>
+    <button id="btn-locate" title="Mein Standort" aria-label="Mein Standort">
+      <svg class="gps-icon" viewBox="0 0 24 32" width="22" height="29">
+        <path d="M12 1C6.48 1 2 5.48 2 11c0 7.5 10 20 10 20s10-12.5 10-20c0-5.52-4.48-10-10-10z" fill="#2E86FF"/>
+        <circle cx="12" cy="11" r="6.4" fill="#ffffff"/>
+        <text x="12" y="13.6" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="5.6" font-weight="700" fill="#2E86FF">GPS</text>
+      </svg>
+    </button>
   </div>
   <div id="coord-readout">–, –</div>
   <div id="table-panel">
@@ -80,6 +89,7 @@
           <tr>
             <th>Schlagnr. / Flächennr.</th>
             <th>Flächenname</th>
+            <th>Flächenidentifikator</th>
             <th>Größe</th>
             <th>Kulturart</th>
             <th>Route</th>
@@ -180,6 +190,35 @@
           <tbody id="compare-table-body"></tbody>
         </table>
       </div>
+    </div>
+  </div>
+</div>
+
+<div id="view-zeichner" class="view">
+  <div id="zeichner-sidebar">
+    <div id="zeichner-brand">
+      <h1>Flächenzeichner</h1>
+      <p>Eigene Parzellen direkt auf der Karte zeichnen</p>
+    </div>
+
+    <button id="btn-zeichner-draw">Fläche zeichnen</button>
+
+    <div id="zeichner-section">
+      <h2>Gezeichnete Flächen</h2>
+      <div id="zeichner-list"></div>
+      <div class="empty-hint" id="zeichner-empty-hint">Noch keine Fläche gezeichnet. „Fläche zeichnen" klicken, dann Eckpunkte per Klick setzen und mit Doppelklick abschließen (Esc bricht ab).</div>
+    </div>
+
+    <button id="btn-export-zeichner-flaechenkarten">Flächenkarten exportieren</button>
+
+    <div id="zeichner-status">Bereit.</div>
+  </div>
+
+  <div id="zeichner-map-wrap">
+    <div id="zeichner-map"></div>
+    <div id="zeichner-error-toast"></div>
+    <div id="zeichner-topbar">
+      <button id="zeichner-btn-basemap">Basiskarte: Standard</button>
     </div>
   </div>
 </div>

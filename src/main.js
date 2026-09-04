@@ -5,22 +5,88 @@ let layerCounter = 0;
 const featureIndex = []; // flat list of every feature across all layers, for the table view
 let highlightedEntry = null;
 
-// Deine Shapefiles benennen die relevanten Attribute unterschiedlich
-// (z.B. NUMMER/NAME/FLAECHE/NUTZ_BEZ bei Parzellen, NUMMER/FLAECHE/CODE_BEZ bei
-// Teilflächen). Wir suchen daher pro Spalte eine Liste plausibler Feldnamen ab,
-// statt einen festen Namen vorauszusetzen — das funktioniert auch für andere
-// hochgeladene Shapefiles mit leicht abweichender Benennung.
+// Deine Shapefiles benennen die relevanten Attribute unterschiedlich, je nach
+// Bundesland/Software-Export — DBF-Feldnamen sind zudem GROSS-/Kleinschreibung-
+// empfindlich (props['NAME'] !== props['Name']), daher tauchen manche Felder
+// hier bewusst in mehreren Schreibweisen auf. Bekannte Formate (Stand: unsere
+// Bundesland-Testdateien in test-shapes/, siehe todo.txt für den Detail-Stand
+// je Bundesland):
+//  - NUMMER/NAME/FLAECHE/NUTZ_BEZ  (Parzellen, u.a. Brandenburg/Mecklenburg-
+//    Vorpommern/Sachsen-Anhalt/Schleswig-Holstein — Referenzformat)
+//  - SCHLAG_NR/TF_BEZ/CODE_BEZ     (Teilflächen, gleiche Länder)
+//  - OBJEKT_ID/FLIK/SCHLAG_NR      ("teilschlaege"-Format, Niedersachsen: hat
+//    weder Name/Größe/Kulturart im Datensatz)
+//  - SCHLAG_ID/SCHLAG_BEZ/SC_FL_BRUT/SC_HA_CODE/NC (sächsische "Schläge"-Exporte)
+//  - FSNr/Name/LFlaeche + Schlag/Flaeche/Nutzung (Bayern "Feldstueck"+"Nutzung":
+//    zwei getrennte, geometrisch identische Shapefiles — werden in
+//    mergeFeldstueckNutzung() zu einer Ebene zusammengeführt)
+//  - schlagnr_a/lage_bez/netto_groe/ncode_aktu/flik_aktue (Hessen "Antragsschläge")
+//  - SCHLAGNR/SCHLAGBEZ/FLIK       (NRW "TS_"/"BLE_"-Format: kein Größen- oder
+//    Kulturartfeld im Datensatz)
+//  - SCHLAGNR/LAGE_BEZ/GR/NCODE/CODE_BEZ/FLIK (Saarland "schlag_"-Format)
+//  - SCHLAGNR/SCHLAGFLAE/KTA_AJ    (Rheinland-Pfalz "SchlaegeExport": Größe in
+//    m², kein Name-/Flächenidentifikator-Feld im Datensatz)
+//  - schlag_nr/bez/flaeche_ha/nutz_code (Baden-Württemberg/Brandenburg "fiona"-Export)
+//  - GEOWD_ID/GEOWD_GEO_ (Thüringen "Antragsflächen Hauptnutzung": mehrere
+//    DBF-Felder werden beim 10-Zeichen-Kürzen auf denselben Namen abgeschnitten,
+//    z.B. 6x "GEOWD_GEO_" — props behält dadurch nur den JEWEILS LETZTEN
+//    gleichnamigen Wert; Name/Kulturart/Flächenidentifikator gehen so verloren,
+//    siehe TODO in todo.txt)
+// Achtung bei "kultur": manche Felder, die wie Kulturarten aussehen, sind es
+// nicht — ZWECK/MASSNAHME (Sachsen) und "interventi"/GEOWD_FREE (NRW/RLP/BW/
+// Thüringen) sind Förderkulissen-Kürzel (z.B. "EGS,AZL,OEBL"), keine Kulturarten,
+// und bleiben daher bewusst außen vor. Wo nur ein Nutzungscode (NC/nutz_code/
+// ncode_aktu/Nutzung/SC_HA_CODE/KTA_AJ/NCODE) ohne Klartext-Zuordnung existiert,
+// wird der Code selbst angezeigt statt einer erfundenen Übersetzung.
 const FIELD_CANDIDATES = {
-  nummer: ['NUMMER', 'SCHLAG_NR', 'SCHLAGNR', 'FLIK_FLEK', 'FLIK', 'ID', 'NR'],
-  name: ['NAME', 'BEZEICHNUNG', 'FLAECHENNAME', 'SCHLAGNAME'],
-  groesse: ['FLAECHE', 'AKTFLAECHE', 'FLAECHE_HA', 'GROESSE', 'AREA'],
-  kultur: ['NUTZ_BEZ', 'CODE_BEZ', 'KULTURART', 'FRUCHTART', 'NUTZUNG']
+  nummer: ['NUMMER', 'SCHLAG_NR', 'SCHLAGNR', 'SCHLAG_ID', 'TF_ID', 'SCHLAG', 'FSNr', 'schlagnr_a', 'schlag_nr', 'GEOWD_ID', 'ID', 'NR'],
+  name: ['NAME', 'Name', 'BEZEICHNUNG', 'FLAECHENNAME', 'SCHLAGNAME', 'SCHLAGBEZ', 'SCHLAG_BEZ', 'TF_BEZ', 'lage_bez', 'LAGE_BEZ', 'bez'],
+  kultur: ['NUTZ_BEZ', 'CODE_BEZ', 'KULTURART', 'FRUCHTART', 'NUTZUNG', 'Nutzung', 'NC', 'nutz_code', 'ncode_aktu', 'SC_HA_CODE', 'KTA_AJ', 'NCODE'],
+  // Zusätzlicher, von Nummer/Name unabhängiger amtlicher Flächenidentifikator
+  // (FLIK/FLEK-Code o.ä.) — heißt je nach Bundesland anders und ist nicht
+  // überall vorhanden (siehe todo.txt).
+  flaechenid: ['FLEK', 'FLIK', 'FB_BEZEICH', 'FLIK_FLEK', 'FID', 'flik_aktue']
 };
+
+// Die Flächengröße braucht eine Sonderbehandlung: manche Quellen liefern sie
+// nicht in Hektar, sondern in Ar (NRW-Referenzflächen/BLE, 1 ha = 100 a) oder
+// in m² (Rheinland-Pfalz SCHLAGFLAE) — daher hier je Kandidat ein
+// Umrechnungsfaktor auf Hektar statt einer reinen Namensliste wie bei den
+// anderen Spalten.
+const GROESSE_CANDIDATES = [
+  { field: 'FLAECHE', scale: 1 },
+  { field: 'Flaeche', scale: 1 },
+  { field: 'AKTFLAECHE', scale: 1 },
+  { field: 'FLAECHE_HA', scale: 1 },
+  { field: 'flaeche_ha', scale: 1 },
+  { field: 'GROESSE', scale: 1 },
+  { field: 'AREA', scale: 1 },
+  { field: 'TF_FLAECHE', scale: 1 },
+  { field: 'SC_FL_BRUT', scale: 1 },
+  { field: 'SC_FLAE_GI', scale: 1 },
+  { field: 'LFlaeche', scale: 1 },
+  { field: 'netto_groe', scale: 1 },
+  { field: 'beantr_gro', scale: 1 },
+  { field: 'GEOWD_GEO_', scale: 1 },
+  { field: 'GR', scale: 1 },
+  { field: 'FLNETTO', scale: 0.01 }, // Ar -> ha
+  { field: 'SCHLAGFLAE', scale: 0.0001 } // m² -> ha
+];
 
 function pickField(props, candidates) {
   for (const key of candidates) {
     const v = props[key];
     if (v !== undefined && v !== null && String(v).trim() !== '') return String(v).trim();
+  }
+  return '';
+}
+
+function pickGroesse(props) {
+  for (const { field, scale } of GROESSE_CANDIDATES) {
+    const v = props[field];
+    if (v === undefined || v === null || String(v).trim() === '') continue;
+    const n = parseFloat(String(v).trim().replace(',', '.'));
+    if (isFinite(n)) return String(n * scale);
   }
   return '';
 }
@@ -31,23 +97,31 @@ function escapeHtml(str) {
 
 const map = L.map('map', { zoomControl: true, attributionControl: true }).setView([51.16, 10.45], 6);
 
-const basemaps = {
-  osm: L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>-Mitwirkende',
-    maxZoom: 19
-  }),
-  topo: L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
-    attribution: '&copy; OpenStreetMap-Mitwirkende, SRTM | Kartendarstellung: &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)',
-    maxZoom: 17
-  }),
-  satellite: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-    attribution: 'Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
-    maxZoom: 19,
-    crossOrigin: true // nötig, damit html2canvas die Kartenkacheln beim Flächenkarten-Export auslesen darf
-  })
-};
+// Eine Leaflet-Kachelebene kann immer nur auf EINER Karte aktiv sein — Viewer,
+// Jahresvergleich und Flächenzeichner haben je eine eigene Leaflet-Map-Instanz
+// und brauchen daher jeweils eigene Kachelebenen-Objekte statt sich dieselben
+// zu teilen.
+function createBasemaps() {
+  return {
+    osm: L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>-Mitwirkende',
+      maxZoom: 19
+    }),
+    topo: L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap-Mitwirkende, SRTM | Kartendarstellung: &copy; <a href="https://opentopomap.org">OpenTopoMap</a> (CC-BY-SA)',
+      maxZoom: 17
+    }),
+    satellite: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      attribution: 'Tiles &copy; Esri — Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
+      maxZoom: 19,
+      crossOrigin: true // nötig, damit html2canvas die Kartenkacheln beim Flächenkarten-Export auslesen darf
+    })
+  };
+}
 const basemapLabels = { osm: 'Standard', topo: 'Topografisch', satellite: 'Satellit' };
 const basemapOrder = ['osm', 'topo', 'satellite'];
+
+const basemaps = createBasemaps();
 let currentBasemap = 'osm';
 basemaps.osm.addTo(map);
 
@@ -102,12 +176,13 @@ async function handleFiles(fileList) {
       const ext = file.name.split('.').pop().toLowerCase();
 
       if (ext === 'zip') {
-        const results = await parseShapefileZip(file);
+        let results = await parseShapefileZip(file);
         if (!results.length) {
           showError(file.name + ': Keine Shapefile-Bestandteile (.shp/.dbf) im Zip gefunden.');
           setStatus('Nichts Lesbares in ' + file.name);
           continue;
         }
+        results = mergeFeldstueckNutzung(results);
         results.forEach(r => addLayer(r.name, r.fc));
         setStatus(file.name + ': ' + results.length + ' Ebene(n) geladen.');
       } else if (ext === 'geojson' || ext === 'json') {
@@ -146,6 +221,24 @@ function reprojectGeometry(geom, transformFn) {
   return Object.assign({}, geom, { coordinates: reprojectCoords(geom.coordinates, transformFn) });
 }
 
+// Errät die Textkodierung einer .dbf ohne begleitende .cpg-Datei: manche
+// Bundesland-Exporte sind windows-1252 (Umlaute als Einzelbyte), andere UTF-8
+// (Umlaute als Mehrbyte-Folge) — ein fest verdrahteter Default ist für die
+// jeweils andere Gruppe garantiert falsch (kaputte Umlaute). Wir lesen daher
+// nur den Datensatz-Teil (ohne Kopf) und prüfen, ob er als striktes UTF-8
+// gültig ist; wenn nicht, war es windows-1252.
+function detectDbfEncoding(dbfBuf) {
+  const view = new DataView(dbfBuf);
+  const headerLen = view.getUint16(8, true);
+  const recordsBuf = dbfBuf.slice(headerLen);
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(recordsBuf);
+    return 'utf-8';
+  } catch (err) {
+    return 'windows-1252';
+  }
+}
+
 // Entpackt ein Zip selbst (statt es blind an shp() zu übergeben) und gruppiert
 // die enthaltenen Dateien anhand ihres gemeinsamen Basisnamens. So werden
 // mehrere Shapefiles in einem Bundle sauber getrennt, fremde Dateien (z.B.
@@ -160,7 +253,12 @@ async function parseShapefileZip(file) {
   const relevantExt = ['shp', 'shx', 'dbf', 'prj', 'cpg'];
   zip.forEach((path, entry) => {
     if (entry.dir) return;
+    // macOS packt beim Zippen oft einen __MACOSX/-Ordner mit ._-Metadaten-
+    // Schattendateien für jede echte Datei mit rein — keine echten Shapefile-
+    // Bestandteile, würden aber sonst als kaputte Fake-Ebene versucht.
+    if (path.startsWith('__MACOSX/')) return;
     const fileName = path.split('/').pop();
+    if (fileName.startsWith('._')) return;
     const dot = fileName.lastIndexOf('.');
     if (dot === -1) return;
     const base = fileName.slice(0, dot);
@@ -198,7 +296,7 @@ async function parseShapefileZip(file) {
       let properties = [];
       if (g.dbf) {
         const dbfBuf = await g.dbf.async('arraybuffer');
-        const cpgText = g.cpg ? (await g.cpg.async('text')).trim() : 'windows-1252';
+        const cpgText = g.cpg ? (await g.cpg.async('text')).trim() : detectDbfEncoding(dbfBuf);
         properties = shp.parseDbf(dbfBuf, cpgText);
       }
 
@@ -210,6 +308,40 @@ async function parseShapefileZip(file) {
     }
   }
   return results;
+}
+
+// Manche Bundesländer (z.B. Bayern) exportieren "Feldstueck" (Geometrie +
+// Name) und "Nutzung" (Kulturart-Code) als zwei separate, geometrisch
+// identische Shapefiles im selben Zip statt einer gemeinsamen Ebene. Ohne
+// Zusammenführung entstehen zwei sich exakt überlappende Ebenen, die je nur
+// die Hälfte der Information zeigen (Feldstück: Name, kein Kulturart;
+// Nutzung: Kulturart, kein Name). Wir verknüpfen sie hier über die
+// gemeinsame Feldstück-ID (FID, mit FSNr als Fallback) zu einer Ebene.
+function mergeFeldstueckNutzung(results) {
+  const feldIdx = results.findIndex(r => /feldst(ü|ue)ck/i.test(r.name));
+  const nutzIdx = results.findIndex(r => /^nutzung/i.test(r.name));
+  if (feldIdx === -1 || nutzIdx === -1) return results;
+
+  const keyOf = (props) => String(props.FID ?? props.Fid ?? props.fid ?? '') + '|' + String(props.FSNr ?? props.Fsnr ?? props.fsnr ?? '');
+
+  const nutzung = results[nutzIdx];
+  const nutzByKey = new Map();
+  (nutzung.fc.features || []).forEach(f => {
+    const props = f.properties || {};
+    const key = keyOf(props);
+    if (!nutzByKey.has(key)) nutzByKey.set(key, props);
+  });
+
+  const feldstueck = results[feldIdx];
+  const mergedFeatures = (feldstueck.fc.features || []).map(f => {
+    const props = f.properties || {};
+    const nutzProps = nutzByKey.get(keyOf(props));
+    return nutzProps ? { ...f, properties: { ...props, ...nutzProps } } : f;
+  });
+
+  const merged = { name: feldstueck.name, fc: { type: 'FeatureCollection', features: mergedFeatures } };
+  const rest = results.filter((_, i) => i !== feldIdx && i !== nutzIdx);
+  return [merged, ...rest];
 }
 
 function addLayer(name, geojson) {
@@ -242,8 +374,9 @@ function addLayer(name, geojson) {
         color,
         nummer: pickField(props, FIELD_CANDIDATES.nummer),
         featName: pickField(props, FIELD_CANDIDATES.name),
-        groesse: pickField(props, FIELD_CANDIDATES.groesse),
-        kultur: pickField(props, FIELD_CANDIDATES.kultur)
+        groesse: pickGroesse(props),
+        kultur: pickField(props, FIELD_CANDIDATES.kultur),
+        flaechenId: pickField(props, FIELD_CANDIDATES.flaechenid)
       };
       featureIndex.push(entry);
       lyr.on('click', () => {
@@ -283,6 +416,7 @@ function renderLayerList() {
       </div>
       <div class="layer-actions">
         <button data-id="${id}" data-action="zoom">Zoom</button>
+        <button data-id="${id}" data-action="table">Tabelle</button>
         <button data-id="${id}" data-action="remove" class="danger">Entfernen</button>
       </div>
     `;
@@ -295,6 +429,7 @@ function renderLayerList() {
       const action = el.getAttribute('data-action');
       if (action === 'toggle') toggleLayer(id);
       if (action === 'zoom') zoomToLayer(id);
+      if (action === 'table') openFeatureTable();
       if (action === 'remove') removeLayer(id);
     });
   });
@@ -372,7 +507,7 @@ function renderFeatureTable() {
   document.getElementById('table-count').textContent = rows.length;
 
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted); padding:14px;">' +
+    tbody.innerHTML = '<tr><td colspan="6" style="color:var(--muted); padding:14px;">' +
       (featureIndex.length ? 'Keine Flächen in dieser Ansicht (Teilflächen sind ausgeblendet).' : 'Noch keine Flächen geladen.') +
       '</td></tr>';
     return;
@@ -387,6 +522,7 @@ function renderFeatureTable() {
     return `<tr data-idx="${entry.idx}">
       <td>${escapeHtml(entry.nummer || '–')}</td>
       <td>${escapeHtml(entry.featName || '–')}</td>
+      <td>${escapeHtml(entry.flaechenId || '–')}</td>
       <td>${groesseText}</td>
       <td>${escapeHtml(entry.kultur || '–')}</td>
       <td>${routeCell}</td>
@@ -505,10 +641,10 @@ const featureTablePanel = initResizablePanel({
   defaultHeight: TABLE_DEFAULT_HEIGHT
 });
 
-document.getElementById('btn-table').addEventListener('click', () => {
+function openFeatureTable() {
   renderFeatureTable();
   featureTablePanel.open();
-});
+}
 
 // ---------- Standort (GPS) ----------
 let locationMarker = null;
@@ -540,7 +676,8 @@ function stopLocating() {
   watchingLocation = false;
   const btn = document.getElementById('btn-locate');
   btn.classList.remove('active');
-  btn.textContent = '📍 Mein Standort';
+  btn.title = 'Mein Standort';
+  btn.setAttribute('aria-label', 'Mein Standort');
 }
 
 map.on('locationfound', onLocationFound);
@@ -554,7 +691,8 @@ document.getElementById('btn-locate').addEventListener('click', () => {
   watchingLocation = true;
   const btn = document.getElementById('btn-locate');
   btn.classList.add('active');
-  btn.textContent = '📍 Standort wird verfolgt…';
+  btn.title = 'Standort wird verfolgt…';
+  btn.setAttribute('aria-label', 'Standort wird verfolgt…');
   map.locate({ setView: true, maxZoom: 17, watch: true, enableHighAccuracy: true });
 });
 
@@ -566,9 +704,13 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     const target = btn.getAttribute('data-view');
     document.getElementById('view-viewer').classList.toggle('active', target === 'viewer');
     document.getElementById('view-compare').classList.toggle('active', target === 'compare');
+    document.getElementById('view-zeichner').classList.toggle('active', target === 'zeichner');
     if (target === 'compare') {
       initCompareMap();
       setTimeout(() => compareMap && compareMap.invalidateSize(), 50);
+    } else if (target === 'zeichner') {
+      initZeichnerMap();
+      setTimeout(() => zeichnerMap && zeichnerMap.invalidateSize(), 50);
     } else {
       setTimeout(() => map.invalidateSize(), 50);
     }
@@ -603,17 +745,7 @@ const STATUS_LABELS = {
 function initCompareMap() {
   if (compareMap) return;
   compareMap = L.map('compare-map', { zoomControl: true, attributionControl: true }).setView([51.16, 10.45], 6);
-  compareBasemaps = {
-    osm: L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>-Mitwirkende', maxZoom: 19
-    }),
-    topo: L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; OpenStreetMap-Mitwirkende, SRTM | &copy; <a href="https://opentopomap.org">OpenTopoMap</a>', maxZoom: 17
-    }),
-    satellite: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-      attribution: 'Tiles &copy; Esri', maxZoom: 19
-    })
-  };
+  compareBasemaps = createBasemaps();
   compareBasemaps.osm.addTo(compareMap);
   document.getElementById('compare-btn-basemap').addEventListener('click', () => {
     compareBasemaps[currentCompareBasemap].remove();
@@ -655,13 +787,14 @@ function showCompareError(msg) {
 
 async function loadCompareFile(file, slot) {
   try {
-    const results = await parseShapefileZip(file);
+    let results = await parseShapefileZip(file);
     if (!results.length) {
       showCompareError(file.name + ': Keine Shapefile-Bestandteile gefunden.');
       return;
     }
+    results = mergeFeldstueckNutzung(results);
     // Für den Vergleich zählt nur die Parzellen-Ebene — Teilflächen o.ä. werden ignoriert.
-    let chosen = results.find(r => /parzelle/i.test(r.name));
+    let chosen = results.find(r => /parzelle/i.test(r.name)) || results.find(r => /feldst(ü|ue)ck/i.test(r.name));
     if (!chosen) {
       chosen = results[0];
       showCompareError(file.name + ': Keine Ebene mit "Parzellen" im Namen gefunden — verwende stattdessen "' + chosen.name + '".');
@@ -724,8 +857,8 @@ function runComparison() {
     const propsB = fB ? (fB.properties || {}) : {};
 
     const name = pickField(propsB, FIELD_CANDIDATES.name) || pickField(propsA, FIELD_CANDIDATES.name);
-    const groesseA = fA ? pickField(propsA, FIELD_CANDIDATES.groesse) : '';
-    const groesseB = fB ? pickField(propsB, FIELD_CANDIDATES.groesse) : '';
+    const groesseA = fA ? pickGroesse(propsA) : '';
+    const groesseB = fB ? pickGroesse(propsB) : '';
     const kulturA = fA ? pickField(propsA, FIELD_CANDIDATES.kultur) : '';
     const kulturB = fB ? pickField(propsB, FIELD_CANDIDATES.kultur) : '';
 
@@ -1026,11 +1159,11 @@ function exportPdf(headers, rows, filename, title) {
 function exportViewerTable(type) {
   const rows = getVisibleFeatureRows();
   if (!rows.length) { showError('Keine Flächen zum Exportieren geladen.'); return; }
-  const headers = ['Schlagnr./Flächennr.', 'Flächenname', 'Größe (ha)', 'Kulturart', 'Ebene'];
+  const headers = ['Schlagnr./Flächennr.', 'Flächenname', 'Flächenidentifikator', 'Größe (ha)', 'Kulturart', 'Ebene'];
   const data = rows.map(e => {
     const n = parseFloat(String(e.groesse).replace(',', '.'));
     const groesseText = isFinite(n) ? n.toFixed(2) : (e.groesse || '');
-    return [e.nummer || '', e.featName || '', groesseText, e.kultur || '', e.layerName || ''];
+    return [e.nummer || '', e.featName || '', e.flaechenId || '', groesseText, e.kultur || '', e.layerName || ''];
   });
   const ts = new Date().toISOString().slice(0, 10);
   if (type === 'csv') exportCsv(headers, data, `flaechenuebersicht_${ts}.csv`);
@@ -1071,6 +1204,8 @@ document.querySelectorAll('.export-btn').forEach(btn => {
 });
 
 // ---------- Flächenkarten exportieren (Screenshot + Infos, eine Fläche pro PDF-Seite) ----------
+// Von Viewer UND Flächenzeichner genutzt (siehe exportFlaechenkarten() /
+// exportZeichnerFlaechenkarten() weiter unten).
 function delay(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
 function waitForTilesLoaded(layer, timeoutMs) {
@@ -1080,6 +1215,69 @@ function waitForTilesLoaded(layer, timeoutMs) {
     layer.once('load', finish);
     setTimeout(finish, timeoutMs);
   });
+}
+
+// Wechselt bei Bedarf auf den angegebenen Tab (nötig, damit dessen Karten-
+// Container beim Screenshot eine echte Größe hat) und liefert eine restore()
+// Funktion, die zum vorher aktiven Tab zurückwechselt.
+function ensureTabActive(viewId) {
+  const activeBtn = document.querySelector('.tab-btn.active');
+  const targetBtn = document.querySelector(`.tab-btn[data-view="${viewId}"]`);
+  const wasActive = activeBtn === targetBtn;
+  if (!wasActive) targetBtn.click();
+  return { wasActive, restore: () => { if (!wasActive) activeBtn.click(); } };
+}
+
+// Zeichnet eine Fläche als schlichten weißen Umriss auf dem Luftbild (ohne
+// Füllung, wie bei einem klassischen Feldstück-Ausdruck), zoomt darauf und
+// liefert einen Screenshot der Karte zurück. Wichtig: als eigener Canvas-
+// Layer statt einen bestehenden SVG-Layer umzustylen — html2canvas berechnet
+// die CSS-Transform-Verschiebung von Leaflets SVG-Overlay-Pane beim Screenshot
+// falsch und rendert den Umriss dadurch versetzt zu den Kacheln. Ein
+// <canvas>-Layer wird von html2canvas als reines Pixelbild kopiert und bleibt
+// exakt an der richtigen Stelle.
+async function captureParcelScreenshot(targetMap, satelliteLayer, mapElId, feature) {
+  const highlightLayer = L.geoJSON(feature, {
+    renderer: L.canvas(),
+    style: { color: '#ffffff', weight: 3, opacity: 1, fillOpacity: 0 }
+  }).addTo(targetMap);
+  try {
+    const bounds = highlightLayer.getBounds();
+    if (bounds.isValid()) {
+      targetMap.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
+    }
+    await waitForTilesLoaded(satelliteLayer, 6000);
+    await delay(400); // kurzer Puffer, damit der letzte Frame sicher gemalt ist
+    return await html2canvas(document.getElementById(mapElId), { useCORS: true, logging: false });
+  } finally {
+    targetMap.removeLayer(highlightLayer);
+  }
+}
+
+// Schreibt Titel/Infozeile + Kartenbild einer Fläche auf die aktuelle PDF-Seite.
+function addFlaechenkartePage(doc, pageW, pageH, margin, canvas, row) {
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(15);
+  doc.text(String(row.nummer || '–') + (row.featName ? ' – ' + row.featName : ''), margin, margin + 4);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(11);
+  const num = parseFloat(String(row.groesse).replace(',', '.'));
+  const groesseText = isFinite(num)
+    ? num.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ha'
+    : (row.groesse || '–');
+  const subtitleParts = ['Größe: ' + groesseText, 'Kulturart: ' + (row.kultur || '–')];
+  if (row.flaechenId) subtitleParts.push('Flächen-ID: ' + row.flaechenId);
+  doc.text(subtitleParts.join('    ·    '), margin, margin + 11);
+
+  const imageTop = margin + 18;
+  const maxW = pageW - margin * 2;
+  const maxH = pageH - imageTop - margin;
+  const scale = Math.min(maxW / canvas.width, maxH / canvas.height);
+  const imgW = canvas.width * scale;
+  const imgH = canvas.height * scale;
+  const imgX = (pageW - imgW) / 2;
+  doc.addImage(canvas.toDataURL('image/jpeg', 0.85), 'JPEG', imgX, imageTop, imgW, imgH);
 }
 
 async function exportFlaechenkarten() {
@@ -1092,8 +1290,7 @@ async function exportFlaechenkarten() {
   btn.disabled = true;
 
   // Ausgangszustand merken, um ihn nach dem Export exakt wiederherzustellen.
-  const wasViewerActive = document.getElementById('view-viewer').classList.contains('active');
-  if (!wasViewerActive) document.querySelector('.tab-btn[data-view="viewer"]').click();
+  const tab = ensureTabActive('viewer');
   const savedCenter = map.getCenter();
   const savedZoom = map.getZoom();
   const savedBasemap = currentBasemap;
@@ -1113,60 +1310,17 @@ async function exportFlaechenkarten() {
       const row = rows[i];
       setStatus(`Exportiere Flächenkarten … (${i + 1}/${rows.length})`);
 
-      // Fläche als schlichter weißer Umriss auf dem Luftbild — ohne Füllung,
-      // damit (wie auf einem klassischen Feldstück-Ausdruck) der Untergrund
-      // durchscheint. Wichtig: als eigener Canvas-Layer statt den bestehenden
-      // (SVG-basierten) row.leafletLayer zu verwenden/umzustylen — html2canvas
-      // berechnet die CSS-Transform-Verschiebung von Leaflets SVG-Overlay-Pane
-      // beim Screenshot falsch und rendert den Umriss dadurch versetzt zu den
-      // Kacheln. Ein <canvas>-Layer wird von html2canvas als reines Pixelbild
-      // kopiert und bleibt exakt an der richtigen Stelle.
-      const highlightLayer = L.geoJSON(row.leafletLayer.feature, {
-        renderer: L.canvas(),
-        style: { color: '#ffffff', weight: 3, opacity: 1, fillOpacity: 0 }
-      }).addTo(map);
-      const bounds = highlightLayer.getBounds();
-      if (bounds.isValid()) {
-        map.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
-      }
-
-      await waitForTilesLoaded(basemaps.satellite, 4000);
-      await delay(250); // kurzer Puffer, damit der letzte Frame sicher gemalt ist
-
       let canvas;
       try {
-        canvas = await html2canvas(document.getElementById('map'), { useCORS: true, logging: false });
+        canvas = await captureParcelScreenshot(map, basemaps.satellite, 'map', row.leafletLayer.feature);
       } catch (err) {
         console.error('Kartenbild-Erfassung fehlgeschlagen für', row.nummer, err);
         showError('Kartenbild konnte nicht erfasst werden (evtl. CORS-Einschränkung der Kachel-Quelle).');
-        map.removeLayer(highlightLayer);
         break;
       }
 
-      map.removeLayer(highlightLayer);
-
       if (i > 0) doc.addPage('a4', 'landscape');
-
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(15);
-      doc.text(String(row.nummer || '–') + (row.featName ? ' – ' + row.featName : ''), margin, margin + 4);
-
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(11);
-      const num = parseFloat(String(row.groesse).replace(',', '.'));
-      const groesseText = isFinite(num)
-        ? num.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ha'
-        : (row.groesse || '–');
-      doc.text('Größe: ' + groesseText + '    ·    Kulturart: ' + (row.kultur || '–'), margin, margin + 11);
-
-      const imageTop = margin + 18;
-      const maxW = pageW - margin * 2;
-      const maxH = pageH - imageTop - margin;
-      const scale = Math.min(maxW / canvas.width, maxH / canvas.height);
-      const imgW = canvas.width * scale;
-      const imgH = canvas.height * scale;
-      const imgX = (pageW - imgW) / 2;
-      doc.addImage(canvas.toDataURL('image/jpeg', 0.85), 'JPEG', imgX, imageTop, imgW, imgH);
+      addFlaechenkartePage(doc, pageW, pageH, margin, canvas, row);
     }
 
     const ts = new Date().toISOString().slice(0, 10);
@@ -1178,14 +1332,236 @@ async function exportFlaechenkarten() {
     if (currentBasemap !== savedBasemap) setBasemap(savedBasemap);
     visibleLayerIds.forEach(id => layers[id] && layers[id].leafletLayer.addTo(map));
     map.setView(savedCenter, savedZoom);
-    if (!wasViewerActive) document.querySelector('.tab-btn[data-view="compare"]').click();
+    tab.restore();
     btn.disabled = false;
   }
 }
 
 document.getElementById('btn-export-flaechenkarten').addEventListener('click', exportFlaechenkarten);
 
-// ---------- Dev-Tooling: Jahresvergleich-Inputs aus test-shapes/ vorbefüllen ----------
-if (import.meta.env.DEV) {
-  import('./dev-prefill.js').then(m => m.prefillCompareInputs());
+// ---------- Flächenzeichner ----------
+// Eigener Tab: Parzellen direkt auf der Karte zeichnen (Leaflet.draw) statt
+// aus einem Shapefile zu laden. Größe wird per turf.area() aus der
+// gezeichneten Geometrie berechnet, Name/Kulturart sind optional frei
+// eintragbar, Export nutzt dieselbe Flächenkarten-PDF-Logik wie der Viewer.
+let zeichnerMap = null;
+let zeichnerBasemaps = null;
+let currentZeichnerBasemap = 'osm';
+let zeichnerLayerGroup = null;
+const zeichnerParcels = []; // { id, nummer, name, kultur, areaHa, layer, color }
+let zeichnerParcelCounter = 0;
+let zeichnerColorIdx = 0;
+
+function initZeichnerMap() {
+  if (zeichnerMap) return;
+  zeichnerMap = L.map('zeichner-map', { zoomControl: true, attributionControl: true }).setView([51.16, 10.45], 6);
+  zeichnerBasemaps = createBasemaps();
+  zeichnerBasemaps.osm.addTo(zeichnerMap);
+  zeichnerLayerGroup = L.featureGroup().addTo(zeichnerMap);
+
+  document.getElementById('zeichner-btn-basemap').addEventListener('click', () => {
+    zeichnerBasemaps[currentZeichnerBasemap].remove();
+    const nextIdx = (basemapOrder.indexOf(currentZeichnerBasemap) + 1) % basemapOrder.length;
+    currentZeichnerBasemap = basemapOrder[nextIdx];
+    zeichnerBasemaps[currentZeichnerBasemap].addTo(zeichnerMap);
+    document.getElementById('zeichner-btn-basemap').textContent = 'Basiskarte: ' + basemapLabels[currentZeichnerBasemap];
+  });
+
+  const drawBtn = document.getElementById('btn-zeichner-draw');
+  if (typeof L.Draw === 'undefined') {
+    drawBtn.disabled = true;
+    showZeichnerError('Zeichenwerkzeug nicht verfügbar (Leaflet.draw konnte nicht geladen werden).');
+    return;
+  }
+
+  const drawPolygon = new L.Draw.Polygon(zeichnerMap, {
+    shapeOptions: { color: '#4FB8AF', weight: 1.8, fillColor: '#4FB8AF', fillOpacity: 0.22 },
+    showArea: true,
+    metric: true,
+    allowIntersection: false
+  });
+  drawBtn.addEventListener('click', () => drawPolygon.enable());
+
+  zeichnerMap.on(L.Draw.Event.DRAWSTART, () => {
+    drawBtn.classList.add('active');
+    drawBtn.textContent = 'Zeichnen läuft … (Esc zum Abbrechen)';
+  });
+  zeichnerMap.on(L.Draw.Event.DRAWSTOP, () => {
+    drawBtn.classList.remove('active');
+    drawBtn.textContent = 'Fläche zeichnen';
+  });
+
+  zeichnerMap.on(L.Draw.Event.CREATED, (e) => {
+    const layer = e.layer;
+    zeichnerLayerGroup.addLayer(layer);
+
+    const areaHa = turf.area(layer.toGeoJSON()) / 10000;
+    const color = COLORS[zeichnerColorIdx % COLORS.length];
+    zeichnerColorIdx++;
+    layer.setStyle({ color, weight: 1.6, fillColor: color, fillOpacity: 0.22 });
+
+    zeichnerParcelCounter++;
+    const entry = {
+      id: 'parcel-' + zeichnerParcelCounter,
+      nummer: zeichnerParcelCounter,
+      name: '',
+      kultur: '',
+      areaHa,
+      layer,
+      color
+    };
+    zeichnerParcels.push(entry);
+    layer.on('click', () => zoomToParcel(entry.id));
+    renderParcelList();
+    setZeichnerStatus(`Fläche ${entry.nummer} gezeichnet (${areaHa.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ha).`);
+  });
 }
+
+function setZeichnerStatus(msg) { document.getElementById('zeichner-status').textContent = msg; }
+
+function showZeichnerError(msg) {
+  const el = document.getElementById('zeichner-error-toast');
+  el.textContent = msg;
+  el.style.display = 'block';
+  clearTimeout(showZeichnerError._t);
+  showZeichnerError._t = setTimeout(() => el.style.display = 'none', 6000);
+}
+
+function zoomToParcel(id) {
+  const p = zeichnerParcels.find(x => x.id === id);
+  if (!p) return;
+  const bounds = p.layer.getBounds();
+  if (bounds.isValid()) zeichnerMap.fitBounds(bounds, { padding: [40, 40], maxZoom: 18 });
+}
+
+function removeParcel(id) {
+  const idx = zeichnerParcels.findIndex(x => x.id === id);
+  if (idx === -1) return;
+  zeichnerLayerGroup.removeLayer(zeichnerParcels[idx].layer);
+  zeichnerParcels.splice(idx, 1);
+  renderParcelList();
+}
+
+function renderParcelList() {
+  const list = document.getElementById('zeichner-list');
+  document.getElementById('zeichner-empty-hint').style.display = zeichnerParcels.length ? 'none' : 'block';
+  list.innerHTML = '';
+  zeichnerParcels.forEach(p => {
+    const item = document.createElement('div');
+    item.className = 'parcel-item';
+    item.innerHTML = `
+      <div class="parcel-row">
+        <div class="swatch" style="background:${p.color}"></div>
+        <div class="parcel-nummer">#${p.nummer}</div>
+        <input class="parcel-name" data-id="${p.id}" placeholder="Flächenname (optional)" value="${escapeHtml(p.name)}">
+        <div class="parcel-size">${p.areaHa.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ha</div>
+      </div>
+      <input class="parcel-kultur" data-id="${p.id}" placeholder="Kulturart (optional)" value="${escapeHtml(p.kultur)}">
+      <div class="layer-actions">
+        <button data-id="${p.id}" data-action="zoom">Zoom</button>
+        <button data-id="${p.id}" data-action="remove" class="danger">Entfernen</button>
+      </div>
+    `;
+    list.appendChild(item);
+  });
+
+  list.querySelectorAll('.parcel-name').forEach(input => {
+    input.addEventListener('input', () => {
+      const p = zeichnerParcels.find(x => x.id === input.getAttribute('data-id'));
+      if (p) p.name = input.value;
+    });
+  });
+  list.querySelectorAll('.parcel-kultur').forEach(input => {
+    input.addEventListener('input', () => {
+      const p = zeichnerParcels.find(x => x.id === input.getAttribute('data-id'));
+      if (p) p.kultur = input.value;
+    });
+  });
+  list.querySelectorAll('[data-action]').forEach(el => {
+    el.addEventListener('click', () => {
+      const id = el.getAttribute('data-id');
+      const action = el.getAttribute('data-action');
+      if (action === 'zoom') zoomToParcel(id);
+      if (action === 'remove') removeParcel(id);
+    });
+  });
+}
+
+async function exportZeichnerFlaechenkarten() {
+  if (typeof html2canvas === 'undefined') { showZeichnerError('Flächenkarten-Export nicht verfügbar (html2canvas konnte nicht geladen werden).'); return; }
+  if (typeof window.jspdf === 'undefined') { showZeichnerError('Flächenkarten-Export nicht verfügbar (jsPDF konnte nicht geladen werden).'); return; }
+  if (!zeichnerParcels.length) { showZeichnerError('Noch keine Fläche gezeichnet.'); return; }
+
+  const btn = document.getElementById('btn-export-zeichner-flaechenkarten');
+  btn.disabled = true;
+
+  const tab = ensureTabActive('zeichner');
+  const savedCenter = zeichnerMap.getCenter();
+  const savedZoom = zeichnerMap.getZoom();
+  const savedBasemap = currentZeichnerBasemap;
+
+  zeichnerMap.removeLayer(zeichnerLayerGroup);
+  if (currentZeichnerBasemap !== 'satellite') {
+    zeichnerBasemaps[currentZeichnerBasemap].remove();
+    currentZeichnerBasemap = 'satellite';
+    zeichnerBasemaps.satellite.addTo(zeichnerMap);
+    document.getElementById('zeichner-btn-basemap').textContent = 'Basiskarte: ' + basemapLabels.satellite;
+  }
+  zeichnerMap.removeControl(zeichnerMap.zoomControl);
+
+  const doc = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const margin = 12;
+
+  try {
+    for (let i = 0; i < zeichnerParcels.length; i++) {
+      const p = zeichnerParcels[i];
+      setZeichnerStatus(`Exportiere Flächenkarten … (${i + 1}/${zeichnerParcels.length})`);
+
+      let canvas;
+      try {
+        canvas = await captureParcelScreenshot(zeichnerMap, zeichnerBasemaps.satellite, 'zeichner-map', p.layer.toGeoJSON());
+      } catch (err) {
+        console.error('Kartenbild-Erfassung fehlgeschlagen für', p.nummer, err);
+        showZeichnerError('Kartenbild konnte nicht erfasst werden (evtl. CORS-Einschränkung der Kachel-Quelle).');
+        break;
+      }
+
+      if (i > 0) doc.addPage('a4', 'landscape');
+      addFlaechenkartePage(doc, pageW, pageH, margin, canvas, {
+        nummer: p.nummer,
+        featName: p.name,
+        groesse: String(p.areaHa),
+        kultur: p.kultur,
+        flaechenId: ''
+      });
+    }
+
+    const ts = new Date().toISOString().slice(0, 10);
+    doc.save(`flaechenkarten_gezeichnet_${ts}.pdf`);
+    setZeichnerStatus('Flächenkarten exportiert.');
+  } finally {
+    zeichnerMap.zoomControl.addTo(zeichnerMap);
+    if (currentZeichnerBasemap !== savedBasemap) {
+      zeichnerBasemaps[currentZeichnerBasemap].remove();
+      currentZeichnerBasemap = savedBasemap;
+      zeichnerBasemaps[currentZeichnerBasemap].addTo(zeichnerMap);
+      document.getElementById('zeichner-btn-basemap').textContent = 'Basiskarte: ' + basemapLabels[currentZeichnerBasemap];
+    }
+    zeichnerLayerGroup.addTo(zeichnerMap);
+    zeichnerMap.setView(savedCenter, savedZoom);
+    tab.restore();
+    btn.disabled = false;
+  }
+}
+
+document.getElementById('btn-export-zeichner-flaechenkarten').addEventListener('click', exportZeichnerFlaechenkarten);
+
+// ---------- Dev-Tooling: Jahresvergleich-Inputs aus test-shapes/ vorbefüllen ----------
+// Vorerst deaktiviert: test-shapes/ enthält jetzt 16 einzelne Bundesland-
+// Dateien statt eines Jahr-A/B-Paares, dev-prefill.js braucht ein Update auf
+// ein aktuelles Dateipaar, bevor das wieder sinnvoll aktiviert werden kann.
+// if (import.meta.env.DEV) {
+//   import('./dev-prefill.js').then(m => m.prefillCompareInputs());
+// }

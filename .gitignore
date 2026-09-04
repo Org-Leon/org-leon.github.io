@@ -2,3 +2,5 @@ node_modules
 dist
 .vite
 test-shapes
+.playwright-mcp
+*.png
