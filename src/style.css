@@ -335,7 +335,7 @@
   .leaflet-popup-content { font-size: 11.5px; font-family: var(--mono); margin: 10px 12px; }
   .leaflet-popup-content b { font-family: var(--sans); color: var(--accent); }
 
-  .compare-feature-label {
+  .feature-label {
     background: rgba(18, 21, 26, 0.82);
     border: 1px solid rgba(255,255,255,0.15);
     color: #fff;
@@ -350,7 +350,7 @@
     white-space: nowrap;
     pointer-events: none;
   }
-  .compare-feature-label::before { display: none; }
+  .feature-label::before { display: none; }
 
   #table-panel, #compare-table-panel {
     position: absolute;

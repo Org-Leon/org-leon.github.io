@@ -260,11 +260,80 @@ function detectDbfEncoding(dbfBuf) {
 // .xlsx, .xml) werden ignoriert. Die Umprojektion nach WGS84 erfolgt explizit
 // über proj4 anhand der jeweiligen .prj-Datei — nicht über das (unklar
 // dokumentierte) automatische Verhalten von shp.parseShp().
+
+function extractWktParam(wkt, name) {
+  const m = wkt.match(new RegExp('PARAMETER\\["' + name + '"\\s*,\\s*(-?[0-9.]+)', 'i'));
+  return m ? parseFloat(m[1]) : null;
+}
+
+// Manche .prj-Dateien nutzen noch das alte deutsche Vermessungssystem DHDN
+// ("Deutsches Hauptdreiecksnetz", Bessel-1841-Ellipsoid, Gauß-Krüger) statt
+// des heutigen ETRS89/UTM — und lassen dabei die nötigen Datums-Verschiebungs-
+// parameter (TOWGS84) zu WGS84 weg. proj4 rechnet dann zwar die Gauß-Krüger-
+// Projektion korrekt zurück, gleicht aber den Versatz zwischen den beiden
+// Referenzellipsoiden NICHT aus — das ergibt einen systematischen Fehler von
+// grob 100-150 Metern, genug um Flächen sichtbar zu verschieben (z.B. in
+// Nachbargrundstücke/Wohngebiete). Wir erkennen das Datum am Namen und
+// ergänzen die fehlende Transformation; ist bereits ein TOWGS84-Parameter in
+// der WKT enthalten, übernimmt proj4 den ohnehin korrekt und wir fassen
+// nichts an.
+function resolveProjDefinition(prjText) {
+  const wkt = prjText.trim();
+  if (/towgs84/i.test(wkt)) return wkt;
+  if (!/hauptdreiecksnetz|\bDHDN\b/i.test(wkt)) return wkt;
+
+  const lon0 = extractWktParam(wkt, 'Central_Meridian') ?? 9;
+  const x0 = extractWktParam(wkt, 'False_Easting') ?? 3500000;
+  const y0 = extractWktParam(wkt, 'False_Northing') ?? 0;
+  const k = extractWktParam(wkt, 'Scale_Factor') ?? 1;
+  // 612.4,77.0,440.2,-0.054,0.057,-2.797,2.55: dieselben Helmert-Parameter,
+  // die der Datenlieferant selbst in einer begleitenden .prj-Datei desselben
+  // Datensatzes für EPSG:31466 angibt (siehe todo.txt) — kein generischer
+  // Schätzwert, sondern die vom Anbieter für genau diese Region genannte
+  // Transformation.
+  return `+proj=tmerc +lat_0=0 +lon_0=${lon0} +k=${k} +x_0=${x0} +y_0=${y0} `
+    + `+ellps=bessel +towgs84=612.4,77.0,440.2,-0.054,0.057,-2.797,2.55 +units=m +no_defs`;
+}
+
+// Manche Bundesländer liefern den amtlichen FLIK-Flächenidentifikator gar
+// nicht im Shapefile selbst (z.B. Brandenburgs Parzellen-DBF hat kein FLIK-
+// Feld), sondern nur in der begleitenden "..._flaechenuebersicht.xlsx" —
+// dort in einer Tabelle mit Spalten wie "Flik" und "Parzellennummer". Wir
+// lesen diese Zuordnung aus und liefern eine Map Nummer -> FLIK zurück.
+async function extractFlikMapFromWorkbook(entry) {
+  if (typeof XLSX === 'undefined') return null;
+  try {
+    const buf = await entry.async('arraybuffer');
+    const wb = XLSX.read(buf, { type: 'array' });
+    const nummerKeys = ['Parzellennummer', 'Nummer', 'Schlagnummer', 'Flächennummer'];
+    const flikKeys = ['Flik', 'FLIK', 'Flek', 'FLEK'];
+    for (const sheetName of wb.SheetNames) {
+      const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName]);
+      if (!rows.length) continue;
+      const cols = Object.keys(rows[0]);
+      const nummerCol = cols.find(c => nummerKeys.includes(c));
+      const flikCol = cols.find(c => flikKeys.includes(c));
+      if (!nummerCol || !flikCol) continue;
+      const map = new Map();
+      rows.forEach(r => {
+        const nummer = r[nummerCol];
+        const flik = r[flikCol];
+        if (nummer !== undefined && nummer !== null && flik) map.set(String(nummer).trim(), String(flik).trim());
+      });
+      if (map.size) return map;
+    }
+  } catch (err) {
+    console.warn('Konnte Flächenübersicht-Excel nicht lesen:', err.message);
+  }
+  return null;
+}
+
 async function parseShapefileZip(file) {
   const buf = await file.arrayBuffer();
   const zip = await JSZip.loadAsync(buf);
 
   const groups = {};
+  let flaechenuebersichtEntry = null;
   const relevantExt = ['shp', 'shx', 'dbf', 'prj', 'cpg'];
   zip.forEach((path, entry) => {
     if (entry.dir) return;
@@ -278,6 +347,7 @@ async function parseShapefileZip(file) {
     if (dot === -1) return;
     const base = fileName.slice(0, dot);
     const ext = fileName.slice(dot + 1).toLowerCase();
+    if (ext === 'xlsx' && /flaechenuebersicht/i.test(fileName)) flaechenuebersichtEntry = entry;
     if (!relevantExt.includes(ext)) return; // .xlsx, .xml usw. werden übersprungen
     groups[base] = groups[base] || {};
     groups[base][ext] = entry;
@@ -296,7 +366,7 @@ async function parseShapefileZip(file) {
       if (g.prj) {
         const prjText = await g.prj.async('text');
         try {
-          const converter = proj4(prjText.trim(), 'WGS84');
+          const converter = proj4(resolveProjDefinition(prjText), 'WGS84');
           geometries = rawGeometries.map(geom =>
             geom ? reprojectGeometry(geom, (x, y) => converter.forward([x, y])) : geom
           );
@@ -322,6 +392,23 @@ async function parseShapefileZip(file) {
       showError(base + ': Ebene konnte nicht gelesen werden — ' + (err.message || 'unbekannter Fehler'));
     }
   }
+
+  if (flaechenuebersichtEntry) {
+    const flikMap = await extractFlikMapFromWorkbook(flaechenuebersichtEntry);
+    if (flikMap) {
+      const parzellenResult = results.find(r => /parzelle|schlag|feldst(ü|ue)ck/i.test(r.name));
+      if (parzellenResult) {
+        (parzellenResult.fc.features || []).forEach(f => {
+          const props = f.properties || {};
+          if (pickField(props, FIELD_CANDIDATES.flaechenid)) return; // schon vorhanden, nicht überschreiben
+          const nummer = pickField(props, FIELD_CANDIDATES.nummer);
+          const flik = nummer && flikMap.get(nummer);
+          if (flik) props.FLIK = flik;
+        });
+      }
+    }
+  }
+
   return results;
 }
 
@@ -370,6 +457,12 @@ function addLayer(name, geojson) {
   const isTeilflaechen = /teilfl(ä|ae)che/i.test(name);
   const startVisible = !isTeilflaechen;
 
+  // Labelanker (Nummer + Name je Fläche, wie im Jahresvergleich) können erst
+  // NACH dem L.geoJSON()-Aufruf zur Gruppe hinzugefügt werden — onEachFeature
+  // läuft synchron WÄHREND des Konstruktoraufrufs, die Variable leafletLayer
+  // ist zu diesem Zeitpunkt noch nicht zugewiesen.
+  const labelAnchors = [];
+
   const leafletLayer = L.geoJSON(geojson, {
     style: () => ({ color: color, weight: 1.6, fillColor: color, fillOpacity: 0.22 }),
     pointToLayer: (feature, latlng) => L.circleMarker(latlng, {
@@ -398,8 +491,12 @@ function addLayer(name, geojson) {
         highlightFeature(entry);
         selectFeatureInTable(entry);
       });
+
+      const labelText = escapeHtml(entry.nummer) + (entry.featName ? '<br>' + escapeHtml(entry.featName) : '');
+      if (labelText.trim()) labelAnchors.push(createLabelAnchorAt(center, labelText));
     }
   });
+  labelAnchors.forEach(anchor => leafletLayer.addLayer(anchor));
   if (startVisible) leafletLayer.addTo(map);
 
   let count = 0;
@@ -1013,6 +1110,13 @@ function computeGeometryDiff(featureA, featureB) {
 // Label (Nummer + Name) mittig auf eine Fläche setzen — über einen unsichtbaren
 // Anker-Punkt mit dauerhaft eingeblendetem Tooltip, damit pro Fläche genau EIN
 // Label erscheint, unabhängig davon aus wie vielen Teil-Layern sie besteht.
+// Wird sowohl vom Viewer (addLayer) als auch vom Jahresvergleich genutzt.
+function createLabelAnchorAt(latlng, text) {
+  const anchor = L.circleMarker(latlng, { radius: 0, opacity: 0, fillOpacity: 0, interactive: false });
+  anchor.bindTooltip(text, { permanent: true, direction: 'center', className: 'feature-label' });
+  return anchor;
+}
+
 function addFeatureLabel(feature, text, group) {
   if (!feature) return;
   let latlng;
@@ -1021,9 +1125,7 @@ function addFeatureLabel(feature, text, group) {
   } catch (err) {
     return;
   }
-  const anchor = L.circleMarker(latlng, { radius: 0, opacity: 0, fillOpacity: 0, interactive: false });
-  anchor.bindTooltip(text, { permanent: true, direction: 'center', className: 'compare-feature-label' });
-  anchor.addTo(group);
+  createLabelAnchorAt(latlng, text).addTo(group);
 }
 
 function renderCompareMapLayers(records, fitView) {
