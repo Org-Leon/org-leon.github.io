@@ -226,6 +226,9 @@
       <div class="empty-hint" id="zeichner-empty-hint">Noch keine Fläche gezeichnet. „Fläche zeichnen" klicken, dann Eckpunkte per Klick setzen und mit Doppelklick abschließen (Esc bricht ab).</div>
     </div>
 
+    <div class="export-buttons" id="zeichner-export-buttons">
+      <button id="btn-export-zeichner-geojson" class="export-btn">GeoJSON speichern</button>
+    </div>
     <button id="btn-export-zeichner-flaechenkarten">Flächenkarten exportieren</button>
 
     <div id="zeichner-status">Bereit.</div>
@@ -247,6 +250,17 @@
       <p>Obstbäume als farbige Punkte auf der Karte erfassen</p>
     </div>
 
+    <div class="compare-upload">
+      <label class="compare-label">Flächen laden (optional)</label>
+      <div class="dropzone-mini" id="obstbaum-parcel-drop">
+        <span id="obstbaum-parcel-file-name">.zip / .geojson auswählen…</span>
+        <input type="file" id="obstbaum-parcel-input" accept=".zip,.geojson,.json" multiple>
+      </div>
+    </div>
+    <div id="obstbaum-parcel-list"></div>
+    <div class="empty-hint" id="obstbaum-parcel-empty-hint">Noch keine Flächen geladen — Bäume lassen sich auch ohne geladene Flächen setzen. Wird ein Baum auf einer geladenen Fläche gesetzt, wird er dieser automatisch zugeordnet.</div>
+    <button id="btn-obstbaum-parcel-table">Flächentabelle</button>
+
     <div id="obstbaum-picker">
       <label class="compare-label">Obstart zum Setzen wählen</label>
       <div id="obstbaum-fruit-grid"></div>
@@ -263,7 +277,7 @@
       </div>
     </div>
 
-    <button id="btn-obstbaum-table">Tabelle</button>
+    <button id="btn-obstbaum-table">Baumtabelle</button>
 
     <div id="obstbaum-spacer"></div>
 
@@ -295,10 +309,35 @@
             <tr>
               <th>Nr.</th>
               <th>Obstart</th>
+              <th>Fläche</th>
               <th></th>
             </tr>
           </thead>
           <tbody id="obstbaum-table-body"></tbody>
+        </table>
+      </div>
+    </div>
+    <div id="obstbaum-parcel-table-panel">
+      <div id="obstbaum-parcel-table-resize-handle"></div>
+      <div id="obstbaum-parcel-table-head">
+        <span class="title">Flächen (<span id="obstbaum-parcel-table-count">0</span>)</span>
+        <button id="obstbaum-parcel-table-minimize" title="Minimieren">▁</button>
+        <button id="obstbaum-parcel-table-close" title="Schließen">✕</button>
+      </div>
+      <div id="obstbaum-parcel-table-body-wrap">
+        <table id="obstbaum-parcel-table">
+          <thead>
+            <tr>
+              <th>Schlagnr. / Flächennr.</th>
+              <th>Flächenname</th>
+              <th>Flächenidentifikator</th>
+              <th>Größe</th>
+              <th>Kulturart</th>
+              <th>Bäume</th>
+              <th>Route</th>
+            </tr>
+          </thead>
+          <tbody id="obstbaum-parcel-table-body"></tbody>
         </table>
       </div>
     </div>
