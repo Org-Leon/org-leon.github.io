@@ -352,7 +352,7 @@
   }
   .feature-label::before { display: none; }
 
-  #table-panel, #compare-table-panel, #obstbaum-table-panel {
+  #table-panel, #compare-table-panel, #obstbaum-table-panel, #obstbaum-parcel-table-panel {
     position: absolute;
     left: 0;
     right: 0;
@@ -366,21 +366,22 @@
     overflow: hidden;
     box-shadow: 0 -6px 20px rgba(0,0,0,0.35);
   }
-  #table-panel.open, #compare-table-panel.open, #obstbaum-table-panel.open { display: flex; }
-  #table-panel.minimized, #compare-table-panel.minimized, #obstbaum-table-panel.minimized { height: auto !important; }
+  #table-panel.open, #compare-table-panel.open, #obstbaum-table-panel.open, #obstbaum-parcel-table-panel.open { display: flex; }
+  #table-panel.minimized, #compare-table-panel.minimized, #obstbaum-table-panel.minimized, #obstbaum-parcel-table-panel.minimized { height: auto !important; }
   #table-panel.minimized #table-body-wrap,
   #compare-table-panel.minimized #compare-table-body-wrap,
   #obstbaum-table-panel.minimized #obstbaum-table-body-wrap,
-  #obstbaum-table-panel.minimized #obstbaum-summary-row { display: none; }
-  #table-panel.dragging, #compare-table-panel.dragging, #obstbaum-table-panel.dragging { user-select: none; }
-  #table-resize-handle, #compare-table-resize-handle, #obstbaum-table-resize-handle {
+  #obstbaum-table-panel.minimized #obstbaum-summary-row,
+  #obstbaum-parcel-table-panel.minimized #obstbaum-parcel-table-body-wrap { display: none; }
+  #table-panel.dragging, #compare-table-panel.dragging, #obstbaum-table-panel.dragging, #obstbaum-parcel-table-panel.dragging { user-select: none; }
+  #table-resize-handle, #compare-table-resize-handle, #obstbaum-table-resize-handle, #obstbaum-parcel-table-resize-handle {
     flex-shrink: 0;
     height: 7px;
     cursor: ns-resize;
     position: relative;
     background: transparent;
   }
-  #table-resize-handle::after, #compare-table-resize-handle::after, #obstbaum-table-resize-handle::after {
+  #table-resize-handle::after, #compare-table-resize-handle::after, #obstbaum-table-resize-handle::after, #obstbaum-parcel-table-resize-handle::after {
     content: '';
     position: absolute;
     left: 50%; top: 50%;
@@ -394,11 +395,14 @@
   #compare-table-resize-handle:hover::after,
   #compare-table-panel.dragging #compare-table-resize-handle::after,
   #obstbaum-table-resize-handle:hover::after,
-  #obstbaum-table-panel.dragging #obstbaum-table-resize-handle::after { background: var(--accent); }
+  #obstbaum-table-panel.dragging #obstbaum-table-resize-handle::after,
+  #obstbaum-parcel-table-resize-handle:hover::after,
+  #obstbaum-parcel-table-panel.dragging #obstbaum-parcel-table-resize-handle::after { background: var(--accent); }
   #table-panel.minimized #table-resize-handle,
   #compare-table-panel.minimized #compare-table-resize-handle,
-  #obstbaum-table-panel.minimized #obstbaum-table-resize-handle { cursor: default; }
-  #table-head, #compare-table-head, #obstbaum-table-head {
+  #obstbaum-table-panel.minimized #obstbaum-table-resize-handle,
+  #obstbaum-parcel-table-panel.minimized #obstbaum-parcel-table-resize-handle { cursor: default; }
+  #table-head, #compare-table-head, #obstbaum-table-head, #obstbaum-parcel-table-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -406,8 +410,8 @@
     border-bottom: 1px solid var(--border);
     font-size: 12.5px;
   }
-  #table-head .title, #compare-table-head .title, #obstbaum-table-head .title { color: var(--text); font-weight: 500; }
-  #table-head, #compare-table-head, #obstbaum-table-head { gap: 14px; flex-wrap: wrap; }
+  #table-head .title, #compare-table-head .title, #obstbaum-table-head .title, #obstbaum-parcel-table-head .title { color: var(--text); font-weight: 500; }
+  #table-head, #compare-table-head, #obstbaum-table-head, #obstbaum-parcel-table-head { gap: 14px; flex-wrap: wrap; }
   #table-teilflaechen-toggle {
     margin-left: auto;
     display: flex;
@@ -432,15 +436,15 @@
     font-family: var(--sans);
   }
   .export-btn:hover { border-color: var(--accent); color: var(--text); }
-  #table-head button, #compare-table-head button, #obstbaum-table-head button {
+  #table-head button, #compare-table-head button, #obstbaum-table-head button, #obstbaum-parcel-table-head button {
     background: transparent;
     border: none;
     color: var(--muted);
     cursor: pointer;
     font-size: 15px;
   }
-  #table-head button:hover, #compare-table-head button:hover, #obstbaum-table-head button:hover { color: var(--text); }
-  #table-body-wrap, #compare-table-body-wrap, #obstbaum-table-body-wrap { overflow: auto; flex: 1; min-height: 0; }
+  #table-head button:hover, #compare-table-head button:hover, #obstbaum-table-head button:hover, #obstbaum-parcel-table-head button:hover { color: var(--text); }
+  #table-body-wrap, #compare-table-body-wrap, #obstbaum-table-body-wrap, #obstbaum-parcel-table-body-wrap { overflow: auto; flex: 1; min-height: 0; }
   #feature-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   #feature-table thead th {
     position: sticky;
@@ -748,8 +752,11 @@
   .parcel-kultur:focus { outline: none; border-color: var(--accent); }
   .parcel-kultur::placeholder { color: var(--muted); }
 
+  #zeichner-export-buttons { margin: 4px 14px 0; }
+  #zeichner-export-buttons .export-btn { flex: 1; text-align: center; padding: 7px 0; }
+
   #btn-export-zeichner-flaechenkarten {
-    margin: 4px 14px 14px;
+    margin: 8px 14px 14px;
     background: var(--accent-dim);
     border: 1px solid var(--accent);
     color: var(--on-accent);
@@ -801,34 +808,40 @@
     display: flex;
     flex-direction: column;
     height: 100%;
+    min-height: 0;
+    overflow-y: auto;
   }
   #obstbaum-brand { padding: 16px 18px 14px; border-bottom: 1px solid var(--border); }
   #obstbaum-brand h1 { font-size: 15px; font-weight: 600; margin: 0 0 2px; letter-spacing: 0.2px; }
   #obstbaum-brand p { margin: 0; font-size: 12px; color: var(--muted); }
 
-  #obstbaum-picker { padding: 14px 14px 0; }
+  #obstbaum-picker { padding: 14px 14px 0; position: relative; }
   #obstbaum-fruit-grid {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 4px;
-    margin-bottom: 6px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    margin-bottom: 8px;
   }
   .fruit-btn, .fruit-list-row {
     display: flex;
     align-items: center;
-    gap: 5px;
+    gap: 6px;
     min-width: 0;
     background: var(--panel-2);
     border: 1px solid var(--border);
     color: var(--text);
-    border-radius: 5px;
-    padding: 5px 6px;
-    font-size: 10.5px;
-    line-height: 1.25;
+    border-radius: 6px;
     font-family: var(--sans);
     cursor: grab;
     text-align: left;
     white-space: normal;
+    overflow-wrap: break-word;
+  }
+  .fruit-btn { padding: 7px 8px; font-size: 11.5px; line-height: 1.3; }
+  .fruit-list-row { padding: 5px 6px; font-size: 10.5px; line-height: 1.25; }
+  .fruit-btn .fruit-label, .fruit-list-row .fruit-label {
+    flex: 1;
+    min-width: 0;
     overflow-wrap: break-word;
   }
   .fruit-btn:hover, .fruit-list-row:hover { border-color: var(--accent); }
@@ -837,7 +850,14 @@
     border-color: var(--accent);
     box-shadow: 0 0 0 2px var(--accent-tint) inset;
   }
-  .fruit-btn .fruit-dot, .fruit-chip .fruit-dot, .fruit-list-row .fruit-dot {
+  .fruit-btn .fruit-dot {
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    border: 1px solid rgba(255,255,255,0.25);
+  }
+  .fruit-chip .fruit-dot, .fruit-list-row .fruit-dot {
     width: 9px;
     height: 9px;
     border-radius: 50%;
@@ -861,18 +881,60 @@
   #obstbaum-sonstige-toggle:hover { border-color: var(--accent); color: var(--text); }
   #obstbaum-sonstige-toggle .chev { transition: transform .15s; margin-left: auto; }
   #obstbaum-sonstige-toggle.open .chev { transform: rotate(180deg); }
+  /* Als echtes Dropdown: absolut positioniert, schwebt über dem Inhalt
+     darunter statt ihn wegzuschieben — bleibt aber (anders als ein natives
+     <select>) eine per Drag&Drop bedienbare Liste. */
   #obstbaum-sonstige-list {
+    position: absolute;
+    left: 14px;
+    right: 14px;
+    top: 100%;
+    z-index: 30;
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 4px;
-    margin-top: 6px;
+    margin-top: 4px;
     padding: 6px;
-    border: 1px dashed var(--border);
+    background: var(--panel);
+    border: 1px solid var(--border);
     border-radius: 6px;
-    max-height: 140px;
+    box-shadow: 0 10px 24px rgba(0,0,0,0.4);
+    max-height: 180px;
     overflow-y: auto;
     transition: border-color .15s;
   }
+  #obstbaum-sonstige-list[hidden] { display: none; }
+  .fruit-add-row {
+    grid-column: 1 / -1;
+    display: flex;
+    gap: 4px;
+    margin-top: 2px;
+  }
+  .fruit-add-row input {
+    flex: 1;
+    min-width: 0;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 5px;
+    padding: 5px 7px;
+    font-size: 11px;
+    font-family: var(--sans);
+  }
+  .fruit-add-row input:focus { outline: none; border-color: var(--accent); }
+  .fruit-add-row button {
+    flex-shrink: 0;
+    width: 26px;
+    background: var(--accent-dim);
+    border: 1px solid var(--accent);
+    color: var(--on-accent);
+    border-radius: 5px;
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    font-family: var(--sans);
+  }
+  .fruit-add-row button:hover { background: var(--accent); }
 
   #obstbaum-spacer { flex: 1; }
 
@@ -984,6 +1046,38 @@
     font-family: var(--sans);
   }
   .table-remove-btn:hover { border-color: var(--warn); color: var(--warn); }
+
+  #obstbaum-parcel-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  #obstbaum-parcel-table thead th {
+    position: sticky;
+    top: 0;
+    background: var(--panel-2);
+    text-align: left;
+    padding: 9px 14px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+  }
+  #obstbaum-parcel-table tbody td { padding: 8px 14px; border-bottom: 1px solid var(--border); }
+  #obstbaum-parcel-table tbody tr { cursor: pointer; }
+  #obstbaum-parcel-table tbody tr:hover td { background: var(--panel-2); }
+  #obstbaum-parcel-table tbody tr.row-selected td { background: var(--accent-tint); }
+
+  #obstbaum-parcel-list { padding: 0 0 4px; }
+  #btn-obstbaum-parcel-table {
+    margin: 4px 14px 12px;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 0;
+    border-radius: 6px;
+    font-size: 12.5px;
+    cursor: pointer;
+    font-family: var(--sans);
+  }
+  #btn-obstbaum-parcel-table:hover { border-color: var(--accent); }
 
   /* Baumpunkt-Icon (L.divIcon) — ersetzt Leaflets Standard-DivIcon-Look
      (weißer Kasten mit grauem Rand) durch einen schlichten farbigen Punkt,

@@ -1338,6 +1338,27 @@ function waitForTilesLoaded(layer, timeoutMs) {
   });
 }
 
+// Leaflet feuert das 'load'-Event der Kachelebene bereits, sobald alle
+// angeforderten Kacheln entweder geladen ODER fehlgeschlagen sind — bei
+// Rate-Limiting des Kachel-Servers (z.B. ArcGIS unter Last durch mehrere
+// schnell aufeinanderfolgende Exports) führt das zu einzelnen schwarzen/
+// leeren Kachel-Feldern im Screenshot. Deshalb zusätzlich gezielt nach
+// <img>-Kacheln suchen, die nicht sauber geladen sind, und diese mehrfach
+// neu anfordern, bevor der Screenshot aufgenommen wird.
+async function waitForTilesFullyLoaded(satelliteLayer, mapElId, timeoutMs) {
+  await waitForTilesLoaded(satelliteLayer, timeoutMs);
+  await delay(400); // kurzer Puffer, damit der letzte Frame sicher gemalt ist
+
+  const maxRetries = 4;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const broken = [...document.querySelectorAll(`#${mapElId} img.leaflet-tile`)]
+      .filter(img => !img.complete || img.naturalWidth === 0);
+    if (!broken.length) break;
+    broken.forEach(img => { const src = img.src; img.src = ''; img.src = src; });
+    await delay(700);
+  }
+}
+
 // Wechselt bei Bedarf auf den angegebenen Tab (nötig, damit dessen Karten-
 // Container beim Screenshot eine echte Größe hat) und liefert eine restore()
 // Funktion, die zum vorher aktiven Tab zurückwechselt.
@@ -1367,8 +1388,7 @@ async function captureParcelScreenshot(targetMap, satelliteLayer, mapElId, featu
     if (bounds.isValid()) {
       targetMap.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
     }
-    await waitForTilesLoaded(satelliteLayer, 6000);
-    await delay(400); // kurzer Puffer, damit der letzte Frame sicher gemalt ist
+    await waitForTilesFullyLoaded(satelliteLayer, mapElId, 6000);
     return await html2canvas(document.getElementById(mapElId), { useCORS: true, logging: false });
   } finally {
     targetMap.removeLayer(highlightLayer);
@@ -1608,6 +1628,31 @@ function renderParcelList() {
   });
 }
 
+// Speichert die gezeichneten Flächen als reguläres GeoJSON (Polygone +
+// Nummer/Name/Kulturart/Größe als Properties) — analog zum Baumkataster-
+// Export im Obstbaumkataster-Tab, z.B. für die Weiterverwendung in einem
+// GIS-Programm oder zum Sichern außerhalb des Browsers.
+function exportZeichnerGeoJSON() {
+  if (!zeichnerParcels.length) { showZeichnerError('Noch keine Fläche gezeichnet.'); return; }
+  const fc = {
+    type: 'FeatureCollection',
+    features: zeichnerParcels.map(p => ({
+      type: 'Feature',
+      geometry: p.layer.toGeoJSON().geometry,
+      properties: {
+        nummer: p.nummer,
+        name: p.name,
+        kultur: p.kultur,
+        groesse_ha: Number(p.areaHa.toFixed(4))
+      }
+    }))
+  };
+  const ts = new Date().toISOString().slice(0, 10);
+  downloadBlob(JSON.stringify(fc, null, 2), `flaechenzeichner_${ts}.geojson`, 'application/geo+json');
+  setZeichnerStatus('Als GeoJSON gespeichert.');
+}
+document.getElementById('btn-export-zeichner-geojson').addEventListener('click', exportZeichnerGeoJSON);
+
 async function exportZeichnerFlaechenkarten() {
   if (typeof html2canvas === 'undefined') { showZeichnerError('Flächenkarten-Export nicht verfügbar (html2canvas konnte nicht geladen werden).'); return; }
   if (typeof window.jspdf === 'undefined') { showZeichnerError('Flächenkarten-Export nicht verfügbar (jsPDF konnte nicht geladen werden).'); return; }
@@ -1703,12 +1748,65 @@ const FRUIT_TYPES_SONSTIGE = [
   { key: 'haselnuss', label: 'Haselnuss', color: '#A47449' },
   { key: 'esskastanie', label: 'Esskastanie', color: '#6B4A32' },
   { key: 'holunder', label: 'Holunder', color: '#3C4A6B' },
-  { key: 'mispel', label: 'Mispel', color: '#7C6A4E' },
-  { key: 'sonstige', label: 'Sonstige/Unbekannt', color: '#6B7280' }
+  { key: 'mispel', label: 'Mispel', color: '#7C6A4E' }
 ];
-const FRUIT_TYPES = [...FRUIT_TYPES_TOP6, ...FRUIT_TYPES_SONSTIGE];
-const FRUIT_BY_KEY = Object.fromEntries(FRUIT_TYPES.map(f => [f.key, f]));
+
+// Statt einer festen "Sonstige/Unbekannt"-Art können Nutzer eigene Obstarten
+// anlegen (Name + automatisch vergebene Farbe) — z.B. regionale Sorten, die
+// in der Standardliste fehlen. Bleiben per localStorage erhalten.
+const OBSTBAUM_CUSTOM_FRUITS_KEY = 'oekoviewer-obstbaum-custom-fruits';
+function loadCustomFruits() {
+  try {
+    const arr = JSON.parse(localStorage.getItem(OBSTBAUM_CUSTOM_FRUITS_KEY));
+    if (Array.isArray(arr)) {
+      return arr.filter(f => f && typeof f.key === 'string' && typeof f.label === 'string' && typeof f.color === 'string');
+    }
+  } catch (err) {}
+  return [];
+}
+function saveCustomFruits() {
+  try { localStorage.setItem(OBSTBAUM_CUSTOM_FRUITS_KEY, JSON.stringify(customFruits)); } catch (err) {}
+}
+let customFruits = loadCustomFruits();
+
+function hslToHex(h, s, l) {
+  s /= 100; l /= 100;
+  const k = n => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  const toHex = n => Math.round(255 * f(n)).toString(16).padStart(2, '0');
+  return `#${toHex(0)}${toHex(8)}${toHex(4)}`;
+}
+// Golden-Angle-Rotation über den Farbkreis, damit aufeinanderfolgende eigene
+// Arten sich immer deutlich in der Farbe unterscheiden statt sich zu ähneln.
+function nextCustomFruitColor() {
+  const hue = (customFruits.length * 137.5) % 360;
+  return hslToHex(hue, 55, 46);
+}
+
+function allFruitTypes() { return [...FRUIT_TYPES_TOP6, ...FRUIT_TYPES_SONSTIGE, ...customFruits]; }
+let FRUIT_BY_KEY = {};
+function rebuildFruitIndex() { FRUIT_BY_KEY = Object.fromEntries(allFruitTypes().map(f => [f.key, f])); }
+rebuildFruitIndex();
 function fruitOf(key) { return FRUIT_BY_KEY[key] || { key, label: key, color: '#6B7280' }; }
+
+function addCustomFruit(label) {
+  const trimmed = (label || '').trim();
+  if (!trimmed) return null;
+  const exists = allFruitTypes().some(f => f.label.toLowerCase() === trimmed.toLowerCase());
+  if (exists) { setObstbaumStatus(`„${trimmed}" gibt es bereits.`); return null; }
+  const slug = trimmed.toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'obstart';
+  let key = 'custom-' + slug;
+  let n = 2;
+  while (FRUIT_BY_KEY[key]) { key = 'custom-' + slug + '-' + (n++); }
+  const fruit = { key, label: trimmed, color: nextCustomFruitColor(), custom: true };
+  customFruits.push(fruit);
+  saveCustomFruits();
+  rebuildFruitIndex();
+  return fruit;
+}
 
 const OBSTBAUM_FAVORITES_KEY = 'oekoviewer-obstbaum-favorites';
 function loadFavoriteFruits() {
@@ -1727,10 +1825,69 @@ let obstbaumMap = null;
 let obstbaumBasemaps = null;
 let currentObstbaumBasemap = 'osm';
 let obstbaumLayerGroup = null;
+let obstbaumParcelGroup = null;
 let obstbaumTablePanel = null;
-const obstbaumTrees = []; // { id, nummer, art, latlng, marker }
+let obstbaumParcelTablePanel = null;
+const obstbaumTrees = []; // { id, nummer, art, latlng, marker, parcelId }
 let obstbaumTreeCounter = 0;
 let activeFruitKey = null;
+
+// Flächen, die zusätzlich zu den Bäumen geladen werden können (optional) —
+// Bäume, die innerhalb einer geladenen Fläche gesetzt werden, werden dieser
+// automatisch zugeordnet (Tabelle + Flächenkarten-Export gruppieren dann
+// danach statt nach geografischer Nähe).
+const obstbaumParcelLayers = {}; // id -> { name, geojson, leafletLayer, color, count }
+let obstbaumParcelLayerCounter = 0;
+const obstbaumParcelIndex = []; // flache Liste aller Flächen-Features über alle geladenen Ebenen
+let obstbaumParcelFeatureCounter = 0;
+let obstbaumHighlightedParcel = null;
+
+// Ordnet eine Koordinate der ersten geladenen Fläche zu, die sie enthält
+// (null, falls keine Fläche geladen ist oder der Punkt außerhalb aller liegt).
+function findObstbaumParcelForLatLng(latlng) {
+  if (!obstbaumParcelIndex.length || typeof turf === 'undefined' || !turf.booleanPointInPolygon) return null;
+  const pt = turf.point([latlng.lng, latlng.lat]);
+  for (const entry of obstbaumParcelIndex) {
+    const geomType = entry.leafletLayer.feature && entry.leafletLayer.feature.geometry && entry.leafletLayer.feature.geometry.type;
+    if (geomType !== 'Polygon' && geomType !== 'MultiPolygon') continue;
+    try {
+      if (turf.booleanPointInPolygon(pt, entry.leafletLayer.feature)) return entry;
+    } catch (err) {}
+  }
+  return null;
+}
+
+function reassignAllTreesToParcels() {
+  obstbaumTrees.forEach(t => { t.parcelId = findObstbaumParcelForLatLng(t.latlng)?.id || null; });
+  renderObstbaumTable();
+  renderObstbaumParcelTable();
+}
+
+// Baumanzahl je Obstart, gruppiert nach zugeordneter Fläche (Bäume ohne
+// Fläche — parcelId null — tauchen hier nicht auf).
+function computeObstbaumParcelTreeCounts() {
+  const map = new Map();
+  obstbaumTrees.forEach(t => {
+    if (!t.parcelId) return;
+    if (!map.has(t.parcelId)) map.set(t.parcelId, new Map());
+    const counts = map.get(t.parcelId);
+    counts.set(t.art, (counts.get(t.art) || 0) + 1);
+  });
+  return map;
+}
+
+// Wie computeObstbaumParcelTreeCounts(), aber mit den vollständigen
+// Baum-Einträgen statt nur Zählungen — für den Flächenkarten-Export, der die
+// Bäume je Fläche zusätzlich räumlich in Bild-Gruppen aufteilen muss.
+function computeObstbaumParcelTreeLists() {
+  const map = new Map();
+  obstbaumTrees.forEach(t => {
+    if (!t.parcelId) return;
+    if (!map.has(t.parcelId)) map.set(t.parcelId, []);
+    map.get(t.parcelId).push(t);
+  });
+  return map;
+}
 
 function setObstbaumStatus(msg) { document.getElementById('obstbaum-status').textContent = msg; }
 
@@ -1769,18 +1926,31 @@ function createTreeIcon(color) {
 function addTree(key, latlng) {
   const fruit = fruitOf(key);
   obstbaumTreeCounter++;
-  const entry = { id: 'baum-' + obstbaumTreeCounter, nummer: obstbaumTreeCounter, art: key, latlng, marker: null };
+  const entry = {
+    id: 'baum-' + obstbaumTreeCounter,
+    nummer: obstbaumTreeCounter,
+    art: key,
+    latlng,
+    marker: null,
+    parcelId: findObstbaumParcelForLatLng(latlng)?.id || null
+  };
 
   const marker = L.marker(latlng, { icon: createTreeIcon(fruit.color), draggable: true });
   marker.bindTooltip(fruit.label, { direction: 'top', offset: [0, -10] });
   marker.on('click', (e) => { L.DomEvent.stopPropagation(e); zoomToTree(entry.id); });
-  marker.on('dragend', () => { entry.latlng = marker.getLatLng(); });
+  marker.on('dragend', () => {
+    entry.latlng = marker.getLatLng();
+    entry.parcelId = findObstbaumParcelForLatLng(entry.latlng)?.id || null;
+    renderObstbaumTable();
+    renderObstbaumParcelTable();
+  });
   marker.addTo(obstbaumLayerGroup);
   entry.marker = marker;
 
   obstbaumTrees.push(entry);
   renderObstbaumSummary();
   renderObstbaumTable();
+  renderObstbaumParcelTable();
   setObstbaumStatus(`${fruit.label} gesetzt (${obstbaumTrees.length} insgesamt).`);
   return entry;
 }
@@ -1792,6 +1962,7 @@ function removeTree(id) {
   obstbaumTrees.splice(idx, 1);
   renderObstbaumSummary();
   renderObstbaumTable();
+  renderObstbaumParcelTable();
 }
 
 function zoomToTree(id) {
@@ -1800,10 +1971,23 @@ function zoomToTree(id) {
   obstbaumMap.setView(t.latlng, Math.max(obstbaumMap.getZoom(), 18));
 }
 
-function fitObstbaumTrees() {
-  if (!obstbaumTrees.length) return;
-  const bounds = L.latLngBounds(obstbaumTrees.map(t => t.latlng));
-  if (bounds.isValid()) obstbaumMap.fitBounds(bounds, { padding: [40, 40], maxZoom: 18 });
+// Zoomt auf alles, was in diesem Tab geladen/gesetzt ist — Flächen UND Bäume.
+function fitObstbaumContent() {
+  let bounds = null;
+  Object.values(obstbaumParcelLayers).forEach(l => {
+    const b = l.leafletLayer.getBounds();
+    if (b.isValid()) bounds = bounds ? bounds.extend(b) : L.latLngBounds(b.getSouthWest(), b.getNorthEast());
+  });
+  obstbaumTrees.forEach(t => {
+    bounds = bounds ? bounds.extend(t.latlng) : L.latLngBounds(t.latlng, t.latlng);
+  });
+  if (bounds && bounds.isValid()) obstbaumMap.fitBounds(bounds, { padding: [40, 40], maxZoom: 18 });
+}
+
+function parcelLabelFor(parcelId) {
+  if (!parcelId) return '–';
+  const p = obstbaumParcelIndex.find(x => x.id === parcelId);
+  return p ? escapeHtml(p.nummer || p.featName || '–') : '–';
 }
 
 function fruitChipHtml(key, extra) {
@@ -1829,12 +2013,13 @@ function renderObstbaumSummary() {
 function renderObstbaumTable() {
   const tbody = document.getElementById('obstbaum-table-body');
   if (!obstbaumTrees.length) {
-    tbody.innerHTML = '<tr><td colspan="3" style="color:var(--muted); padding:14px;">Noch keine Bäume erfasst.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted); padding:14px;">Noch keine Bäume erfasst.</td></tr>';
     return;
   }
   tbody.innerHTML = obstbaumTrees.map(t => `<tr data-id="${t.id}">
       <td>${t.nummer}</td>
       <td>${fruitChipHtml(t.art)}</td>
+      <td>${parcelLabelFor(t.parcelId)}</td>
       <td><button data-id="${t.id}" data-action="remove" class="table-remove-btn">Entfernen</button></td>
     </tr>`).join('');
   tbody.querySelectorAll('tr[data-id]').forEach(tr => {
@@ -1865,6 +2050,9 @@ function initObstbaumMap() {
     document.getElementById('obstbaum-btn-basemap').textContent = 'Basiskarte: ' + basemapLabels[currentObstbaumBasemap];
   });
 
+  // Flächen-Gruppe VOR der Baum-Gruppe hinzufügen, damit Baumpunkte optisch
+  // immer über den Flächenumrissen liegen.
+  obstbaumParcelGroup = L.featureGroup().addTo(obstbaumMap);
   obstbaumLayerGroup = L.featureGroup().addTo(obstbaumMap);
 
   obstbaumMap.on('click', (e) => {
@@ -1882,9 +2070,216 @@ function initObstbaumMap() {
     defaultHeight: TABLE_DEFAULT_HEIGHT
   });
   document.getElementById('btn-obstbaum-table').addEventListener('click', () => {
+    document.getElementById('obstbaum-parcel-table-panel').classList.remove('open');
     renderObstbaumTable();
     renderObstbaumSummary();
     obstbaumTablePanel.open();
+  });
+
+  // Zweites Bodenleisten-Panel für die Flächentabelle — beide Panels teilen
+  // sich denselben Bereich, daher schließt das Öffnen des einen das andere.
+  obstbaumParcelTablePanel = initResizablePanel({
+    panel: document.getElementById('obstbaum-parcel-table-panel'),
+    handle: document.getElementById('obstbaum-parcel-table-resize-handle'),
+    minimizeBtn: document.getElementById('obstbaum-parcel-table-minimize'),
+    closeBtn: document.getElementById('obstbaum-parcel-table-close'),
+    boundsWrap: document.getElementById('obstbaum-map-wrap'),
+    minHeight: TABLE_MIN_HEIGHT,
+    defaultHeight: TABLE_DEFAULT_HEIGHT
+  });
+  document.getElementById('btn-obstbaum-parcel-table').addEventListener('click', () => {
+    document.getElementById('obstbaum-table-panel').classList.remove('open');
+    renderObstbaumParcelTable();
+    obstbaumParcelTablePanel.open();
+  });
+}
+
+// ---------- Flächen laden (optional) ----------
+// Nutzt dieselben Parser wie der Viewer (parseShapefileZip/mergeFeldstueckNutzung),
+// hält die Ergebnisse aber in einem eigenen Index statt in den Viewer-Ebenen —
+// beide Tabs haben unabhängige Kartenobjekte.
+function addObstbaumParcelLayer(name, geojson) {
+  const id = 'obparcel-' + (obstbaumParcelLayerCounter++);
+  const color = COLORS[colorIdx % COLORS.length];
+  colorIdx++;
+  const labelAnchors = [];
+
+  const leafletLayer = L.geoJSON(geojson, {
+    style: () => ({ color, weight: 1.6, fillColor: color, fillOpacity: 0.18 }),
+    onEachFeature: (feature, lyr) => {
+      const props = feature.properties || {};
+      const center = lyr.getBounds ? lyr.getBounds().getCenter() : lyr.getLatLng();
+      const entry = {
+        id: 'obparcelfeat-' + (obstbaumParcelFeatureCounter++),
+        layerId: id,
+        layerName: name,
+        props,
+        center,
+        leafletLayer: lyr,
+        color,
+        nummer: pickField(props, FIELD_CANDIDATES.nummer),
+        featName: pickField(props, FIELD_CANDIDATES.name),
+        groesse: pickGroesse(props),
+        kultur: pickField(props, FIELD_CANDIDATES.kultur),
+        flaechenId: pickField(props, FIELD_CANDIDATES.flaechenid)
+      };
+      obstbaumParcelIndex.push(entry);
+      lyr.on('click', () => highlightObstbaumParcel(entry));
+
+      const labelText = escapeHtml(entry.nummer) + (entry.featName ? '<br>' + escapeHtml(entry.featName) : '');
+      if (labelText.trim()) labelAnchors.push(createLabelAnchorAt(center, labelText));
+    }
+  });
+  labelAnchors.forEach(anchor => leafletLayer.addLayer(anchor));
+  leafletLayer.addTo(obstbaumParcelGroup);
+
+  let count = 0;
+  (geojson.features || []).forEach(() => count++);
+  obstbaumParcelLayers[id] = { name, geojson, leafletLayer, color, count };
+
+  renderObstbaumParcelList();
+  reassignAllTreesToParcels();
+  fitObstbaumContent();
+}
+
+function highlightObstbaumParcel(entry) {
+  if (obstbaumHighlightedParcel && obstbaumHighlightedParcel.leafletLayer.setStyle) {
+    obstbaumHighlightedParcel.leafletLayer.setStyle({ color: obstbaumHighlightedParcel.color, weight: 1.6 });
+  }
+  if (entry.leafletLayer.setStyle) entry.leafletLayer.setStyle({ color: '#ffffff', weight: 4 });
+  obstbaumHighlightedParcel = entry;
+}
+
+function zoomToObstbaumParcel(entry) {
+  highlightObstbaumParcel(entry);
+  const lyr = entry.leafletLayer;
+  if (lyr.getBounds) obstbaumMap.fitBounds(lyr.getBounds(), { padding: [40, 40], maxZoom: 18 });
+}
+
+function removeObstbaumParcelLayer(id) {
+  const l = obstbaumParcelLayers[id];
+  if (!l) return;
+  obstbaumParcelGroup.removeLayer(l.leafletLayer);
+  delete obstbaumParcelLayers[id];
+  for (let i = obstbaumParcelIndex.length - 1; i >= 0; i--) {
+    if (obstbaumParcelIndex[i].layerId === id) {
+      if (obstbaumHighlightedParcel === obstbaumParcelIndex[i]) obstbaumHighlightedParcel = null;
+      obstbaumParcelIndex.splice(i, 1);
+    }
+  }
+  renderObstbaumParcelList();
+  reassignAllTreesToParcels();
+}
+
+function renderObstbaumParcelList() {
+  const list = document.getElementById('obstbaum-parcel-list');
+  const ids = Object.keys(obstbaumParcelLayers);
+  document.getElementById('obstbaum-parcel-empty-hint').style.display = ids.length ? 'none' : 'block';
+  list.innerHTML = '';
+  ids.forEach(id => {
+    const l = obstbaumParcelLayers[id];
+    const item = document.createElement('div');
+    item.className = 'layer-item';
+    item.innerHTML = `
+      <div class="layer-row">
+        <div class="swatch" style="background:${l.color}"></div>
+        <div class="layer-name" title="${l.name}">${l.name}</div>
+        <div class="layer-count">${l.count}</div>
+      </div>
+      <div class="layer-actions">
+        <button data-id="${id}" data-action="zoom">Zoom</button>
+        <button data-id="${id}" data-action="remove" class="danger">Entfernen</button>
+      </div>
+    `;
+    list.appendChild(item);
+  });
+  list.querySelectorAll('[data-action]').forEach(el => {
+    el.addEventListener('click', () => {
+      const id = el.getAttribute('data-id');
+      const action = el.getAttribute('data-action');
+      if (action === 'zoom') {
+        const b = obstbaumParcelLayers[id].leafletLayer.getBounds();
+        if (b.isValid()) obstbaumMap.fitBounds(b, { padding: [24, 24] });
+      }
+      if (action === 'remove') removeObstbaumParcelLayer(id);
+    });
+  });
+}
+
+async function handleObstbaumParcelFiles(fileList) {
+  const files = Array.from(fileList);
+  for (const file of files) {
+    try {
+      setObstbaumStatus('Lese ' + file.name + ' …');
+      const ext = file.name.split('.').pop().toLowerCase();
+      if (ext === 'zip') {
+        let results = await parseShapefileZip(file);
+        if (!results.length) {
+          showObstbaumError(file.name + ': Keine Shapefile-Bestandteile (.shp/.dbf) im Zip gefunden.');
+          continue;
+        }
+        results = mergeFeldstueckNutzung(results);
+        results.forEach(r => addObstbaumParcelLayer(r.name, r.fc));
+        setObstbaumStatus(file.name + ': ' + results.length + ' Flächen-Ebene(n) geladen.');
+      } else if (ext === 'geojson' || ext === 'json') {
+        const text = await file.text();
+        const geojson = JSON.parse(text);
+        addObstbaumParcelLayer(file.name.replace(/\.\w+$/, ''), geojson);
+        setObstbaumStatus(file.name + ' geladen.');
+      } else {
+        showObstbaumError(file.name + ': Format nicht unterstützt (erwartet .zip, .geojson, .json)');
+      }
+    } catch (err) {
+      console.error(err);
+      showObstbaumError(file.name + ': Konnte Datei nicht lesen — ' + (err.message || 'unbekannter Fehler'));
+    }
+  }
+  document.getElementById('obstbaum-parcel-input').value = '';
+}
+document.getElementById('obstbaum-parcel-input').addEventListener('change', (e) => {
+  if (e.target.files.length) handleObstbaumParcelFiles(e.target.files);
+});
+
+function renderObstbaumParcelTable() {
+  const tbody = document.getElementById('obstbaum-parcel-table-body');
+  document.getElementById('obstbaum-parcel-table-count').textContent = obstbaumParcelIndex.length;
+  if (!obstbaumParcelIndex.length) {
+    tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted); padding:14px;">Noch keine Flächen geladen.</td></tr>';
+    return;
+  }
+  const treeCounts = computeObstbaumParcelTreeCounts();
+  const rows = obstbaumParcelIndex.slice().sort((a, b) =>
+    String(a.nummer).localeCompare(String(b.nummer), undefined, { numeric: true }));
+
+  tbody.innerHTML = rows.map(entry => {
+    const num = parseFloat(String(entry.groesse).replace(',', '.'));
+    const groesseText = isFinite(num)
+      ? num.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ha'
+      : (entry.groesse || '–');
+    const routeCell = entry.center
+      ? `<a class="table-route-link" href="${googleMapsDirectionsUrl(entry.center.lat, entry.center.lng)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Route ↗</a>`
+      : '–';
+    const counts = treeCounts.get(entry.id);
+    const treesCell = counts && counts.size
+      ? [...counts.entries()].map(([key, n]) => fruitChipHtml(key, ` <span class="n">${n}</span>`)).join('')
+      : '<span style="color:var(--muted);">–</span>';
+    return `<tr data-id="${entry.id}">
+      <td>${escapeHtml(entry.nummer || '–')}</td>
+      <td>${escapeHtml(entry.featName || '–')}</td>
+      <td>${escapeHtml(entry.flaechenId || '–')}</td>
+      <td>${groesseText}</td>
+      <td>${escapeHtml(entry.kultur || '–')}</td>
+      <td>${treesCell}</td>
+      <td>${routeCell}</td>
+    </tr>`;
+  }).join('');
+
+  tbody.querySelectorAll('tr[data-id]').forEach(tr => {
+    tr.addEventListener('click', (e) => {
+      if (e.target.closest('a')) return;
+      const entry = obstbaumParcelIndex.find(p => p.id === tr.getAttribute('data-id'));
+      if (entry) zoomToObstbaumParcel(entry);
+    });
   });
 }
 
@@ -1920,7 +2315,7 @@ function promoteToFavorite(draggedKey, targetKey) {
 function demoteFromFavorite(draggedKey) {
   const idx = favoriteFruitKeys.indexOf(draggedKey);
   if (idx === -1) return; // war schon nicht (mehr) Favorit
-  const replacement = FRUIT_TYPES.map(f => f.key).find(k => k !== draggedKey && !favoriteFruitKeys.includes(k));
+  const replacement = allFruitTypes().map(f => f.key).find(k => k !== draggedKey && !favoriteFruitKeys.includes(k));
   if (!replacement) return;
   favoriteFruitKeys[idx] = replacement;
   saveFavoriteFruits();
@@ -1936,7 +2331,7 @@ function renderFruitPicker() {
     btn.type = 'button';
     btn.className = 'fruit-btn';
     btn.setAttribute('data-key', key);
-    btn.innerHTML = `<span class="fruit-dot" style="background:${fruit.color}"></span>${escapeHtml(fruit.label)}`;
+    btn.innerHTML = `<span class="fruit-dot" style="background:${fruit.color}"></span><span class="fruit-label">${escapeHtml(fruit.label)}</span>`;
     btn.classList.toggle('active', key === activeFruitKey);
     btn.addEventListener('click', () => setActiveFruitKey(key));
     makeFruitDraggable(btn, key);
@@ -1952,19 +2347,40 @@ function renderFruitPicker() {
 
   const list = document.getElementById('obstbaum-sonstige-list');
   list.innerHTML = '';
-  FRUIT_TYPES
+  allFruitTypes()
     .filter(f => !favoriteFruitKeys.includes(f.key))
     .forEach(fruit => {
       const row = document.createElement('button');
       row.type = 'button';
       row.className = 'fruit-list-row';
       row.setAttribute('data-key', fruit.key);
-      row.innerHTML = `<span class="fruit-dot" style="background:${fruit.color}"></span>${escapeHtml(fruit.label)}`;
+      row.innerHTML = `<span class="fruit-dot" style="background:${fruit.color}"></span><span class="fruit-label">${escapeHtml(fruit.label)}</span>`;
       row.classList.toggle('active', fruit.key === activeFruitKey);
       row.addEventListener('click', () => setActiveFruitKey(fruit.key));
       makeFruitDraggable(row, fruit.key);
       list.appendChild(row);
     });
+
+  const addRow = document.createElement('div');
+  addRow.className = 'fruit-add-row';
+  addRow.innerHTML = `<input type="text" id="obstbaum-custom-fruit-input" placeholder="Eigene Obstart…" maxlength="30">
+    <button type="button" id="obstbaum-custom-fruit-add" title="Obstart hinzufügen">+</button>`;
+  list.appendChild(addRow);
+  const customInput = document.getElementById('obstbaum-custom-fruit-input');
+  const customAddBtn = document.getElementById('obstbaum-custom-fruit-add');
+  function submitCustomFruit() {
+    const fruit = addCustomFruit(customInput.value);
+    if (!fruit) { customInput.focus(); return; }
+    customInput.value = '';
+    renderFruitPicker();
+    setObstbaumStatus(`„${fruit.label}" hinzugefügt.`);
+  }
+  customAddBtn.addEventListener('click', submitCustomFruit);
+  customInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); submitCustomFruit(); }
+  });
+  customInput.addEventListener('click', (e) => e.stopPropagation());
+  customInput.addEventListener('dragover', (e) => e.stopPropagation());
 }
 renderFruitPicker();
 
@@ -1978,14 +2394,28 @@ sonstigeList.addEventListener('drop', (e) => {
 });
 
 const sonstigeToggle = document.getElementById('obstbaum-sonstige-toggle');
+function closeSonstigeDropdown() {
+  sonstigeList.hidden = true;
+  sonstigeToggle.classList.remove('open');
+}
 sonstigeToggle.addEventListener('click', () => {
   const willOpen = sonstigeList.hidden;
   sonstigeList.hidden = !willOpen;
   sonstigeToggle.classList.toggle('open', willOpen);
 });
+// Capture-Phase nötig: das "+"-Formular in der Liste ruft bei Klick
+// renderFruitPicker() auf, was die Liste neu aufbaut und e.target damit vom
+// DOM löst — in der Bubble-Phase wäre sonstigeList.contains(e.target) dann
+// fälschlich false und die Liste ginge sofort wieder zu.
+document.addEventListener('click', (e) => {
+  if (sonstigeList.hidden) return;
+  if (sonstigeList.contains(e.target) || sonstigeToggle.contains(e.target)) return;
+  closeSonstigeDropdown();
+}, true);
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && activeFruitKey) setActiveFruitKey(null);
+  if (e.key === 'Escape' && !sonstigeList.hidden) closeSonstigeDropdown();
 });
 
 // ---------- Baumkataster laden/speichern (Format: GeoJSON) ----------
@@ -2003,14 +2433,22 @@ async function loadBaumkatasterFile(file) {
       const [lng, lat] = f.geometry.coordinates;
       if (!isFinite(lat) || !isFinite(lng)) return;
       const props = f.properties || {};
-      const key = FRUIT_BY_KEY[props.art] ? props.art : 'sonstige';
+      let key = props.art || '';
+      if (key && !FRUIT_BY_KEY[key]) {
+        // Unbekannte Art (z.B. eigene Art aus einer anderen Installation) —
+        // anhand des mitgespeicherten Klartext-Labels als eigene Art wiederherstellen.
+        const restored = addCustomFruit(props.label || key);
+        key = restored ? restored.key : key;
+      }
+      if (!key) key = 'unbekannt';
       addTree(key, L.latLng(lat, lng));
       added++;
     });
     document.getElementById('obstbaum-file-name').textContent = file.name;
     document.getElementById('obstbaum-drop').classList.add('filled');
     setObstbaumStatus(`${added} Baum/Bäume aus ${file.name} geladen.`);
-    if (added) fitObstbaumTrees();
+    renderFruitPicker(); // ggf. wiederhergestellte eigene Arten in "Sonstige" sichtbar machen
+    if (added) fitObstbaumContent();
   } catch (err) {
     console.error(err);
     showObstbaumError(file.name + ': Konnte Kataster nicht lesen — ' + (err.message || 'unbekannter Fehler'));
@@ -2050,6 +2488,14 @@ function treeDistanceMeters(a, b) {
   return turf.distance([a.latlng.lng, a.latlng.lat], [b.latlng.lng, b.latlng.lat], { units: 'meters' });
 }
 
+// Radius, innerhalb dessen Bäume noch auf ein gemeinsames, eng gezoomtes
+// Bild passen sollen — kleiner als eine typische Flächenausdehnung, damit
+// einzelne Bäume auf dem Kartenbild klar erkennbar bleiben statt als kleine
+// Punkte in einer großen Übersichtsaufnahme zu verschwinden. Liegen Bäume
+// derselben Fläche weiter auseinander, entstehen dafür automatisch mehrere
+// Bilder (siehe addObstbaumParcelPages).
+const TREE_VISIBILITY_RADIUS = 70;
+
 // Gruppiert nahe beieinanderstehende Bäume (z.B. eine Streuobstwiese) auf
 // eine gemeinsame Flächenkarten-Seite, statt stur eine Seite pro Baum zu
 // erzeugen — sonst wären bei eng stehenden Bäumen unnötig viele, fast
@@ -2080,6 +2526,178 @@ function clusterTrees(trees, radiusMeters) {
   return clusters;
 }
 
+// Schreibt Titel/Infozeile + Fruchtart-Legende + Kartenbild einer Fläche
+// (mit ihren zugeordneten Bäumen) auf die aktuelle PDF-Seite. titleSuffix
+// kennzeichnet bei einer auf mehrere Bilder aufgeteilten Fläche, das
+// wievielte Bild das ist (z.B. " (Bild 2/3)").
+function addObstbaumParcelPage(doc, pageW, pageH, margin, canvas, parcelEntry, counts, titleSuffix) {
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(15);
+  doc.text(String(parcelEntry.nummer || '–') + (parcelEntry.featName ? ' – ' + parcelEntry.featName : '') + (titleSuffix || ''), margin, margin + 4);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(11);
+  const num = parseFloat(String(parcelEntry.groesse).replace(',', '.'));
+  const groesseText = isFinite(num)
+    ? num.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ha'
+    : (parcelEntry.groesse || '–');
+  const subtitleParts = ['Größe: ' + groesseText, 'Kulturart: ' + (parcelEntry.kultur || '–')];
+  if (parcelEntry.flaechenId) subtitleParts.push('Flächen-ID: ' + parcelEntry.flaechenId);
+  doc.text(subtitleParts.join('    ·    '), margin, margin + 11);
+
+  doc.setFontSize(10);
+  let legendX = margin;
+  let legendY = margin + 18;
+  [...counts.entries()].forEach(([key, n]) => {
+    const fruit = fruitOf(key);
+    const rgb = hexToRgb(fruit.color);
+    const label = `${fruit.label}: ${n}`;
+    if (legendX + doc.getTextWidth(label) + 6 > pageW - margin) { legendX = margin; legendY += 5.5; }
+    doc.setFillColor(rgb.r, rgb.g, rgb.b);
+    doc.circle(legendX + 1.3, legendY - 1.2, 1.3, 'F');
+    doc.setFont('helvetica', 'normal');
+    doc.text(label, legendX + 4, legendY);
+    legendX += doc.getTextWidth(label) + 10;
+  });
+
+  const imageTop = legendY + 6;
+  const maxW = pageW - margin * 2;
+  const maxH = pageH - imageTop - margin;
+  const scale = Math.min(maxW / canvas.width, maxH / canvas.height);
+  const imgW = canvas.width * scale;
+  const imgH = canvas.height * scale;
+  const imgX = (pageW - imgW) / 2;
+  doc.addImage(canvas.toDataURL('image/jpeg', 0.85), 'JPEG', imgX, imageTop, imgW, imgH);
+}
+
+// Nimmt einen Screenshot der Karte auf, gezoomt auf eine Gruppe von
+// Baumpunkten (statt auf die ganze Fläche) — damit einzelne Bäume auf dem
+// Bild klar erkennbar bleiben. Die Fläche selbst wird trotzdem als weißer
+// Umriss eingeblendet (sofern sie im Ausschnitt sichtbar ist), damit der
+// räumliche Bezug erhalten bleibt.
+async function captureTreeClusterScreenshot(targetMap, satelliteLayer, mapElId, feature, treeLatLngs) {
+  const highlightLayer = feature ? L.geoJSON(feature, {
+    renderer: L.canvas(),
+    style: { color: '#ffffff', weight: 3, opacity: 1, fillOpacity: 0 }
+  }).addTo(targetMap) : null;
+  try {
+    if (treeLatLngs.length === 1) {
+      targetMap.setView(treeLatLngs[0], 20);
+    } else {
+      targetMap.fitBounds(L.latLngBounds(treeLatLngs), { padding: [70, 70], maxZoom: 20 });
+    }
+    await waitForTilesFullyLoaded(satelliteLayer, mapElId, 6000);
+    return await html2canvas(document.getElementById(mapElId), { useCORS: true, logging: false });
+  } finally {
+    if (highlightLayer) targetMap.removeLayer(highlightLayer);
+  }
+}
+
+// Ein oder mehrere PDF-Seiten je Fläche mit zugeordneten Bäumen — liegen die
+// Bäume einer Fläche weiter auseinander, als auf ein eng gezoomtes Bild
+// passt, wird die Fläche auf mehrere Bilder aufgeteilt (siehe
+// TREE_VISIBILITY_RADIUS), jedes davon mit eigener Legende für die darauf
+// sichtbaren Bäume. Die Baumpunkte selbst sind normale DOM-Elemente
+// (divIcon) und erscheinen daher automatisch mit im Screenshot.
+async function addObstbaumParcelPages(doc, parcelsWithTrees, treeLists, pageW, pageH, margin, pageIdx, grandTotal) {
+  for (let i = 0; i < parcelsWithTrees.length; i++) {
+    const parcelEntry = parcelsWithTrees[i];
+    const subClusters = clusterTrees(treeLists.get(parcelEntry.id), TREE_VISIBILITY_RADIUS);
+
+    for (let j = 0; j < subClusters.length; j++) {
+      const subCluster = subClusters[j];
+      const progress = subClusters.length > 1 ? `, Bild ${j + 1}/${subClusters.length}` : '';
+      setObstbaumStatus(`Exportiere Flächenkarten … (${i + 1}/${parcelsWithTrees.length}${progress})`);
+
+      let canvas;
+      try {
+        canvas = await captureTreeClusterScreenshot(
+          obstbaumMap, obstbaumBasemaps.satellite, 'obstbaum-map',
+          parcelEntry.leafletLayer.feature, subCluster.map(t => t.latlng)
+        );
+      } catch (err) {
+        console.error('Kartenbild-Erfassung fehlgeschlagen für', parcelEntry.nummer, err);
+        showObstbaumError('Kartenbild konnte nicht erfasst werden (evtl. CORS-Einschränkung der Kachel-Quelle).');
+        return pageIdx;
+      }
+      if (pageIdx > 0) doc.addPage('a4', 'landscape');
+      pageIdx++;
+
+      const counts = new Map();
+      subCluster.forEach(t => counts.set(t.art, (counts.get(t.art) || 0) + 1));
+      counts.forEach((n, key) => grandTotal.set(key, (grandTotal.get(key) || 0) + n));
+
+      const titleSuffix = subClusters.length > 1 ? ` (Bild ${j + 1}/${subClusters.length})` : '';
+      addObstbaumParcelPage(doc, pageW, pageH, margin, canvas, parcelEntry, counts, titleSuffix);
+    }
+  }
+  return pageIdx;
+}
+
+// Eine PDF-Seite je geografischer Baumgruppe (Single-Linkage-Cluster) — für
+// Bäume ohne zugeordnete Fläche bzw. wenn gar keine Flächen geladen sind.
+async function addObstbaumClusterPages(doc, clusters, pageW, pageH, margin, pageIdx, grandTotal, titlePrefix) {
+  for (let i = 0; i < clusters.length; i++) {
+    const cluster = clusters[i];
+    setObstbaumStatus(`Exportiere Flächenkarten${titlePrefix ? ' (' + titlePrefix + ')' : ''} … (${i + 1}/${clusters.length})`);
+
+    if (cluster.length === 1) {
+      obstbaumMap.setView(cluster[0].latlng, 20);
+    } else {
+      obstbaumMap.fitBounds(L.latLngBounds(cluster.map(t => t.latlng)), { padding: [70, 70], maxZoom: 20 });
+    }
+    await waitForTilesFullyLoaded(obstbaumBasemaps.satellite, 'obstbaum-map', 6000);
+
+    let canvas;
+    try {
+      canvas = await html2canvas(document.getElementById('obstbaum-map'), { useCORS: true, logging: false });
+    } catch (err) {
+      console.error('Kartenbild-Erfassung fehlgeschlagen für Gruppe', i + 1, err);
+      showObstbaumError('Kartenbild konnte nicht erfasst werden (evtl. CORS-Einschränkung der Kachel-Quelle).');
+      return pageIdx;
+    }
+
+    if (pageIdx > 0) doc.addPage('a4', 'landscape');
+    pageIdx++;
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(15);
+    const title = (titlePrefix ? titlePrefix + ' – ' : '') + `Gruppe ${i + 1} (${cluster.length} Baum/Bäume)`;
+    doc.text(title, margin, margin + 4);
+
+    // Zählung je Obstart auf dieser Seite — der Farbpunkt davor dient
+    // zugleich als Legende (Farbe -> Obstart), extra Legendenblock nicht nötig.
+    const pageCounts = new Map();
+    cluster.forEach(t => pageCounts.set(t.art, (pageCounts.get(t.art) || 0) + 1));
+    pageCounts.forEach((n, key) => grandTotal.set(key, (grandTotal.get(key) || 0) + n));
+
+    doc.setFontSize(10);
+    let legendX = margin;
+    let legendY = margin + 11;
+    [...pageCounts.entries()].forEach(([key, n]) => {
+      const fruit = fruitOf(key);
+      const rgb = hexToRgb(fruit.color);
+      const label = `${fruit.label}: ${n}`;
+      if (legendX + doc.getTextWidth(label) + 6 > pageW - margin) { legendX = margin; legendY += 5.5; }
+      doc.setFillColor(rgb.r, rgb.g, rgb.b);
+      doc.circle(legendX + 1.3, legendY - 1.2, 1.3, 'F');
+      doc.setFont('helvetica', 'normal');
+      doc.text(label, legendX + 4, legendY);
+      legendX += doc.getTextWidth(label) + 10;
+    });
+
+    const imageTop = legendY + 6;
+    const maxW = pageW - margin * 2;
+    const maxH = pageH - imageTop - margin;
+    const scale = Math.min(maxW / canvas.width, maxH / canvas.height);
+    const imgW = canvas.width * scale;
+    const imgH = canvas.height * scale;
+    const imgX = (pageW - imgW) / 2;
+    doc.addImage(canvas.toDataURL('image/jpeg', 0.85), 'JPEG', imgX, imageTop, imgW, imgH);
+  }
+  return pageIdx;
+}
+
 async function exportObstbaumFlaechenkarten() {
   if (typeof html2canvas === 'undefined') { showObstbaumError('Export nicht verfügbar (html2canvas konnte nicht geladen werden).'); return; }
   if (typeof window.jspdf === 'undefined') { showObstbaumError('Export nicht verfügbar (jsPDF konnte nicht geladen werden).'); return; }
@@ -2101,7 +2719,6 @@ async function exportObstbaumFlaechenkarten() {
   }
   obstbaumMap.removeControl(obstbaumMap.zoomControl);
 
-  const clusters = clusterTrees(obstbaumTrees, 120);
   const grandTotal = new Map();
 
   const doc = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
@@ -2110,60 +2727,25 @@ async function exportObstbaumFlaechenkarten() {
   const margin = 12;
 
   try {
-    for (let i = 0; i < clusters.length; i++) {
-      const cluster = clusters[i];
-      setObstbaumStatus(`Exportiere Flächenkarten … (${i + 1}/${clusters.length})`);
+    let pageIdx = 0;
+    if (obstbaumParcelIndex.length) {
+      // Flächen geladen: ein oder mehrere eng gezoomte Bilder je Fläche mit
+      // zugeordneten Bäumen, Bäume ohne Fläche fallen weiterhin unter die
+      // geografische Gruppierung.
+      const treeLists = computeObstbaumParcelTreeLists();
+      const parcelsWithTrees = obstbaumParcelIndex
+        .filter(p => treeLists.has(p.id))
+        .sort((a, b) => String(a.nummer).localeCompare(String(b.nummer), undefined, { numeric: true }));
+      pageIdx = await addObstbaumParcelPages(doc, parcelsWithTrees, treeLists, pageW, pageH, margin, pageIdx, grandTotal);
 
-      const bounds = L.latLngBounds(cluster.map(t => t.latlng));
-      obstbaumMap.fitBounds(bounds, { padding: [60, 60], maxZoom: 19 });
-
-      await waitForTilesLoaded(obstbaumBasemaps.satellite, 6000);
-      await delay(400);
-
-      let canvas;
-      try {
-        canvas = await html2canvas(document.getElementById('obstbaum-map'), { useCORS: true, logging: false });
-      } catch (err) {
-        console.error('Kartenbild-Erfassung fehlgeschlagen für Gruppe', i + 1, err);
-        showObstbaumError('Kartenbild konnte nicht erfasst werden (evtl. CORS-Einschränkung der Kachel-Quelle).');
-        break;
+      const unassigned = obstbaumTrees.filter(t => !t.parcelId);
+      if (unassigned.length) {
+        const clusters = clusterTrees(unassigned, TREE_VISIBILITY_RADIUS);
+        pageIdx = await addObstbaumClusterPages(doc, clusters, pageW, pageH, margin, pageIdx, grandTotal, 'Nicht zugeordnet');
       }
-
-      if (i > 0) doc.addPage('a4', 'landscape');
-
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(15);
-      doc.text(`Gruppe ${i + 1} (${cluster.length} Baum/Bäume)`, margin, margin + 4);
-
-      // Zählung je Obstart auf dieser Seite — der Farbpunkt davor dient
-      // zugleich als Legende (Farbe -> Obstart), extra Legendenblock nicht nötig.
-      const pageCounts = new Map();
-      cluster.forEach(t => pageCounts.set(t.art, (pageCounts.get(t.art) || 0) + 1));
-      pageCounts.forEach((n, key) => grandTotal.set(key, (grandTotal.get(key) || 0) + n));
-
-      doc.setFontSize(10);
-      let legendX = margin;
-      let legendY = margin + 11;
-      [...pageCounts.entries()].forEach(([key, n]) => {
-        const fruit = fruitOf(key);
-        const rgb = hexToRgb(fruit.color);
-        const label = `${fruit.label}: ${n}`;
-        if (legendX + doc.getTextWidth(label) + 6 > pageW - margin) { legendX = margin; legendY += 5.5; }
-        doc.setFillColor(rgb.r, rgb.g, rgb.b);
-        doc.circle(legendX + 1.3, legendY - 1.2, 1.3, 'F');
-        doc.setFont('helvetica', 'normal');
-        doc.text(label, legendX + 4, legendY);
-        legendX += doc.getTextWidth(label) + 10;
-      });
-
-      const imageTop = legendY + 6;
-      const maxW = pageW - margin * 2;
-      const maxH = pageH - imageTop - margin;
-      const scale = Math.min(maxW / canvas.width, maxH / canvas.height);
-      const imgW = canvas.width * scale;
-      const imgH = canvas.height * scale;
-      const imgX = (pageW - imgW) / 2;
-      doc.addImage(canvas.toDataURL('image/jpeg', 0.85), 'JPEG', imgX, imageTop, imgW, imgH);
+    } else {
+      const clusters = clusterTrees(obstbaumTrees, TREE_VISIBILITY_RADIUS);
+      pageIdx = await addObstbaumClusterPages(doc, clusters, pageW, pageH, margin, pageIdx, grandTotal, '');
     }
 
     // Abschlussseite: Gesamtsumme je Obstart über alle Gruppen hinweg.
