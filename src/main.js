@@ -1628,30 +1628,48 @@ function renderParcelList() {
   });
 }
 
-// Speichert die gezeichneten Flächen als reguläres GeoJSON (Polygone +
-// Nummer/Name/Kulturart/Größe als Properties) — analog zum Baumkataster-
-// Export im Obstbaumkataster-Tab, z.B. für die Weiterverwendung in einem
-// GIS-Programm oder zum Sichern außerhalb des Browsers.
+// Property-Namen bewusst NICHT frei erfunden, sondern aus FIELD_CANDIDATES/
+// GROESSE_CANDIDATES (siehe oben) gewählt — nur so zeigt eine erneut als
+// Fläche geladene Datei (Viewer, Jahresvergleich, Obstbaumkataster) Name/
+// Größe/Kulturart auch tatsächlich an, statt überall "–" anzuzeigen.
+function zeichnerParcelToGeoJSONFeature(p) {
+  return {
+    type: 'Feature',
+    geometry: p.layer.toGeoJSON().geometry,
+    properties: {
+      NUMMER: p.nummer,
+      NAME: p.name,
+      KULTURART: p.kultur,
+      FLAECHE_HA: Number(p.areaHa.toFixed(4))
+    }
+  };
+}
+
+// Speichert die gezeichneten Flächen als reguläres GeoJSON — analog zum
+// Baumkataster-Export im Obstbaumkataster-Tab, z.B. für die Weiterverwendung
+// in einem GIS-Programm oder zum Sichern außerhalb des Browsers.
 function exportZeichnerGeoJSON() {
   if (!zeichnerParcels.length) { showZeichnerError('Noch keine Fläche gezeichnet.'); return; }
-  const fc = {
-    type: 'FeatureCollection',
-    features: zeichnerParcels.map(p => ({
-      type: 'Feature',
-      geometry: p.layer.toGeoJSON().geometry,
-      properties: {
-        nummer: p.nummer,
-        name: p.name,
-        kultur: p.kultur,
-        groesse_ha: Number(p.areaHa.toFixed(4))
-      }
-    }))
-  };
+  const fc = { type: 'FeatureCollection', features: zeichnerParcels.map(zeichnerParcelToGeoJSONFeature) };
   const ts = new Date().toISOString().slice(0, 10);
   downloadBlob(JSON.stringify(fc, null, 2), `flaechenzeichner_${ts}.geojson`, 'application/geo+json');
   setZeichnerStatus('Als GeoJSON gespeichert.');
 }
 document.getElementById('btn-export-zeichner-geojson').addEventListener('click', exportZeichnerGeoJSON);
+
+// Übernimmt die gezeichneten Flächen direkt (ohne Umweg über Speichern +
+// erneutes Hochladen) als Flächen-Ebene ins Obstbaumkataster — praktisch,
+// um dort sofort Bäume auf den gerade gezeichneten Flächen zu setzen.
+function transferZeichnerToObstbaum() {
+  if (!zeichnerParcels.length) { showZeichnerError('Noch keine Fläche gezeichnet.'); return; }
+  const fc = { type: 'FeatureCollection', features: zeichnerParcels.map(zeichnerParcelToGeoJSONFeature) };
+  document.querySelector('.tab-btn[data-view="obstbaum"]').click();
+  setTimeout(() => {
+    addObstbaumParcelLayer('Flächenzeichner', fc);
+    setObstbaumStatus(`${zeichnerParcels.length} Fläche(n) aus dem Flächenzeichner übernommen.`);
+  }, 60);
+}
+document.getElementById('btn-zeichner-to-obstbaum').addEventListener('click', transferZeichnerToObstbaum);
 
 async function exportZeichnerFlaechenkarten() {
   if (typeof html2canvas === 'undefined') { showZeichnerError('Flächenkarten-Export nicht verfügbar (html2canvas konnte nicht geladen werden).'); return; }
@@ -2104,7 +2122,13 @@ function addObstbaumParcelLayer(name, geojson) {
   colorIdx++;
   const labelAnchors = [];
 
+  // Nur Flächen-Geometrien akzeptieren — beim "Kataster speichern"-Export
+  // lassen sich Bäume optional zusammen mit den Flächen in eine Datei packen;
+  // würde man diese Kombi-Datei versehentlich hier statt beim Baumkataster
+  // hochladen, sollen die Baum-Punkte darin einfach ignoriert werden statt
+  // als kaputte "Flächen" in der Tabelle aufzutauchen.
   const leafletLayer = L.geoJSON(geojson, {
+    filter: (feature) => !!feature.geometry && (feature.geometry.type === 'Polygon' || feature.geometry.type === 'MultiPolygon'),
     style: () => ({ color, weight: 1.6, fillColor: color, fillOpacity: 0.18 }),
     onEachFeature: (feature, lyr) => {
       const props = feature.properties || {};
@@ -2427,9 +2451,20 @@ async function loadBaumkatasterFile(file) {
     const text = await file.text();
     const data = JSON.parse(text);
     const features = data.features || [];
+    const pointFeatures = features.filter(f => f.geometry && f.geometry.type === 'Point');
+    const parcelFeatures = features.filter(f => f.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon'));
+
+    // Enthält die Datei (z.B. aus "Kataster speichern" inkl. Flächen) auch
+    // Flächen-Geometrien, diese zuerst laden — sonst müsste dieselbe Datei
+    // zusätzlich noch einmal über "Flächen laden" hochgeladen werden. Vorher
+    // laden ist wichtig, damit beim gleich folgenden Setzen der Baum-Punkte
+    // direkt die richtige Flächen-Zuordnung berechnet werden kann.
+    if (parcelFeatures.length) {
+      addObstbaumParcelLayer(file.name.replace(/\.\w+$/, ''), { type: 'FeatureCollection', features: parcelFeatures });
+    }
+
     let added = 0;
-    features.forEach(f => {
-      if (!f.geometry || f.geometry.type !== 'Point') return;
+    pointFeatures.forEach(f => {
       const [lng, lat] = f.geometry.coordinates;
       if (!isFinite(lat) || !isFinite(lng)) return;
       const props = f.properties || {};
@@ -2446,9 +2481,12 @@ async function loadBaumkatasterFile(file) {
     });
     document.getElementById('obstbaum-file-name').textContent = file.name;
     document.getElementById('obstbaum-drop').classList.add('filled');
-    setObstbaumStatus(`${added} Baum/Bäume aus ${file.name} geladen.`);
+    const parts = [];
+    if (added) parts.push(`${added} Baum/Bäume`);
+    if (parcelFeatures.length) parts.push(`${parcelFeatures.length} Fläche(n)`);
+    setObstbaumStatus(`${parts.length ? parts.join(' + ') : 'Nichts Lesbares'} aus ${file.name} geladen.`);
     renderFruitPicker(); // ggf. wiederhergestellte eigene Arten in "Sonstige" sichtbar machen
-    if (added) fitObstbaumContent();
+    if (added || parcelFeatures.length) fitObstbaumContent();
   } catch (err) {
     console.error(err);
     showObstbaumError(file.name + ': Konnte Kataster nicht lesen — ' + (err.message || 'unbekannter Fehler'));
@@ -2458,21 +2496,67 @@ document.getElementById('obstbaum-file-input').addEventListener('change', (e) =>
   if (e.target.files[0]) loadBaumkatasterFile(e.target.files[0]);
 });
 
-function exportBaumkataster() {
-  if (!obstbaumTrees.length) { showObstbaumError('Noch keine Bäume erfasst.'); return; }
-  const fc = {
-    type: 'FeatureCollection',
-    features: obstbaumTrees.map(t => ({
-      type: 'Feature',
-      geometry: { type: 'Point', coordinates: [t.latlng.lng, t.latlng.lat] },
-      properties: { nummer: t.nummer, art: t.art, label: fruitOf(t.art).label }
-    }))
+// Property-Namen bewusst wie bei zeichnerParcelToGeoJSONFeature() gewählt
+// (von FIELD_CANDIDATES/GROESSE_CANDIDATES erkannt), damit eine mit
+// Flächen exportierte Kataster-Datei sich direkt wieder als Fläche laden
+// lässt (Viewer, Jahresvergleich, Obstbaumkataster).
+function obstbaumParcelToGeoJSONFeature(p) {
+  const num = parseFloat(String(p.groesse).replace(',', '.'));
+  return {
+    type: 'Feature',
+    geometry: p.leafletLayer.feature.geometry,
+    properties: {
+      NUMMER: p.nummer,
+      NAME: p.featName,
+      KULTURART: p.kultur,
+      FLAECHE_HA: isFinite(num) ? Number(num.toFixed(4)) : '',
+      FLIK: p.flaechenId
+    }
   };
+}
+
+function exportBaumkataster(includeParcels) {
+  if (!obstbaumTrees.length) { showObstbaumError('Noch keine Bäume erfasst.'); return; }
+  const treeFeatures = obstbaumTrees.map(t => ({
+    type: 'Feature',
+    geometry: { type: 'Point', coordinates: [t.latlng.lng, t.latlng.lat] },
+    properties: { nummer: t.nummer, art: t.art, label: fruitOf(t.art).label }
+  }));
+  const parcelFeatures = includeParcels ? obstbaumParcelIndex.map(obstbaumParcelToGeoJSONFeature) : [];
+  const fc = { type: 'FeatureCollection', features: [...parcelFeatures, ...treeFeatures] };
   const ts = new Date().toISOString().slice(0, 10);
   downloadBlob(JSON.stringify(fc, null, 2), `baumkataster_${ts}.geojson`, 'application/geo+json');
-  setObstbaumStatus('Baumkataster gespeichert.');
+  setObstbaumStatus(includeParcels ? 'Baumkataster inkl. Flächen gespeichert.' : 'Baumkataster gespeichert.');
 }
-document.getElementById('btn-export-baumkataster').addEventListener('click', exportBaumkataster);
+
+// ---------- Export-Popup: Bäume optional zusammen mit Flächen exportieren ----------
+function openObstbaumExportModal() {
+  if (!obstbaumTrees.length) { showObstbaumError('Noch keine Bäume erfasst.'); return; }
+  const hasParcels = obstbaumParcelIndex.length > 0;
+  const checkbox = document.getElementById('obstbaum-export-include-parcels');
+  checkbox.checked = hasParcels;
+  checkbox.disabled = !hasParcels;
+  document.getElementById('obstbaum-export-no-parcels-hint').hidden = hasParcels;
+  document.getElementById('obstbaum-export-modal-overlay').hidden = false;
+}
+function closeObstbaumExportModal() {
+  document.getElementById('obstbaum-export-modal-overlay').hidden = true;
+}
+document.getElementById('btn-export-baumkataster').addEventListener('click', openObstbaumExportModal);
+document.getElementById('obstbaum-export-modal-cancel').addEventListener('click', closeObstbaumExportModal);
+document.getElementById('obstbaum-export-modal-confirm').addEventListener('click', () => {
+  const includeParcels = document.getElementById('obstbaum-export-include-parcels').checked;
+  closeObstbaumExportModal();
+  exportBaumkataster(includeParcels);
+});
+document.getElementById('obstbaum-export-modal-overlay').addEventListener('click', (e) => {
+  if (e.target.id === 'obstbaum-export-modal-overlay') closeObstbaumExportModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const modal = document.getElementById('obstbaum-export-modal-overlay');
+  if (!modal.hidden) closeObstbaumExportModal();
+});
 
 // ---------- Flächenkarten exportieren (PDF mit Legende + Summen) ----------
 function hexToRgb(hex) {
@@ -2602,7 +2686,34 @@ async function captureTreeClusterScreenshot(targetMap, satelliteLayer, mapElId, 
 async function addObstbaumParcelPages(doc, parcelsWithTrees, treeLists, pageW, pageH, margin, pageIdx, grandTotal) {
   for (let i = 0; i < parcelsWithTrees.length; i++) {
     const parcelEntry = parcelsWithTrees[i];
-    const subClusters = clusterTrees(treeLists.get(parcelEntry.id), TREE_VISIBILITY_RADIUS);
+    const trees = treeLists.get(parcelEntry.id);
+    const subClusters = clusterTrees(trees, TREE_VISIBILITY_RADIUS);
+
+    // Wird eine Fläche auf mehrere Bilder aufgeteilt (Bäume liegen weiter
+    // auseinander, als auf ein eng gezoomtes Bild passt), zusätzlich eine
+    // Übersichtsseite mit der ganzen Fläche voranstellen — sonst ist beim
+    // Durchblättern nicht erkennbar, wo die einzelnen Ausschnitte overall
+    // liegen. Bei nur einem Bild wäre die Übersicht identisch zum Einzelbild
+    // und entfällt daher.
+    if (subClusters.length > 1) {
+      setObstbaumStatus(`Exportiere Flächenkarten … (${i + 1}/${parcelsWithTrees.length}, Übersicht)`);
+      let overviewCanvas;
+      try {
+        overviewCanvas = await captureParcelScreenshot(obstbaumMap, obstbaumBasemaps.satellite, 'obstbaum-map', parcelEntry.leafletLayer.feature);
+      } catch (err) {
+        console.error('Kartenbild-Erfassung fehlgeschlagen für', parcelEntry.nummer, err);
+        showObstbaumError('Kartenbild konnte nicht erfasst werden (evtl. CORS-Einschränkung der Kachel-Quelle).');
+        return pageIdx;
+      }
+      if (pageIdx > 0) doc.addPage('a4', 'landscape');
+      pageIdx++;
+      // Fließt bewusst NICHT in grandTotal ein — die Einzelbild-Seiten unten
+      // zählen alle Bäume dieser Fläche bereits vollständig, sonst würde
+      // jeder Baum doppelt in der Gesamtsumme landen.
+      const overviewCounts = new Map();
+      trees.forEach(t => overviewCounts.set(t.art, (overviewCounts.get(t.art) || 0) + 1));
+      addObstbaumParcelPage(doc, pageW, pageH, margin, overviewCanvas, parcelEntry, overviewCounts, ' (Übersicht)');
+    }
 
     for (let j = 0; j < subClusters.length; j++) {
       const subCluster = subClusters[j];
