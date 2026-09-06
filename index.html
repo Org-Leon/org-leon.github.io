@@ -228,6 +228,7 @@
 
     <div class="export-buttons" id="zeichner-export-buttons">
       <button id="btn-export-zeichner-geojson" class="export-btn">GeoJSON speichern</button>
+      <button id="btn-zeichner-to-obstbaum" class="export-btn">In Obstbaumkataster übernehmen</button>
     </div>
     <button id="btn-export-zeichner-flaechenkarten">Flächenkarten exportieren</button>
 
@@ -339,6 +340,22 @@
           </thead>
           <tbody id="obstbaum-parcel-table-body"></tbody>
         </table>
+      </div>
+    </div>
+  </div>
+
+  <div id="obstbaum-export-modal-overlay" class="modal-overlay" hidden>
+    <div class="modal-card">
+      <h3>Kataster exportieren</h3>
+      <p class="modal-hint">Die erfassten Bäume werden immer als GeoJSON gespeichert.</p>
+      <label class="modal-checkbox-row">
+        <input type="checkbox" id="obstbaum-export-include-parcels">
+        Geladene Flächen mit in dieselbe Datei aufnehmen
+      </label>
+      <p class="modal-hint" id="obstbaum-export-no-parcels-hint">Keine Flächen geladen.</p>
+      <div class="modal-actions">
+        <button type="button" id="obstbaum-export-modal-cancel">Abbrechen</button>
+        <button type="button" id="obstbaum-export-modal-confirm" class="primary">Exportieren</button>
       </div>
     </div>
   </div>
