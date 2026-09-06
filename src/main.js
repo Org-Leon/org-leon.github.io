@@ -412,13 +412,180 @@ async function parseShapefileZip(file) {
   return results;
 }
 
+// Amtliche Codierungsliste für das bayerische Flächen- und Nutzungsnachweis
+// (FNN) 2022 (Stand: Februar 2022, iBALIS) — Nutzungscode (NC) -> Kulturart
+// im Klartext. Nur für Bayern gültig: andere Bundesländer verwenden eigene
+// Nutzungscode-Systematiken, die NICHT mit dieser Liste kompatibel sind
+// (siehe mergeFeldstueckNutzung(), wo diese Tabelle ausschließlich auf das
+// Bayern-spezifische "Feldstueck"+"Nutzung"-Format angewendet wird).
+// Schlüssel bewusst ohne führende Nullen (siehe bayernNutzungscodeKlartext).
+const BAYERN_NUTZUNGSCODE_KLARTEXT = {
+  112: 'Winterdurum (Hartweizen)', 113: 'Sommerdurum (Hartweizen)',
+  114: 'Winterdinkel', 120: 'Sommerdinkel',
+  115: 'Winterweizen (Weichweizen)', 116: 'Sommerweizen (Weichweizen)',
+  118: 'Winteremmer, Wintereinkorn', 119: 'Sommeremmer, Sommereinkorn',
+  121: 'Winterroggen, Winter-Waldstaudenroggen', 122: 'Sommerroggen, Sommer-Waldstaudenroggen',
+  125: 'Wintermenggetreide mit Weizen', 126: 'Wintermenggetreide ohne Weizen',
+  131: 'Wintergerste', 132: 'Sommergerste',
+  142: 'Winterhafer', 143: 'Sommerhafer',
+  144: 'Sommermenggetreide mit Weizen', 145: 'Sommermenggetreide ohne Weizen',
+  156: 'Wintertriticale', 157: 'Sommertriticale',
+  171: 'Körnermais',
+  181: 'Rispenhirse (Panicum), Rutenhirse', 182: 'Buchweizen',
+  183: 'Sorghumhirse (Körnersorghum)', 186: 'Amarant (Fuchsschwanz)',
+  187: 'Quinoa (Gänsefuß-Arten)', 188: 'Reis im Trockenanbau',
+  210: 'Erbsen', 220: 'Ackerbohnen', 221: 'Wicken', 230: 'Lupinen',
+  240: 'Gemenge Erbsen/Bohnen', 250: 'Gemenge Leguminosen mit Stützfrucht',
+  292: 'Linsen (Speiselinse)', 330: 'Sojabohnen',
+  311: 'Winterraps', 312: 'Sommerraps', 315: 'Winterrübsen', 316: 'Sommerrübsen',
+  320: 'Sonnenblumen', 341: 'Öllein, Faserflachs',
+  392: 'Krambe, Echter Meerkohl', 393: 'Leindotter', 512: 'Iberischer Drachenkopf',
+  411: 'Silomais', 412: 'Gemenge mit Silomais', 413: 'Runkelrübe, Futterrübe',
+  414: 'Kohl-, Steckrüben', 421: 'Klee', 422: 'Kleegras, Klee-/Luzernegras-Gemisch',
+  423: 'Luzerne', 424: 'Ackergras', 425: 'Klee-Luzerne-Gemisch',
+  428: 'Wechselgrünland', 429: 'Sonstige Futterpflanze',
+  430: 'Esparsette, Serradella kleinkörnig',
+  441: 'Grünlandeinsaat – Wiesen', 442: 'Grünlandeinsaat – Mähweiden', 443: 'Grünlandeinsaat – Weiden',
+  451: 'Wiesen (einschl. Streuobstwiesen)', 452: 'Mähweiden', 453: 'Weiden',
+  454: 'Hutungen (Futternutzung)', 455: 'Anerkannte Almen, Alpen',
+  458: 'Streuwiesen (Streu-/Futternutzung)', 460: 'Sommerweiden für Wanderschafe',
+  545: 'Stillgelegte Ackerflächen nach FELEG', 546: 'Stillgelegte Dauergrünlandflächen nach FELEG',
+  560: 'Stillgelegte Ackerflächen i. R. von AUM',
+  564: 'Aufgeforstete Acker-/Grünlandflächen nach Art. 32 VO(EU) 1307/2013',
+  567: 'Stillgelegte Dauergrünlandflächen i. R. von AUM',
+  583: 'Nicht landwirtschaftliche Fläche aufgrund Maßnahme gem. Natura 2000 oder Wasserrahmenrichtlinie',
+  590: 'Brache mit Einsaat von einjährigen Blühmischungen',
+  591: 'Ackerland aus der Erzeugung genommen', 592: 'Dauergrünland aus der Erzeugung genommen',
+  844: 'Unbestockte Rebflächen',
+  54: 'Beihilfefähige Ackerstreifen an Waldrändern (ÖVF)',
+  57: 'Pufferstreifen und Feldrand auf Dauergrünland (ÖVF)',
+  58: 'Pufferstreifen und Feldrand auf Ackerland (ÖVF)',
+  59: 'Niederwald mit Kurzumtrieb – KUP (ÖVF)',
+  61: 'Aufgeforstete Acker-/Grünlandflächen nach Art. 32 VO(EU) 1307/2013 (ÖVF)',
+  62: 'Brachliegende Flächen (ÖVF)', 63: 'Chinaschilf (Miscanthus) (ÖVF)',
+  64: 'Silphium (Durchwachsene Silphie) (ÖVF)',
+  65: 'Brache mit Honigpflanzen – einjährig (ÖVF)', 66: 'Brache mit Honigpflanzen – mehrjährig (ÖVF)',
+  601: 'Stärkekartoffeln', 602: 'Kartoffeln', 603: 'Zuckerrüben', 604: 'Topinambur', 605: 'Süßkartoffel',
+  802: 'Silphium (Durchwachsene Silphie)', 803: 'Sudangras', 804: 'Sida (Virginiamalve)', 805: 'Igniscum',
+  852: 'Chinaschilf (Miscanthus)', 853: 'Riesenweizengras (Szarvasigras)', 854: 'Rohrglanzgras',
+  866: 'Pflanzenmischung mit Hanf', 870: 'Energiepflanzen im Mischanbau', 871: 'Energieblühmischungen ohne Hanf',
+  822: 'Streuobstanlage (ohne Wiesen-/Ackernutzung)', 825: 'Kernobst, z.B. Äpfel, Birnen',
+  826: 'Steinobst, z.B. Kirschen, Pflaumen',
+  827: 'Beerenobst, z.B. Johannis-, Stachel-, Heidel- und Himbeeren',
+  829: 'Sonstige Obstanlagen (z.B. Holunder, Sanddorn)',
+  833: 'Haselnüsse', 834: 'Walnüsse', 835: 'Sonstige Schalenfrüchte', 838: 'Baumschulen (nicht für Beerenobst)',
+  841: 'Niederwald mit Kurzumtrieb (KUP)', 843: 'Bestockte Rebfläche', 845: 'Rebschule',
+  848: 'Tafeltrauben', 850: 'Sonstige Dauerkulturen', 851: 'Rhabarber', 856: 'Hopfen',
+  860: 'Spargel', 861: 'Artischocke', 865: 'Trüffel',
+  766: 'Pfingstrosen/Päonien (Gemeine Pfingstrose, Strauch-Pfingstrose)',
+  912: 'Samenvermehrung für Gras gem. Saatgutverkehrsgesetz oder Erhaltungsmischungsverordnung',
+  914: 'Kleinparzellen auf Ackerland',
+  921: 'Samenvermehrung für Klee gem. Saatgutverkehrsgesetz oder Erhaltungsmischungsverordnung (ÖVF)',
+  922: 'Samenvermehrung für Luzerne gem. Saatgutverkehrsgesetz oder Erhaltungsmischungsverordnung (ÖVF)',
+  920: 'Nicht landw. genutzte Haus- und Nutzgärten',
+  930: 'Bewirtschaftete Teichflächen', 940: 'Nicht bewirtschaftete Teichflächen',
+  941: 'Grünbrache im ökologischen Landbau (Hauptfutterfläche)',
+  958: 'Naturschutzflächen (keine landwirtschaftliche Verwertung)',
+  983: 'Christbaumkulturen außerhalb des Waldes',
+  990: 'Maximal 3 Jahre nichtlandwirtschaftlich genutzte Fläche (z.B. Holzlager)',
+  994: 'Landwirtschaftliche Lagerung (max. 3 Jahre) auf Dauergrünland',
+  996: 'Landwirtschaftliche Lagerung (max. 3 Jahre) auf Ackerland',
+  690: 'Sammelcode Samenvermehrung von Wildkräutern',
+  610: 'Sammelcode Gemüse', 611: 'Sammelcode Gemüse-Kreuzblütler', 612: 'Schwarzer Senf',
+  613: 'Gemüsekohl (Kopfkohl, Wirsing, Rot-/Weißkohl, Spitzkohl, Grünkohl, Kohlrabi, Markstammkohl, Blumenkohl, Romanesco, Brokkoli, Rosenkohl, Zierkohl)',
+  614: 'Brauner Senf (Brauner Senf/Sareptasenf)', 615: 'Brunnenkresse',
+  616: 'Senfrauke (Garten-Senfrauke, Rucola)', 617: 'Gartenkresse',
+  618: 'Gartenrettiche (Weiße/Rote Rettiche, Ölrettich, Radieschen)', 619: 'Weißer Senf; Gelber Senf',
+  621: 'Sammelcode Gemüse-Nachtschattengewächse', 622: 'Tomaten', 623: 'Auberginen',
+  624: 'Spanischer Pfeffer (Paprika, Chilli, Peperoni)', 625: 'Schwarze Tollkirsche',
+  626: 'Sammelcode Gemüse-Kürbisgewächse', 627: 'Salatgurke (Gurke, Salatgurke, Einlegegurke)',
+  628: 'Zuckermelone (Cucumis melo)', 629: 'Riesenkürbis (Riesenkürbis, Hokkaidokürbis)',
+  630: 'Gartenkürbis (Cucurbita pepo) (Gartenkürbis, Steirischer Kürbis, Zucchini, Spaghettikürbis, Zierkürbis)',
+  631: 'Melone (Citrullus, Wassermelone)',
+  632: 'Sammelcode andere Gemüsearten – auch zur Samenvermehrung',
+  633: 'Zwiebel (Speisezwiebel, Schalotte, Lauch, Knoblauch, Schnittlauch, Winterheckenzwiebel, Bärlauch)',
+  634: 'Möhre (Möhre/Karotte, Futtermöhre)',
+  635: 'Gartenbohne (Garten-, Busch-, Stangen-, Feuer-, Prunkbohne) (ÖVF)',
+  636: 'Feldsalate (Feldsalat/Ackersalat/Rapunzel)',
+  637: 'Lattich (Garten-Salat/Lattich, Lollo Rosso, Romana-Salat/Römischer Salat)',
+  638: 'Spinat', 639: 'Mangold, Rote Beete/Rote Rübe', 640: 'Melde (Garten-Melde)',
+  641: 'Sellerie (Knollen-Sellerie, Bleich-Sellerie, Stangen-Sellerie)',
+  642: 'Ampfer (Wiesen-Sauerampfer)', 643: 'Pastinaken',
+  644: 'Zichorien/Wegwarten (Chicoree, Radicchio, krausblättrige Endivie, ganzblättrige Endivie, Zichorie)',
+  645: 'Kichererbsen', 646: 'Meerrettich', 647: 'Schwarzwurzeln',
+  648: 'Fenchel (Gemüsefenchel/Körnerfenchel)',
+  650: 'Sammelcode Küchenkräuter, Heil- und Gewürzpflanzen',
+  651: 'Anethum (Dill, Gurkenkraut)', 652: 'Kerbel (Kerbel/echter Kerbel, Wiesenkerbel)',
+  653: 'Bibernellen (Anis)', 654: 'Kümmel (Echter Kümmel)', 655: 'Kreuzkümmel (Echter Kreuzkümmel)',
+  656: 'Schwarzkümmel (Echter Schwarzkümmel, Jungfer im Grünen)', 657: 'Koriander',
+  658: 'Liebstöckel/Maggikraut', 659: 'Petroselinum (Petersilie)', 660: 'Basilikum', 661: 'Rosmarin',
+  662: 'Salbei (Küchen-, Heilsalbei, Buntschopf-Salbei)', 663: 'Borretsch',
+  664: 'Oregano (Echter Majoran, Oregano/Dost/Wilder Majoran)', 665: 'Bohnenkräuter',
+  666: 'Hyssopus (Ysop/Eisenkraut)', 667: 'Verbenen (Echtes Eisenkraut)',
+  668: 'Lavendel (Echter Lavendel, Speik-Lavendel, Hybrid-Lavendel)',
+  669: 'Thymiane (Thymian, Gartenthymian, Echter Thymian)', 670: 'Melissen (Zitronenmelisse)',
+  671: 'Enziane', 672: 'Minzen (Pfefferminze, Grüne Minze)', 673: 'Artemisia (Wermut, Estragon, Beifuß)',
+  674: 'Ringelblumen (Garten-Ringelblume)',
+  675: 'Sonnenhut (Schmalblättriger Sonnenhut, Purpur-Sonnenhut)', 676: 'Wegeriche (Spitzwegerich)',
+  677: 'Kamillen (Echte Kamille)', 678: 'Schafgarben (Gelbe Schafgarbe)', 679: 'Baldriane (Echter Baldrian)',
+  680: 'Johanniskräuter (Echtes Johanniskraut)', 681: 'Frauenmantel', 682: 'Mariendisteln',
+  683: 'Galega (Geißraute)', 684: 'Löwenzahn',
+  685: 'Engelwurzen (Arznei-Engelwurz, Echter Engelwurz)', 686: 'Malven (Wilde Malve)', 687: 'Arnika',
+  701: 'Hanf', 702: 'Rollrasen, Vegetationsmappen für Dachbegrünung', 703: 'Färber-Waid',
+  704: 'Glanzgräser (Kanariensaat/Echtes Glanzgras)', 705: 'Virginischer Tabak',
+  706: 'Mohn (Schlaf-, Back-, Klatschmohn)', 707: 'Erdbeeren', 708: 'Färberdisteln',
+  709: 'Brennnesseln (Gr. Brennnessel)', 777: 'Phacelia zur Samenvermehrung',
+  720: 'Sammelcode Zierpflanzen – auch zur Samenvermehrung', 520: 'Silberbrandschopf (Hahnenkamm)',
+  721: 'Goldlack', 722: 'Einjähriges Silberblatt', 723: 'Garten-/Sommerlevkoje',
+  724: 'Kugelamarant (Echter Kugelamarant)', 725: 'Taglilien (Essbare Taglilie)',
+  726: 'Lilien (Türkenbund)', 727: 'Narzissen/Osterglocken', 728: 'Knorpelmöhren (Bischofskraut)',
+  729: 'Hasenohren (rundblättriges Hasenohr)', 730: 'Seidenpflanzen (Indianer-Seidenpflanze)',
+  731: 'Hyazinthe (Garten-Hyazinthe)', 732: 'Milchstern (Kap-Milchstern)', 733: 'Astern (Sommeraster)',
+  734: 'Chrysanthemen (Garten-Chrysantheme, Winteraster)', 735: 'Strohblumen (Garten-Strohblume)',
+  736: 'Edelweiß (Alpen-Edelweiß)', 737: 'Margeriten',
+  738: 'Rudbeckien (Schwarzäugige Rudbeckie/Sonnenhut, Leuchtender Sonnenhut, Schlitzblättriger Sonnenhut)',
+  739: 'Tagetes (Aufrechte Studentenblume, Tagetes patula, Tagetes tenuifolia)',
+  740: 'Wucherblumen (Mutterkraut)', 741: 'Strandflieder (Geflügelter Strandflieder)',
+  742: 'Spreublumen (Einjährige Papierblume)', 743: 'Zinnien', 744: 'Taubnesseln (Weiße Taubnessel)',
+  745: 'Gladiolen (Gartengladiole)', 746: 'Tulpen (Garten-Tulpe)',
+  747: 'Christophskräuter (Trauben-Silberkerze)', 748: 'Feldrittersporne (Gewöhnlicher Feldrittersporn)',
+  749: 'Scabiosen (Samt-Skabiose, Kugel-Skabiose)', 750: 'Dahlien (Garten-Dahlie)',
+  751: 'Rodiola (Rosenwurz)', 752: 'Krokusse (Safran, Garten-Krokus)',
+  753: 'Hibiskus (Chinesischer Roseneibisch)', 754: 'Strauch-/Bechermalven',
+  755: 'Wolfsmilch (Weißrand-Wolfsmilch)', 756: 'Löwenmäulchen (Großes Löwenmaul)',
+  757: 'Montbretien (Garten-Montbretie)', 758: 'Halskräuter (Blaues Halskraut)',
+  759: 'Gipskräuter (Schleierkraut)', 760: 'Pampasgräser (Amerikanisches Pampasgras)',
+  761: 'Kosmeen (Gemeines Schmuckkörbchen)', 762: 'Nachtkerzen (Diptam)',
+  763: 'Oenothera/Nachtkerzen (Gewöhnliche Nachtkerze)', 764: 'Königskerzen (Großblütige Königskerze)',
+  765: 'Kapuzinerkressen (Große Kapuzinerkresse)', 767: 'Schwertlilien (Deutsche Schwertlilie)',
+  768: 'Wiesenknopf (Kleiner Wiesenknopf, Pimpinelle)', 769: 'Zieste (Deutscher Ziest)',
+  770: 'Vergissmeinnicht (Wald-Vergissmeinnicht)', 771: 'Portulak',
+  772: 'Nelken (Bartnelke, Land-/Edelnelke)', 773: 'Ageratum (Gewöhnlicher Leberbalsam)',
+  774: 'Lonas (Gelber Leberbalsam)', 775: 'Kornblumen',
+  776: 'Veilchen (Horn-Veilchen, Garten-Stiefmütterchen, Wildes Stiefmütterchen)',
+  790: 'Anemonen (Herbstanemone, Japanische Anemone)', 796: 'Fetthenne, Mauerpfeffer (Sedum)',
+  798: 'Ramtillkraut', 970: 'Sonstige Ackerkultur (nicht in dieser Liste enthalten)'
+};
+
+// Wandelt einen bayerischen Nutzungscode (als Zahl oder String, mit oder
+// ohne führende Nullen) in die Kulturart im Klartext um — null, falls der
+// Code nicht in der Liste steht (z.B. weil er in Wahrheit schon ein anderer
+// Wert ist, siehe Aufrufer).
+function bayernNutzungscodeKlartext(rawCode) {
+  const n = parseInt(String(rawCode).trim(), 10);
+  if (!isFinite(n)) return null;
+  return BAYERN_NUTZUNGSCODE_KLARTEXT[n] || null;
+}
+
 // Manche Bundesländer (z.B. Bayern) exportieren "Feldstueck" (Geometrie +
 // Name) und "Nutzung" (Kulturart-Code) als zwei separate, geometrisch
 // identische Shapefiles im selben Zip statt einer gemeinsamen Ebene. Ohne
 // Zusammenführung entstehen zwei sich exakt überlappende Ebenen, die je nur
 // die Hälfte der Information zeigen (Feldstück: Name, kein Kulturart;
 // Nutzung: Kulturart, kein Name). Wir verknüpfen sie hier über die
-// gemeinsame Feldstück-ID (FID, mit FSNr als Fallback) zu einer Ebene.
+// gemeinsame Feldstück-ID (FID, mit FSNr als Fallback) zu einer Ebene und
+// übersetzen dabei den Nutzungscode direkt in die Kulturart im Klartext
+// (nur für dieses bayerische Format gültig, siehe BAYERN_NUTZUNGSCODE_KLARTEXT).
 function mergeFeldstueckNutzung(results) {
   const feldIdx = results.findIndex(r => /feldst(ü|ue)ck/i.test(r.name));
   const nutzIdx = results.findIndex(r => /^nutzung/i.test(r.name));
@@ -436,9 +603,22 @@ function mergeFeldstueckNutzung(results) {
 
   const feldstueck = results[feldIdx];
   const mergedFeatures = (feldstueck.fc.features || []).map(f => {
-    const props = f.properties || {};
+    const props = { ...(f.properties || {}) };
     const nutzProps = nutzByKey.get(keyOf(props));
-    return nutzProps ? { ...f, properties: { ...props, ...nutzProps } } : f;
+    if (nutzProps) Object.assign(props, nutzProps);
+    // Nutzung enthält bislang nur den rohen Nutzungscode (z.B. "115") — in
+    // die Kulturart im Klartext übersetzen, roh-Code als NutzungCode für
+    // Nachvollziehbarkeit zusätzlich aufheben. Unbekannte Codes (z.B. neu
+    // hinzugekommene, noch nicht in der Liste erfasste) bleiben unverändert
+    // als Code stehen statt eine erfundene Übersetzung zu zeigen.
+    if (props.Nutzung) {
+      const klartext = bayernNutzungscodeKlartext(props.Nutzung);
+      if (klartext) {
+        props.NutzungCode = props.Nutzung;
+        props.Nutzung = klartext;
+      }
+    }
+    return { ...f, properties: props };
   });
 
   const merged = { name: feldstueck.name, fc: { type: 'FeatureCollection', features: mergedFeatures } };
@@ -818,6 +998,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     document.getElementById('view-compare').classList.toggle('active', target === 'compare');
     document.getElementById('view-zeichner').classList.toggle('active', target === 'zeichner');
     document.getElementById('view-obstbaum').classList.toggle('active', target === 'obstbaum');
+    document.getElementById('view-bienenflug').classList.toggle('active', target === 'bienenflug');
     if (target === 'compare') {
       initCompareMap();
       setTimeout(() => compareMap && compareMap.invalidateSize(), 50);
@@ -827,6 +1008,9 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     } else if (target === 'obstbaum') {
       initObstbaumMap();
       setTimeout(() => obstbaumMap && obstbaumMap.invalidateSize(), 50);
+    } else if (target === 'bienenflug') {
+      initBienenflugMap();
+      setTimeout(() => bienenflugMap && bienenflugMap.invalidateSize(), 50);
     } else {
       setTimeout(() => map.invalidateSize(), 50);
     }
@@ -2899,6 +3083,253 @@ async function exportObstbaumFlaechenkarten() {
 }
 
 document.getElementById('btn-export-obstbaum-flaechenkarten').addEventListener('click', exportObstbaumFlaechenkarten);
+
+// ---------- Bienenflugkarte ----------
+// Eigener Tab: Bienenstöcke als Punkte markieren, jeweils mit dem
+// theoretischen Flugradius (3 km, Standardannahme für Honigbienen) als
+// Kreis um den Punkt. Bewusst simpel gehalten — anders als im
+// Obstbaumkataster gibt es nur EINE Punktart, daher kein Art-Picker: jeder
+// Kartenklick setzt direkt einen neuen Bienenstock.
+const BIENENFLUG_RADIUS_METERS = 3000;
+
+let bienenflugMap = null;
+let bienenflugBasemaps = null;
+let currentBienenflugBasemap = 'osm';
+let bienenflugLayerGroup = null;
+const bienenflugPoints = []; // { id, nummer, latlng, marker, circle }
+let bienenflugCounter = 0;
+let bienenflugHighlighted = null;
+
+function setBienenflugStatus(msg) { document.getElementById('bienenflug-status').textContent = msg; }
+
+function showBienenflugError(msg) {
+  const el = document.getElementById('bienenflug-error-toast');
+  el.textContent = msg;
+  el.style.display = 'block';
+  clearTimeout(showBienenflugError._t);
+  showBienenflugError._t = setTimeout(() => el.style.display = 'none', 6000);
+}
+
+function createBeehiveIcon() {
+  return L.divIcon({
+    className: 'beehive-marker-icon',
+    html: `<svg viewBox="0 0 24 24" width="26" height="26">
+      <path d="M12 2C7.5 2 5.5 6 5.5 10L5.5 20C5.5 21.1 6.2 22 7.5 22L16.5 22C17.8 22 18.5 21.1 18.5 20L18.5 10C18.5 6 16.5 2 12 2Z" fill="#D9A544" stroke="#8A6238" stroke-width="1.2"/>
+      <path d="M5.6 8L18.4 8" stroke="#8A6238" stroke-width="1"/>
+      <path d="M5.3 12.5L18.7 12.5" stroke="#8A6238" stroke-width="1"/>
+      <path d="M5.5 17L18.5 17" stroke="#8A6238" stroke-width="1"/>
+      <circle cx="12" cy="19.5" r="1.7" fill="#3C2A18"/>
+    </svg>`,
+    iconSize: [26, 26],
+    iconAnchor: [13, 23]
+  });
+}
+
+function highlightBeehive(entry) {
+  if (bienenflugHighlighted && bienenflugHighlighted.circle) {
+    bienenflugHighlighted.circle.setStyle({ color: '#D9A544', weight: 2 });
+  }
+  entry.circle.setStyle({ color: '#ffffff', weight: 3 });
+  bienenflugHighlighted = entry;
+}
+
+// Zeigt den frei vergebenen Namen an, falls gesetzt, sonst die fortlaufende
+// Nummer als Standardbezeichnung ("Bienenstock 3").
+function beehiveLabel(entry) {
+  return entry.name ? entry.name : `Bienenstock ${entry.nummer}`;
+}
+
+function addBeehive(latlng) {
+  bienenflugCounter++;
+  const entry = { id: 'bienenstock-' + bienenflugCounter, nummer: bienenflugCounter, name: '', latlng, marker: null, circle: null };
+
+  // Canvas-Renderer statt SVG (Standard), damit der Kreis beim Flächenkarten-
+  // Export exakt lagerichtig im Screenshot landet (siehe captureParcelScreenshot
+  // weiter oben für den Hintergrund dieser html2canvas-Eigenheit).
+  const circle = L.circle(latlng, {
+    renderer: L.canvas(),
+    radius: BIENENFLUG_RADIUS_METERS,
+    color: '#D9A544', weight: 2, fillColor: '#D9A544', fillOpacity: 0.12
+  }).addTo(bienenflugLayerGroup);
+
+  const marker = L.marker(latlng, { icon: createBeehiveIcon(), draggable: true });
+  marker.bindTooltip(beehiveLabel(entry), { direction: 'top', offset: [0, -20] });
+  marker.on('click', (e) => { L.DomEvent.stopPropagation(e); zoomToBeehive(entry.id); });
+  marker.on('drag', () => circle.setLatLng(marker.getLatLng()));
+  marker.on('dragend', () => { entry.latlng = marker.getLatLng(); });
+  marker.addTo(bienenflugLayerGroup);
+
+  entry.marker = marker;
+  entry.circle = circle;
+  bienenflugPoints.push(entry);
+  renderBienenflugList();
+  setBienenflugStatus(`Bienenstock ${entry.nummer} gesetzt (${bienenflugPoints.length} insgesamt).`);
+  return entry;
+}
+
+function removeBeehive(id) {
+  const idx = bienenflugPoints.findIndex(e => e.id === id);
+  if (idx === -1) return;
+  const entry = bienenflugPoints[idx];
+  bienenflugLayerGroup.removeLayer(entry.marker);
+  bienenflugLayerGroup.removeLayer(entry.circle);
+  if (bienenflugHighlighted === entry) bienenflugHighlighted = null;
+  bienenflugPoints.splice(idx, 1);
+  renderBienenflugList();
+}
+
+function zoomToBeehive(id) {
+  const entry = bienenflugPoints.find(e => e.id === id);
+  if (!entry) return;
+  highlightBeehive(entry);
+  bienenflugMap.fitBounds(entry.circle.getBounds(), { padding: [30, 30] });
+}
+
+function renderBienenflugList() {
+  const list = document.getElementById('bienenflug-list');
+  document.getElementById('bienenflug-empty-hint').style.display = bienenflugPoints.length ? 'none' : 'block';
+  list.innerHTML = '';
+  bienenflugPoints.forEach(entry => {
+    const item = document.createElement('div');
+    item.className = 'layer-item';
+    item.innerHTML = `
+      <div class="layer-row">
+        <div class="swatch" style="background:#D9A544"></div>
+        <input class="parcel-name" data-id="${entry.id}" placeholder="Bienenstock ${entry.nummer}" value="${escapeHtml(entry.name)}">
+      </div>
+      <div class="layer-actions">
+        <button data-id="${entry.id}" data-action="zoom">Zoom</button>
+        <button data-id="${entry.id}" data-action="remove" class="danger">Entfernen</button>
+      </div>
+    `;
+    list.appendChild(item);
+  });
+  list.querySelectorAll('.parcel-name').forEach(input => {
+    input.addEventListener('input', () => {
+      const entry = bienenflugPoints.find(e => e.id === input.getAttribute('data-id'));
+      if (!entry) return;
+      entry.name = input.value;
+      entry.marker.setTooltipContent(beehiveLabel(entry));
+    });
+  });
+  list.querySelectorAll('[data-action]').forEach(el => {
+    el.addEventListener('click', () => {
+      const id = el.getAttribute('data-id');
+      const action = el.getAttribute('data-action');
+      if (action === 'zoom') zoomToBeehive(id);
+      if (action === 'remove') removeBeehive(id);
+    });
+  });
+}
+
+function initBienenflugMap() {
+  if (bienenflugMap) return;
+  bienenflugMap = L.map('bienenflug-map', { zoomControl: true, attributionControl: true }).setView([51.16, 10.45], 6);
+  bienenflugBasemaps = createBasemaps();
+  bienenflugBasemaps.osm.addTo(bienenflugMap);
+
+  document.getElementById('bienenflug-btn-basemap').addEventListener('click', () => {
+    bienenflugBasemaps[currentBienenflugBasemap].remove();
+    const nextIdx = (basemapOrder.indexOf(currentBienenflugBasemap) + 1) % basemapOrder.length;
+    currentBienenflugBasemap = basemapOrder[nextIdx];
+    bienenflugBasemaps[currentBienenflugBasemap].addTo(bienenflugMap);
+    document.getElementById('bienenflug-btn-basemap').textContent = 'Basiskarte: ' + basemapLabels[currentBienenflugBasemap];
+  });
+
+  bienenflugLayerGroup = L.featureGroup().addTo(bienenflugMap);
+
+  bienenflugMap.on('click', (e) => addBeehive(e.latlng));
+}
+
+async function captureBeehiveScreenshot(entry) {
+  bienenflugMap.fitBounds(entry.circle.getBounds(), { padding: [40, 40], maxZoom: 16 });
+  await waitForTilesFullyLoaded(bienenflugBasemaps.satellite, 'bienenflug-map', 6000);
+  return await html2canvas(document.getElementById('bienenflug-map'), { useCORS: true, logging: false });
+}
+
+function addBienenflugPage(doc, pageW, pageH, margin, canvas, entry) {
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(15);
+  const title = entry.name ? `${entry.name} (Bienenstock ${entry.nummer})` : `Bienenstock ${entry.nummer}`;
+  doc.text(title, margin, margin + 4);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(11);
+  const coordText = entry.latlng.lat.toFixed(5) + ', ' + entry.latlng.lng.toFixed(5);
+  doc.text(`Koordinaten: ${coordText}    ·    Theoretischer Flugradius: 3 km`, margin, margin + 11);
+
+  const imageTop = margin + 18;
+  const maxW = pageW - margin * 2;
+  const maxH = pageH - imageTop - margin;
+  const scale = Math.min(maxW / canvas.width, maxH / canvas.height);
+  const imgW = canvas.width * scale;
+  const imgH = canvas.height * scale;
+  const imgX = (pageW - imgW) / 2;
+  doc.addImage(canvas.toDataURL('image/jpeg', 0.85), 'JPEG', imgX, imageTop, imgW, imgH);
+}
+
+async function exportBienenflugFlaechenkarten() {
+  if (typeof html2canvas === 'undefined') { showBienenflugError('Flächenkarten-Export nicht verfügbar (html2canvas konnte nicht geladen werden).'); return; }
+  if (typeof window.jspdf === 'undefined') { showBienenflugError('Flächenkarten-Export nicht verfügbar (jsPDF konnte nicht geladen werden).'); return; }
+  if (!bienenflugPoints.length) { showBienenflugError('Noch kein Bienenstock gesetzt.'); return; }
+
+  const btn = document.getElementById('btn-export-bienenflug-flaechenkarten');
+  btn.disabled = true;
+
+  const tab = ensureTabActive('bienenflug');
+  const savedCenter = bienenflugMap.getCenter();
+  const savedZoom = bienenflugMap.getZoom();
+  const savedBasemap = currentBienenflugBasemap;
+
+  if (currentBienenflugBasemap !== 'satellite') {
+    bienenflugBasemaps[currentBienenflugBasemap].remove();
+    currentBienenflugBasemap = 'satellite';
+    bienenflugBasemaps.satellite.addTo(bienenflugMap);
+    document.getElementById('bienenflug-btn-basemap').textContent = 'Basiskarte: ' + basemapLabels.satellite;
+  }
+  bienenflugMap.removeControl(bienenflugMap.zoomControl);
+
+  const doc = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const margin = 12;
+
+  try {
+    for (let i = 0; i < bienenflugPoints.length; i++) {
+      const entry = bienenflugPoints[i];
+      setBienenflugStatus(`Exportiere Flächenkarten … (${i + 1}/${bienenflugPoints.length})`);
+
+      let canvas;
+      try {
+        canvas = await captureBeehiveScreenshot(entry);
+      } catch (err) {
+        console.error('Kartenbild-Erfassung fehlgeschlagen für Bienenstock', entry.nummer, err);
+        showBienenflugError('Kartenbild konnte nicht erfasst werden (evtl. CORS-Einschränkung der Kachel-Quelle).');
+        break;
+      }
+
+      if (i > 0) doc.addPage('a4', 'landscape');
+      addBienenflugPage(doc, pageW, pageH, margin, canvas, entry);
+    }
+
+    const ts = new Date().toISOString().slice(0, 10);
+    doc.save(`bienenflugkarten_${ts}.pdf`);
+    setBienenflugStatus('Flächenkarten exportiert.');
+  } finally {
+    bienenflugMap.zoomControl.addTo(bienenflugMap);
+    if (currentBienenflugBasemap !== savedBasemap) {
+      bienenflugBasemaps[currentBienenflugBasemap].remove();
+      currentBienenflugBasemap = savedBasemap;
+      bienenflugBasemaps[currentBienenflugBasemap].addTo(bienenflugMap);
+      document.getElementById('bienenflug-btn-basemap').textContent = 'Basiskarte: ' + basemapLabels[currentBienenflugBasemap];
+    }
+    bienenflugMap.setView(savedCenter, savedZoom);
+    tab.restore();
+    btn.disabled = false;
+  }
+}
+
+document.getElementById('btn-export-bienenflug-flaechenkarten').addEventListener('click', exportBienenflugFlaechenkarten);
 
 // ---------- Dev-Tooling: Jahresvergleich-Inputs aus test-shapes/ vorbefüllen ----------
 // Vorerst deaktiviert: test-shapes/ enthält jetzt 16 einzelne Bundesland-
