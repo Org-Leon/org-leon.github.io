@@ -55,8 +55,15 @@
   #tabbar {
     flex: 0 0 auto;
     display: flex;
+    align-items: center;
     background: var(--panel);
     border-bottom: 1px solid var(--border);
+  }
+  #brand-logo {
+    height: 30px;
+    width: auto;
+    margin: 0 10px 0 14px;
+    flex-shrink: 0;
   }
   #tabbar button {
     background: transparent;
