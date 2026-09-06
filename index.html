@@ -38,6 +38,7 @@
   <button class="tab-btn" data-view="compare">Jahresvergleich</button>
   <button class="tab-btn" data-view="zeichner">Flächenzeichner</button>
   <button class="tab-btn" data-view="obstbaum">Obstbaumkataster</button>
+  <button class="tab-btn" data-view="bienenflug">Bienenflugkarte</button>
   <button id="theme-toggle" title="Hell-/Dunkelmodus umschalten" aria-label="Hell-/Dunkelmodus umschalten">
     <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2" fill="currentColor"/><g stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="12" y1="1.5" x2="12" y2="4.5"/><line x1="12" y1="19.5" x2="12" y2="22.5"/><line x1="1.5" y1="12" x2="4.5" y2="12"/><line x1="19.5" y1="12" x2="22.5" y2="12"/><line x1="4.4" y1="4.4" x2="6.5" y2="6.5"/><line x1="17.5" y1="17.5" x2="19.6" y2="19.6"/><line x1="4.4" y1="19.6" x2="6.5" y2="17.5"/><line x1="17.5" y1="6.5" x2="19.6" y2="4.4"/></g></svg>
     <span class="theme-thumb"></span>
@@ -357,6 +358,35 @@
         <button type="button" id="obstbaum-export-modal-cancel">Abbrechen</button>
         <button type="button" id="obstbaum-export-modal-confirm" class="primary">Exportieren</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<div id="view-bienenflug" class="view">
+  <div id="bienenflug-sidebar">
+    <div id="bienenflug-brand">
+      <h1>Bienenflugkarte</h1>
+      <p>Bienenstöcke markieren — theoretischer Flugradius 3 km</p>
+    </div>
+
+    <div class="empty-hint" id="bienenflug-hint">Auf die Karte klicken, um dort einen Bienenstock zu setzen — der Flugradius wird automatisch mit angezeigt. Gesetzte Punkte lassen sich per Drag verschieben.</div>
+
+    <div id="bienenflug-section">
+      <h2>Gesetzte Bienenstöcke</h2>
+      <div id="bienenflug-list"></div>
+      <div class="empty-hint" id="bienenflug-empty-hint">Noch kein Bienenstock gesetzt.</div>
+    </div>
+
+    <button id="btn-export-bienenflug-flaechenkarten">Flächenkarten exportieren</button>
+
+    <div id="bienenflug-status">Bereit.</div>
+  </div>
+
+  <div id="bienenflug-map-wrap">
+    <div id="bienenflug-map"></div>
+    <div id="bienenflug-error-toast"></div>
+    <div id="bienenflug-topbar">
+      <button id="bienenflug-btn-basemap">Basiskarte: Standard</button>
     </div>
   </div>
 </div>
