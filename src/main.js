@@ -110,6 +110,38 @@ function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// Fasst den Besichtigt-Status einer Liste von Flächen-Entries (Viewer- oder
+// Obstbaumkataster-Tabelle, beide teilen dieselbe Entry-Form mit .groesse/.besichtigt)
+// für die Zusammenfassungszeile über der Tabelle zusammen.
+function computeBesichtigtStats(rows) {
+  let checkedCount = 0, totalHa = 0, checkedHa = 0;
+  rows.forEach(entry => {
+    const ha = parseFloat(String(entry.groesse).replace(',', '.'));
+    const haVal = isFinite(ha) ? ha : 0;
+    totalHa += haVal;
+    if (entry.besichtigt) {
+      checkedCount++;
+      checkedHa += haVal;
+    }
+  });
+  return { totalCount: rows.length, checkedCount, totalHa, checkedHa };
+}
+
+function renderBesichtigtSummary(elId, rows) {
+  const el = document.getElementById(elId);
+  const stats = computeBesichtigtStats(rows);
+  if (!stats.totalCount) {
+    el.innerHTML = '<span style="color:var(--muted);">Noch keine Flächen geladen.</span>';
+    return;
+  }
+  const pctCount = Math.round((stats.checkedCount / stats.totalCount) * 100);
+  const pctHa = stats.totalHa > 0 ? Math.round((stats.checkedHa / stats.totalHa) * 100) : 0;
+  const fmtHa = n => n.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  el.innerHTML =
+    `<span>Besichtigt: <strong>${stats.checkedCount} / ${stats.totalCount}</strong> Flächen (${pctCount} %)</span>` +
+    `<span><strong>${fmtHa(stats.checkedHa)} / ${fmtHa(stats.totalHa)}</strong> ha (${pctHa} %)</span>`;
+}
+
 const map = L.map('map', { zoomControl: true, attributionControl: true }).setView([51.16, 10.45], 6);
 
 // Eine Leaflet-Kachelebene kann immer nur auf EINER Karte aktiv sein — Viewer,
@@ -295,6 +327,102 @@ function resolveProjDefinition(prjText) {
     + `+ellps=bessel +towgs84=612.4,77.0,440.2,-0.054,0.057,-2.797,2.55 +units=m +no_defs`;
 }
 
+// NRW liefert im Teilschläge-Shapefile (TS_*.dbf) weder Kulturart noch
+// Größe (siehe FIELD_CANDIDATES-Kommentar oben) — beides steckt aber, wenn
+// die Begleit-XML des Antragsprogramms im Zip liegt (Dateiname enthält
+// "NTNW", data-experts-Format), direkt darin: die Kulturart sogar schon als
+// fertiger Klartext ("459 - Grünland"), keine Code-Übersetzung nötig.
+// Rückgabe: Map "SCHLAGNR_TEILSCHLAG" -> { kultur, groesseHa }.
+async function extractNrwNutzungMap(entry) {
+  try {
+    const text = await entry.async('text');
+    const doc = new DOMParser().parseFromString(text, 'application/xml');
+    if (doc.querySelector('parsererror')) return null;
+    const map = new Map();
+    doc.querySelectorAll('parzelle').forEach(p => {
+      const schlagNr = p.querySelector('schlag > nummer')?.textContent?.trim();
+      if (!schlagNr) return;
+      const teilschlag = p.querySelector('teilschlag')?.textContent?.trim() || '';
+      const bezRoh = p.querySelector('nutzungaj > bezeichnung')?.textContent?.trim() || '';
+      const kultur = bezRoh.replace(/^\d+\s*-\s*/, '').trim(); // "459 - Grünland" -> "Grünland"
+      const nettoflaeche = parseFloat(p.querySelector('nettoflaeche')?.textContent || '');
+      if (!kultur) return;
+      map.set(schlagNr + '_' + teilschlag, {
+        kultur,
+        groesseHa: isFinite(nettoflaeche) ? nettoflaeche / 10000 : null // m² -> ha
+      });
+    });
+    return map.size ? map : null;
+  } catch (err) {
+    console.warn('Konnte NRW-Nutzungs-XML nicht lesen:', err.message);
+    return null;
+  }
+}
+
+function mergeNrwNutzung(results, nutzungMap) {
+  results.forEach(r => {
+    (r.fc.features || []).forEach(f => {
+      const props = f.properties || {};
+      if (!('SCHLAGNR' in props)) return;
+      const key = String(props.SCHLAGNR).trim() + '_' + String(props.TEILSCHLAG || '').trim();
+      const info = nutzungMap.get(key);
+      if (!info) return;
+      props.NCODE = info.kultur; // FIELD_CANDIDATES.kultur kennt "NCODE" bereits
+      if (info.groesseHa != null) props.FLAECHE_HA = info.groesseHa; // FIELD_CANDIDATES-Größe kennt dieses Feld bereits
+    });
+  });
+}
+
+// Niedersachsens Teilschläge-Shapefile enthält nur OBJEKT_ID/FLIK/SCHLAG_NR
+// — weder Name noch Kulturart. Der Hauptantrag (Sammelantrag-XML, ANDI/GELA-
+// Exportformat, Dateiname = reine Betriebs-Registriernummer ohne erkennbares
+// Präfix) enthält beides pro Schlag als Attribute, z.B.
+// <schlag flik="..." nr="27" bezeichnung="Albers" kultur_fach_code="452" .../>.
+// Da der Dateiname nicht zuverlässig erkennbar ist, wird stattdessen der
+// INHALT jeder unbekannten .xml im Zip auf genau dieses Attributmuster
+// geprüft — findet sich keins, bleibt die Datei einfach unberücksichtigt.
+// kultur_fach_code ist wie in Bayern ein bundesweit einheitlich
+// nummerierter Nutzungscode (Stichproben in den Testdaten stimmen mit der
+// bayerischen FNN-Liste überein) — als Klartext-Fallback wird deshalb
+// bewusst BAYERN_NUTZUNGSCODE_KLARTEXT verwendet statt einer eigens für
+// Niedersachsen recherchierten Liste; unbekannte Codes bleiben roh stehen.
+function extractNiedersachsenSchlagMap(xmlText) {
+  try {
+    const doc = new DOMParser().parseFromString(xmlText, 'application/xml');
+    if (doc.querySelector('parsererror')) return null;
+    const schlaege = doc.querySelectorAll('schlag[nr][kultur_fach_code]');
+    if (!schlaege.length) return null;
+    const map = new Map();
+    schlaege.forEach(s => {
+      const nr = s.getAttribute('nr');
+      if (!nr) return;
+      map.set(nr, {
+        name: (s.getAttribute('bezeichnung') || '').trim(),
+        code: (s.getAttribute('kultur_fach_code') || '').trim()
+      });
+    });
+    return map.size ? map : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+function mergeNiedersachsenSchlaege(results, schlagMap) {
+  results.forEach(r => {
+    (r.fc.features || []).forEach(f => {
+      const props = f.properties || {};
+      if (!('SCHLAG_NR' in props)) return;
+      const info = schlagMap.get(String(props.SCHLAG_NR).trim());
+      if (!info) return;
+      if (info.name) props.SCHLAGNAME = info.name; // FIELD_CANDIDATES.name kennt dieses Feld bereits
+      if (info.code) {
+        const klartext = bayernNutzungscodeKlartext(info.code);
+        props.NCODE = klartext || info.code; // FIELD_CANDIDATES.kultur kennt "NCODE" bereits
+      }
+    });
+  });
+}
+
 // Manche Bundesländer liefern den amtlichen FLIK-Flächenidentifikator gar
 // nicht im Shapefile selbst (z.B. Brandenburgs Parzellen-DBF hat kein FLIK-
 // Feld), sondern nur in der begleitenden "..._flaechenuebersicht.xlsx" —
@@ -334,6 +462,8 @@ async function parseShapefileZip(file) {
 
   const groups = {};
   let flaechenuebersichtEntry = null;
+  let nrwNutzungXmlEntry = null;
+  const otherXmlEntries = []; // Kandidaten für die Niedersachsen-Sammelantrag-XML (kein festes Namensmuster, siehe extractNiedersachsenSchlagMap)
   const relevantExt = ['shp', 'shx', 'dbf', 'prj', 'cpg'];
   zip.forEach((path, entry) => {
     if (entry.dir) return;
@@ -348,6 +478,10 @@ async function parseShapefileZip(file) {
     const base = fileName.slice(0, dot);
     const ext = fileName.slice(dot + 1).toLowerCase();
     if (ext === 'xlsx' && /flaechenuebersicht/i.test(fileName)) flaechenuebersichtEntry = entry;
+    if (ext === 'xml') {
+      if (/NTNW/i.test(fileName)) nrwNutzungXmlEntry = entry;
+      else otherXmlEntries.push(entry);
+    }
     if (!relevantExt.includes(ext)) return; // .xlsx, .xml usw. werden übersprungen
     groups[base] = groups[base] || {};
     groups[base][ext] = entry;
@@ -408,6 +542,28 @@ async function parseShapefileZip(file) {
       }
     }
   }
+
+  if (nrwNutzungXmlEntry) {
+    const nutzungMap = await extractNrwNutzungMap(nrwNutzungXmlEntry);
+    if (nutzungMap) mergeNrwNutzung(results, nutzungMap);
+  }
+
+  // Niedersachsen-Sammelantrag-XML hat kein festes Namensmuster — jede
+  // übrige .xml im Zip auf das erkennbare <schlag nr=... kultur_fach_code=...>
+  // -Muster prüfen; die erste passende gewinnt.
+  for (const entry of otherXmlEntries) {
+    let text;
+    try { text = await entry.async('text'); } catch (err) { continue; }
+    const schlagMap = extractNiedersachsenSchlagMap(text);
+    if (schlagMap) { mergeNiedersachsenSchlaege(results, schlagMap); break; }
+  }
+
+  // Bundesland-spezifische Nutzungscodes zuletzt übersetzen, nachdem alle
+  // XML-Anreicherungen oben (die z.T. selbst erst NCODE befüllen) gelaufen
+  // sind.
+  results.forEach(r => {
+    (r.fc.features || []).forEach(f => applyBundeslandNutzungscode(f.properties || {}));
+  });
 
   return results;
 }
@@ -577,6 +733,1047 @@ function bayernNutzungscodeKlartext(rawCode) {
   return BAYERN_NUTZUNGSCODE_KLARTEXT[n] || null;
 }
 
+// ---------- Weitere Bundesländer: Nutzungscode -> Kulturart im Klartext ----------
+// Baden-Württemberg, Stand 06.03.2026.
+// Quelle: https://www.rv.de/site/LRA_RV_Responsive/get/documents_E1338061234/chancenpool/LRA_Ravensburg_Objekte/01-Ihr%20Anliegen/Land-%20und%20Forstwirtschaft/LA%20Agrarf%C3%B6rderung/2026%20GA%20-%20Nutzcodeliste.pdf
+const BW_NUTZUNGSCODE_KLARTEXT = {
+  10: 'Zuckermais', 20: 'Koppelschafweiden',
+  30: 'Hof-, Wege- und Gebäudeflächen', 40: 'Konditionalitäts-Landschaftselement',
+  43: 'Kulturen in Substrat/ ohne Bodenkontakt', 49: 'Unbestockte Obstbaufläche',
+
+  112: 'Winterdurum (Hartweizen)', 113: 'Sommerdurum (Hartweizen)',
+  114: 'Winterdinkel', 115: 'Winterweichweizen',
+  116: 'Sommerweichweizen', 118: 'Winteremmer/-einkorn',
+  119: 'Sommeremmer/-einkorn', 120: 'Sommerdinkel',
+  121: 'Winterroggen', 122: 'Sommerroggen',
+  125: 'Wintermenggetreide', 131: 'Wintergerste', 132: 'Sommergerste',
+  142: 'Winterhafer', 143: 'Sommerhafer', 144: 'Sommermenggetreide',
+  156: 'Wintertriticale', 157: 'Sommertriticale',
+  171: 'Körnermais (CCM)',
+  181: 'Rispenhirse', 182: 'Buchweizen', 183: 'Sorghumhirse (Körnersorghum)',
+  184: 'Kolbenhirse', 186: 'Amarant (Fuchsschwanz)', 187: 'Quinoa', 189: 'Chia',
+
+  210: 'Sommer-Erbsen zur Körnergewinnung',
+  211: 'Sommer-Gemüseerbse (Markerbse, Schalerbse, Zuckererbse)',
+  212: 'Platterbse',
+  213: 'Winter-Erbsen (Markerbse, Schalerbse, Zuckererbse, Futtererbse, Peluschke)',
+  220: 'Ackerbohne/Puffbohne/Pferdebohne/Dicke Bohne',
+  221: 'Wicken (Pannonische, Zottel-, Saatwicke)',
+  222: 'Linsen (Speiselinse)', 230: 'Lupinen',
+  240: 'Erbsen/Bohnen-Gemenge',
+  250: 'Gemenge Leguminosen/Getreide (Leguminose überwiegt)',
+
+  311: 'Winterraps', 312: 'Sommerraps',
+  315: 'Winterrübsen (Rübsen, Rübsamen, Rübsaat)',
+  316: 'Sommerrübsen (Rübsen, Rübsamen, Rübsaat)',
+  320: 'Sonnenblumen', 330: 'Sojabohnen',
+  341: 'Lein (Gemeiner Lein, Flachs)', 393: 'Leindotter',
+
+  411: 'Silomais/Silomais-Gemenge', 413: 'Futterrüben (Runkelrüben)',
+  421: 'Rot-/Weiß-/Alexandriner-/Inkarnat-/Erd-/Schweden-/Persischer Klee',
+  422: 'Kleegras, Luzerne-Gras-Gemenge',
+  423: 'Luzerne, Hopfen-/Gelbklee, Bastard-/Sandluzerne',
+  424: 'Ackergras', 425: 'Klee-Luzerne-Gemisch',
+  426: 'Bockshornklee, Schabziger Klee', 427: 'Hornklee, Hornschotenklee',
+  429: 'Esparsette', 430: 'Serradella', 431: 'Steinklee',
+  432: 'Kleemischung aus NC 421, 427, 431',
+  434: 'Gras-Leguminosen-Gemisch (Leguminose überwiegt)',
+  441: 'Wiesen (Grünlandneueinsaat weniger als 5 Jahre zurückliegend)',
+  442: 'Mähweiden (Grünlandneueinsaat weniger als 5 Jahre zurückliegend)',
+  443: 'Weiden (Grünlandneueinsaat weniger als 5 Jahre zurückliegend)',
+
+  451: 'Wiesen (einschl. Streuobstwiesen)', 452: 'Mähweiden', 453: 'Weiden',
+  454: 'Hutungen', 455: 'Almen und Alpen', 458: 'Streuwiesen',
+  460: 'Sommerschafweiden', 481: 'Streuobst ohne Wiesennutzung',
+  492: 'Weidegebiete als Teil eines etablierten lokalen Bewirtschaftungsverfahrens',
+
+  513: 'Braunelle',
+
+  563: 'Stillgelegte Ackerflächen nach LPR',
+  567: 'Stillgelegte Dauergrünlandflächen n. LPR',
+  575: 'Blühfläche (nur FAKT E8)',
+  584: 'aus ehemals DZ-fähiger Fläche durch Natura 2000-Auflagen entstandene nicht landwirtschaftliche Fläche',
+  585: 'aus ehemals DZ-fähiger Fläche durch WRRL-Auflagen entstandene nicht landwirtschaftliche Fläche',
+  587: 'Landw. Fläche im Paludianbau ohne landw. Erzeugung',
+  590: 'Brache mit jährlicher Neueinsaat von Blühmischungen (nur FAKT E7)',
+  591: 'Ackerland aus der Erzeugung genommen',
+  592: 'Dauergrünland aus der Erzeugung genommen',
+  593: 'Dauerkultur aus der Erzeugung genommen',
+
+  601: 'Stärkekartoffeln', 602: 'Speisekartoffeln', 603: 'Zuckerrüben',
+  604: 'Topinambur', 605: 'Süßkartoffeln', 606: 'Pflanzkartoffeln',
+  610: 'beetweiser Anbau v. Gemüse ab 5 Kulturen',
+  611: 'beetweiser Anbau v. Gemüse bis 4 Kulturen',
+  613: 'Gemüsekohl', 615: 'Brunnenkresse',
+  616: 'Senfrauke (Garten-Senfrauke, Rucola)', 617: 'Gartenkresse',
+  618: 'Gartenrettiche (Weiße/rote Rettiche, Ölrettich, Radieschen)',
+  619: 'Weißer Senf, Gelber Senf',
+  620: 'Gemüseraps (Raps, Steckrübe, Kohlrübe)',
+  622: 'Tomaten', 623: 'Auberginen',
+  624: 'Spanischer Pfeffer einschl. Paprika, Chilli, Peperoni',
+  625: 'Schwarze Tollkirsche', 627: 'Salatgurke', 628: 'Zuckermelone',
+  629: 'Riesenkürbis', 630: 'Gartenkürbis einschl. Zucchini und Zierkürbis',
+  631: 'Melone',
+  632: 'Winterlauch (Zwiebel einschl. Knoblauch, Lauch, Schnittlauch und Bärlauch)',
+  633: 'Sommerlauch (Zwiebel einschl. Knoblauch, Lauch, Schnittlauch und Bärlauch)',
+  634: 'Möhre', 635: 'Gartenbohne',
+  636: 'Feldsalate einschl. Ackersalat und Rapunzel',
+  637: 'Salat/Lattich, Lollo Rosso, Romana-Salat/Römischer Salat',
+  638: 'Spinat', 639: 'Mangold, Rote Beete/Rote Rübe',
+  641: 'Sellerie', 642: 'Ampfer (Wiesen-Sauerampfer)', 643: 'Pastinaken',
+  644: 'Zichorien/Wegwarten (Chicorée, Radicchio, krausblättrige Endivie, ganzblättrige Endivie, Zichorie)',
+  645: 'Kichererbsen', 646: 'Meerrettich', 647: 'Schwarzwurzeln',
+  648: 'Fenchel (Gemüse-/Körnerfenchel)', 649: 'Gemüserübsen',
+  650: 'beetweiser Anbau von Küchenkräutern/ Heil- und Gewürzpflanzen ab 5 Kulturen',
+  651: 'Dill, Gurkenkraut',
+  652: 'Kerbel (Kerbel/echter Kerbel, Wiesenkerbel)',
+  653: 'Anis', 654: 'Kümmel (Echter Kümmel)', 656: 'Schwarzkümmel',
+  657: 'Koriander', 658: 'Liebstöckel/Maggikraut', 659: 'Petersilie',
+  660: 'Basilikum', 661: 'Rosmarin', 662: 'Salbei',
+  664: 'Oregano, Majoran', 665: 'Bohnenkraut',
+  667: 'Verbenen (Echtes Eisenkraut)', 668: 'Lavendel', 669: 'Thymian',
+  670: 'Melissen (Zitronenmelisse)', 672: 'Minzen (Pfefferminze, Grüne Minze)',
+  673: 'Artemisia (Wermut, Estragon, Beifuß)',
+  674: 'Ringelblumen (Garten-Ringelblume)',
+  675: 'Sonnenhut', 676: 'Wegeriche (Spitzwegerich)',
+  677: 'Kamillen (Echte Kamille)', 678: 'Schafgarben (Gelbe Schafgarbe)',
+  680: 'Johanniskräuter (Echtes Johanniskraut)', 682: 'Mariendisteln',
+  684: 'Löwenzahn', 685: 'Engelwurz', 686: 'Malven (Wilde Malve)',
+  690: 'beetweiser Anbau von Küchenkräutern/ Heil- und Gewürzpflanzen bis 4 Kulturen',
+
+  701: 'Hanf', 702: 'Rollrasen', 705: 'Tabak',
+  706: 'Mohn (Schlafmohn, Backmohn)', 707: 'Erdbeeren',
+  708: 'Färberdistel/Saflor', 709: 'Brennnesseln',
+  718: 'beetweiser Anbau von Zierpflanzen bis 4 Kulturen',
+  720: 'beetweiser Anbau von Zierpflanzen ab 5 Kulturen',
+  727: 'Narzissen / Osterglocken', 737: 'Margeriten',
+  745: 'Gladiolen (Gartengladiole)', 746: 'Tulpen (Garten-Tulpe)',
+  749: 'Scabiosen (Samt-, Kugel-Skabiose)', 750: 'Dahlien (Garten-Dahlie)',
+  764: 'Königskerzen (Großblütige Königskerze)',
+  766: 'Pfingstrosen/Päonien (Gemeine Pfingstrose, Strauch-Pfingstrose)',
+  772: 'Nelken (Bartnelke, Land-/Edelnelke)', 775: 'Kornblumen',
+  777: 'Phacelia (als Hauptkultur, z.B. Saatgutvermehrung)',
+  788: 'Geranien', 793: 'Leimkraut/Taubenkropf-Leimkraut',
+  796: 'Fetthenne, Mauerpfeffer (Sedum)', 798: 'Ramtillkraut',
+
+  801: 'Sonstige Energiepflanze (Acker)',
+  802: 'Silphium (Durchwachsene Silphie)', 803: 'Sudangras',
+  804: 'Virginiamalve (Sida)', 805: 'Staudenknöterich (Igniscum)',
+  821: 'Kern- und Steinobst (Mischanbau)', 825: 'Kernobst z.B. Äpfel, Birnen',
+  826: 'Steinobst z.B. Kirschen, Pflaumen',
+  827: 'Beerenobst z.B. Johannis-, Stachel-, Himbeeren',
+  829: 'Sonstige Obstanlagen z.B. Holunder, Sanddorn',
+  833: 'Haselnüsse', 834: 'Walnüsse', 835: 'sonstige Schalenfrüchte',
+  838: 'Baumschulen, nicht für Beerenobst',
+  839: 'Beerenobst zur Vermehrung (in Baumschulen)',
+  841: 'Niederwald mit Kurzumtrieb (KUP lt. GAPDZV)',
+  843: 'Bestockte Rebfläche', 844: 'Unbestockte Rebfläche',
+  845: 'Rebschulfläche', 848: 'Tafeltrauben', 850: 'Sonstige Dauerkulturen',
+  851: 'Rhabarber', 852: 'Chinaschilf (Miscanthus)',
+  853: 'Riesenweizengras (Szarvasi-Gras)', 854: 'Rohrglanzgras',
+  856: 'Hopfen', 859: 'Hopfen, vorübergehend stillgelegt',
+  860: 'Spargel', 861: 'Artischocke', 865: 'Trüffel',
+  866: 'Pflanzenmischung mit Hanf',
+  871: 'Wildpflanzenmischung zur Energieerzeugung (FAKT E14)',
+
+  912: 'Grassamenvermehrung', 913: 'Wildpflanzenvermehrung',
+  914: 'Versuchsflächen mit mehreren beihilfefähigen Kulturarten',
+  915: 'Ackerrandstreifen', 917: 'Mischkulturen',
+  920: 'Haus- und Nutzgarten',
+  925: 'Biotope mit landwirtschaftlicher Nutzung Dauergrünland',
+  927: 'Flächen mit LPR-Verpflichtung auf nichtlandwirtschaftlicher Fläche',
+  930: 'Bewirtschaftete Gewässer/ Teichflächen',
+
+  961: 'Flächen mit LPR-Pflegeverpflichtung auf landwirtschaftlicher Fläche (nur bei LPR-Code 309)',
+  982: 'Sonstige KUP', 983: 'Weihnachtsbäume',
+  990: 'Alle anderen Flächen (keine LF)',
+  994: 'Unbefestigte Mieten-, Stroh-, Futter-, Dunglager- und Maschinenstellplätze auf DGL',
+  995: 'Forstflächen (Waldbodenflächen)',
+  996: 'Unbefestigte Mieten-, Stroh-, Futter-, Dunglager- und Maschinenstellplätze auf AL'
+};
+
+// Sachsen, Stand 06.03.2026.
+// Quelle: https://www.landwirtschaft.sachsen.de/download/SN26_FV_NC.pdf
+const SACHSEN_NUTZUNGSCODE_KLARTEXT = {
+  // NC 70-78: bundesweit einheitliche Konditionalitäts-Landschaftselemente (GLÖZ 8),
+  // fehlen in der Sachsen-eigenen NC-Liste (dort separat geführt), tauchen aber in
+  // Sachsen-Schlägen auf — Klartext hier aus der Hessen-Liste übernommen (gleiche Codes/Bezeichnungen).
+  70: 'Hecken oder Knicks >10m', 71: 'Baumreihe >50m',
+  72: 'Feldgehölze 50 - 2.000 m²', 73: 'Feuchtgebiete < 2.000 m²',
+  74: 'Einzelbäume', 75: 'Tümpel, Sölle und Doline',
+  76: 'Natur-, Stein- oder Trockenmauer', 77: 'Fels- und Steinriegel, naturversteinte Fläche',
+  78: 'Feldraine',
+  112: 'Winterdurum (Hartweizen)', 113: 'Sommerdurum (Hartweizen)',
+  114: 'Winter-Dinkel', 115: 'Winterweichweizen',
+  116: 'Sommerweichweizen', 118: 'Winter-Emmer/-Einkorn',
+  119: 'Sommer-Emmer/-Einkorn', 120: 'Sommer-Dinkel',
+  121: 'Winterroggen, Winter-Waldstaudenroggen', 122: 'Sommerroggen, Sommer-Waldstaudenroggen',
+  125: 'Wintermenggetreide', 126: 'Wintermenggetreide ohne Weizen',
+  131: 'Wintergerste', 132: 'Sommergerste',
+  142: 'Winterhafer', 143: 'Sommerhafer',
+  144: 'Sommermenggetreide', 145: 'Sommermenggetreide ohne Weizen',
+  150: 'Gemenge Getreide/Leguminose (Getreide überwiegt)', 156: 'Wintertriticale',
+  157: 'Sommertriticale', 171: 'Mais (ohne Silomais NC 411)',
+  181: 'Rispenhirse', 182: 'Buchweizen',
+  183: 'Mohren-/Zuckerhirse (ohne Sudangras NC 803)', 186: 'Amarant, Fuchsschwanz',
+  187: 'Quinoa', 189: 'Chia',
+
+  210: 'Erbsen (Markerbse, Schalerbse, Zuckererbse, Futtererbse, Peluschke)',
+  211: 'Gemüseerbse (Markerbse, Schalerbse, Zuckererbse)', 212: 'Platterbse',
+  213: 'Winter-Erbsen (Markerbse, Schalerbse, Zuckererbse, Futtererbse, Peluschke)',
+  220: 'Ackerbohne/Puffbohne/Pferdebohne/Dicke Bohne', 221: 'Wicken (Pannonische Wicke, Zottelwicke, Saatwicke)',
+  222: 'Linsen', 230: 'Lupinen (Süßlupine, weiße Lupine, blaue/schmalblättrige Lupine, gelbe Lupine, Andenlupine)',
+  240: 'Erbsen/Bohnen', 250: 'Gemenge Leguminose/Getreide (Leguminose überwiegt)',
+
+  311: 'Winterraps', 312: 'Sommerraps',
+  315: 'Winterrübsen (Rübsen, Rübsamen, Rübsaat)', 316: 'Sommerrübsen (Rübsen, Rübsamen, Rübsaat)',
+  320: 'Sonnenblumen', 330: 'Sojabohnen',
+  341: 'Lein, Flachs', 393: 'Leindotter',
+
+  411: 'Silomais (als Hauptfutter)', 413: 'Futterrübe/Runkelrübe',
+  414: 'Kohlrübe, Steckrübe', 421: 'Rot-/Weiß-/Alexandriner-/Inkarnat-/Erd-/Schweden-/Persischer Klee',
+  422: 'Kleegras', 423: 'Luzerne, Hopfenklee/Gelbklee, Bastardluzerne/Sandluzerne',
+  424: 'Ackergras', 425: 'Klee-Luzerne-Gemisch',
+  426: 'Bockshornklee, Schabziger Klee', 427: 'Hornklee, Hornschotenklee',
+  429: 'Esparsette', 430: 'Serradella',
+  431: 'Steinklee', 432: 'Kleemischung aus NC 421, 427, 431 (stickstoffbindend)',
+  433: 'Luzerne-Gras', 434: 'Gras-Leguminosen Gemisch (Leguminosen überwiegt)',
+
+  451: 'Wiesen', 452: 'Mähweiden',
+  453: 'Weiden und Almen', 454: 'Hutungen',
+  458: 'Streuwiesen', 480: 'Streuobstfläche mit Grünlandnutzung',
+  492: 'Dauergrünland unter etablierten lokalen Praktiken (z.B. Heide)',
+
+  911: '(Beta-)Rübensamenvermehrung', 912: 'Grassamenvermehrung',
+  913: 'Wildsamenvermehrung', 914: 'Versuchsflächen mit mehreren beihilfefähigen Kulturarten',
+  917: 'Mischkulturen', 919: 'Saatmais (Saatgutvermehrung)',
+
+  564: 'nach VO 1257/1999 oder VO (EG) Nr. 1698/2005 oder VO 1305/2013 oder VO 2021/2115 aufgeforstete Flächen',
+  568: 'aufgeforstete Dauergrünlandflächen, weder nach VO 1257/99 oder VO 1698/2005 oder VO 1305/2013',
+  584: 'Nicht landwirtschaftliche, aber nach §11 (1) Nr.3 Bst. a) aa oder cc) der GAPDZV beihilfefähige Fläche (Maßnahmen aus Natura2000)',
+  585: 'Nicht landwirtschaftliche, aber nach §11 (1) Nr.3 Bst. a) bb) der GAPDZV beihilfefähige Fläche (Maßnahmen aus der Wasserrahmenrichtlinie)',
+
+  591: 'Ackerland aus der Erzeugung genommen', 592: 'Dauergrünland aus der Erzeugung genommen',
+  593: 'Dauerkulturen aus der Erzeugung genommen',
+
+  601: 'Stärkekartoffeln', 602: 'Kartoffeln (Speise)',
+  603: 'Zuckerrüben', 604: 'Topinambur',
+  605: 'Süßkartoffel',
+
+  610: 'beetweiser Anbau von Gemüse ab 5 Kulturen', 611: 'beetweiser Anbau von Gemüse bis 4 Kulturen',
+  612: 'Schwarzer Senf',
+  613: 'Gemüsekohl (Kopfkohl, Wirsing, Rot-/Weißkohl, Spitzkohl, Grünkohl, Kohlrabi, Markstammkohl, Blumenkohl, Romanesco, Brokkoli, Rosenkohl, Zierkohl)',
+  614: 'Brauner Senf/Sareptasenf', 615: 'Echte Brunnenkresse',
+  616: 'Garten-Senfrauke, Rucola', 617: 'Gartenkresse',
+  618: 'Gartenrettiche (Weiße/rote Rettiche, schwarzer Winterrettich, Ölrettich, Radieschen)', 619: 'Weißer Senf, Gelber Senf',
+  620: 'Steckrübe, Kohlrübe (Gemüseanbau)', 622: 'Tomaten',
+  623: 'Auberginen', 624: 'Paprika, Chilli, Peperoni',
+  625: 'Schwarze Tollkirsche', 627: 'Gurke (Salatgurke, Einlegegurke)',
+  628: 'Zuckermelone', 629: 'Riesenkürbis (Riesenkürbis, Hokkaidokürbis)',
+  630: 'Gartenkürbis (Gartenkürbis, Steirischer Kürbis, Zucchini, Spaghettikürbis, Zierkürbis)', 631: 'Melone (Wassermelone)',
+  632: 'Winterlauch (Speise-Zwiebel, Schalotte, Lauch, Knoblauch, Schnittlauch, Bärlauch)',
+  633: 'Sommerlauch (Speise-Zwiebel, Schalotte, Lauch, Knoblauch, Schnittlauch, Bärlauch)',
+  634: 'Möhre (Möhre/Karotte, Futtermöhre)', 635: 'Gartenbohne (Gartenbohne/Buschbohne/Stangenbohne, Feuerbohne/Prunkbohne)',
+  636: 'Feldsalat/Ackersalat/ Rapunzel', 637: 'Lattich (Garten-Salat/Lattich, Lollo Rosso, Romana-Salat/Römischer Salat)',
+  638: 'Spinat', 639: 'Mangold, Rote Beete/Rote Rübe',
+  640: 'Melde (Garten-Melde)', 641: 'Sellerie (Knollen-Sellerie, Bleich-Sellerie, Stangen-Sellerie)',
+  642: 'Ampfer (Wiesen-Sauerampfer)', 643: 'Pastinaken',
+  644: 'Zichorien/Wegwarten (Chicorée, Radicchio, krausblättrige Endivie, ganzblättrige Endivie, Zichorie)',
+  645: 'Kichererbsen', 646: 'Meerettich',
+  647: 'Schwarzwurzeln', 648: 'Fenchel (Gemüsefenchel, Körnerfenchel)',
+  649: 'Gemüserübsen (Stoppelrübe, Weiße Rübe, Bayerische Rübe, Mairübe, Chinakohl, Pak-Choi, Teltower Rübchen, Stielmus, Herbstrübe)',
+
+  650: 'beetweiser Anbau von Küchenkräuter/Heil-und Gewürzpflanzen ab 5 Kulturen',
+  690: 'beetweiser Anbau von Küchenkräuter/Heil-und Gewürzpflanzen bis 4 Kulturen',
+  651: 'Dill, Gurkenkraut', 652: 'Kerbel (Kerbel/echter Kerbel, Wiesenkerbel)',
+  653: 'Anis', 654: 'Kümmel',
+  655: 'Kreuzkümmel', 656: 'Schwarzkümmel (Echter Schwarzkümmel, Jungfer im Grünen)',
+  657: 'Koriander', 658: 'Liebstöckel/Maggikraut',
+  659: 'Petersilie', 660: 'Basilikum',
+  661: 'Rosmarin', 662: 'Salbei (Küchen-/Heilsalbei, Buntschopf-Salbei)',
+  663: 'Borretsch', 664: 'Oregano (Echter Majoran, Oregano/Dost/Wilder Majoran)',
+  665: 'Bohnenkraut', 666: 'Ysop/Eisenkraut',
+  667: 'Verbenen (Echtes Eisenkraut)', 668: 'Lavendel (Echter Lavendel, Speik-Lavendel, Hybrid-Lavendel)',
+  669: 'Thymian', 670: 'Melisse (Zitronenmelisse)',
+  671: 'Enzian', 672: 'Minzen (Pfefferminze, Grüne Minze)',
+  673: 'Wermut, Estragon, Beifuß', 674: 'Ringelblumen (Garten-Ringelblume)',
+  675: 'Sonnenhut (Schmalblättriger Sonnenhut, Purpur-Sonnenhut)', 676: 'Wegerich (Spitzwegerich)',
+  677: 'Kamillen (Echte Kamille)', 678: 'Schafgarben (Gelbe Schafgarbe)',
+  679: 'Baldrian (Echter Baldrian)', 680: 'Echtes Johanniskraut/Hyperikum',
+  681: 'Frauenmantel', 682: 'Mariendisteln',
+  683: 'Geißraute', 684: 'Löwenzahn',
+  685: 'Engelwurzen (Arznei-Engelwurz, Echter Engelwurz)', 686: 'Malven (Wilde Malve)',
+  687: 'echte Arnika (Arnica montana)',
+
+  701: 'Hanf', 702: 'Rollrasen, Vegetationsmappen für Dachbegrünung',
+  703: 'Färber-Waid', 704: 'Kanariensaat/Echtes Glanzgras',
+  705: 'Virginischer Tabak', 706: 'Mohn (Schlafmohn, Backmohn)',
+  707: 'Erdbeeren', 708: 'Färberdisteln',
+  709: 'Brennnesseln (Große Brennnessel)', 710: 'Färberkrapp (Rubia tinctorum)',
+
+  718: 'beetweiser Anbau Zierpflanzen bis 4 Kulturen', 720: 'beetweiser Anbau Zierpflanzen ab 5 Kulturen',
+  721: 'Goldlack', 722: 'Einjähriges Silberblatt',
+  723: 'Garten-/Sommerlevkoje', 724: 'Kugelamarant (Echter Kugelamarant)',
+  725: 'Taglilien (Essbare Taglilie)', 726: 'Lilien (Türkenbund)',
+  727: 'Narzissen / Osterglocken', 728: 'Bischofskraut',
+  729: 'Hasenohren (rundblättriges Hasenohr)', 730: 'Seidenpflanzen (Indianer-Seidenpflanze)',
+  731: 'Hyazinthe (Garten-Hyazinthe)', 732: 'Milchstern',
+  733: 'Astern (Sommeraster)', 734: 'Chrysanthemen (Garten-Chrysantheme, Winteraster)',
+  735: 'Strohblumen', 736: 'Edelweiß',
+  737: 'Margeriten', 738: 'Rudbeckien (Schwarzäugige Rudbeckie/Sonnenhut, Leuchtender Sonnenhut, Schlitzblättriger Sonnenhut)',
+  739: 'Tagetes/Studentenblume', 740: 'Wucherblumen (Mutterkraut)',
+  741: 'Strandflieder (Geflügelter Strandflieder)', 742: 'Spreublumen (Einjährige Papierblume)',
+  743: 'Zinnien', 744: 'Taubnesseln (Weiße Taubnessel)',
+  745: 'Gladiolen', 746: 'Tulpen',
+  747: 'Trauben-Silberkerze', 748: 'Rittersporn',
+  749: 'Skabiosen', 750: 'Dahlien',
+  751: 'Rosenwurz', 752: 'Krokusse (Safran, Garten-Krokus)',
+  753: 'Hibiskus (Chinesischer Roseneibisch)', 754: 'Strauch-/Bechermalven (Bechermalve)',
+  755: 'Wolfsmilch', 756: 'Löwenmäulchen (Großes Löwenmaul)',
+  757: 'Montbretien', 758: 'Halskräuter (Blaues Halskraut)',
+  759: 'Gipskräuter (Schleierkraut)', 760: 'Pampasgräser (Amerikanisches Pampasgras)',
+  761: 'Kosmeen (Gemeines Schmuckkörbchen)', 762: 'Nachtkerzen (Diptam)',
+  763: 'Nachtkerzen (Oenothera)', 764: 'Königskerzen (Großblütige Königskerze)',
+  765: 'Kapuzinerkresse', 766: 'Pfingstrosen/Päonien (Gemeine Pfingstrose, Strauch-Pfingstrose)',
+  767: 'Schwertlilien (Deutsche Schwertlilie)', 768: 'Wiesenknopf (Kleiner Wiesenknopf, Pimpinelle)',
+  769: 'Zieste (Deutscher Ziest, Knollen-Ziest)', 770: 'Vergissmeinnicht (Wald-Vergissmeinnicht)',
+  771: 'Portulak', 772: 'Nelken (Bartnelke, Land-/Edelnelke)',
+  773: 'Gewöhnlicher Leberbalsam (Ageratum)', 774: 'Gelber Leberbalsam (Lonas)',
+  775: 'Kornblumen', 776: 'Veilchen (Horn-Veilchen, Garten-Stiefmütterchen, Wildes Stiefmütterchen)',
+  777: 'Phacelia (als Hauptkultur z.B. Saatgutvermehrung)', 778: 'Alpendistel',
+  779: 'Amacrinum', 780: 'Begonien',
+  781: 'Calla/Drachenwurz', 782: 'Glockenblumen (Campanula)',
+  783: 'Schildblume (Chelone)', 784: 'Christrose-/Schnee-/Weihnachtsrose, Korischer Nieswurz',
+  785: 'Eukalyptus', 786: 'Fingerhut',
+  787: 'Fuchsien', 788: 'Geranien',
+  789: 'Veronica/Hebe/Ehrenpreis', 790: 'Anemonen (Herbstanemone, Japanische Anemone)',
+  791: 'Knollenbegonien', 792: 'Kornrade',
+  793: 'Leimkraut/Taubenkropf-Leimkraut', 794: 'Orchideen',
+  795: 'Pelargonien', 796: 'Fetthenne, Mauerpfeffer (Sedum)',
+  797: 'Rhizinus', 798: 'Ramtillkraut',
+  799: 'Husarenknopf (Sanvitalia)',
+  510: 'Goldrute (Solidago)', 511: 'Streptocarpus/Drehfrucht',
+  512: 'Iberischer Drachenkopf', 513: 'Braunellen',
+  514: 'Hauswurz (Sempervivum)', 515: 'Mühlenbeckia/Drahtsträucher',
+  516: 'Knöterich (Persicaria)', 517: 'Garten-Petunie',
+  518: 'Polygonum', 519: 'Köcherblümchen (Cuphea)',
+  520: 'Silberbrandschopf',
+
+  802: 'Silphium (Durchwachsene Silphie, Becherpflanze)', 803: 'Sudangras',
+  804: 'Virginiamalve', 805: 'Staudenknöterich, Igniscum',
+  852: 'Chinaschilf/Miscanthus', 853: 'Riesenweizengras/Szarvasi-Gras/Hirschgras',
+  854: 'Rohrglanzgras', 866: 'Pflanzenmischung mit Hanf',
+
+  824: 'sonst. Obstanlagen in Vollanbau (ohne Äpfel, Birnen, Pfirsiche)', 825: 'Kernobst z.B. Äpfel, Birnen',
+  826: 'Steinobst, z. B. Kirschen, Pflaumen', 827: 'Beerenobst, z.B. Johannis-, Stachel-, Himbeeren',
+  829: 'Sonstige Obstanlagen z.B. Holunder, Aronia, Maulbeeren', 833: 'Haselnüsse',
+  834: 'Walnüsse', 838: 'Baumschulen, nicht für Beerenobst',
+  839: 'Beerenobst zur Vermehrung (in Baumschulen)', 841: 'KUP (inkl. Vermehrungsflächen/Baumschulen) lt. GAPDZV',
+  842: 'Rebland', 850: 'Sonstige Dauerkulturen',
+  851: 'Rhabarber', 856: 'Hopfen',
+  859: 'Hopfen vorübergehend stillgelegt (Gerüst steht noch)', 860: 'Spargel',
+  861: 'Artischocke', 862: 'Heidekraut',
+  863: 'Rosen (Baumschulen), Schnittrosen', 864: 'Rhododendron',
+  865: 'Trüffel',
+
+  549: 'Stilllegung für Naturschutz und Landschaftspflege (5-Jahresprogramm) (auf AL)',
+  559: 'Stilllegung für Naturschutz und Landschaftspflege (5-Jahresprogramm) (auf GL)',
+  575: 'Blühfläche (AUKM-Maßnahme)', 882: 'Winterhartes Gemenge Getreide/Leguminose (Getreide überwiegt)',
+  923: 'Grünland ohne landwirtschaftliche Nutzung', 925: 'Biotope mit landwirtschaftlicher Nutzung',
+
+  930: 'Bewirtschaftete Gewässer/Teichflächen', 983: 'Weihnachtsbäume',
+  990: 'Alle anderen Flächen (keine LF)', 994: 'Vorübergehende, unbefestigte Mieten, Stroh-, Futter- oder Dunglagerplätze auf DGL',
+  996: 'Vorübergehende, unbefestigte Mieten, Stroh-, Futter oder Dunglagerplätze auf AL',
+  999: 'Ackerkultur einer Gattung/Art, die in der aktuellen Liste nicht aufgeführt ist'
+};
+
+// Hessen, Merkblatt zum Gemeinsamen Antrag 2026, Anlage 1 "Codeliste A 2026" (S. 67-69).
+// Quelle: https://www.wibank.de/resource/blob/wibank/615584/0c70ccd70565e1540b8faf96849c8ce3/merkblatt-zum-ga-2026-data.pdf
+const HESSEN_NUTZUNGSCODE_KLARTEXT = {
+  70: 'Hecken oder Knicks >10m Kondi', 71: 'Baumreihe >50m Kondi',
+  72: 'Feldgehölze 50 - 2.000 m² Kondi', 73: 'Feuchtgebiete < 2.000 m² Kondi',
+  74: 'Einzelbäume Kondi', 75: 'Tümpel Sölle und Doline Kondi',
+  76: 'Natur-, Stein- oder Trockenmauer Kondi', 77: 'Fels- und Steinriegel, naturversteinte Fläche Kondi',
+  78: 'Feldraine Kondi',
+
+  112: 'Winterhartweizen/Durum', 113: 'Sommerhartweizen/Durum',
+  114: 'Winter-Dinkel', 115: 'Winterweichweizen',
+  116: 'Sommerweichweizen', 118: 'Winter-Emmer/-Einkorn',
+  119: 'Sommer-Emmer/-Einkorn', 120: 'Sommer-Dinkel',
+  121: 'Winterroggen, Winter-Waldstaudenroggen', 122: 'Sommerroggen, Sommer-Waldstaudenroggen',
+  125: 'Wintermenggetreide', 131: 'Wintergerste',
+  132: 'Sommergerste', 142: 'Winterhafer',
+  143: 'Sommerhafer', 144: 'Sommermenggetreide',
+  150: 'Gemenge Getreide/Leguminose (Getreide überwiegt, ohne Mais)',
+  151: 'Gemenge Getreide/Leguminose (Getreide überwiegt, mit Mais)',
+  156: 'Wintertriticale', 157: 'Sommertriticale',
+  171: 'Mais (ohne Silomais NC 411)', 181: 'Rispenhirse',
+  182: 'Buchweizen', 183: 'Mohren-/Zuckerhirse (ohne Sudangras NC 803)',
+  184: 'Kolbenhirse', 186: 'Amarant, Fuchsschwanz',
+  187: 'Quinoa', 188: 'Reis im Trockenanbau',
+  189: 'Chia', 882: 'Winterhartes Gemenge Getreide/Leguminose (Getreide überwiegt)',
+
+  573: 'Uferrandstreifenprogramm (HALM 2 C.3.6)', 575: 'Blühfläche (AUKM-Maßnahme, HALM 2 C.3.2)',
+  576: 'Schutzstreifen Erosion (HALM 2 C.3.3)', 577: 'Dauergrünland mit PV-Anlagen (nur für HALM2 SB)',
+
+  210: 'Sommer-Erbsen (Markerbse, Schalerbse, Zuckererbse, Futtererbse, Peluschke)',
+  211: 'Sommer-Gemüseerbse (Markerbse, Schalerbse, Zuckererbse)', 212: 'Platterbse',
+  213: 'Winter-Erbsen (Markerbse, Schalerbse, Zuckererbse, Futtererbse, Peluschke)',
+  220: 'Ackerbohne/Puffbohne/Pferdebohne/Dicke Bohne', 221: 'Wicken (Pannonische, Zottelwicke, Saatwicke)',
+  222: 'Linsen', 230: 'Lupinen (Süßlupine, weiße Lupine, blaue/schmalblättrige Lupine, gelbe Lupine, Anden-Lupine)',
+  240: 'Erbsen/Bohnen', 250: 'Gemenge Leguminose/Getreide (Leguminose überwiegt, ohne Mais)',
+  251: 'Gemenge Leguminose/Getreide (Leguminose überwiegt, mit Mais)', 883: 'Winterhartes Leguminosengemenge',
+
+  311: 'Winterraps', 312: 'Sommerraps',
+  315: 'Winterrübsen (Rübsen, Rübsamen, Rübsaat)', 316: 'Sommerrübsen (Rübsen, Rübsamen, Rübsaat)',
+  320: 'Sonnenblumen', 330: 'Sojabohnen',
+  341: 'Lein, Flachs', 392: 'Meerkohl/Krambe',
+  393: 'Leindotter',
+
+  411: 'Silomais (als Hauptfutter)', 413: 'Futterrübe/Runkelrübe',
+  414: 'Kohlrübe, Steckrübe', 421: 'Rot-/Weiß-/Alexandriner-/Inkarnat-/Erd-/Schweden-/Persischer Klee',
+  422: 'Kleegras', 423: 'Luzerne',
+  424: 'Ackergras', 425: 'Klee-Luzerne-Gemisch',
+  426: 'Bockshornklee, Schabziger Klee', 427: 'Hornklee, Hornschotenklee',
+  429: 'Esparsette', 430: 'Serradella',
+  431: 'Steinklee', 432: 'Kleemischung aus NC 421, 427, 431 (stickstoffbindend)',
+  433: 'Luzerne-Gras', 434: 'Gras-Leguminosen Gemisch (Leguminosen überwiegt)',
+
+  444: 'DGL Neueinsaat als Ersatz für genehmigten DGL Umbruch', 459: 'Grünland',
+  480: 'Streuobst mit Grünlandnutzung', 492: 'Dauergrünland unter etablierten lokalen Praktiken (z.B. Heide)',
+  972: 'Grünland (nicht DZ und/oder AGZ fähig)',
+
+  910: 'Wildäsungsfläche', 912: 'Grassamenvermehrung',
+  913: 'Wildsamenvermehrung', 914: 'Versuchsflächen mit mehreren beihilfefähigen Kulturarten',
+  919: 'Saatmais (Saatgutvermehrung)',
+
+  564: 'Nicht landwirtschaftliche, aber §11 (1) Nr.3 Bst. c) der GAPDZV förderfähige Fläche (Aufforstungsverpflichtung nach VO 1257/1999 oder VO (EG) Nr. 1698/2005 oder VO 1305/2013 oder VO 2021/2115 oder bei Eingehung damit in Einklang stehender öffentlich finanzierter Maßnahme aufgeforstete Fläche)',
+  584: 'Nicht landwirtschaftliche, aber nach §11 (1) Nr.3 Bst. a) aa) oder cc) der GAPDZV förderfähige Fläche (Infolge Anwendung Natura2000)',
+  585: 'Nicht landwirtschaftliche, aber nach §11 (1) Nr.3 Bst. a) bb) der GAPDZV förderfähige Fläche (Infolge Anwendung der Wasserrahmenrichtlinie)',
+  587: 'Landwirtschaftliche Fläche im Paludi Verfahren ohne landwirtschaftliches Erzeugnis',
+
+  590: 'Brache mit Einsaat von einjährigen Blühmischungen', 591: 'Ackerland aus der Erzeugung genommen',
+  592: 'Dauergrünland aus der Erzeugung genommen', 593: 'Dauerkulturen aus der Erzeugung genommen',
+
+  601: 'Stärkekartoffeln', 602: 'Kartoffeln (Speise)',
+  603: 'Zuckerrüben', 604: 'Topinambur',
+  605: 'Süßkartoffeln',
+
+  610: 'beetweiser Anbau von Gemüse ab 5 Kulturen', 611: 'beetweiser Anbau von Gemüse bis 4 Kulturen',
+  612: 'Schwarzer Senf',
+  613: 'Gemüsekohl (Kopfkohl, Wirsing, Rot-/Weißkohl, Spitzkohl, Grünkohl, Kohlrabi, Markstammkohl, Blumenkohl, Romanesco, Brokkoli, Rosenkohl, Zierkohl)',
+  614: 'Brauner Senf/Sareptasenf', 615: 'Echte Brunnenkresse',
+  616: 'Garten-Senfrauke, Rucola', 617: 'Gartenkresse',
+  618: 'Gartenrettiche (Weiße/rote Rettiche, schwarzer Winterrettich, Ölrettich, Radieschen)',
+  619: 'Weißer Senf, Gelber Senf', 620: 'Steckrübe, Kohlrübe (Gemüsebau)',
+  622: 'Tomaten', 623: 'Auberginen',
+  624: 'Paprika, Chilli, Peperoni', 625: 'Schwarze Tollkirsche',
+  627: 'Gurke (Salatgurke, Einlegegurke)', 628: 'Zuckermelone',
+  629: 'Riesenkürbis (Riesenkürbis, Hokkaidokürbis)',
+  630: 'Gartenkürbis (Gartenkürbis, Steirischer Kürbis, Zucchini, Spaghettikürbis, Zierkürbis)',
+  631: 'Melone (Wassermelone)',
+  632: 'Winterlauch (Speise-Zwiebel, Schalotte, Lauch, Knoblauch, Schnittlauch, Winterheckenzwiebel, Bärlauch)',
+  633: 'Sommerlauch (Speise-Zwiebel, Schalotte, Lauch, Knoblauch, Schnittlauch, Winterheckenzwiebel, Bärlauch)',
+  634: 'Möhre (Möhre/Karotte, Futtermöhre)',
+  635: 'Gartenbohne (Gartenbohne/Buschbohne/Stangenbohne, Feuerbohne/Prunkbohne)',
+  636: 'Feldsalat/Ackersalat/ Rapunzel',
+  637: 'Lattich (Garten-Salat/Lattich, Lollo Rosso, Romana-Salat/ Römischer Salat)',
+  638: 'Spinat', 639: 'Mangold, Rote Beete/Rote Rübe',
+  640: 'Melde (Garten-Melde)', 641: 'Sellerie (Knollen-Sellerie, Bleich-Sellerie, Stangen-Sellerie)',
+  642: 'Ampfer (Wiesen-Sauerampfer)', 643: 'Pastinaken',
+  644: 'Zichorien/Wegwarten (Chicoree, Radiccio, krausblättrige Endivie, ganzblättrige Endivie, Zichorie)',
+  645: 'Kichererbsen', 646: 'Meerrettich',
+  647: 'Schwarzwurzeln', 648: 'Fenchel (Gemüsefenchel, Körnerfenchel)',
+
+  650: 'beetweiser Anbau von Küchenkräuter/Heil- und Gewürzpflanzen ab 5 Kulturen',
+  690: 'beetweiser Anbau von Küchenkräuter/Heil- und Gewürzpflanzen bis 4 Kulturen',
+  651: 'Dill, Gurkenkraut', 652: 'Kerbel (Kerbel/echter Kerbel, Wiesenkerbel)',
+  653: 'Anis', 654: 'Kümmel',
+  655: 'Kreuzkümmel', 656: 'Schwarzkümmel (Echter Schwarzkümmel, Jungfer im Grünen)',
+  657: 'Koriander', 658: 'Liebstöckel/Maggikraut',
+  659: 'Petersilie',
+
+  660: 'Basilikum', 661: 'Rosmarin',
+  662: 'Salbei (Küchen-/Heilsalbei, Buntschopf-Salbei)', 663: 'Borretsch',
+  664: 'Oregano (Echter Majoran, Oregano/Dost/Wilder Majoran)', 665: 'Bohnenkraut',
+  666: 'Ysop/Eisenkraut', 667: 'Verbenen (Echtes Eisenkraut)',
+  668: 'Lavendel (Echter Lavendel, Speik-Lavendel, Hybrid-Lavendel)', 669: 'Thymian',
+  670: 'Melisse (Zitronenmelisse)', 671: 'Enzian',
+  672: 'Minzen (Pfefferminze, Grüne Minze)', 673: 'Wermut, Estragon, Beifuß',
+  674: 'Ringelblumen (Garten-Ringelblume)', 675: 'Sonnenhut (Schmalblättriger Sonnenhut, Purpur-Sonnenhut)',
+  676: 'Wegerich (Spitzwegerich)', 677: 'Kamillen (Echte Kamille)',
+  678: 'Schafgarben (Gelbe Schafgarbe)', 679: 'Baldrian (Echter Baldrian)',
+  680: 'Echtes Johanniskraut/Hyperikum', 681: 'Frauenmantel',
+  682: 'Mariendisteln', 683: 'Geißraute',
+  684: 'Löwenzahn', 685: 'Engelwurzen (Arznei-Engelwurz, Echter Engelwurz)',
+  686: 'Malven (Wilde Malve)', 687: 'echte Arnika (Arnica montana)',
+
+  701: 'Hanf (THC-arme Sorten)', 702: 'Rollrasen, Vegetationsmatten für Dachbegrünung',
+  703: 'Färber-Waid', 704: 'Kanariensaat/Echtes Glanzgras',
+  705: 'Virginischer Tabak', 706: 'Mohn (Schlafmohn, Backmohn)',
+  707: 'Erdbeeren (Freiland)', 708: 'Färberdisteln',
+  709: 'Brennnesseln (Große Brennnessel)', 710: 'Färberkrapp (Rubia tinctorum)',
+
+  718: 'beetweiser Anbau von Zierpflanzen bis 4 Kulturen', 720: 'beetweiser Anbau von Zierpflanzen ab 5 Kulturen',
+  721: 'Goldlack', 722: 'Einjähriges Silberblatt',
+  723: 'Garten-/Sommerlevkoje', 724: 'Kugelamarant (Echter Kugelamarant)',
+  725: 'Taglilien (Essbare Taglilie)', 726: 'Lilien (Türkenbund)',
+  727: 'Narzissen / Osterglocken', 728: 'Bischofskraut',
+  729: 'Hasenohren (rundblättriges Hasenohr)', 730: 'Seidenpflanzen (Indianer-Seidenpflanze)',
+  731: 'Hyazinthe (Garten-Hyazinthe)', 732: 'Milchstern',
+  733: 'Astern (Sommeraster)', 734: 'Chrysanthemen (Garten-Chrysantheme, Winteraster)',
+  735: 'Strohblumen', 736: 'Edelweiß',
+  737: 'Margeriten', 738: 'Rudbeckien (Schwarzäugige Rudbeckie/Sonnenhut, Leuchtender Sonnenhut, Schlitzblättriger Sonnenhut)',
+  739: 'Tagetes/Studentenblume', 740: 'Wucherblumen (Mutterkraut)',
+  741: 'Strandflieder (Geflügelter Strandflieder)', 742: 'Spreublumen (Einjährige Papierblume)',
+
+  743: 'Zinnien', 744: 'Taubnesseln (Weiße Taubnessel)',
+  745: 'Gladiolen', 746: 'Tulpen',
+  747: 'Trauben-Silberkerze', 748: 'Rittersporn',
+  749: 'Skabiosen', 750: 'Dahlien',
+  751: 'Rosenwurz', 752: 'Krokusse (Safran, Garten-Krokus)',
+  753: 'Hibiskus (Chinesischer Roseneibisch)', 754: 'Strauch-/Bechermalven (Bechermalve)',
+  755: 'Wolfsmilch', 756: 'Löwenmäulchen (Großes Löwenmaul)',
+  757: 'Montbretien', 758: 'Halskräuter (Blaues Halskraut)',
+  759: 'Gipskräuter (Schleierkraut)', 760: 'Pampasgräser (Amerikanisches Pampasgras)',
+  761: 'Kosmeen (Gemeines Schmuckkörbchen)', 762: 'Nachtkerzen (Diptam)',
+  763: 'Nachtkerzen (Oenothera)', 764: 'Königskerzen (Großblütige Königskerze)',
+  765: 'Kapuzinerkresse', 766: 'Pfingstrosen/Päonien (Gemeine Pfingstrose, Strauch-Pfingstrose)',
+  767: 'Schwertlilien (Deutsche Schwertlilie)', 768: 'Wiesenknopf (Kleiner Wiesenknopf, Pimpinelle)',
+  769: 'Zieste (Deutscher Ziest, Knollen-Ziest)', 770: 'Vergissmeinnicht (Wald-Vergissmeinnicht)',
+  771: 'Portulak', 772: 'Nelken (Bartnelke, Land-/Edelnelke)',
+  773: 'Gewöhnlicher Leberbalsam (Ageratum)', 774: 'Gelber Leberbalsam (Lonas)',
+  775: 'Kornblumen', 776: 'Veilchen (Horn-Veilchen, Garten-Stiefmütterchen, Wildes Stiefmütterchen)',
+  777: 'Phacelia (als Hauptkultur z.B. Saatgutvermehrung)', 778: 'Alpendistel',
+  779: 'Amacrinum', 780: 'Begonien',
+  781: 'Calla/Drachenwurz', 782: 'Glockenblumen (Campanula)',
+  783: 'Schildblume (Chelone)', 784: 'Christrose-/Schnee-/Weihnachtsrose, Korischer Nieswurz',
+  785: 'Eukalyptus', 786: 'Fingerhut',
+  787: 'Fuchsien', 788: 'Geranien',
+  789: 'Veronica/Hebe/Ehrenpreis', 790: 'Anemonen (Herbstanemone, Japanische Anemone)',
+  791: 'Knollenbegonien', 792: 'Kornrade',
+  793: 'Leimkraut/Taubenkropf-Leimkraut', 794: 'Orchideen',
+  795: 'Pelargonien', 796: 'Fetthenne, Mauerpfeffer',
+  797: 'Rhizinus', 798: 'Ramtillkraut',
+  799: 'Husarenknopf', 510: 'Goldrute (Solidago)',
+  511: 'Streptocarpus/Drehfrucht', 512: 'Iberischer Drachenkopf',
+  513: 'Braunellen', 514: 'Hauswurz (Sempervivum)',
+  515: 'Mühlenbeckia/Drahtsträucher', 516: 'Knöterich (Persicaria)',
+
+  517: 'Garten-Petunie', 518: 'Polygonum',
+  519: 'Köcherblümchen (Cuphea)', 520: 'Silberbrandschopf',
+
+  802: 'Silphium (Durchwachsene Silphie, Becherpflanze)', 803: 'Sudangras',
+  804: 'Virginiamalve', 805: 'Staudenknöterich, Igniscum',
+  806: 'Rutenhirse/Switchgras', 852: 'Chinaschilf/Miscanthus',
+  853: 'Riesenweizengras/Szarvasi-Gras/Hirschgras', 854: 'Rohrglanzgras',
+  866: 'Pflanzenmischung mit Hanf', 871: 'Wildpflanzenmischung zur Energieerzeugung',
+
+  822: 'Streuobst (ohne Wiesennutzung)', 825: 'Kernobst z.B. Äpfel, Birnen',
+  826: 'Steinobst, z.B. Kirschen, Pflaumen', 827: 'Beerenobst, z.B. Johannis-, Stachel-, Himbeeren',
+  829: 'Sonstige Obstanlagen z.B. Holunder, Sanddorn, Aronia, Maulbeeren', 833: 'Haselnüsse',
+  834: 'Walnüsse', 838: 'Baumschulen, nicht für Beerenobst',
+  839: 'Beerenobst zur Vermehrung (in Baumschulen)', 841: 'KUP lt. GAPDZV',
+  842: 'Rebland', 845: 'Rebschulfläche',
+  846: 'Unterlagsrebfläche', 848: 'Tafeltrauben',
+  849: 'Weinbergbrache', 850: 'Sonstige Dauerkulturen',
+  851: 'Rhabarber', 856: 'Hopfen',
+  860: 'Spargel', 861: 'Artischocke',
+  862: 'Heidekraut', 863: 'Rosen (Baumschulen), Schnittrosen',
+  864: 'Rhododendron', 865: 'Trüffel',
+
+  920: 'Haus- und Nutzgärten', 930: 'Bewirtschaftete Gewässer/Teichflächen',
+  981: 'Pilze unter Glas', 982: 'Sonstige KUP',
+  983: 'Weihnachtsbäume', 990: 'Alle anderen Flächen (keine LF)',
+  994: 'Vorübergehende, unbefestigte Mieten, Stroh-, Futter- oder Dunglagerplätze auf DGL',
+  995: 'Forstflächen (Waldbodenflächen)',
+  996: 'Vorübergehende, unbefestigte Mieten, Stroh-, Futter oder Dunglagerplätze auf AL',
+  997: 'Sonstige Infrastrukturmaßnahmen'
+};
+
+// Nordrhein-Westfalen, Merkblatt Sammelantrag 2026 (S. 4-9).
+// Quelle: https://www.landwirtschaftskammer.de/foerderung/formulare/merkblaetter/mb-sammelantrag-2026-flaechenverzeichnis-hinweise.pdf
+// Dient nur als Fallback, falls die begleitende NTNW-XML fehlt — normalerweise
+// liefert die XML den Klartext direkt, siehe extractNrwNutzungMap() oben.
+const NRW_NUTZUNGSCODE_KLARTEXT = {
+  88: 'ÖR 1a Freiwillige Stilllegung', 90: 'ÖR 1b Blühfläche auf AL',
+  92: 'ÖR 1c Blühfläche auf DK', 93: 'ÖR 1d Altgrasstreifen DGL',
+
+  112: 'Winterdurum (Hartweizen)', 113: 'Sommerdurum (Hartweizen)',
+  114: 'Winter-Dinkel', 115: 'Winterweichweizen',
+  116: 'Sommerweichweizen', 118: 'Winter-Emmer/-Einkorn',
+  119: 'Sommer-Emmer/-Einkorn', 120: 'Sommer-Dinkel',
+  121: 'Winterroggen', 122: 'Sommerroggen',
+  125: 'Wintermenggetreide', 131: 'Wintergerste',
+  132: 'Sommergerste', 142: 'Winterhafer',
+  143: 'Sommerhafer', 144: 'Sommermenggetreide',
+  150: 'Gemenge Getr./Leg. (mehr Getr./ohne Mais)', 156: 'Wintertriticale',
+  157: 'Sommertriticale', 171: 'Mais (ohne Silomais)',
+  917: 'Mais-Mischkulturen', 181: 'Rispenhirse',
+  182: 'Buchweizen', 183: 'Mohren-/Zuckerhirse',
+  186: 'Amarant, Fuchsschwanz', 187: 'Quinoa',
+  188: 'Reis im Trockenanbau', 189: 'Chia',
+
+  210: 'Futtererbsen', 211: 'Gemüseerbse',
+  212: 'Platterbse', 220: 'Ackerbohnen/Dicke Bohne',
+  221: 'Wicken', 222: 'Linsen',
+  230: 'Lupinen', 240: 'Erbsen/Bohnen - Gemische',
+  250: 'Gemenge Leg./Getr. (mehr Leg./ohne Mais)',
+
+  311: 'Winterraps', 312: 'Sommerraps',
+  315: 'Winterrübsen', 316: 'Sommerrübsen',
+  320: 'Sonnenblumen', 330: 'Sojabohnen',
+  341: 'Lein, Flachs', 392: 'Meerkohl/Krambe',
+  393: 'Leindotter',
+
+  411: 'Silomais', 413: 'Futterrübe/Runkelrübe',
+  414: 'Kohlrübe, Steckrüben', 421: 'Klee',
+  422: 'Kleegras', 423: 'Luzerne',
+  424: 'Ackergras', 425: 'Klee-Luzerne-Gemisch',
+  426: 'Bockshornklee', 427: 'Hornklee, Hornschotenklee',
+  429: 'Esparsette', 430: 'Serradella',
+  431: 'Steinklee', 432: 'Kleemischung',
+  433: 'Luzerne-Gras', 434: 'Gras-Leguminosen (mehr Leg.)',
+
+  459: 'Grünland', 480: 'Streuobst (Grünlandnutzung)',
+  492: 'Heide (DGL etabl. Praktiken)',
+
+  510: 'Goldrute', 511: 'Streptocarpus/Drehfrucht',
+  512: 'Iberischer Drachenkopf', 513: 'Braunellen',
+  514: 'Hauswurz', 515: 'Mühlenbeckia/Drahtsträucher',
+  516: 'Knöterich', 517: 'Garten-Petunie',
+  518: 'Polygonum', 519: 'Köcherblümchen',
+
+  560: 'Brache (im Rahmen VNS)', 564: 'Aufforstung Ländl. Raum',
+  573: 'Uferrandstreifen (AUM-Maßnahme)', 576: 'Erosionsschutzstreifen (AUM-Maßnahme)',
+  583: 'Naturschutzfläche (1307/2013i)',
+
+  590: 'Brache (einj. Blühmisch.)', 591: 'Ackerland aus Erzeugung genommen',
+  592: 'DGL aus Erzeugung genommen', 593: 'DK aus der Erzeugung genommen',
+
+  602: 'Kartoffeln', 603: 'Zuckerrüben',
+  604: 'Topinambur',
+
+  610: 'beetweiser Anbau von Gemüse ab 5 Kulturen', 611: 'beetweiser Anbau von Gemüse bis 4 Kulturen',
+  612: 'Schwarzer Senf', 613: 'Gemüsekohl (auch Zierkohl)',
+  614: 'Brauner Senf', 616: 'Garten-Senfrauke, Rucola',
+  617: 'Gartenkresse', 618: 'Gartenrettiche',
+  619: 'Weißer Senf, Gelber Senf', 620: 'Gemüserübe',
+  622: 'Tomaten', 623: 'Auberginen',
+  624: 'Paprika, Chilli, Peperoni', 627: 'Gurken',
+  628: 'Zuckermelone', 629: 'Riesenkürbis',
+  630: 'Gartenkürbis', 631: 'Melone',
+  633: 'Zwiebeln/Lauch', 634: 'Möhre (auch Futtermöhre)',
+  635: 'Gartenbohne', 636: 'Feldsalat (auch Rapunzel)',
+  637: 'Salat (Garten, Lollo Rosso.)', 638: 'Spinat',
+  639: 'Mangold, Rote Beete/Rote Rübe', 640: 'Melde',
+  641: 'Sellerie (Knollen/Bleich/Stang)', 642: 'Ampfer (Wiesen-Sauerampfer)',
+  643: 'Pastinaken', 644: 'Zichorien/Wegwarten',
+  645: 'Kichererbsen', 646: 'Meerrettich',
+  647: 'Schwarzwurzeln', 648: 'Fenchel (Gemüse/Körner)',
+  649: 'Gemüserübsen',
+
+  650: 'beetweise Anbau Kräuter/Gewürz ab 5 Kulturen', 690: 'beetweise Anbau Kräuter/Gewürz bis 4 Kulturen',
+  651: 'Anethum (Dill, Gurkenkraut)', 652: 'Kerbel (auch Wiesenkerbel)',
+  653: 'Bibernellen (Anis)', 654: 'Kümmel',
+  656: 'Schwarzkümmel', 657: 'Koriander',
+  658: 'Liebstöckel/Maggikraut', 659: 'Petersilie',
+  660: 'Basilikum', 661: 'Rosmarin',
+  662: 'Salbei (auch Buntschopf)', 663: 'Borretsch',
+  664: 'Oregano (Majoran, Dost)', 665: 'Bohnenkräuter',
+  667: 'Verbenen (echtes Eisenkraut)', 668: 'Lavendel',
+  669: 'Thymian (auch Gartenthymian)', 670: 'Melisse (Zitronenmelisse)',
+  671: 'Enziane', 672: 'Minzen (Pfefferm., Grüne M.)',
+  673: 'Wermut, Estragon, Beifuß', 674: 'Ringelblumen',
+  675: 'Sonnenhut (Schmalbl., Purpur)', 676: 'Wegeriche (Spitzwegerich)',
+  677: 'Kamillen (Echte Kamille)', 678: 'Schafgarben (Gelbe Schafgarbe)',
+  679: 'Baldriane (Echter Baldrian)', 680: 'Johanniskräuter (Echtes J.)',
+  681: 'Frauenmantel', 682: 'Mariendisteln',
+  683: 'Galega (Geißraute)', 684: 'Löwenzahn',
+  685: 'Engelwurzen', 686: 'Malven (Wilde Malve)',
+  687: 'echte Arnika (Arnica montana)',
+
+  701: 'Hanf', 702: 'Rollrasen',
+  703: 'Färber-Waid', 704: 'Glanzgräser',
+  705: 'Virginischer Tabak', 706: 'Mohn (Schlafmohn, Backmohn)',
+  707: 'Erdbeeren', 708: 'Färberdisteln',
+  709: 'Brennnesseln (Große Brennn.)', 710: 'Färberkrapp (Rubia tinctorum)',
+
+  718: 'beetweise Anbau Zierpflanzen bis 4 Kulturen', 720: 'beetweise Anbau Zierpflanzen ab 5 Kulturen',
+  722: 'Einjähriges Silberblatt', 723: 'Garten-/ Sommerlevkoje',
+  726: 'Lilien (Türkenbund)', 727: 'Narzissen / Osterglocken',
+  728: 'Knorpelmöhren (Bischofskraut)', 730: 'Seidenpflanzen',
+  732: 'Milchstern (Kap-Milchstern)', 733: 'Astern (Sommeraster)',
+  734: 'Chrysantheme, Winteraster', 735: 'Strohblumen (Garten)',
+  736: 'Edelweiß (Alpen-Edelweiß)', 737: 'Margeriten',
+  738: 'Rudbeckien (Sonnenhut)', 739: 'Tagetes',
+  740: 'Wucherblumen (Mutterkraut)', 741: 'Strandflieder (Geflügelter S.)',
+  743: 'Zinnien', 744: 'Taubnesseln (Weiße Taubnessel)',
+  745: 'Gladiolen (Gartengladiole)', 746: 'Tulpen (Garten-Tulpe)',
+  747: 'Trauben-Silberkerze', 748: 'Rittersporn',
+  750: 'Dahlien (Garten-Dahlie)', 751: 'Rhodiola (Rosenwurz)',
+  752: 'Krokusse (Safran, Garten-K.)', 753: 'Hibiskus',
+  755: 'Wolfsmilch (Weißrand)', 756: 'Löwenmäulchen',
+  757: 'Garten-Montbretie', 759: 'Gipskräuter (Schleierkraut)',
+  760: 'Amerikanisches Pampasgras', 761: 'Kosmeen (Schmuckkörbchen)',
+  764: 'Königskerzen (Großblütige K.)', 765: 'Kapuzinerkresse',
+  766: 'Pfingstrosen (auch Strauch)', 768: 'Wiesenknopf (Kl. W., Pimpine.)',
+  769: 'Zieste (Deutscher, Knollen)', 770: 'Vergissmeinnicht (Wald-Verg.)',
+  771: 'Portulak', 772: 'Nelken (Bartn., Land/Edel)',
+  773: 'Ageratum (Gew. Leberbalsam)', 775: 'Kornblumen',
+  776: 'Veilchen und Stiefmütterchen', 777: 'Phacelia',
+  778: 'Alpendistel', 780: 'Begonien',
+  782: 'Glockenblumen (Campanula)', 783: 'Schildblume (Chelone)',
+  784: 'Korischer Nieswurz, Rosen', 785: 'Eukalyptus',
+  786: 'Fingerhut', 787: 'Fuchsien',
+  788: 'Geranien', 789: 'Veronica/Hebe/Ehrenpreis',
+  790: 'Anemonen', 792: 'Kornrade',
+  793: 'Taubenkropf-/Leimkraut', 795: 'Pelargonien',
+  796: 'Fetthenne, Mauerpfeffer', 797: 'Rhizinus',
+  798: 'Ramtillkraut', 799: 'Husarenknopf (Sanvitalia)',
+
+  802: 'Silphium (Durchwachs., Becher)', 803: 'Sudangras, Zuckerhirse',
+  804: 'Sida (Virginiamalve)', 806: 'Rutenhirse/Switchgras',
+
+  81: 'Agroforstsystem (Streifen)',
+
+  822: 'Streuobst (ohne Wiesennutzung)', 825: 'Kernobst z.B. Äpfel, Birnen',
+  826: 'Steinobst z.B. Kirsche, Pflaume', 827: 'Beerenobst',
+  829: 'Sonstige Obstanlagen', 833: 'Haselnüsse',
+  834: 'Walnüsse', 838: 'Baumschulen (ohne Beerenobst)',
+  839: 'Beerenobst zur Vermehrung', 840: 'Korbweiden',
+  841: 'Niederwald mit Kurzumtrieb', 842: 'Rebland',
+  850: 'Sonstige Dauerkulturen', 851: 'Rhabarber',
+  852: 'Chinaschilf/Miscanthus', 853: 'Riesenweizengras/Szarvasi-Gras',
+  854: 'Rohrglanzgras', 860: 'Spargel',
+  861: 'Artischocke', 862: 'Heidekraut',
+  863: 'Rosen, Schnittrosen', 865: 'Trüffel',
+  866: 'Pflanzenmischung mit Hanf', 871: 'Wildpflanzenmischung (AUM-Maßnahme)',
+
+  910: 'Wildacker auf lw. Fläche', 911: 'Rübensamenvermehrung',
+  912: 'Grassamenvermehrung', 913: 'Wildsamenvermehrung',
+  914: 'Versuchsflächen (nur DZ-fähig)', 915: 'Randstreifen (Acker/DK)',
+  918: 'Mehrjährige Buntbrache (AUM-Maßnahme)', 919: 'Saatmais (Saatgutvermehrung)',
+  924: 'Vertragsnaturs. ohne DZ', 956: 'Aufforstung',
+  972: 'NFF: Dauergrünlandnutzung', 973: 'NFF: Ackernutzung',
+  983: 'Weihnachtsbäume', 994: 'Unbefestigte Mieten DGL',
+  995: 'Forstflächen', 996: 'Unbefestigte Mieten AL',
+  997: 'Anbau in Pflanzgefäßen', 999: 'Gattung/Art (nicht in Liste)'
+};
+
+// Rheinland-Pfalz, KTA-Liste 2026, Stand 25.03.2026.
+// Quelle: https://add.rlp.de/fileadmin/add/Abteilung_4/Foerderungen/Agrarwirtschaft/Gemeinsamer_Antrag/KTA-Liste_RP_2026.pdf
+const RP_NUTZUNGSCODE_KLARTEXT = {
+  83: 'Agroforststreifen ohne ÖR',
+  88: 'ÖR 1a Brache (Selbst-/Begrünung)', 89: 'ÖR 1a Brache (aktive Begrünung)',
+  90: 'ÖR 1b Blühfläche/-streifen auf AL', 92: 'ÖR 1c Blühfläche/-streifen auf DK',
+  93: 'ÖR 1d Altgrasstreifen / -flächen', 94: 'ÖR 3 Agroforststreifen',
+
+  112: 'Winterdurum (Hartweizen)', 113: 'Sommerdurum (Hartweizen)',
+  114: 'Winter-Dinkel', 120: 'Sommer-Dinkel',
+  115: 'Winterweichweizen', 116: 'Sommerweichweizen',
+  118: 'Winter-Emmer/-Einkorn', 119: 'Sommer-Emmer/-Einkorn',
+  121: 'Winterroggen, Winter-Waldstaudenroggen', 122: 'Sommerroggen, Sommer-Waldstaudenroggen',
+  125: 'Wintermenggetreide', 126: 'Wintermenggetreide ohne Weizen',
+  131: 'Wintergerste', 132: 'Sommergerste',
+  142: 'Winterhafer', 143: 'Sommerhafer',
+  144: 'Sommermenggetreide', 145: 'Sommermenggetreide ohne Weizen',
+  156: 'Wintertriticale', 157: 'Sommertriticale',
+  150: 'Gemenge Sommergetreide/Leguminose (Getreide überwiegt)',
+  171: 'Mais (ohne Silomais NC 411)',
+  181: 'Rispenhirse', 182: 'Buchweizen',
+  183: 'Mohren-/Zuckerhirse (ohne Sudangras NC 803)', 184: 'Kolbenhirse',
+  186: 'Amarant, Fuchsschwanz', 187: 'Quinoa',
+  188: 'Reis im Trockenanbau', 189: 'Chia',
+  882: 'Winterhartes Gemenge Getreide/Leguminose (Getreide überwiegt)',
+
+  210: 'Sommer-Erbsen (Markerbse, Schalerbse, Zuckererbse, Futtererbse, Peluschke)',
+  211: 'Sommer-Gemüseerbse (Markerbse, Schalerbse, Zuckererbse)',
+  212: 'Platterbse',
+  213: 'Winter-Erbsen (Markerbse, Schalerbse, Zuckererbse, Futtererbse, Peluschke)',
+  220: 'Ackerbohne/Puffbohne/Pferdebohne/Dicke Bohne',
+  221: 'Wicken (Pannonische Wicke, Zottelwicke, Saatwicke)',
+  222: 'Linsen',
+  230: 'Lupinen (Süßlupine, weiße Lupine, blaue/schmalblättrige Lupine, gelbe Lupine, Anden-Lupine)',
+  240: 'Erbsen/Bohnen',
+  250: 'Gemenge Leguminose/Getreide (Leguminose überwiegt)',
+
+  311: 'Winterraps', 312: 'Sommerraps',
+  315: 'Winterrübsen (Rübsen, Rübsamen, Rübsaat)', 316: 'Sommerrübsen (Rübsen, Rübsamen, Rübsaat)',
+  317: 'Ölrettich', 320: 'Sonnenblumen',
+  330: 'Sojabohnen', 341: 'Lein, Flachs',
+  392: 'Meerkohl/Krambe', 393: 'Leindotter',
+
+  410: 'Mais-Gemenge', 411: 'Silomais (als Hauptfutter)', 413: 'Futterrübe/Runkelrübe',
+  421: 'Rot-/Weiß-/Alexandriner-/Inkarnat-/Erd-/Schweden-/Persischer Klee',
+  422: 'Kleegras',
+  423: 'Luzerne, Hopfenklee/Gelbklee, Bastardluzerne/Sandluzerne',
+  424: 'Ackergras',
+  425: 'Klee-Luzerne-Gemisch',
+  426: 'Bockshornklee, Schabziger Klee',
+  427: 'Hornklee, Hornschotenklee',
+  429: 'Esparsette', 430: 'Serradella', 431: 'Steinklee',
+  432: 'Kleemischung aus NC 421, 427, 431 (stickstoffbindend)',
+  433: 'Luzerne-Gras',
+  434: 'Gras-Leguminosen Gemisch (Leguminosen überwiegt)',
+
+  441: 'Wiesen (Grünlandneueinsaat 1. bis inkl. 5. Jahr)',
+  442: 'Mähweiden (Grünlandneueinsaat 1. bis inkl. 5. Jahr)',
+  443: 'Weiden (Grünlandneueinsaat 1 bis inkl. 5. Jahr)',
+  450: 'DGL Neueinsaat als Ersatz für genehmigten DGL-Umbruch',
+  451: 'Wiesen', 452: 'Mähweiden', 453: 'Weiden und Almen', 454: 'Hutungen',
+  480: 'Streuobstfläche mit Grünlandnutzung',
+  492: 'Dauergrünland unter etablierten lokalen Praktiken (z.B. Heide)',
+
+  910: 'Wildäsungsfläche', 911: '(Beta-)Rübensamenvermehrung',
+  912: 'Grassamenvermehrung', 913: 'Wildsamenvermehrung',
+  914: 'Versuchsflächen mit mehreren beihilfefähigen Kulturarten',
+  917: 'Mischkulturen ohne Mais',
+
+  556: 'Erstaufforstung EAFP alt und EAFP 2000',
+  586: 'Nach §11 (1) Nr.3 Bst. b) der GAPDZV förderfähige Fläche (In Folge einer Maßnahme, die Paludikulturen zur Erzeugung von nicht in Anhang I AEUV aufgeführten Erzeugnissen erlaubt)',
+  587: 'Landwirtschaftliche Fläche im Paludi Verfahren ohne landwirtschaftliches Erzeugnis',
+
+  590: 'Ackerbrache mit jährlicher Einsaat von Blühmischungen',
+  591: 'Ackerland aus der Erzeugung genommen',
+  592: 'Dauergrünland aus der Erzeugung genommen',
+  593: 'Dauerkulturen aus der Erzeugung genommen',
+  595: 'Ackerbrache mit mehrjährigen Blühmischungen',
+
+  601: 'Stärkekartoffeln', 602: 'Kartoffeln (Speise)', 603: 'Zuckerrüben',
+  604: 'Topinambur', 605: 'Süßkartoffel', 606: 'Pflanzkartoffeln',
+
+  610: 'beetweiser Anbau von Gemüse ab 5 Kulturen',
+  611: 'beetweiser Anbau von Gemüse bis 4 Kulturen',
+  649: 'Gemüserübsen (Stoppelrübe, Weiße Rübe, Bayerische Rübe, Mairübe, Chinakohl, Pak-Choi, Teltower Rübchen, Stielmus, Herbstrübe)',
+  613: 'Gemüsekohl (Kopfkohl, Wirsing, Rot-/Weißkohl, Spitzkohl, Grünkohl, Kohlrabi, Markstammkohl, Blumenkohl, Romanesco, Brokkoli, Rosenkohl, Zierkohl)',
+  614: 'Brauner Senf/Sareptasenf', 612: 'Schwarzer Senf',
+  615: 'Echte Brunnenkresse', 616: 'Garten-Senfrauke, Rucola', 617: 'Gartenkresse',
+  618: 'Gartenrettiche (Weiße/rote Rettiche, schwarzer Winterrettich, Ölrettich, Radieschen)',
+  619: 'Weißer Senf, Gelber Senf', 620: 'Steckrübe, Kohlrübe (Gemüseanbau)',
+  622: 'Tomaten', 623: 'Auberginen', 624: 'Paprika, Chilli, Peperoni',
+  625: 'Schwarze Tollkirsche', 627: 'Gurke (Salatgurke, Einlegegurke)',
+  628: 'Zuckermelone', 629: 'Riesenkürbis (Riesenkürbis, Hokkaidokürbis)',
+  630: 'Gartenkürbis (Gartenkürbis, Steirischer Kürbis, Zucchini, Spaghettikürbis, Zierkürbis)',
+  631: 'Melone (Wassermelone)',
+  632: 'Winterlauch (Speise-Zwiebel, Schalotte, Lauch, Knoblauch, Schnittlauch, Bärlauch)',
+  633: 'Sommerlauch (Speise-Zwiebel, Schalotte, Lauch, Knoblauch, Schnittlauch, Bärlauch)',
+  634: 'Möhre (Möhre/Karotte, Futtermöhre)',
+  635: 'Gartenbohne (Gartenbohne/Buschbohne/Stangenbohne, Feuerbohne/Prunkbohne)',
+  636: 'Feldsalat/Ackersalat/ Rapunzel',
+  637: 'Lattich (Garten-Salat/Lattich, Lollo Rosso, Romana-Salat/Römischer Salat)',
+  638: 'Spinat', 639: 'Mangold, Rote Beete/Rote Rübe', 640: 'Melde (Garten-Melde)',
+  641: 'Sellerie (Knollen-Sellerie, Bleich-Sellerie, Stangen-Sellerie)',
+  642: 'Ampfer (Wiesen-Sauerampfer)', 643: 'Pastinaken',
+  644: 'Zichorien/Wegwarten (Chicorée, Radicchio, krausblättrige Endivie, ganzblättrige Endivie, Zichorie)',
+  645: 'Kichererbsen', 646: 'Meerettich', 647: 'Schwarzwurzeln',
+  648: 'Fenchel (Gemüsefenchel, Körnerfenchel)',
+
+  650: 'beetweiser Anbau von Küchenkräuter/ Heil- und Gewürzpflanzen ab 5 Kulturen',
+  690: 'beetweiser Anbau von Küchenkräuter/Heil-und Gewürzpflanzen bis 4 Kulturen',
+  651: 'Dill, Gurkenkraut', 652: 'Kerbel (Kerbel/echter Kerbel, Wiesenkerbel)',
+  653: 'Anis', 654: 'Kümmel', 655: 'Kreuzkümmel',
+  656: 'Schwarzkümmel (Echter Schwarzkümmel, Jungfer im Grünen)',
+  657: 'Koriander', 658: 'Liebstöckel/Maggikraut', 659: 'Petersilie',
+  660: 'Basilikum', 661: 'Rosmarin',
+  662: 'Salbei (Küchen-/Heilsalbei, Buntschopf-Salbei)', 663: 'Borretsch',
+  664: 'Oregano (Echter Majoran, Oregano/Dost/Wilder Majoran)', 665: 'Bohnenkraut',
+  666: 'Ysop/Eisenkraut', 667: 'Verbenen (Echtes Eisenkraut)',
+  668: 'Lavendel (Echter Lavendel, Speik-Lavendel, Hybrid-Lavendel)', 669: 'Thymian',
+  670: 'Melisse (Zitronenmelisse)', 671: 'Enzian',
+  672: 'Minzen (Pfefferminze, Grüne Minze)', 673: 'Wermut, Estragon, Beifuß',
+  674: 'Ringelblumen (Garten-Ringelblume)',
+  675: 'Sonnenhut (Schmalblättriger Sonnenhut, Purpur-Sonnenhut)',
+  676: 'Wegerich (Spitzwegerich)', 677: 'Kamillen (Echte Kamille)',
+  678: 'Schafgarben (Gelbe Schafgarbe)', 679: 'Baldrian (Echter Baldrian)',
+  680: 'Echtes Johanniskraut/Hyperikum', 681: 'Frauenmantel', 682: 'Mariendisteln',
+  683: 'Geißraute', 684: 'Löwenzahn',
+  685: 'Engelwurzen (Arznei-Engelwurz, Echter Engelwurz)', 686: 'Malven (Wilde Malve)',
+  687: 'echte Arnika (Arnica montana)',
+
+  701: 'Hanf', 702: 'Rollrasen, Vegetationsmatten für Dachbegrünung',
+  703: 'Färber-Waid', 704: 'Kanariensaat/Echtes Glanzgras',
+  705: 'Virginischer Tabak', 706: 'Mohn (Schlafmohn, Backmohn)',
+  707: 'Erdbeeren', 708: 'Färberdisteln',
+  709: 'Brennnesseln (Große Brennnessel)', 710: 'Färberkrapp (Rubia tinctorum)',
+
+  718: 'beetweiser Anbau Zierpflanzen bis 4 Kulturen',
+  720: 'beetweiser Anbau von Zierpflanzen ab 5 Kulturen',
+  721: 'Goldlack', 722: 'Einjähriges Silberblatt', 723: 'Garten-/Sommerlevkoje',
+  724: 'Kugelamarant (Echter Kugelamarant)', 725: 'Taglilien (Essbare Taglilie)',
+  726: 'Lilien (Türkenbund)', 727: 'Narzissen / Osterglocken', 728: 'Bischofskraut',
+  729: 'Hasenohren (rundblättriges Hasenohr)',
+  730: 'Seidenpflanzen (Indianer-Seidenpflanze)', 731: 'Hyazinthe (Garten-Hyazinthe)',
+  732: 'Milchstern', 733: 'Astern (Sommeraster)',
+  734: 'Chrysanthemen (Garten-Chrysantheme, Winteraster)', 735: 'Strohblumen',
+  736: 'Edelweiß', 737: 'Margeriten',
+  738: 'Rudbeckien (Schwarzäugige Rudbeckie/Sonnenhut, Leuchtender Sonnenhut, Schlitzblättriger Sonnenhut)',
+  739: 'Tagetes/Studentenblume', 740: 'Wucherblumen (Mutterkraut)',
+  741: 'Strandflieder (Geflügelter Strandflieder)',
+  742: 'Spreublumen (Einjährige Papierblume)', 743: 'Zinnien',
+  744: 'Taubnesseln (Weiße Taubnessel)', 745: 'Gladiolen', 746: 'Tulpen',
+  747: 'Trauben-Silberkerze', 748: 'Rittersporn',
+  749: 'Skabiosen', 750: 'Dahlien', 751: 'Rosenwurz',
+  752: 'Krokusse (Safran, Garten-Krokus)', 753: 'Hibiskus (Chinesischer Roseneibisch)',
+  754: 'Strauch-/Bechermalven (Bechermalve)', 755: 'Wolfsmilch',
+  756: 'Löwenmäulchen (Großes Löwenmaul)', 757: 'Montbretien',
+  758: 'Halskräuter (Blaues Halskraut)', 759: 'Gipskräuter (Schleierkraut)',
+  760: 'Pampasgräser (Amerikanisches Pampasgras)',
+  761: 'Kosmeen (Gemeines Schmuckkörbchen)', 762: 'Nachtkerzen (Diptam)',
+  763: 'Nachtkerzen (Oenothera)', 764: 'Königskerzen (Großblütige Königskerze)',
+  765: 'Kapuzinerkresse',
+  766: 'Pfingstrosen/Päonien (Gemeine Pfingstrose, Strauch-Pfingstrose)',
+  767: 'Schwertlilien (Deutsche Schwertlilie)',
+  768: 'Wiesenknopf (Kleiner Wiesenknopf, Pimpinelle)',
+  769: 'Zieste (Deutscher Ziest, Knollen-Ziest)',
+  770: 'Vergissmeinnicht (Wald-Vergissmeinnicht)', 771: 'Portulak',
+  772: 'Nelken (Bartnelke, Land-/Edelnelke)',
+  773: 'Gewöhnlicher Leberbalsam (Ageratum)', 774: 'Gelber Leberbalsam (Lonas)',
+  775: 'Kornblumen',
+  776: 'Veilchen (Horn-Veilchen, Garten-Stiefmütterchen, Wildes Stiefmütterchen)',
+  777: 'Phacelia (als Hauptkultur z.B. Saatgutvermehrung)', 778: 'Alpendistel',
+  779: 'Amacrinum', 780: 'Begonien', 781: 'Calla/Drachenwurz',
+  782: 'Glockenblumen (Campanula)', 783: 'Schildblume (Chelone)',
+  784: 'Christrose-/Schnee-/Weihnachtsrose, Korischer Nieswurz', 785: 'Eukalyptus',
+  786: 'Fingerhut', 787: 'Fuchsien', 788: 'Geranien',
+  789: 'Veronica/Hebe/Ehrenpreis',
+  790: 'Anemonen (Herbstanemone, Japanische Anemone)', 791: 'Knollenbegonien',
+  792: 'Kornrade', 793: 'Leimkraut/Taubenkropf-Leimkraut', 794: 'Orchideen',
+  795: 'Pelargonien', 796: 'Fetthenne, Mauerpfeffer (Sedum)', 797: 'Rhizinus',
+  798: 'Ramtillkraut', 799: 'Husarenknopf (Sanvitalia)',
+  510: 'Goldrute (Solidago)', 511: 'Streptocarpus/Drehfrucht',
+  512: 'Iberischer Drachenkopf', 513: 'Braunellen', 514: 'Hauswurz (Sempervivum)',
+  515: 'Mühlenbeckia/Drahtsträucher', 516: 'Knöterich (Persicaria)',
+  517: 'Garten-Petunie', 518: 'Polygonum', 519: 'Köcherblümchen (Cuphea)',
+  520: 'Silberbrandschopf',
+
+  802: 'Silphium (Durchwachsene Silphie, Becherpflanze)', 803: 'Sudangras',
+  804: 'Virginiamalve', 805: 'Staudenknöterich, Igniscum',
+  806: 'Rutenhirse/Switchgras', 852: 'Chinaschilf/Miscanthus',
+  853: 'Riesenweizengras/Szarvasi-Gras/Hirschgras', 854: 'Rohrglanzgras',
+  866: 'Pflanzenmischung mit Hanf', 871: 'Wildpflanzenmischung zur Energieerzeugung',
+
+  821: 'Kern- und Steinobst', 825: 'Kernobst z.B. Äpfel, Birnen',
+  826: 'Steinobst, z. B. Kirschen, Pflaumen',
+  827: 'Beerenobst, z.B. Johannis-, Stachel-, Himbeeren',
+  829: 'Sonstige Obstanlagen z.B. Holunder, Aronia, Maulbeeren',
+  833: 'Haselnüsse', 834: 'Walnüsse', 835: 'sonstige Schalenfrüchte',
+  838: 'Baumschulen, nicht für Beerenobst',
+  839: 'Beerenobst zur Vermehrung (in Baumschulen)', 841: 'KUP lt. GAPDZV',
+  843: 'Bestockte Rebfläche', 844: 'Unbestockte Rebfläche', 845: 'Rebschulfläche',
+  846: 'Unterlagsrebfläche', 848: 'Tafeltrauben', 850: 'Sonstige Dauerkulturen',
+  851: 'Rhabarber', 856: 'Hopfen',
+  859: 'Hopfen vorübergehend stillgelegt (Gerüst steht noch)', 860: 'Spargel',
+  861: 'Artischocke', 862: 'Heidekraut', 863: 'Rosen (Baumschulen), Schnittrosen',
+  864: 'Rhododendron', 865: 'Trüffel',
+
+  41: 'Wiesen Umwandlung AUKM (Ackerstatus)',
+  42: 'Mähweiden Umwandlung AUKM (Ackerstatus)',
+  43: 'Weiden Umwandlung AUKM (Ackerstatus)',
+  44: 'Hutung Umwandlung AUKM (Ackerstatus)',
+  48: 'Streuobstwiese Umwandlung AUKM (Ackerstatus)',
+  470: 'Grünland Zielflächen für ganzjährige Weidehaltung VN Grünland ohne BF',
+  849: 'Weinbergbrache AUKM', 915: 'Ackerrandstreifen und Blühflächen',
+  928: 'Saum- und Bandstrukturen',
+
+  920: 'Haus- und Nutzgärten', 930: 'Bewirtschaftete Gewässer/Teichflächen',
+  940: 'Unbewirtschaftes Gewässer', 941: 'Gründüngung im Hauptfruchtanbau',
+  960: 'Dämme und Deiche',
+  980: 'Pilzbeet- und Gemüseflächen in Gebäuden (nicht im Gewächshaus)',
+  981: 'Hof-, Wege- und Gebäudefläche', 982: 'Abbau-/Öd-/Un-/Geringstland',
+  983: 'Weihnachtsbäume', 990: 'Alle anderen Flächen (keine LF)',
+  991: 'Nicht landwirt. Flächen in der Verfügungsgewalt des Antragstellers, die gemäß GAPKondV als umweltsensibles Dauergrünland bestimmt worden sind',
+  994: 'Vorübergehende, unbefestigte Mieten, Stroh-, Futter- oder Dunglagerplätze auf DGL',
+  995: 'Forstflächen (Waldbodenflächen)',
+  996: 'Vorübergehende, unbefestigte Mieten, Stroh-, Futter oder Dunglagerplätze auf AL'
+};
+
+// Registry: für jedes bekannte Bundesland-Shapefile-Format (erkennbar an
+// einem charakteristischen DBF-Feld, siehe FIELD_CANDIDATES-Kommentar oben)
+// das Feld mit dem rohen Nutzungscode und die zugehörige amtliche
+// Code->Klartext-Tabelle. codeField ist bewusst jeweils ein Feldname, den
+// FIELD_CANDIDATES.kultur bereits kennt — pickField() findet den übersetzten
+// Klartext dadurch automatisch, ohne dass FIELD_CANDIDATES selbst geändert
+// werden muss.
+const BUNDESLAND_NC_CONFIGS = [
+  // Bayern läuft separat über mergeFeldstueckNutzung() (zwei-Shapefile-Format).
+  {
+    name: 'Baden-Württemberg',
+    quelle: 'https://www.rv.de/.../2026 GA - Nutzcodeliste.pdf',
+    codeField: 'nutz_code',
+    table: BW_NUTZUNGSCODE_KLARTEXT,
+    detect: props => 'nutz_code' in props
+  },
+  {
+    name: 'Sachsen',
+    quelle: 'https://www.landwirtschaft.sachsen.de/download/SN26_FV_NC.pdf',
+    codeField: 'SC_HA_CODE',
+    table: SACHSEN_NUTZUNGSCODE_KLARTEXT,
+    detect: props => 'SC_HA_CODE' in props
+  },
+  // Sachsen liefert Teilflächen in einem eigenen DBF (_teilflaechen.dbf) mit dem
+  // Code im Feld "NC" statt "SC_HA_CODE" — nur zusammen mit "TF_TYP" erkennen,
+  // damit ein generisches "NC"-Feld aus anderen Bundesländern nicht fälschlich matcht.
+  {
+    name: 'Sachsen (Teilflächen)',
+    quelle: 'https://www.landwirtschaft.sachsen.de/download/SN26_FV_NC.pdf',
+    codeField: 'NC',
+    table: SACHSEN_NUTZUNGSCODE_KLARTEXT,
+    detect: props => 'NC' in props && 'TF_TYP' in props
+  },
+  {
+    name: 'Hessen',
+    quelle: 'https://www.wibank.de/.../merkblatt-zum-ga-2026-data.pdf (ab S. 67)',
+    codeField: 'ncode_aktu',
+    table: HESSEN_NUTZUNGSCODE_KLARTEXT,
+    detect: props => 'ncode_aktu' in props
+  },
+  {
+    name: 'Rheinland-Pfalz',
+    quelle: 'https://add.rlp.de/.../KTA-Liste_RP_2026.pdf',
+    codeField: 'KTA_AJ',
+    table: RP_NUTZUNGSCODE_KLARTEXT,
+    detect: props => 'KTA_AJ' in props
+  },
+  // NRW: Kulturart steckt normalerweise nicht im DBF, sondern (falls die
+  // Begleit-XML im Zip liegt) direkt als Klartext in der NTNW-XML, siehe
+  // extractNrwNutzungMap()/mergeNrwNutzung() weiter unten. Diese Tabelle
+  // dient nur als Fallback für den seltenen Fall, dass NCODE doch einmal
+  // roh im DBF steht.
+  {
+    name: 'Nordrhein-Westfalen',
+    quelle: 'https://www.landwirtschaftskammer.de/.../mb-sammelantrag-2026-flaechenverzeichnis-hinweise.pdf (ab S. 4)',
+    codeField: 'NCODE',
+    table: NRW_NUTZUNGSCODE_KLARTEXT,
+    detect: props => 'NCODE' in props
+  }
+];
+
+function translateNutzungscodeMitTabelle(rawCode, table) {
+  const n = parseInt(String(rawCode).trim(), 10);
+  if (!isFinite(n)) return null;
+  return table[n] || null;
+}
+
+// Erkennt anhand der vorhandenen Felder, aus welchem der oben registrierten
+// Bundesland-Formate ein Feature stammt, und übersetzt den rohen
+// Nutzungscode direkt im selben Feld in Klartext (Rohcode bleibt zusätzlich
+// unter "<Feld>_Code" erhalten). Unbekannte Codes bleiben bewusst
+// unverändert stehen statt eine erfundene Übersetzung zu zeigen.
+function applyBundeslandNutzungscode(props) {
+  for (const cfg of BUNDESLAND_NC_CONFIGS) {
+    if (!cfg.detect(props)) continue;
+    const raw = props[cfg.codeField];
+    if (!raw) return;
+    const klartext = translateNutzungscodeMitTabelle(raw, cfg.table);
+    if (klartext) {
+      props[cfg.codeField + '_Code'] = raw;
+      props[cfg.codeField] = klartext;
+    }
+    return;
+  }
+}
+
 // Manche Bundesländer (z.B. Bayern) exportieren "Feldstueck" (Geometrie +
 // Name) und "Nutzung" (Kulturart-Code) als zwei separate, geometrisch
 // identische Shapefiles im selben Zip statt einer gemeinsamen Ebene. Ohne
@@ -664,7 +1861,8 @@ function addLayer(name, geojson) {
         featName: pickField(props, FIELD_CANDIDATES.name),
         groesse: pickGroesse(props),
         kultur: pickField(props, FIELD_CANDIDATES.kultur),
-        flaechenId: pickField(props, FIELD_CANDIDATES.flaechenid)
+        flaechenId: pickField(props, FIELD_CANDIDATES.flaechenid),
+        besichtigt: false
       };
       featureIndex.push(entry);
       lyr.on('click', () => {
@@ -797,9 +1995,10 @@ function renderFeatureTable() {
   const tbody = document.getElementById('feature-table-body');
   const rows = getVisibleFeatureRows();
   document.getElementById('table-count').textContent = rows.length;
+  renderBesichtigtSummary('table-besichtigt-summary', rows);
 
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="6" style="color:var(--muted); padding:14px;">' +
+    tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted); padding:14px;">' +
       (featureIndex.length ? 'Keine Flächen in dieser Ansicht (Teilflächen sind ausgeblendet).' : 'Noch keine Flächen geladen.') +
       '</td></tr>';
     return;
@@ -817,12 +2016,20 @@ function renderFeatureTable() {
       <td>${escapeHtml(entry.flaechenId || '–')}</td>
       <td>${groesseText}</td>
       <td>${escapeHtml(entry.kultur || '–')}</td>
+      <td class="besichtigt-cell"><input type="checkbox" class="besichtigt-checkbox" ${entry.besichtigt ? 'checked' : ''} onclick="event.stopPropagation()"></td>
       <td>${routeCell}</td>
     </tr>`;
   }).join('');
 
   tbody.querySelectorAll('tr[data-idx]').forEach(tr => {
     tr.addEventListener('click', () => selectFeatureFromTable(parseInt(tr.getAttribute('data-idx'), 10)));
+  });
+  tbody.querySelectorAll('.besichtigt-checkbox').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const idx = parseInt(cb.closest('tr').getAttribute('data-idx'), 10);
+      featureIndex[idx].besichtigt = cb.checked;
+      renderBesichtigtSummary('table-besichtigt-summary', getVisibleFeatureRows());
+    });
   });
 }
 
@@ -1085,6 +2292,52 @@ function showCompareError(msg) {
   showCompareError._t = setTimeout(() => el.style.display = 'none', 7000);
 }
 
+// Sucht in den Feature-Eigenschaften nach einem Feldnamen, der "jahr" enthält
+// (z.B. JAHR, Jahr, WJAHR, ajahr_aktu) — deckt die Antrags-/Wirtschaftsjahr-Felder
+// der bisher gesehenen Bundesländer ab (Sachsen: JAHR, Bayern: Jahr, NRW: WJAHR,
+// Hessen: ajahr_aktu). Fallback auf Datumsfelder (z.B. BW: dat_bearb, Hessen: updated_at).
+function extractJahrAusFeature(feature) {
+  const props = (feature && feature.properties) || {};
+  const keys = Object.keys(props);
+  for (const key of keys) {
+    if (!/jahr/i.test(key)) continue;
+    const v = props[key];
+    if (v === null || v === undefined) continue;
+    const m = String(v).match(/(19|20)\d{2}/);
+    if (m) return m[0];
+  }
+  for (const key of keys) {
+    if (!/dat|datum|zeit|updated|erstellt|created/i.test(key)) continue;
+    const v = props[key];
+    if (v === null || v === undefined) continue;
+    const m = String(v).match(/(19|20)\d{2}/);
+    if (m) return m[0];
+  }
+  return null;
+}
+
+function extractJahrAusMetadaten(fc, fileName) {
+  const features = (fc && fc.features) || [];
+  for (let i = 0; i < Math.min(features.length, 20); i++) {
+    const jahr = extractJahrAusFeature(features[i]);
+    if (jahr) return jahr;
+  }
+  // Letzter Fallback: viele Ämter benennen die Export-Datei nach dem Antragsjahr
+  // (z.B. "2025_Mustermann_Shape.zip") — Metadaten in Fläche/DBF gehen vor.
+  if (fileName) {
+    const m = fileName.match(/(19|20)\d{2}/);
+    if (m) return m[0];
+  }
+  return null;
+}
+
+function updateCompareYearButtons() {
+  const btnA = document.querySelector('.cvt-btn[data-mode="onlyA"]');
+  const btnB = document.querySelector('.cvt-btn[data-mode="onlyB"]');
+  if (btnA) btnA.textContent = (compareDataA && compareDataA.jahr) ? 'Nur ' + compareDataA.jahr : 'Nur Jahr A';
+  if (btnB) btnB.textContent = (compareDataB && compareDataB.jahr) ? 'Nur ' + compareDataB.jahr : 'Nur Jahr B';
+}
+
 async function loadCompareFile(file, slot) {
   try {
     let results = await parseShapefileZip(file);
@@ -1099,7 +2352,7 @@ async function loadCompareFile(file, slot) {
       chosen = results[0];
       showCompareError(file.name + ': Keine Ebene mit "Parzellen" im Namen gefunden — verwende stattdessen "' + chosen.name + '".');
     }
-    const data = { fc: chosen.fc, fileName: file.name, layerName: chosen.name };
+    const data = { fc: chosen.fc, fileName: file.name, layerName: chosen.name, jahr: extractJahrAusMetadaten(chosen.fc, file.name) };
     if (slot === 'a') {
       compareDataA = data;
       document.getElementById('compare-file-a-name').textContent = file.name;
@@ -1109,6 +2362,7 @@ async function loadCompareFile(file, slot) {
       document.getElementById('compare-file-b-name').textContent = file.name;
       document.getElementById('compare-drop-b').classList.add('filled');
     }
+    updateCompareYearButtons();
     document.getElementById('btn-compare-run').disabled = !(compareDataA && compareDataB);
   } catch (err) {
     console.error(err);
@@ -2140,6 +3394,13 @@ function addTree(key, latlng) {
   const marker = L.marker(latlng, { icon: createTreeIcon(fruit.color), draggable: true });
   marker.bindTooltip(fruit.label, { direction: 'top', offset: [0, -10] });
   marker.on('click', (e) => { L.DomEvent.stopPropagation(e); zoomToTree(entry.id); });
+  // Rechtsklick auf einen Baum löscht ihn sofort — schnellste Korrektur bei
+  // Fehlklicks beim Setzen, ohne erst die Baumtabelle öffnen zu müssen.
+  marker.on('contextmenu', (e) => {
+    L.DomEvent.stopPropagation(e);
+    if (e.originalEvent) e.originalEvent.preventDefault();
+    removeTree(entry.id);
+  });
   marker.on('dragend', () => {
     entry.latlng = marker.getLatLng();
     entry.parcelId = findObstbaumParcelForLatLng(entry.latlng)?.id || null;
@@ -2160,11 +3421,13 @@ function addTree(key, latlng) {
 function removeTree(id) {
   const idx = obstbaumTrees.findIndex(t => t.id === id);
   if (idx === -1) return;
+  const fruit = fruitOf(obstbaumTrees[idx].art);
   obstbaumLayerGroup.removeLayer(obstbaumTrees[idx].marker);
   obstbaumTrees.splice(idx, 1);
   renderObstbaumSummary();
   renderObstbaumTable();
   renderObstbaumParcelTable();
+  setObstbaumStatus(`${fruit.label} entfernt (${obstbaumTrees.length} verbleibend).`);
 }
 
 function zoomToTree(id) {
@@ -2311,8 +3574,17 @@ function addObstbaumParcelLayer(name, geojson) {
   // würde man diese Kombi-Datei versehentlich hier statt beim Baumkataster
   // hochladen, sollen die Baum-Punkte darin einfach ignoriert werden statt
   // als kaputte "Flächen" in der Tabelle aufzutauchen.
+  //
+  // renderer: L.canvas() ist hier Pflicht, nicht nur Stilfrage: anders als im
+  // Viewer/Zeichner bleiben die Flächen beim Obstbaum-Flächenkarten-Export
+  // durchgehend sichtbar (der Baumkontext soll ja mit ins Bild) statt vor der
+  // Aufnahme entfernt zu werden — mit dem SVG-Standard-Renderer berechnet
+  // html2canvas die CSS-Transform-Verschiebung von Leaflets SVG-Overlay-Pane
+  // falsch und der Umriss landet versetzt zu den Kacheln (siehe
+  // captureParcelScreenshot weiter oben für denselben Bug am Ursprung).
   const leafletLayer = L.geoJSON(geojson, {
     filter: (feature) => !!feature.geometry && (feature.geometry.type === 'Polygon' || feature.geometry.type === 'MultiPolygon'),
+    renderer: L.canvas(),
     style: () => ({ color, weight: 1.6, fillColor: color, fillOpacity: 0.18 }),
     onEachFeature: (feature, lyr) => {
       const props = feature.properties || {};
@@ -2329,7 +3601,8 @@ function addObstbaumParcelLayer(name, geojson) {
         featName: pickField(props, FIELD_CANDIDATES.name),
         groesse: pickGroesse(props),
         kultur: pickField(props, FIELD_CANDIDATES.kultur),
-        flaechenId: pickField(props, FIELD_CANDIDATES.flaechenid)
+        flaechenId: pickField(props, FIELD_CANDIDATES.flaechenid),
+        besichtigt: false
       };
       obstbaumParcelIndex.push(entry);
       lyr.on('click', () => highlightObstbaumParcel(entry));
@@ -2451,8 +3724,9 @@ document.getElementById('obstbaum-parcel-input').addEventListener('change', (e) 
 function renderObstbaumParcelTable() {
   const tbody = document.getElementById('obstbaum-parcel-table-body');
   document.getElementById('obstbaum-parcel-table-count').textContent = obstbaumParcelIndex.length;
+  renderBesichtigtSummary('obstbaum-parcel-summary-row', obstbaumParcelIndex);
   if (!obstbaumParcelIndex.length) {
-    tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted); padding:14px;">Noch keine Flächen geladen.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" style="color:var(--muted); padding:14px;">Noch keine Flächen geladen.</td></tr>';
     return;
   }
   const treeCounts = computeObstbaumParcelTreeCounts();
@@ -2478,15 +3752,24 @@ function renderObstbaumParcelTable() {
       <td>${groesseText}</td>
       <td>${escapeHtml(entry.kultur || '–')}</td>
       <td>${treesCell}</td>
+      <td class="besichtigt-cell"><input type="checkbox" class="besichtigt-checkbox" ${entry.besichtigt ? 'checked' : ''} onclick="event.stopPropagation()"></td>
       <td>${routeCell}</td>
     </tr>`;
   }).join('');
 
   tbody.querySelectorAll('tr[data-id]').forEach(tr => {
     tr.addEventListener('click', (e) => {
-      if (e.target.closest('a')) return;
+      if (e.target.closest('a') || e.target.closest('input')) return;
       const entry = obstbaumParcelIndex.find(p => p.id === tr.getAttribute('data-id'));
       if (entry) zoomToObstbaumParcel(entry);
+    });
+  });
+  tbody.querySelectorAll('.besichtigt-checkbox').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const id = cb.closest('tr').getAttribute('data-id');
+      const entry = obstbaumParcelIndex.find(p => p.id === id);
+      if (entry) entry.besichtigt = cb.checked;
+      renderBesichtigtSummary('obstbaum-parcel-summary-row', obstbaumParcelIndex);
     });
   });
 }
