@@ -1,11 +1,8 @@
 
-CLEAR BUTTON Compare
-KatasterMaster
-config fruit tree color selector
-delete data type BAUMKATASTER. geojson suffices
 
-Bienen Flugkarte
-Routenplanung
+
+
+
 
 === Bundesland-Kompatibilität Testdaten (test-shapes/) — Stand 2026-09-03 ===
 Neu geordnet nach Bundesland-Ordnern, mit echten Betriebs-Zips (statt der alten
@@ -93,9 +90,4 @@ vorhanden bzw. technisch nicht auslesbar, keine Mapping-Lücke mehr.
 [x] Tabellenspalte "Flächenidentifikator" (FLEK/FLIK/FB_BEZEICH/FID/...) in
     Tabelle, CSV/Excel/PDF-Export und Flächenkarten-PDF-Export.
 
-=== Bekannte, nicht-kritische Nebenbefunde ===
-[ ] Leere "hinweispunkte"-Ebenen (0 Datensätze, z.B. Brandenburg, NRW BLE_)
-    lösen beim Einlesen einen Konsolenfehler + Fehler-Toast aus ("I don't know
-    shp type '0'") statt einfach übersprungen zu werden. Funktional
-    unkritisch (Ebene wird korrekt ausgelassen, alle anderen Ebenen laden
-    normal), aber unschön für den Nutzer.
+

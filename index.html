@@ -117,6 +117,7 @@
       <button id="table-minimize" title="Minimieren">▁</button>
       <button id="table-close" title="Schließen">✕</button>
     </div>
+    <div id="table-besichtigt-summary" class="besichtigt-summary-row"></div>
     <div id="table-body-wrap">
       <table id="feature-table">
         <thead>
@@ -126,6 +127,7 @@
             <th>Flächenidentifikator</th>
             <th>Größe</th>
             <th>Kulturart</th>
+            <th>Besichtigt</th>
             <th>Route</th>
           </tr>
         </thead>
@@ -285,7 +287,7 @@
       <button type="button" id="obstbaum-sonstige-toggle">Sonstige Obstart <span class="chev">▾</span></button>
       <div id="obstbaum-sonstige-list" hidden></div>
     </div>
-    <div class="empty-hint" id="obstbaum-placement-hint">Obstart anklicken, dann auf die Karte klicken, um dort einen Baum zu setzen — bleibt aktiv für mehrere Bäume derselben Art. Erneuter Klick auf die aktive Obstart (oder Esc) beendet das Setzen. Gesetzte Punkte lassen sich auf der Karte per Drag verschieben. Tipp: Eine Obstart aus „Sonstige" auf einen der Buttons oben ziehen, um sie dorthin zu holen.</div>
+    <div class="empty-hint" id="obstbaum-placement-hint">Obstart anklicken, dann auf die Karte klicken, um dort einen Baum zu setzen — bleibt aktiv für mehrere Bäume derselben Art. Erneuter Klick auf die aktive Obstart (oder Esc) beendet das Setzen. Gesetzte Punkte lassen sich auf der Karte per Drag verschieben, per Rechtsklick sofort löschen. Tipp: Eine Obstart aus „Sonstige" auf einen der Buttons oben ziehen, um sie dorthin zu holen.</div>
 
     <div class="compare-upload">
       <label class="compare-label">Baumkataster laden</label>
@@ -342,6 +344,7 @@
         <button id="obstbaum-parcel-table-minimize" title="Minimieren">▁</button>
         <button id="obstbaum-parcel-table-close" title="Schließen">✕</button>
       </div>
+      <div id="obstbaum-parcel-summary-row" class="besichtigt-summary-row"></div>
       <div id="obstbaum-parcel-table-body-wrap">
         <table id="obstbaum-parcel-table">
           <thead>
@@ -352,6 +355,7 @@
               <th>Größe</th>
               <th>Kulturart</th>
               <th>Bäume</th>
+              <th>Besichtigt</th>
               <th>Route</th>
             </tr>
           </thead>
