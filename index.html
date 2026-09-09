@@ -37,6 +37,9 @@
 <body>
 
 <div id="tabbar">
+  <button id="btn-sidebar-toggle" title="Menü öffnen" aria-label="Menü öffnen">
+    <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+  </button>
   <span id="brand-logo" aria-label="FeldFolio">
     <span class="ff-txt">Feld</span><span class="ff-txt">F</span><span class="ff-apple">
       <svg viewBox="292 54 184 219" aria-hidden="true">
@@ -50,11 +53,6 @@
       </svg>
     </span><span class="ff-txt">lio</span>
   </span>
-  <button class="tab-btn active" data-view="viewer">Viewer</button>
-  <button class="tab-btn" data-view="compare">Jahresvergleich</button>
-  <button class="tab-btn" data-view="zeichner">Flächenzeichner</button>
-  <button class="tab-btn" data-view="obstbaum">Obstbaumkataster</button>
-  <button class="tab-btn" data-view="bienenflug">Bienenflugkarte</button>
   <button id="theme-toggle" title="Hell-/Dunkelmodus umschalten" aria-label="Hell-/Dunkelmodus umschalten">
     <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2" fill="currentColor"/><g stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="12" y1="1.5" x2="12" y2="4.5"/><line x1="12" y1="19.5" x2="12" y2="22.5"/><line x1="1.5" y1="12" x2="4.5" y2="12"/><line x1="19.5" y1="12" x2="22.5" y2="12"/><line x1="4.4" y1="4.4" x2="6.5" y2="6.5"/><line x1="17.5" y1="17.5" x2="19.6" y2="19.6"/><line x1="4.4" y1="19.6" x2="6.5" y2="17.5"/><line x1="17.5" y1="6.5" x2="19.6" y2="4.4"/></g></svg>
     <span class="theme-thumb"></span>
@@ -62,12 +60,19 @@
   </button>
 </div>
 
-<div id="views">
-<div id="view-viewer" class="view active">
+<div id="app-body">
+<div id="sidebar-backdrop"></div>
 <div id="sidebar">
   <div id="brand">
-    <h1>Shapefile-Viewer</h1>
-    <p>Shapefiles &amp; GeoJSON lokal auf der Karte darstellen</p>
+    <h1>FeldFolio</h1>
+    <p id="brand-caption">Shapefiles &amp; GeoJSON lokal auf der Karte darstellen</p>
+  </div>
+
+  <div id="view-switcher">
+    <button class="segment-btn" data-view="compare">Jahresvergleich</button>
+    <button class="segment-btn" data-view="zeichner">Flächenzeichner</button>
+    <button class="segment-btn" data-view="obstbaum">Obstbaumkataster</button>
+    <button class="segment-btn" data-view="bienenflug">Bienenflugkarte</button>
   </div>
 
   <div id="dropzone">
@@ -79,17 +84,121 @@
   <div id="layer-section">
     <h2>Ebenen</h2>
     <div id="layer-list"></div>
-    <div class="empty-hint" id="empty-hint">Noch keine Ebene geladen. Ein Shapefile besteht meist aus .shp, .shx und .dbf — am einfachsten alle Dateien zusammen als .zip hochladen.</div>
+    <div class="empty-hint" id="empty-hint">Noch keine Ebene geladen. Ein Shapefile besteht meist aus .shp, .shx und .dbf — am einfachsten alle Dateien zusammen als .zip hochladen. Einmal geladen, stehen die Ebenen in allen Werkzeugen zur Verfügung.</div>
   </div>
 
-  <button id="btn-export-flaechenkarten">Flächenkarten exportieren</button>
+  <div class="sidebar-section active" data-view="viewer">
+    <button id="btn-export-flaechenkarten">Flächenkarten exportieren</button>
+    <div id="status" class="status-line">Bereit.</div>
+  </div>
 
-  <div id="status">Bereit.</div>
+  <div class="sidebar-section" data-view="compare">
+    <div class="compare-upload">
+      <label class="compare-label">Jahr A (älter)</label>
+      <div class="dropzone-mini" id="compare-drop-a">
+        <span id="compare-file-a-name">.zip auswählen…</span>
+        <input type="file" id="compare-file-a" accept=".zip">
+      </div>
+    </div>
+    <div class="compare-upload" id="compare-jahrb-picker-wrap" hidden>
+      <label class="compare-label">Jahr B (aktuell geladene Ebene)</label>
+      <select id="compare-jahrb-picker"></select>
+    </div>
+
+    <button id="btn-compare-run" disabled>Vergleichen</button>
+    <div class="empty-hint" id="compare-hint">Jahr A separat hochladen — Jahr B kommt automatisch aus den oben geladenen Ebenen. Teilflächen &amp; sonstige Ebenen werden für den Vergleich ignoriert.</div>
+
+    <div id="compare-criteria">
+      <label class="compare-label" style="margin: 10px 0 6px;">Als "Verändert" zählt eine Abweichung bei:</label>
+      <label class="criteria-option">
+        <input type="checkbox" id="crit-groesse" checked> Flächengröße
+      </label>
+      <label class="criteria-option">
+        <input type="checkbox" id="crit-kultur" checked> Kulturart
+      </label>
+    </div>
+
+    <div id="compare-summary"></div>
+
+    <div id="compare-legend">
+      <div><span class="legend-swatch" style="background:#6FBF73"></span> Zugang (neu dazugekommen)</div>
+      <div><span class="legend-swatch" style="background:#D97757"></span> Abgang (weggefallen)</div>
+      <div><span class="legend-swatch" style="background:#C9A24F"></span> Verändert (Umriss)</div>
+      <div><span class="legend-swatch" style="background:#5A6270"></span> Unverändert</div>
+      <div style="margin-top:4px; padding-top:4px; border-top:1px solid var(--border);">
+        <span class="legend-swatch" style="background:#5F7A93"></span> Bestandsfläche (in beiden Jahren gleich)</div>
+      <div><span class="legend-swatch" style="background:#2EE6B8"></span> geometrisch dazugekommenes Stück</div>
+      <div><span class="legend-swatch" style="background:#E0507A"></span> geometrisch weggefallenes Stück</div>
+    </div>
+    <div id="compare-status" class="status-line">Bereit.</div>
+  </div>
+
+  <div class="sidebar-section" data-view="zeichner">
+    <button id="btn-zeichner-draw">Fläche zeichnen</button>
+    <div class="empty-hint" id="zeichner-empty-hint">Noch keine Fläche gezeichnet. „Fläche zeichnen" klicken, dann Eckpunkte per Klick setzen und mit Doppelklick abschließen. Rechtsklick entfernt den zuletzt gesetzten Punkt, Esc bricht das Zeichnen ganz ab. Gezeichnete Flächen erscheinen sofort auch in der Ebenenliste oben und stehen dort allen Werkzeugen zur Verfügung.</div>
+    <div id="zeichner-section">
+      <h2>Gezeichnete Flächen</h2>
+      <div id="zeichner-list"></div>
+    </div>
+    <div class="export-buttons" id="zeichner-export-buttons">
+      <button id="btn-export-zeichner-geojson" class="export-btn">GeoJSON speichern</button>
+    </div>
+    <button id="btn-export-zeichner-flaechenkarten">Flächenkarten exportieren</button>
+    <div id="zeichner-status" class="status-line">Bereit.</div>
+  </div>
+
+  <div class="sidebar-section" data-view="obstbaum">
+    <div id="obstbaum-picker">
+      <label class="compare-label">Obstart zum Setzen wählen</label>
+      <div id="obstbaum-fruit-grid"></div>
+      <button type="button" id="obstbaum-sonstige-toggle">Sonstige Obstart <span class="chev">▾</span></button>
+      <div id="obstbaum-sonstige-list" hidden></div>
+    </div>
+    <div class="empty-hint" id="obstbaum-placement-hint">Obstart anklicken, dann auf die Karte klicken, um dort einen Baum zu setzen — bleibt aktiv für mehrere Bäume derselben Art. Erneuter Klick auf die aktive Obstart (oder Esc) beendet das Setzen. Gesetzte Punkte lassen sich auf der Karte per Drag verschieben, per Rechtsklick sofort löschen. Tipp: Eine Obstart aus „Sonstige" auf einen der Buttons oben ziehen, um sie dorthin zu holen.</div>
+
+    <div class="compare-upload">
+      <label class="compare-label">Baumkataster laden</label>
+      <div class="dropzone-mini" id="obstbaum-drop">
+        <span id="obstbaum-file-name">.geojson auswählen…</span>
+        <input type="file" id="obstbaum-file-input" accept=".geojson,.json">
+      </div>
+    </div>
+
+    <button id="btn-obstbaum-table">Baumtabelle</button>
+    <button id="btn-obstbaum-parcel-table">Flächentabelle</button>
+
+    <div id="obstbaum-spacer"></div>
+
+    <div class="export-buttons" id="obstbaum-export-buttons">
+      <button id="btn-export-baumkataster" class="export-btn">Kataster speichern</button>
+    </div>
+    <button id="btn-export-obstbaum-flaechenkarten">Flächenkarten exportieren</button>
+
+    <div id="obstbaum-status" class="status-line">Bereit.</div>
+  </div>
+
+  <div class="sidebar-section" data-view="bienenflug">
+    <div class="empty-hint" id="bienenflug-hint">Auf die Karte klicken, um dort einen Bienenstock zu setzen — der Flugradius wird automatisch mit angezeigt. Gesetzte Punkte lassen sich per Drag verschieben.</div>
+
+    <div id="bienenflug-section">
+      <h2>Gesetzte Bienenstöcke</h2>
+      <div id="bienenflug-list"></div>
+      <div class="empty-hint" id="bienenflug-empty-hint">Noch kein Bienenstock gesetzt.</div>
+    </div>
+
+    <button id="btn-export-bienenflug-flaechenkarten">Flächenkarten exportieren</button>
+
+    <div id="bienenflug-status" class="status-line">Bereit.</div>
+  </div>
 </div>
 
 <div id="map-wrap">
   <div id="map"></div>
   <div id="error-toast"></div>
+  <div id="compare-error-toast"></div>
+  <div id="zeichner-error-toast"></div>
+  <div id="obstbaum-error-toast"></div>
+  <div id="bienenflug-error-toast"></div>
   <div id="topbar">
     <button id="btn-basemap">Basiskarte: Standard</button>
     <button id="btn-fit">Auf Inhalt zoomen</button>
@@ -100,8 +209,16 @@
         <text x="12" y="13.6" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="5.6" font-weight="700" fill="#2E86FF">GPS</text>
       </svg>
     </button>
+    <div class="topbar-extra" data-view="compare">
+      <div id="compare-view-toggle">
+        <button class="cvt-btn active" data-mode="diff">Vergleich</button>
+        <button class="cvt-btn" data-mode="onlyA">Nur Jahr A</button>
+        <button class="cvt-btn" data-mode="onlyB">Nur Jahr B</button>
+      </div>
+    </div>
   </div>
   <div id="coord-readout">–, –</div>
+
   <div id="table-panel">
     <div id="table-resize-handle"></div>
     <div id="table-head">
@@ -127,6 +244,7 @@
             <th>Flächenidentifikator</th>
             <th>Größe</th>
             <th>Kulturart</th>
+            <th>Bäume</th>
             <th>Besichtigt</th>
             <th>Route</th>
           </tr>
@@ -135,233 +253,57 @@
       </table>
     </div>
   </div>
-</div>
-</div>
 
-<div id="view-compare" class="view">
-  <div id="compare-sidebar">
-    <div id="compare-brand">
-      <h1>Jahresvergleich</h1>
-      <p>Zwei Parzellen-Shapefiles gegenüberstellen — Zugänge, Abgänge, Änderungen</p>
-    </div>
-
-    <div class="compare-upload">
-      <label class="compare-label">Jahr A (älter)</label>
-      <div class="dropzone-mini" id="compare-drop-a">
-        <span id="compare-file-a-name">.zip auswählen…</span>
-        <input type="file" id="compare-file-a" accept=".zip">
+  <div id="compare-table-panel">
+    <div id="compare-table-resize-handle"></div>
+    <div id="compare-table-head">
+      <span class="title">Vergleichsergebnisse (<span id="compare-table-count">0</span>)</span>
+      <div class="export-buttons" id="compare-export-buttons">
+        <button class="export-btn" data-export="csv" data-target="compare">CSV</button>
+        <button class="export-btn" data-export="xlsx" data-target="compare">Excel</button>
+        <button class="export-btn" data-export="pdf" data-target="compare">PDF</button>
       </div>
+      <button id="compare-table-minimize" title="Minimieren">▁</button>
+      <button id="compare-table-close" title="Schließen">✕</button>
     </div>
-    <div class="compare-upload">
-      <label class="compare-label">Jahr B (neuer)</label>
-      <div class="dropzone-mini" id="compare-drop-b">
-        <span id="compare-file-b-name">.zip auswählen…</span>
-        <input type="file" id="compare-file-b" accept=".zip">
-      </div>
-    </div>
-
-    <button id="btn-compare-run" disabled>Vergleichen</button>
-    <div class="empty-hint" id="compare-hint">Beide Jahre laden eine Parzellen-Ebene aus dem jeweiligen Zip — Teilflächen &amp; sonstige Ebenen werden für den Vergleich ignoriert.</div>
-
-    <div id="compare-criteria">
-      <label class="compare-label" style="margin: 10px 0 6px;">Als "Verändert" zählt eine Abweichung bei:</label>
-      <label class="criteria-option">
-        <input type="checkbox" id="crit-groesse" checked> Flächengröße
-      </label>
-      <label class="criteria-option">
-        <input type="checkbox" id="crit-kultur" checked> Kulturart
-      </label>
-    </div>
-
-    <div id="compare-summary"></div>
-
-    <div id="compare-legend">
-      <div><span class="legend-swatch" style="background:#6FBF73"></span> Zugang (neu dazugekommen)</div>
-      <div><span class="legend-swatch" style="background:#D97757"></span> Abgang (weggefallen)</div>
-      <div><span class="legend-swatch" style="background:#C9A24F"></span> Verändert (Umriss)</div>
-      <div><span class="legend-swatch" style="background:#5A6270"></span> Unverändert</div>
-      <div style="margin-top:4px; padding-top:4px; border-top:1px solid var(--border);">
-        <span class="legend-swatch" style="background:#5F7A93"></span> Bestandsfläche (in beiden Jahren gleich)</div>
-      <div><span class="legend-swatch" style="background:#2EE6B8"></span> geometrisch dazugekommenes Stück</div>
-      <div><span class="legend-swatch" style="background:#E0507A"></span> geometrisch weggefallenes Stück</div>
+    <div id="compare-table-body-wrap">
+      <table id="compare-table">
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Nr.</th>
+            <th>Name</th>
+            <th>Größe A</th>
+            <th>Größe B</th>
+            <th>Δ ha</th>
+            <th>Kultur A → B</th>
+          </tr>
+        </thead>
+        <tbody id="compare-table-body"></tbody>
+      </table>
     </div>
   </div>
-  <div id="compare-map-wrap">
-    <div id="compare-map"></div>
-    <div id="compare-error-toast"></div>
-    <div id="compare-topbar">
-      <div id="compare-view-toggle">
-        <button class="cvt-btn active" data-mode="diff">Vergleich</button>
-        <button class="cvt-btn" data-mode="onlyA">Nur Jahr A</button>
-        <button class="cvt-btn" data-mode="onlyB">Nur Jahr B</button>
-      </div>
-      <button id="compare-btn-table">Tabelle</button>
-      <button id="compare-btn-basemap">Basiskarte: Standard</button>
+
+  <div id="obstbaum-table-panel">
+    <div id="obstbaum-table-resize-handle"></div>
+    <div id="obstbaum-table-head">
+      <span class="title">Bäume (<span id="obstbaum-table-count">0</span>)</span>
+      <button id="obstbaum-table-minimize" title="Minimieren">▁</button>
+      <button id="obstbaum-table-close" title="Schließen">✕</button>
     </div>
-    <div id="compare-table-panel">
-      <div id="compare-table-resize-handle"></div>
-      <div id="compare-table-head">
-        <span class="title">Vergleichsergebnisse (<span id="compare-table-count">0</span>)</span>
-        <div class="export-buttons" id="compare-export-buttons">
-          <button class="export-btn" data-export="csv" data-target="compare">CSV</button>
-          <button class="export-btn" data-export="xlsx" data-target="compare">Excel</button>
-          <button class="export-btn" data-export="pdf" data-target="compare">PDF</button>
-        </div>
-        <button id="compare-table-minimize" title="Minimieren">▁</button>
-        <button id="compare-table-close" title="Schließen">✕</button>
-      </div>
-      <div id="compare-table-body-wrap">
-        <table id="compare-table">
-          <thead>
-            <tr>
-              <th>Status</th>
-              <th>Nr.</th>
-              <th>Name</th>
-              <th>Größe A</th>
-              <th>Größe B</th>
-              <th>Δ ha</th>
-              <th>Kultur A → B</th>
-            </tr>
-          </thead>
-          <tbody id="compare-table-body"></tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-</div>
-
-<div id="view-zeichner" class="view">
-  <div id="zeichner-sidebar">
-    <div id="zeichner-brand">
-      <h1>Flächenzeichner</h1>
-      <p>Eigene Parzellen direkt auf der Karte zeichnen</p>
-    </div>
-
-    <button id="btn-zeichner-draw">Fläche zeichnen</button>
-
-    <div id="zeichner-section">
-      <h2>Gezeichnete Flächen</h2>
-      <div id="zeichner-list"></div>
-      <div class="empty-hint" id="zeichner-empty-hint">Noch keine Fläche gezeichnet. „Fläche zeichnen" klicken, dann Eckpunkte per Klick setzen und mit Doppelklick abschließen (Esc bricht ab).</div>
-    </div>
-
-    <div class="export-buttons" id="zeichner-export-buttons">
-      <button id="btn-export-zeichner-geojson" class="export-btn">GeoJSON speichern</button>
-      <button id="btn-zeichner-to-obstbaum" class="export-btn">In Obstbaumkataster übernehmen</button>
-    </div>
-    <button id="btn-export-zeichner-flaechenkarten">Flächenkarten exportieren</button>
-
-    <div id="zeichner-status">Bereit.</div>
-  </div>
-
-  <div id="zeichner-map-wrap">
-    <div id="zeichner-map"></div>
-    <div id="zeichner-error-toast"></div>
-    <div id="zeichner-topbar">
-      <button id="zeichner-btn-basemap">Basiskarte: Standard</button>
-    </div>
-  </div>
-</div>
-
-<div id="view-obstbaum" class="view">
-  <div id="obstbaum-sidebar">
-    <div id="obstbaum-brand">
-      <h1>Obstbaumkataster</h1>
-      <p>Obstbäume als farbige Punkte auf der Karte erfassen</p>
-    </div>
-
-    <div class="compare-upload">
-      <label class="compare-label">Flächen laden (optional)</label>
-      <div class="dropzone-mini" id="obstbaum-parcel-drop">
-        <span id="obstbaum-parcel-file-name">.zip / .geojson auswählen…</span>
-        <input type="file" id="obstbaum-parcel-input" accept=".zip,.geojson,.json" multiple>
-      </div>
-    </div>
-    <div id="obstbaum-parcel-list"></div>
-    <div class="empty-hint" id="obstbaum-parcel-empty-hint">Noch keine Flächen geladen — Bäume lassen sich auch ohne geladene Flächen setzen. Wird ein Baum auf einer geladenen Fläche gesetzt, wird er dieser automatisch zugeordnet.</div>
-    <button id="btn-obstbaum-parcel-table">Flächentabelle</button>
-
-    <div id="obstbaum-picker">
-      <label class="compare-label">Obstart zum Setzen wählen</label>
-      <div id="obstbaum-fruit-grid"></div>
-      <button type="button" id="obstbaum-sonstige-toggle">Sonstige Obstart <span class="chev">▾</span></button>
-      <div id="obstbaum-sonstige-list" hidden></div>
-    </div>
-    <div class="empty-hint" id="obstbaum-placement-hint">Obstart anklicken, dann auf die Karte klicken, um dort einen Baum zu setzen — bleibt aktiv für mehrere Bäume derselben Art. Erneuter Klick auf die aktive Obstart (oder Esc) beendet das Setzen. Gesetzte Punkte lassen sich auf der Karte per Drag verschieben, per Rechtsklick sofort löschen. Tipp: Eine Obstart aus „Sonstige" auf einen der Buttons oben ziehen, um sie dorthin zu holen.</div>
-
-    <div class="compare-upload">
-      <label class="compare-label">Baumkataster laden</label>
-      <div class="dropzone-mini" id="obstbaum-drop">
-        <span id="obstbaum-file-name">.geojson auswählen…</span>
-        <input type="file" id="obstbaum-file-input" accept=".geojson,.json">
-      </div>
-    </div>
-
-    <button id="btn-obstbaum-table">Baumtabelle</button>
-
-    <div id="obstbaum-spacer"></div>
-
-    <div class="export-buttons" id="obstbaum-export-buttons">
-      <button id="btn-export-baumkataster" class="export-btn">Kataster speichern</button>
-    </div>
-    <button id="btn-export-obstbaum-flaechenkarten">Flächenkarten exportieren</button>
-
-    <div id="obstbaum-status">Bereit.</div>
-  </div>
-
-  <div id="obstbaum-map-wrap">
-    <div id="obstbaum-map"></div>
-    <div id="obstbaum-error-toast"></div>
-    <div id="obstbaum-topbar">
-      <button id="obstbaum-btn-basemap">Basiskarte: Standard</button>
-    </div>
-    <div id="obstbaum-table-panel">
-      <div id="obstbaum-table-resize-handle"></div>
-      <div id="obstbaum-table-head">
-        <span class="title">Bäume (<span id="obstbaum-table-count">0</span>)</span>
-        <button id="obstbaum-table-minimize" title="Minimieren">▁</button>
-        <button id="obstbaum-table-close" title="Schließen">✕</button>
-      </div>
-      <div id="obstbaum-summary-row"></div>
-      <div id="obstbaum-table-body-wrap">
-        <table id="obstbaum-table">
-          <thead>
-            <tr>
-              <th>Nr.</th>
-              <th>Obstart</th>
-              <th>Fläche</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody id="obstbaum-table-body"></tbody>
-        </table>
-      </div>
-    </div>
-    <div id="obstbaum-parcel-table-panel">
-      <div id="obstbaum-parcel-table-resize-handle"></div>
-      <div id="obstbaum-parcel-table-head">
-        <span class="title">Flächen (<span id="obstbaum-parcel-table-count">0</span>)</span>
-        <button id="obstbaum-parcel-table-minimize" title="Minimieren">▁</button>
-        <button id="obstbaum-parcel-table-close" title="Schließen">✕</button>
-      </div>
-      <div id="obstbaum-parcel-summary-row" class="besichtigt-summary-row"></div>
-      <div id="obstbaum-parcel-table-body-wrap">
-        <table id="obstbaum-parcel-table">
-          <thead>
-            <tr>
-              <th>Schlagnr. / Flächennr.</th>
-              <th>Flächenname</th>
-              <th>Flächenidentifikator</th>
-              <th>Größe</th>
-              <th>Kulturart</th>
-              <th>Bäume</th>
-              <th>Besichtigt</th>
-              <th>Route</th>
-            </tr>
-          </thead>
-          <tbody id="obstbaum-parcel-table-body"></tbody>
-        </table>
-      </div>
+    <div id="obstbaum-summary-row"></div>
+    <div id="obstbaum-table-body-wrap">
+      <table id="obstbaum-table">
+        <thead>
+          <tr>
+            <th>Nr.</th>
+            <th>Obstart</th>
+            <th>Fläche</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="obstbaum-table-body"></tbody>
+      </table>
     </div>
   </div>
 
@@ -378,35 +320,6 @@
         <button type="button" id="obstbaum-export-modal-cancel">Abbrechen</button>
         <button type="button" id="obstbaum-export-modal-confirm" class="primary">Exportieren</button>
       </div>
-    </div>
-  </div>
-</div>
-
-<div id="view-bienenflug" class="view">
-  <div id="bienenflug-sidebar">
-    <div id="bienenflug-brand">
-      <h1>Bienenflugkarte</h1>
-      <p>Bienenstöcke markieren — theoretischer Flugradius 3 km</p>
-    </div>
-
-    <div class="empty-hint" id="bienenflug-hint">Auf die Karte klicken, um dort einen Bienenstock zu setzen — der Flugradius wird automatisch mit angezeigt. Gesetzte Punkte lassen sich per Drag verschieben.</div>
-
-    <div id="bienenflug-section">
-      <h2>Gesetzte Bienenstöcke</h2>
-      <div id="bienenflug-list"></div>
-      <div class="empty-hint" id="bienenflug-empty-hint">Noch kein Bienenstock gesetzt.</div>
-    </div>
-
-    <button id="btn-export-bienenflug-flaechenkarten">Flächenkarten exportieren</button>
-
-    <div id="bienenflug-status">Bereit.</div>
-  </div>
-
-  <div id="bienenflug-map-wrap">
-    <div id="bienenflug-map"></div>
-    <div id="bienenflug-error-toast"></div>
-    <div id="bienenflug-topbar">
-      <button id="bienenflug-btn-basemap">Basiskarte: Standard</button>
     </div>
   </div>
 </div>
