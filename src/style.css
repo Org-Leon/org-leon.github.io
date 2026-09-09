@@ -40,6 +40,22 @@
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
+
+  /* ---------- Scrollbalken im Layout-Farbschema (Dark-/Hellmodus) ---------- */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--accent) transparent;
+  }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--accent);
+    border-radius: 6px;
+    border: 2px solid var(--panel);
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background-color: var(--accent-dim); }
+  ::-webkit-scrollbar-corner { background: transparent; }
   body {
     font-family: var(--sans);
     background: var(--bg);
@@ -51,7 +67,7 @@
     transition: background-color .15s, color .15s;
   }
 
-  /* ---------- Reiter (Viewer / Jahresvergleich) ---------- */
+  /* ---------- Kopfleiste (Wortmarke + Theme-Umschalter) ---------- */
   #tabbar {
     flex: 0 0 auto;
     display: flex;
@@ -59,6 +75,18 @@
     background: var(--panel);
     border-bottom: 1px solid var(--border);
   }
+  /* Nur unterhalb der Mobil-Breakpoint sichtbar (siehe Media Query am Dateiende) */
+  #btn-sidebar-toggle {
+    display: none;
+    background: transparent;
+    border: none;
+    color: var(--text);
+    padding: 8px 6px 8px 14px;
+    cursor: pointer;
+    flex-shrink: 0;
+    align-items: center;
+  }
+
   /* ---------- FeldFolio-Wortmarke (Tabbar) ---------- */
   #brand-logo {
     display: inline-flex;
@@ -83,18 +111,46 @@
     transform: translateY(0.04em);
   }
   #brand-logo .ff-apple svg { height: 100%; width: auto; display: block; }
-  #tabbar button {
+
+  /* ---------- Funktions-Umschalter (SelectButton-Stil, Sidebar) ----------
+     2×2-Raster statt einer horizontalen Leiste — die vier Funktionsnamen sind
+     für eine einzeilige Anordnung in der 300px-Sidebar zu lang. Aktiv-Klick
+     auf den bereits aktiven Button schaltet zurück auf die Standardansicht
+     (Viewer), siehe setActiveSegment() in main.js. */
+  #view-switcher {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--panel-2);
+    margin: 14px 14px 0;
+    /* flex-shrink:0 ist Pflicht, nicht nur Stilfrage: overflow:hidden (für die
+       runden Ecken) setzt die automatische Mindestgröße als Flex-Kind sonst
+       auf 0 — bei viel Sidebar-Inhalt (z.B. Obstbaumkataster) würde der
+       Umschalter dadurch auf ~0px zusammengequetscht statt sichtbar zu
+       bleiben, während #sidebar drumherum scrollt. Genau das machte den
+       Rückweg aus einer Funktion unklickbar. */
+    flex-shrink: 0;
+  }
+  .segment-btn {
     background: transparent;
     border: none;
-    border-bottom: 2px solid transparent;
+    border-right: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
     color: var(--muted);
     font-family: var(--sans);
-    font-size: 13px;
-    padding: 12px 18px;
+    font-size: 12px;
+    line-height: 1.25;
+    padding: 10px 8px;
     cursor: pointer;
+    text-align: center;
+    transition: background-color .12s, color .12s;
   }
-  #tabbar button.active { color: var(--text); border-bottom-color: var(--accent); }
-  #tabbar button:hover { color: var(--text); }
+  .segment-btn:nth-child(2n) { border-right: none; }
+  .segment-btn:nth-last-child(-n+2) { border-bottom: none; }
+  .segment-btn:hover { color: var(--text); background: var(--panel); }
+  .segment-btn.active { background: var(--accent); color: var(--on-accent); }
 
   #tabbar button#theme-toggle {
     margin: auto 14px auto auto;
@@ -132,9 +188,24 @@
   }
   :root[data-theme="light"] .theme-thumb { transform: translateX(0); }
 
-  #views { flex: 1; position: relative; overflow: hidden; }
-  .view { position: absolute; inset: 0; display: none; }
-  .view.active { display: flex; }
+  #app-body { flex: 1; display: flex; overflow: hidden; min-height: 0; position: relative; }
+
+  /* Sidebar-Abschnitte je Funktion — nur der zur aktiven SelectButton-Auswahl
+     passende ist sichtbar; Dropzone/Ebenenliste liegen davor und sind (weil
+     der Datenbestand jetzt geteilt ist) immer sichtbar, unabhängig davon,
+     welche Funktion gerade aktiv ist. */
+  /* flex-shrink:0 + kein min-height:0: der aktive Abschnitt behält immer seine
+     natürliche Inhaltshöhe (nie zusammengequetscht/abgeschnitten) — passt der
+     Gesamtinhalt nicht mehr in die Sidebar, scrollt #sidebar als Ganzes statt
+     dass Inhalte verschwinden (siehe #layer-section min-height als Gegenstück:
+     die geteilte Ebenenliste bleibt so in jeder Funktion mindestens sichtbar). */
+  .sidebar-section { display: none; flex-direction: column; flex-shrink: 0; }
+  .sidebar-section.active { display: flex; }
+
+  /* Zusatz-Bedienelemente im Topbar, die nur für eine Funktion Sinn ergeben
+     (z.B. der Diff/Jahr-A/Jahr-B-Umschalter im Jahresvergleich). */
+  .topbar-extra { display: none; }
+  .topbar-extra.active { display: flex; align-items: center; gap: 8px; }
 
   /* ---------- Sidebar ---------- */
   #sidebar {
@@ -145,18 +216,20 @@
     display: flex;
     flex-direction: column;
     height: 100%;
+    min-height: 0;
+    overflow-y: auto;
   }
-  #brand, #compare-brand {
+  #brand {
     padding: 16px 18px 14px;
     border-bottom: 1px solid var(--border);
   }
-  #brand h1, #compare-brand h1 {
+  #brand h1 {
     font-size: 15px;
     font-weight: 600;
     margin: 0 0 2px;
     letter-spacing: 0.2px;
   }
-  #brand p, #compare-brand p {
+  #brand p {
     margin: 0;
     font-size: 12px;
     color: var(--muted);
@@ -189,6 +262,7 @@
 
   #layer-section {
     flex: 1;
+    min-height: 130px;
     overflow-y: auto;
     padding: 4px 0 10px;
   }
@@ -272,12 +346,13 @@
   .vis-toggle svg { width: 10px; height: 10px; display: none; }
   .vis-toggle.on svg { display: block; }
 
-  #status {
+  #status, .status-line {
     padding: 8px 14px;
     font-size: 11px;
     color: var(--muted);
     border-top: 1px solid var(--border);
     font-family: var(--mono);
+    margin-top: auto;
   }
 
   /* ---------- Map area ---------- */
@@ -291,9 +366,12 @@
   #topbar {
     position: absolute;
     top: 12px;
+    left: 12px;
     right: 12px;
     z-index: 1000;
     display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
     gap: 8px;
   }
   #topbar button {
@@ -311,6 +389,7 @@
   }
   #topbar button:hover { border-color: var(--accent); }
   #topbar button.active { border-color: var(--accent); color: var(--accent); }
+  #topbar button[hidden] { display: none; }
 
   #topbar button#btn-locate {
     background: transparent;
@@ -377,7 +456,7 @@
   }
   .feature-label::before { display: none; }
 
-  #table-panel, #compare-table-panel, #obstbaum-table-panel, #obstbaum-parcel-table-panel {
+  #table-panel, #compare-table-panel, #obstbaum-table-panel {
     position: absolute;
     left: 0;
     right: 0;
@@ -391,24 +470,22 @@
     overflow: hidden;
     box-shadow: 0 -6px 20px rgba(0,0,0,0.35);
   }
-  #table-panel.open, #compare-table-panel.open, #obstbaum-table-panel.open, #obstbaum-parcel-table-panel.open { display: flex; }
-  #table-panel.minimized, #compare-table-panel.minimized, #obstbaum-table-panel.minimized, #obstbaum-parcel-table-panel.minimized { height: auto !important; }
+  #table-panel.open, #compare-table-panel.open, #obstbaum-table-panel.open { display: flex; }
+  #table-panel.minimized, #compare-table-panel.minimized, #obstbaum-table-panel.minimized { height: auto !important; }
   #table-panel.minimized #table-body-wrap,
   #table-panel.minimized #table-besichtigt-summary,
   #compare-table-panel.minimized #compare-table-body-wrap,
   #obstbaum-table-panel.minimized #obstbaum-table-body-wrap,
-  #obstbaum-table-panel.minimized #obstbaum-summary-row,
-  #obstbaum-parcel-table-panel.minimized #obstbaum-parcel-table-body-wrap,
-  #obstbaum-parcel-table-panel.minimized #obstbaum-parcel-summary-row { display: none; }
-  #table-panel.dragging, #compare-table-panel.dragging, #obstbaum-table-panel.dragging, #obstbaum-parcel-table-panel.dragging { user-select: none; }
-  #table-resize-handle, #compare-table-resize-handle, #obstbaum-table-resize-handle, #obstbaum-parcel-table-resize-handle {
+  #obstbaum-table-panel.minimized #obstbaum-summary-row { display: none; }
+  #table-panel.dragging, #compare-table-panel.dragging, #obstbaum-table-panel.dragging { user-select: none; }
+  #table-resize-handle, #compare-table-resize-handle, #obstbaum-table-resize-handle {
     flex-shrink: 0;
     height: 7px;
     cursor: ns-resize;
     position: relative;
     background: transparent;
   }
-  #table-resize-handle::after, #compare-table-resize-handle::after, #obstbaum-table-resize-handle::after, #obstbaum-parcel-table-resize-handle::after {
+  #table-resize-handle::after, #compare-table-resize-handle::after, #obstbaum-table-resize-handle::after {
     content: '';
     position: absolute;
     left: 50%; top: 50%;
@@ -422,14 +499,11 @@
   #compare-table-resize-handle:hover::after,
   #compare-table-panel.dragging #compare-table-resize-handle::after,
   #obstbaum-table-resize-handle:hover::after,
-  #obstbaum-table-panel.dragging #obstbaum-table-resize-handle::after,
-  #obstbaum-parcel-table-resize-handle:hover::after,
-  #obstbaum-parcel-table-panel.dragging #obstbaum-parcel-table-resize-handle::after { background: var(--accent); }
+  #obstbaum-table-panel.dragging #obstbaum-table-resize-handle::after { background: var(--accent); }
   #table-panel.minimized #table-resize-handle,
   #compare-table-panel.minimized #compare-table-resize-handle,
-  #obstbaum-table-panel.minimized #obstbaum-table-resize-handle,
-  #obstbaum-parcel-table-panel.minimized #obstbaum-parcel-table-resize-handle { cursor: default; }
-  #table-head, #compare-table-head, #obstbaum-table-head, #obstbaum-parcel-table-head {
+  #obstbaum-table-panel.minimized #obstbaum-table-resize-handle { cursor: default; }
+  #table-head, #compare-table-head, #obstbaum-table-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -437,8 +511,8 @@
     border-bottom: 1px solid var(--border);
     font-size: 12.5px;
   }
-  #table-head .title, #compare-table-head .title, #obstbaum-table-head .title, #obstbaum-parcel-table-head .title { color: var(--text); font-weight: 500; }
-  #table-head, #compare-table-head, #obstbaum-table-head, #obstbaum-parcel-table-head { gap: 14px; flex-wrap: wrap; }
+  #table-head .title, #compare-table-head .title, #obstbaum-table-head .title { color: var(--text); font-weight: 500; }
+  #table-head, #compare-table-head, #obstbaum-table-head { gap: 14px; flex-wrap: wrap; }
   #table-teilflaechen-toggle {
     margin-left: auto;
     display: flex;
@@ -463,15 +537,15 @@
     font-family: var(--sans);
   }
   .export-btn:hover { border-color: var(--accent); color: var(--text); }
-  #table-head button, #compare-table-head button, #obstbaum-table-head button, #obstbaum-parcel-table-head button {
+  #table-head button, #compare-table-head button, #obstbaum-table-head button {
     background: transparent;
     border: none;
     color: var(--muted);
     cursor: pointer;
     font-size: 15px;
   }
-  #table-head button:hover, #compare-table-head button:hover, #obstbaum-table-head button:hover, #obstbaum-parcel-table-head button:hover { color: var(--text); }
-  #table-body-wrap, #compare-table-body-wrap, #obstbaum-table-body-wrap, #obstbaum-parcel-table-body-wrap { overflow: auto; flex: 1; min-height: 0; }
+  #table-head button:hover, #compare-table-head button:hover, #obstbaum-table-head button:hover { color: var(--text); }
+  #table-body-wrap, #compare-table-body-wrap, #obstbaum-table-body-wrap { overflow: auto; flex: 1; min-height: 0; }
   #feature-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   #feature-table thead th {
     position: sticky;
@@ -516,18 +590,6 @@
   }
 
   /* ---------- Jahresvergleich ---------- */
-  #view-compare { width: 100%; height: 100%; }
-  #compare-sidebar {
-    width: 340px;
-    min-width: 340px;
-    background: var(--panel);
-    border-right: 1px solid var(--border);
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    min-height: 0;
-    overflow: hidden;
-  }
   .compare-upload { padding: 0 14px; margin-top: 12px; }
   .compare-label {
     display: block;
@@ -536,6 +598,17 @@
     letter-spacing: 0.5px;
     color: var(--muted);
     margin-bottom: 6px;
+  }
+  #compare-jahrb-picker {
+    width: 100%;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 12.5px;
+    font-family: var(--sans);
+    padding: 8px 10px;
+    cursor: pointer;
   }
   .dropzone-mini {
     position: relative;
@@ -645,16 +718,6 @@
     color: #12151A;
   }
 
-  #compare-map-wrap { flex: 1; position: relative; height: 100%; }
-  #compare-map { width: 100%; height: 100%; background: #0D0F13; }
-  #compare-topbar {
-    position: absolute; top: 12px; right: 12px; z-index: 1000; display: flex; gap: 8px;
-  }
-  #compare-topbar button {
-    background: var(--panel); border: 1px solid var(--border); color: var(--text);
-    font-size: 12px; padding: 6px 11px; border-radius: 6px; cursor: pointer; font-family: var(--sans);
-  }
-  #compare-topbar button:hover { border-color: var(--accent); }
   #compare-view-toggle {
     display: flex;
     background: var(--panel);
@@ -662,7 +725,11 @@
     border-radius: 6px;
     overflow: hidden;
   }
-  .cvt-btn {
+  /* Höher gewichtet als "#topbar button" (ID+Klasse schlägt ID+Typ), damit die
+     Segment-Optik des Diff/Jahr-A/Jahr-B-Umschalters nicht vom generischen
+     Topbar-Button-Stil überschrieben wird, seit beide dieselbe geteilte
+     Kopfleiste teilen. */
+  #compare-view-toggle .cvt-btn {
     background: transparent;
     border: none;
     border-right: 1px solid var(--border);
@@ -672,9 +739,9 @@
     cursor: pointer;
     font-family: var(--sans);
   }
-  .cvt-btn:last-child { border-right: none; }
-  .cvt-btn:hover { color: var(--text); }
-  .cvt-btn.active { background: var(--accent-tint); color: var(--text); }
+  #compare-view-toggle .cvt-btn:last-child { border-right: none; }
+  #compare-view-toggle .cvt-btn:hover { color: var(--text); }
+  #compare-view-toggle .cvt-btn.active { background: var(--accent-tint); color: var(--text); }
   #compare-error-toast {
     position: absolute;
     top: 12px;
@@ -691,22 +758,6 @@
   }
 
   /* ---------- Flächenzeichner ---------- */
-  #zeichner-sidebar {
-    width: 300px;
-    min-width: 300px;
-    background: var(--panel);
-    border-right: 1px solid var(--border);
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-  }
-  #zeichner-brand {
-    padding: 16px 18px 14px;
-    border-bottom: 1px solid var(--border);
-  }
-  #zeichner-brand h1 { font-size: 15px; font-weight: 600; margin: 0 0 2px; letter-spacing: 0.2px; }
-  #zeichner-brand p { margin: 0; font-size: 12px; color: var(--muted); }
-
   #btn-zeichner-draw {
     margin: 14px 14px 4px;
     background: var(--accent-dim);
@@ -795,22 +846,6 @@
   }
   #btn-export-zeichner-flaechenkarten:hover { background: var(--accent); }
 
-  #zeichner-status {
-    padding: 8px 14px;
-    font-size: 11px;
-    color: var(--muted);
-    border-top: 1px solid var(--border);
-    font-family: var(--mono);
-  }
-
-  #zeichner-map-wrap { flex: 1; position: relative; height: 100%; }
-  #zeichner-map { width: 100%; height: 100%; background: #0D0F13; }
-  #zeichner-topbar { position: absolute; top: 12px; right: 12px; z-index: 1000; display: flex; gap: 8px; }
-  #zeichner-topbar button {
-    background: var(--panel); border: 1px solid var(--border); color: var(--text);
-    font-size: 12px; padding: 6px 11px; border-radius: 6px; cursor: pointer; font-family: var(--sans);
-  }
-  #zeichner-topbar button:hover { border-color: var(--accent); }
   #zeichner-error-toast {
     position: absolute;
     top: 12px;
@@ -827,20 +862,7 @@
   }
 
   /* ---------- Obstbaumkataster ---------- */
-  #obstbaum-sidebar {
-    width: 300px;
-    min-width: 300px;
-    background: var(--panel);
-    border-right: 1px solid var(--border);
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    min-height: 0;
-    overflow-y: auto;
-  }
-  #obstbaum-brand { padding: 16px 18px 14px; border-bottom: 1px solid var(--border); }
-  #obstbaum-brand h1 { font-size: 15px; font-weight: 600; margin: 0 0 2px; letter-spacing: 0.2px; }
-  #obstbaum-brand p { margin: 0; font-size: 12px; color: var(--muted); }
+  .sidebar-section[data-view="obstbaum"] { overflow-y: auto; }
 
   #obstbaum-picker { padding: 14px 14px 0; position: relative; }
   #obstbaum-fruit-grid {
@@ -1002,15 +1024,7 @@
     font-family: var(--mono);
   }
 
-  #obstbaum-map-wrap { flex: 1; position: relative; height: 100%; }
-  #obstbaum-map { width: 100%; height: 100%; background: #0D0F13; }
-  #obstbaum-map.placing { cursor: crosshair; }
-  #obstbaum-topbar { position: absolute; top: 12px; right: 12px; z-index: 1000; display: flex; gap: 8px; }
-  #obstbaum-topbar button {
-    background: var(--panel); border: 1px solid var(--border); color: var(--text);
-    font-size: 12px; padding: 6px 11px; border-radius: 6px; cursor: pointer; font-family: var(--sans);
-  }
-  #obstbaum-topbar button:hover { border-color: var(--accent); }
+  #map.placing { cursor: crosshair; }
   #obstbaum-error-toast {
     position: absolute;
     top: 12px;
@@ -1086,25 +1100,6 @@
   }
   .table-remove-btn:hover { border-color: var(--warn); color: var(--warn); }
 
-  #obstbaum-parcel-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-  #obstbaum-parcel-table thead th {
-    position: sticky;
-    top: 0;
-    background: var(--panel-2);
-    text-align: left;
-    padding: 9px 14px;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.4px;
-    color: var(--muted);
-    border-bottom: 1px solid var(--border);
-  }
-  #obstbaum-parcel-table tbody td { padding: 8px 14px; border-bottom: 1px solid var(--border); }
-  #obstbaum-parcel-table tbody tr { cursor: pointer; }
-  #obstbaum-parcel-table tbody tr:hover td { background: var(--panel-2); }
-  #obstbaum-parcel-table tbody tr.row-selected td { background: var(--accent-tint); }
-
-  #obstbaum-parcel-list { padding: 0 0 4px; }
   #btn-obstbaum-parcel-table {
     margin: 4px 14px 12px;
     background: transparent;
@@ -1186,19 +1181,6 @@
   .modal-actions button.primary:hover { background: var(--accent); }
 
   /* ---------- Bienenflugkarte ---------- */
-  #bienenflug-sidebar {
-    width: 300px;
-    min-width: 300px;
-    background: var(--panel);
-    border-right: 1px solid var(--border);
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-  }
-  #bienenflug-brand { padding: 16px 18px 14px; border-bottom: 1px solid var(--border); }
-  #bienenflug-brand h1 { font-size: 15px; font-weight: 600; margin: 0 0 2px; letter-spacing: 0.2px; }
-  #bienenflug-brand p { margin: 0; font-size: 12px; color: var(--muted); }
-
   #bienenflug-hint { margin-top: 12px; }
 
   #bienenflug-section { flex: 1; overflow-y: auto; padding: 4px 0 10px; }
@@ -1232,14 +1214,6 @@
     font-family: var(--mono);
   }
 
-  #bienenflug-map-wrap { flex: 1; position: relative; height: 100%; }
-  #bienenflug-map { width: 100%; height: 100%; background: #0D0F13; cursor: crosshair; }
-  #bienenflug-topbar { position: absolute; top: 12px; right: 12px; z-index: 1000; display: flex; gap: 8px; }
-  #bienenflug-topbar button {
-    background: var(--panel); border: 1px solid var(--border); color: var(--text);
-    font-size: 12px; padding: 6px 11px; border-radius: 6px; cursor: pointer; font-family: var(--sans);
-  }
-  #bienenflug-topbar button:hover { border-color: var(--accent); }
   #bienenflug-error-toast {
     position: absolute;
     top: 12px;
@@ -1258,3 +1232,70 @@
   /* Bienenstock-Icon (L.divIcon) — schlichter Korbschwarm/Skep als Inline-SVG,
      analog zum handgezeichneten GPS-Icon. */
   .beehive-marker-icon { background: transparent; border: none; }
+
+  /* ================= Mobile (Smartphone/Tablet, Hochformat) =================
+     Die feste 300px-Sidebar würde auf einem Telefon fast den ganzen Bildschirm
+     einnehmen — unterhalb der Breakpoint-Breite wird sie stattdessen zu einem
+     Einschub, der über der (dann vollbreiten) Karte liegt und per Menü-Button
+     in #tabbar ein-/ausgeblendet wird (Logik in main.js: btn-sidebar-toggle/
+     sidebar-backdrop/body.sidebar-open). */
+  @media (max-width: 860px) {
+    #btn-sidebar-toggle { display: inline-flex; }
+    #brand-logo { margin-left: 4px; }
+
+    /* position:absolute statt fixed, verankert an #app-body (position:relative,
+       siehe dort) statt am Viewport — #app-body beginnt im normalen Fluss
+       schon UNTER #tabbar, dadurch bleiben Wortmarke und Menü-Button immer
+       sichtbar/klickbar und werden nie vom Einschub oder Backdrop verdeckt. */
+    #sidebar {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      width: min(300px, 84vw);
+      min-width: 0;
+      z-index: 1600;
+      border-right: 1px solid var(--border);
+      box-shadow: 24px 0 48px rgba(0,0,0,0.35);
+      transform: translateX(-100%);
+      transition: transform .22s ease;
+    }
+    body.sidebar-open #sidebar { transform: translateX(0); }
+
+    #sidebar-backdrop {
+      display: none;
+      position: absolute;
+      inset: 0;
+      background: rgba(0,0,0,0.45);
+      z-index: 1550;
+    }
+    body.sidebar-open #sidebar-backdrop { display: block; }
+
+    /* #sidebar liegt jetzt außerhalb des normalen Flusses (position:absolute) —
+       #map-wrap füllt dadurch automatisch die volle Breite. */
+
+    #view-switcher { grid-template-columns: 1fr 1fr; }
+    .segment-btn { padding: 11px 8px; font-size: 12.5px; }
+
+    #topbar { top: 8px; left: 8px; right: 8px; gap: 6px; }
+    #topbar button { padding: 7px 10px; font-size: 12px; }
+
+    /* Bodenleisten-Panels (Flächen-/Vergleichs-/Baumtabelle) dürfen auf einem
+       kurzen Bildschirm nie mehr als ~70% der Karte einnehmen — die JS-Logik
+       (initResizablePanel) deckelt zwar schon aufs Ziehen bezogen bei 85% von
+       boundsWrap, hier zusätzlich als CSS-Sicherheitsnetz für die Höhe direkt
+       nach dem Laden, bevor JS überhaupt eine Höhe gesetzt hat. */
+    #table-panel, #compare-table-panel, #obstbaum-table-panel { max-height: 75vh; }
+
+    /* Tabellen selbst bleiben so breit wie ihr Inhalt und scrollen seitlich,
+       statt Spalten zusammenzuquetschen. */
+    #table-body-wrap, #compare-table-body-wrap, #obstbaum-table-body-wrap { overflow-x: auto; }
+    #feature-table, #compare-table, #obstbaum-table { min-width: 640px; }
+  }
+
+  /* Sehr schmale Telefone (Hochformat, <400px) — Wortmarke und Theme-Toggle
+     brauchen etwas weniger Luft, damit nichts umbricht. */
+  @media (max-width: 400px) {
+    #brand-logo { font-size: 18px; margin-right: 6px; }
+    #theme-toggle { margin-right: 8px; }
+  }
