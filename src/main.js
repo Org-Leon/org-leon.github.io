@@ -1924,6 +1924,10 @@ function addLayer(name, geojson) {
   renderLayerList();
   renderFeatureTable();
   fitAllLayers();
+  // Neue Fläche könnte bereits gesetzte Obstbäume neu "einfangen" — ohne
+  // geladene Flächen bleiben Bäume sonst dauerhaft ohne Flächen-Zuordnung,
+  // auch wenn später passende Flächen nachgeladen werden.
+  reassignAllTreesToParcels();
 }
 
 // Fügt EIN Feature nachträglich zu einer bereits bestehenden Ebene hinzu
@@ -1949,6 +1953,7 @@ function addFeatureToLayer(layerId, feature, colorOverride) {
   l.count++;
   renderLayerList();
   renderFeatureTable();
+  reassignAllTreesToParcels();
   return newEntry;
 }
 
@@ -1968,6 +1973,7 @@ function removeFeatureEntry(entry) {
   if (highlightedEntry === entry) highlightedEntry = null;
   renderLayerList();
   renderFeatureTable();
+  reassignAllTreesToParcels();
 }
 
 // Aktualisiert Name/Kulturart eines Eintrags nachträglich — nur für
@@ -2051,6 +2057,7 @@ function removeLayer(id) {
   featureIndex.forEach((entry, i) => { entry.idx = i; }); // Indizes neu durchnummerieren
   renderLayerList();
   renderFeatureTable();
+  reassignAllTreesToParcels(); // Bäume, deren Fläche gerade entfernt wurde, wieder als "ohne Fläche" markieren
 }
 
 function fitAllLayers() {
@@ -2189,7 +2196,8 @@ function initResizablePanel({ panel, handle, minimizeBtn, closeBtn, boundsWrap, 
     panel.classList.add('open');
   }
 
-  closeBtn.addEventListener('click', () => panel.classList.remove('open'));
+  function close() { panel.classList.remove('open'); }
+  closeBtn.addEventListener('click', close);
 
   minimizeBtn.addEventListener('click', () => {
     const minimizing = !panel.classList.contains('minimized');
@@ -2235,7 +2243,7 @@ function initResizablePanel({ panel, handle, minimizeBtn, closeBtn, boundsWrap, 
   }, { passive: true });
   window.addEventListener('touchend', endDrag);
 
-  return { open };
+  return { open, close };
 }
 
 const featureTablePanel = initResizablePanel({
@@ -2325,7 +2333,7 @@ function setActiveSegment(target) {
   if (armedTool === 'draw-polygon' && zeichnerDrawPolygon) zeichnerDrawPolygon.disable();
   if (armedTool === 'place-tree') setActiveFruitKey(null);
   armedTool = null;
-  if (target !== 'compare') restoreCompareHiddenLayer();
+  if (target !== 'compare') { restoreCompareHiddenLayer(); compareTablePanel.close(); }
   document.getElementById('map').classList.toggle('placing', target === 'bienenflug');
 
   document.querySelectorAll('.segment-btn').forEach(b => b.classList.toggle('active', b.getAttribute('data-view') === target));
