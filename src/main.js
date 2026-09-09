@@ -13,11 +13,25 @@ document.getElementById('theme-toggle').addEventListener('click', () => {
   }
 });
 
+// ---------- Mobile: Sidebar als Einschub ----------
+// Ab der Media-Query-Breite in style.css wird #sidebar per CSS zu einem
+// festen Einschub von links (transform, siehe dort) — hier nur die
+// Auf/Zu-Logik: Menü-Button, Klick auf das Backdrop dahinter, Esc, und
+// automatisches Schließen sobald eine Funktion gewählt oder eine Datei
+// abgelegt wird (auf Desktop-Breiten sind all das no-ops, da die Sidebar
+// dort ohnehin permanent sichtbar bleibt und das Backdrop unsichtbar ist).
+function closeMobileSidebar() { document.body.classList.remove('sidebar-open'); }
+function toggleMobileSidebar() { document.body.classList.toggle('sidebar-open'); }
+document.getElementById('btn-sidebar-toggle').addEventListener('click', toggleMobileSidebar);
+document.getElementById('sidebar-backdrop').addEventListener('click', closeMobileSidebar);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMobileSidebar(); });
+
 const COLORS = ['#4FB8AF', '#D97757', '#8AA6D9', '#C9A24F', '#B287D9', '#6FBF73', '#E08FA8', '#5FA8C4'];
 let colorIdx = 0;
 const layers = {}; // id -> { name, geojson, leafletLayer, color, visible }
 let layerCounter = 0;
 const featureIndex = []; // flat list of every feature across all layers, for the table view
+let featureEntryCounter = 0;
 let highlightedEntry = null;
 
 // Deine Shapefiles benennen die relevanten Attribute unterschiedlich, je nach
@@ -144,6 +158,12 @@ function renderBesichtigtSummary(elId, rows) {
 
 const map = L.map('map', { zoomControl: true, attributionControl: true }).setView([51.16, 10.45], 6);
 
+// Alle Werkzeuge (Zeichnen, Baum setzen, Bienenstock setzen) teilen sich jetzt
+// denselben Karten-Klick-Event — armedTool sorgt dafür, dass immer nur genau
+// ein Werkzeug auf einen Kartenklick reagiert, statt dass sich mehrere
+// gegenseitig ins Gehege kommen.
+let armedTool = null; // null | 'draw-polygon' | 'place-tree' | 'place-hive'
+
 // Eine Leaflet-Kachelebene kann immer nur auf EINER Karte aktiv sein — Viewer,
 // Jahresvergleich und Flächenzeichner haben je eine eigene Leaflet-Map-Instanz
 // und brauchen daher jeweils eigene Kachelebenen-Objekte statt sich dieselben
@@ -172,6 +192,8 @@ const basemaps = createBasemaps();
 let currentBasemap = 'osm';
 basemaps.osm.addTo(map);
 
+// Alle fünf Funktionen teilen sich jetzt eine Karte und damit eine einzige
+// Basiskarten-Auswahl im gemeinsamen Topbar.
 function setBasemap(key) {
   basemaps[currentBasemap].remove();
   currentBasemap = key;
@@ -179,10 +201,12 @@ function setBasemap(key) {
   document.getElementById('btn-basemap').textContent = 'Basiskarte: ' + basemapLabels[currentBasemap];
 }
 
-document.getElementById('btn-basemap').addEventListener('click', () => {
+function cycleBasemap() {
   const nextIdx = (basemapOrder.indexOf(currentBasemap) + 1) % basemapOrder.length;
   setBasemap(basemapOrder[nextIdx]);
-});
+}
+
+document.getElementById('btn-basemap').addEventListener('click', cycleBasemap);
 
 document.getElementById('btn-fit').addEventListener('click', fitAllLayers);
 
@@ -1823,6 +1847,42 @@ function mergeFeldstueckNutzung(results) {
   return [merged, ...rest];
 }
 
+// Baut den featureIndex-Eintrag für ein einzelnes Feature einer Ebene und
+// verdrahtet dessen Klick-Handler + Labelanker — von addLayer() für den
+// Erstaufbau und von addFeatureToLayer() für nachträglich einzeln
+// hinzugefügte Features (z.B. im Flächenzeichner gezeichnete Flächen)
+// gemeinsam genutzt, damit beide Wege exakt dieselbe Eintragsform erzeugen.
+function buildFeatureEntry(feature, lyr, layerId, layerName, isTeilflaechen, color) {
+  const props = feature.properties || {};
+  const center = lyr.getBounds ? lyr.getBounds().getCenter() : lyr.getLatLng();
+  const entry = {
+    idx: featureIndex.length,
+    id: 'feat-' + (featureEntryCounter++), // stabile Kennung, bleibt gültig auch wenn andere Einträge entfernt werden und .idx sich verschiebt
+    layerId,
+    layerName,
+    isTeilflaechen,
+    props,
+    center,
+    leafletLayer: lyr,
+    labelAnchor: null,
+    color,
+    nummer: pickField(props, FIELD_CANDIDATES.nummer),
+    featName: pickField(props, FIELD_CANDIDATES.name),
+    groesse: pickGroesse(props),
+    kultur: pickField(props, FIELD_CANDIDATES.kultur),
+    flaechenId: pickField(props, FIELD_CANDIDATES.flaechenid),
+    besichtigt: false
+  };
+  featureIndex.push(entry);
+  lyr.on('click', () => {
+    highlightFeature(entry);
+    selectFeatureInTable(entry);
+  });
+  const labelText = escapeHtml(entry.nummer) + (entry.featName ? '<br>' + escapeHtml(entry.featName) : '');
+  if (labelText.trim()) entry.labelAnchor = createLabelAnchorAt(center, labelText);
+  return entry;
+}
+
 function addLayer(name, geojson) {
   const id = 'layer-' + (layerCounter++);
   const color = COLORS[colorIdx % COLORS.length];
@@ -1841,37 +1901,17 @@ function addLayer(name, geojson) {
   const labelAnchors = [];
 
   const leafletLayer = L.geoJSON(geojson, {
+    // Canvas- statt SVG-Renderer für alle Ebenen — verhindert einen html2canvas/
+    // Leaflet-Eigenheit-Bug, bei dem der SVG-Overlay-Pane beim Flächenkarten-
+    // Export versetzt zu den Kartenkacheln landet (siehe captureParcelScreenshot).
+    renderer: L.canvas(),
     style: () => ({ color: color, weight: 1.6, fillColor: color, fillOpacity: 0.22 }),
     pointToLayer: (feature, latlng) => L.circleMarker(latlng, {
       radius: 5, color: color, weight: 1.6, fillColor: color, fillOpacity: 0.6
     }),
     onEachFeature: (feature, lyr) => {
-      const props = feature.properties || {};
-      const center = lyr.getBounds ? lyr.getBounds().getCenter() : lyr.getLatLng();
-      const entry = {
-        idx: featureIndex.length,
-        layerId: id,
-        layerName: name,
-        isTeilflaechen,
-        props,
-        center,
-        leafletLayer: lyr,
-        color,
-        nummer: pickField(props, FIELD_CANDIDATES.nummer),
-        featName: pickField(props, FIELD_CANDIDATES.name),
-        groesse: pickGroesse(props),
-        kultur: pickField(props, FIELD_CANDIDATES.kultur),
-        flaechenId: pickField(props, FIELD_CANDIDATES.flaechenid),
-        besichtigt: false
-      };
-      featureIndex.push(entry);
-      lyr.on('click', () => {
-        highlightFeature(entry);
-        selectFeatureInTable(entry);
-      });
-
-      const labelText = escapeHtml(entry.nummer) + (entry.featName ? '<br>' + escapeHtml(entry.featName) : '');
-      if (labelText.trim()) labelAnchors.push(createLabelAnchorAt(center, labelText));
+      const entry = buildFeatureEntry(feature, lyr, id, name, isTeilflaechen, color);
+      if (entry.labelAnchor) labelAnchors.push(entry.labelAnchor);
     }
   });
   labelAnchors.forEach(anchor => leafletLayer.addLayer(anchor));
@@ -1884,6 +1924,64 @@ function addLayer(name, geojson) {
   renderLayerList();
   renderFeatureTable();
   fitAllLayers();
+}
+
+// Fügt EIN Feature nachträglich zu einer bereits bestehenden Ebene hinzu
+// (statt eine komplette neue Ebene aufzubauen) — genutzt vom Flächenzeichner,
+// dessen gezeichnete Flächen einzeln nacheinander entstehen. L.GeoJSON.addData()
+// ruft onEachFeature für nur das neue Feature erneut auf und hängt es an die
+// bestehende Layer-Gruppe an, ohne die vorhandenen Features neu aufzubauen.
+function addFeatureToLayer(layerId, feature, colorOverride) {
+  const l = layers[layerId];
+  const color = colorOverride || l.color;
+  let newEntry = null;
+  const onEachFeature = (feat, lyr) => {
+    newEntry = buildFeatureEntry(feat, lyr, layerId, l.name, l.isTeilflaechen, color);
+    if (colorOverride && lyr.setStyle) lyr.setStyle({ color: colorOverride, fillColor: colorOverride });
+    if (newEntry.labelAnchor) l.leafletLayer.addLayer(newEntry.labelAnchor);
+  };
+  // L.GeoJSON merkt sich seine Konstruktor-Optionen nicht für addData() erneut
+  // nutzbar, daher hier direkt per Handler statt über die Layer-eigene Option.
+  l.leafletLayer.options.onEachFeature = onEachFeature;
+  l.leafletLayer.addData(feature);
+  delete l.leafletLayer.options.onEachFeature;
+  l.geojson.features.push(feature);
+  l.count++;
+  renderLayerList();
+  renderFeatureTable();
+  return newEntry;
+}
+
+// Entfernt genau EIN Feature aus seiner Ebene (im Unterschied zu removeLayer(),
+// das immer die ganze Ebene entfernt) — für die Einzel-Löschung gezeichneter
+// Flächen im Flächenzeichner.
+function removeFeatureEntry(entry) {
+  const l = layers[entry.layerId];
+  if (!l) return;
+  l.leafletLayer.removeLayer(entry.leafletLayer);
+  if (entry.labelAnchor) l.leafletLayer.removeLayer(entry.labelAnchor);
+  l.geojson.features = l.geojson.features.filter(f => f !== entry.leafletLayer.feature);
+  l.count--;
+  const idx = featureIndex.indexOf(entry);
+  if (idx !== -1) featureIndex.splice(idx, 1);
+  featureIndex.forEach((e, i) => e.idx = i);
+  if (highlightedEntry === entry) highlightedEntry = null;
+  renderLayerList();
+  renderFeatureTable();
+}
+
+// Aktualisiert Name/Kulturart eines Eintrags nachträglich — nur für
+// Flächenzeichner-Flächen relevant, deren Name/Kulturart frei eintragbar
+// sind (uploadete Flächen sind aus der DBF abgeleitet und nicht editierbar).
+function updateDrawnParcelEntry(entry, { name, kultur }) {
+  if (name !== undefined) { entry.featName = name; entry.props.NAME = name; }
+  if (kultur !== undefined) { entry.kultur = kultur; entry.props.KULTURART = kultur; }
+  if (entry.leafletLayer.feature) entry.leafletLayer.feature.properties = entry.props;
+  if (entry.labelAnchor && entry.labelAnchor.setTooltipContent) {
+    const labelText = escapeHtml(entry.nummer) + (entry.featName ? '<br>' + escapeHtml(entry.featName) : '');
+    entry.labelAnchor.setTooltipContent(labelText);
+  }
+  renderFeatureTable();
 }
 
 function renderLayerList() {
@@ -1998,24 +2096,30 @@ function renderFeatureTable() {
   renderBesichtigtSummary('table-besichtigt-summary', rows);
 
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted); padding:14px;">' +
+    tbody.innerHTML = '<tr><td colspan="8" style="color:var(--muted); padding:14px;">' +
       (featureIndex.length ? 'Keine Flächen in dieser Ansicht (Teilflächen sind ausgeblendet).' : 'Noch keine Flächen geladen.') +
       '</td></tr>';
     return;
   }
 
+  const treeCounts = computeObstbaumParcelTreeCounts();
   tbody.innerHTML = rows.map(entry => {
     const num = parseFloat(String(entry.groesse).replace(',', '.'));
     const groesseText = isFinite(num) ? num.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ha' : (entry.groesse || '–');
     const routeCell = entry.center
       ? `<a class="table-route-link" href="${googleMapsDirectionsUrl(entry.center.lat, entry.center.lng)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Route ↗</a>`
       : '–';
+    const counts = treeCounts.get(entry.id);
+    const treesCell = counts && counts.size
+      ? [...counts.entries()].map(([key, n]) => fruitChipHtml(key, ` <span class="n">${n}</span>`)).join('')
+      : '<span style="color:var(--muted);">–</span>';
     return `<tr data-idx="${entry.idx}">
       <td>${escapeHtml(entry.nummer || '–')}</td>
       <td>${escapeHtml(entry.featName || '–')}</td>
       <td>${escapeHtml(entry.flaechenId || '–')}</td>
       <td>${groesseText}</td>
       <td>${escapeHtml(entry.kultur || '–')}</td>
+      <td>${treesCell}</td>
       <td class="besichtigt-cell"><input type="checkbox" class="besichtigt-checkbox" ${entry.besichtigt ? 'checked' : ''} onclick="event.stopPropagation()"></td>
       <td>${routeCell}</td>
     </tr>`;
@@ -2076,7 +2180,11 @@ function initResizablePanel({ panel, handle, minimizeBtn, closeBtn, boundsWrap, 
 
   function open() {
     panel.classList.remove('minimized');
-    panel.style.height = lastExpandedHeight + 'px';
+    // Gegen dieselbe 85%-Grenze wie beim Ziehen deckeln — auf kurzen (mobilen)
+    // Bildschirmen wäre die feste defaultHeight (320px) sonst oft größer als
+    // die ganze Karte.
+    const maxHeight = boundsWrap.getBoundingClientRect().height * 0.85;
+    panel.style.height = Math.min(lastExpandedHeight, maxHeight) + 'px';
     minimizeBtn.textContent = '▁';
     panel.classList.add('open');
   }
@@ -2195,46 +2303,77 @@ document.getElementById('btn-locate').addEventListener('click', () => {
   map.locate({ setView: true, maxZoom: 17, watch: true, enableHighAccuracy: true });
 });
 
-// ---------- Reiter-Umschaltung ----------
-document.querySelectorAll('.tab-btn').forEach(btn => {
+// ---------- Funktions-Umschaltung (SelectButton) ----------
+// Ersetzt die frühere Reiter-Logik: es gibt nur noch EINE Karte, die beim
+// Wechseln nie neu aufgebaut oder verschoben wird — nur die Sidebar-Sektion,
+// eventuelle Topbar-Zusatzelemente und das gerade "scharfe" Kartenwerkzeug
+// (Zeichnen/Baum setzen/Bienenstock setzen) ändern sich.
+const SEGMENT_CAPTIONS = {
+  viewer: 'Shapefiles & GeoJSON lokal auf der Karte darstellen',
+  compare: 'Zwei Parzellen-Stände gegenüberstellen — Zugänge, Abgänge, Änderungen',
+  zeichner: 'Eigene Parzellen direkt auf der Karte zeichnen',
+  obstbaum: 'Obstbäume als farbige Punkte auf der Karte erfassen',
+  bienenflug: 'Bienenstöcke markieren — theoretischer Flugradius 3 km'
+};
+
+function setActiveSegment(target) {
+  // Auf schmalen Bildschirmen liegt die Sidebar als Einschub über der Karte —
+  // eine Funktion auszuwählen soll die Karte gleich freigeben (no-op auf Desktop).
+  closeMobileSidebar();
+  // Zuerst das ggf. scharfe Werkzeug der vorherigen Sektion entwaffnen, bevor
+  // die neue Sektion (ggf. mit eigenem Werkzeug) aktiv wird.
+  if (armedTool === 'draw-polygon' && zeichnerDrawPolygon) zeichnerDrawPolygon.disable();
+  if (armedTool === 'place-tree') setActiveFruitKey(null);
+  armedTool = null;
+  if (target !== 'compare') restoreCompareHiddenLayer();
+  document.getElementById('map').classList.toggle('placing', target === 'bienenflug');
+
+  document.querySelectorAll('.segment-btn').forEach(b => b.classList.toggle('active', b.getAttribute('data-view') === target));
+  document.querySelectorAll('.sidebar-section').forEach(el => el.classList.toggle('active', el.getAttribute('data-view') === target));
+  document.querySelectorAll('.topbar-extra').forEach(el => el.classList.toggle('active', el.getAttribute('data-view') === target));
+  document.getElementById('brand-caption').textContent = SEGMENT_CAPTIONS[target] || '';
+  // "Auf Inhalt zoomen" fittet auf layers/featureIndex — im Jahresvergleich
+  // wird stattdessen automatisch auf das Vergleichsergebnis gezoomt, daher
+  // dort ausgeblendet statt einer Funktion ohne Bezug zur aktuellen Ansicht.
+  document.getElementById('btn-fit').hidden = target === 'compare';
+  // Im Jahresvergleich wandert GPS ganz nach rechts, hinter den Diff/Jahr-A/
+  // Jahr-B-Umschalter — in den anderen Ansichten bleibt die normale Reihenfolge.
+  document.getElementById('btn-locate').style.order = target === 'compare' ? '5' : '';
+
+  if (target === 'zeichner') initZeichnerMap();
+  else if (target === 'obstbaum') initObstbaumMap();
+  else if (target === 'bienenflug') { initBienenflugMap(); armedTool = 'place-hive'; }
+  else if (target === 'compare') refreshCompareJahrBOptions();
+}
+
+// Es gibt keinen eigenen "Viewer"-Button mehr — Viewer ist die Standardansicht.
+// Klick auf den bereits aktiven Funktions-Button schaltet dorthin zurück,
+// klick auf einen anderen wechselt direkt zur neuen Funktion.
+document.querySelectorAll('.segment-btn').forEach(btn => {
   btn.addEventListener('click', () => {
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
     const target = btn.getAttribute('data-view');
-    document.getElementById('view-viewer').classList.toggle('active', target === 'viewer');
-    document.getElementById('view-compare').classList.toggle('active', target === 'compare');
-    document.getElementById('view-zeichner').classList.toggle('active', target === 'zeichner');
-    document.getElementById('view-obstbaum').classList.toggle('active', target === 'obstbaum');
-    document.getElementById('view-bienenflug').classList.toggle('active', target === 'bienenflug');
-    if (target === 'compare') {
-      initCompareMap();
-      setTimeout(() => compareMap && compareMap.invalidateSize(), 50);
-    } else if (target === 'zeichner') {
-      initZeichnerMap();
-      setTimeout(() => zeichnerMap && zeichnerMap.invalidateSize(), 50);
-    } else if (target === 'obstbaum') {
-      initObstbaumMap();
-      setTimeout(() => obstbaumMap && obstbaumMap.invalidateSize(), 50);
-    } else if (target === 'bienenflug') {
-      initBienenflugMap();
-      setTimeout(() => bienenflugMap && bienenflugMap.invalidateSize(), 50);
-    } else {
-      setTimeout(() => map.invalidateSize(), 50);
-    }
+    setActiveSegment(btn.classList.contains('active') ? 'viewer' : target);
   });
 });
 
 // ---------- Jahresvergleich ----------
-let compareMap = null;
-let compareBasemaps = null;
-let compareBasemapOrder = ['osm', 'topo', 'satellite'];
-let compareBasemapLabels = { osm: 'Standard', topo: 'Topografisch', satellite: 'Satellit' };
-let currentCompareBasemap = 'osm';
 let compareGeoLayer = null;
 let compareViewMode = 'diff'; // 'diff' | 'onlyA' | 'onlyB'
 let compareDataA = null; // { fc, fileName, layerName }
 let compareDataB = null;
 let compareRecords = [];
+let compareHiddenLayerId = null; // Jahr-B-Quellebene, während der Vergleichsansicht ausgeblendet (sonst doppelte Darstellung)
+
+// Blendet die als Jahr B genutzte Ebene wieder ein, falls sie für die
+// Vergleichsansicht ausgeblendet wurde — beim Verlassen des Jahresvergleichs
+// oder vor einem neuen Vergleichslauf aufgerufen.
+function restoreCompareHiddenLayer() {
+  if (compareHiddenLayerId && layers[compareHiddenLayerId] && layers[compareHiddenLayerId].visible) {
+    layers[compareHiddenLayerId].leafletLayer.addTo(map);
+  }
+  compareHiddenLayerId = null;
+  if (compareGeoLayer) { map.removeLayer(compareGeoLayer); compareGeoLayer = null; }
+}
 
 const STATUS_COLORS = {
   zugang: '#6FBF73',
@@ -2249,19 +2388,6 @@ const STATUS_LABELS = {
   unveraendert: 'Unverändert'
 };
 
-function initCompareMap() {
-  if (compareMap) return;
-  compareMap = L.map('compare-map', { zoomControl: true, attributionControl: true }).setView([51.16, 10.45], 6);
-  compareBasemaps = createBasemaps();
-  compareBasemaps.osm.addTo(compareMap);
-  document.getElementById('compare-btn-basemap').addEventListener('click', () => {
-    compareBasemaps[currentCompareBasemap].remove();
-    const nextIdx = (compareBasemapOrder.indexOf(currentCompareBasemap) + 1) % compareBasemapOrder.length;
-    currentCompareBasemap = compareBasemapOrder[nextIdx];
-    compareBasemaps[currentCompareBasemap].addTo(compareMap);
-    document.getElementById('compare-btn-basemap').textContent = 'Basiskarte: ' + compareBasemapLabels[currentCompareBasemap];
-  });
-}
 
 document.querySelectorAll('.cvt-btn').forEach(btn => {
   btn.addEventListener('click', () => {
@@ -2277,12 +2403,10 @@ const compareTablePanel = initResizablePanel({
   handle: document.getElementById('compare-table-resize-handle'),
   minimizeBtn: document.getElementById('compare-table-minimize'),
   closeBtn: document.getElementById('compare-table-close'),
-  boundsWrap: document.getElementById('compare-map-wrap'),
+  boundsWrap: document.getElementById('map-wrap'),
   minHeight: TABLE_MIN_HEIGHT,
   defaultHeight: TABLE_DEFAULT_HEIGHT
 });
-
-document.getElementById('compare-btn-table').addEventListener('click', () => compareTablePanel.open());
 
 function showCompareError(msg) {
   const el = document.getElementById('compare-error-toast');
@@ -2331,14 +2455,60 @@ function extractJahrAusMetadaten(fc, fileName) {
   return null;
 }
 
+// Jahr B kommt jetzt aus dem geteilten Datenbestand (layers) statt aus einem
+// eigenen Upload — Kandidaten sind alle nicht-Teilflächen-Ebenen mit
+// Flächengeometrie. Bei mehreren geladenen Ebenen wählt eine kleine Auswahlliste,
+// Standardwert ist die zuletzt hinzugefügte (Objektschlüssel-Reihenfolge = Einfügereihenfolge).
+function getCompareJahrBCandidates() {
+  return Object.keys(layers)
+    .filter(id => !layers[id].isTeilflaechen && (layers[id].geojson.features || []).some(f =>
+      f.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon')))
+    .map(id => ({ id, name: layers[id].name }));
+}
+
+function getSelectedJahrBLayerId() {
+  const candidates = getCompareJahrBCandidates();
+  if (!candidates.length) return null;
+  const select = document.getElementById('compare-jahrb-picker');
+  if (candidates.length === 1) return candidates[0].id;
+  return candidates.some(c => c.id === select.value) ? select.value : candidates[candidates.length - 1].id;
+}
+
+function updateCompareRunEnabled() {
+  document.getElementById('btn-compare-run').disabled = !(compareDataA && getSelectedJahrBLayerId());
+}
+
+// Aktualisiert die Jahr-B-Auswahlliste (nur sichtbar bei mehr als einer
+// Kandidaten-Ebene) — aufgerufen beim Wechsel in den Jahresvergleich sowie
+// jedes Mal, wenn sich der geteilte Datenbestand ändert (neue Ebene geladen/entfernt).
+function refreshCompareJahrBOptions() {
+  const candidates = getCompareJahrBCandidates();
+  const wrap = document.getElementById('compare-jahrb-picker-wrap');
+  const select = document.getElementById('compare-jahrb-picker');
+  wrap.hidden = candidates.length <= 1;
+  if (candidates.length > 1) {
+    const prevValue = select.value;
+    select.innerHTML = candidates.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+    select.value = candidates.some(c => c.id === prevValue) ? prevValue : candidates[candidates.length - 1].id;
+  }
+  updateCompareYearButtons();
+  updateCompareRunEnabled();
+}
+document.getElementById('compare-jahrb-picker').addEventListener('change', () => {
+  updateCompareYearButtons();
+  updateCompareRunEnabled();
+});
+
 function updateCompareYearButtons() {
   const btnA = document.querySelector('.cvt-btn[data-mode="onlyA"]');
   const btnB = document.querySelector('.cvt-btn[data-mode="onlyB"]');
   if (btnA) btnA.textContent = (compareDataA && compareDataA.jahr) ? 'Nur ' + compareDataA.jahr : 'Nur Jahr A';
-  if (btnB) btnB.textContent = (compareDataB && compareDataB.jahr) ? 'Nur ' + compareDataB.jahr : 'Nur Jahr B';
+  const jahrBLayerId = getSelectedJahrBLayerId();
+  const jahrB = jahrBLayerId ? extractJahrAusMetadaten(layers[jahrBLayerId].geojson, layers[jahrBLayerId].name) : null;
+  if (btnB) btnB.textContent = jahrB ? 'Nur ' + jahrB : 'Nur Jahr B';
 }
 
-async function loadCompareFile(file, slot) {
+async function loadCompareFile(file) {
   try {
     let results = await parseShapefileZip(file);
     if (!results.length) {
@@ -2352,18 +2522,11 @@ async function loadCompareFile(file, slot) {
       chosen = results[0];
       showCompareError(file.name + ': Keine Ebene mit "Parzellen" im Namen gefunden — verwende stattdessen "' + chosen.name + '".');
     }
-    const data = { fc: chosen.fc, fileName: file.name, layerName: chosen.name, jahr: extractJahrAusMetadaten(chosen.fc, file.name) };
-    if (slot === 'a') {
-      compareDataA = data;
-      document.getElementById('compare-file-a-name').textContent = file.name;
-      document.getElementById('compare-drop-a').classList.add('filled');
-    } else {
-      compareDataB = data;
-      document.getElementById('compare-file-b-name').textContent = file.name;
-      document.getElementById('compare-drop-b').classList.add('filled');
-    }
+    compareDataA = { fc: chosen.fc, fileName: file.name, layerName: chosen.name, jahr: extractJahrAusMetadaten(chosen.fc, file.name) };
+    document.getElementById('compare-file-a-name').textContent = file.name;
+    document.getElementById('compare-drop-a').classList.add('filled');
     updateCompareYearButtons();
-    document.getElementById('btn-compare-run').disabled = !(compareDataA && compareDataB);
+    updateCompareRunEnabled();
   } catch (err) {
     console.error(err);
     showCompareError(file.name + ': Konnte Datei nicht lesen — ' + (err.message || 'unbekannter Fehler'));
@@ -2371,10 +2534,7 @@ async function loadCompareFile(file, slot) {
 }
 
 document.getElementById('compare-file-a').addEventListener('change', (e) => {
-  if (e.target.files[0]) loadCompareFile(e.target.files[0], 'a');
-});
-document.getElementById('compare-file-b').addEventListener('change', (e) => {
-  if (e.target.files[0]) loadCompareFile(e.target.files[0], 'b');
+  if (e.target.files[0]) loadCompareFile(e.target.files[0]);
 });
 
 function parseHa(v) {
@@ -2384,8 +2544,21 @@ function parseHa(v) {
 }
 
 function runComparison() {
-  if (!compareDataA || !compareDataB) return;
-  initCompareMap();
+  const jahrBLayerId = getSelectedJahrBLayerId();
+  if (!compareDataA || !jahrBLayerId) return;
+
+  // Jahr B ist jetzt eine ganz normal geladene Ebene — sie bleibt gleichzeitig
+  // "normale Kartenebene" UND "Vergleichs-Eingabe"; damit sie nicht doppelt
+  // (einmal normal, einmal als farbige Status-Fläche) übereinander liegt, wird
+  // sie für die Dauer der Vergleichsansicht ausgeblendet (restoreCompareHiddenLayer()
+  // blendet sie beim Verlassen des Jahresvergleichs oder vor dem nächsten Lauf
+  // wieder ein).
+  restoreCompareHiddenLayer();
+  const jahrBLayer = layers[jahrBLayerId];
+  compareDataB = { fc: jahrBLayer.geojson, fileName: jahrBLayer.name, layerName: jahrBLayer.name, jahr: extractJahrAusMetadaten(jahrBLayer.geojson, jahrBLayer.name) };
+  updateCompareYearButtons();
+  map.removeLayer(jahrBLayer.leafletLayer);
+  compareHiddenLayerId = jahrBLayerId;
 
   const compareCritGroesse = document.getElementById('crit-groesse').checked;
   const compareCritKultur = document.getElementById('crit-kultur').checked;
@@ -2572,9 +2745,8 @@ function addFeatureLabel(feature, text, group) {
 
 function renderCompareMapLayers(records, fitView) {
   if (fitView === undefined) fitView = true;
-  if (!compareMap) return;
-  if (compareGeoLayer) compareMap.removeLayer(compareGeoLayer);
-  compareGeoLayer = L.featureGroup().addTo(compareMap);
+  if (compareGeoLayer) map.removeLayer(compareGeoLayer);
+  compareGeoLayer = L.featureGroup().addTo(map);
 
   if (compareViewMode === 'onlyA' || compareViewMode === 'onlyB') {
     renderSingleYearLayers(records, compareViewMode, fitView);
@@ -2635,7 +2807,7 @@ function renderCompareMapLayers(records, fitView) {
   });
 
   if (fitView && compareGeoLayer.getLayers().length) {
-    compareMap.fitBounds(compareGeoLayer.getBounds(), { padding: [30, 30] });
+    map.fitBounds(compareGeoLayer.getBounds(), { padding: [30, 30] });
   }
 }
 
@@ -2659,7 +2831,7 @@ function renderSingleYearLayers(records, which, fitView) {
   });
 
   if (fitView && compareGeoLayer.getLayers().length) {
-    compareMap.fitBounds(compareGeoLayer.getBounds(), { padding: [30, 30] });
+    map.fitBounds(compareGeoLayer.getBounds(), { padding: [30, 30] });
   }
 }
 
@@ -2667,7 +2839,7 @@ function zoomToCompareRecord(rec) {
   if (!rec || !rec._mapLayer) return;
   const b = rec._mapLayer.getBounds();
   if (b && b.isValid()) {
-    compareMap.fitBounds(b, { padding: [60, 60], maxZoom: 17 });
+    map.fitBounds(b, { padding: [60, 60], maxZoom: 17 });
     rec._mapLayer.openPopup(b.getCenter());
   }
 }
@@ -2800,14 +2972,6 @@ async function waitForTilesFullyLoaded(satelliteLayer, mapElId, timeoutMs) {
 // Wechselt bei Bedarf auf den angegebenen Tab (nötig, damit dessen Karten-
 // Container beim Screenshot eine echte Größe hat) und liefert eine restore()
 // Funktion, die zum vorher aktiven Tab zurückwechselt.
-function ensureTabActive(viewId) {
-  const activeBtn = document.querySelector('.tab-btn.active');
-  const targetBtn = document.querySelector(`.tab-btn[data-view="${viewId}"]`);
-  const wasActive = activeBtn === targetBtn;
-  if (!wasActive) targetBtn.click();
-  return { wasActive, restore: () => { if (!wasActive) activeBtn.click(); } };
-}
-
 // Zeichnet eine Fläche als schlichten weißen Umriss auf dem Luftbild (ohne
 // Füllung, wie bei einem klassischen Feldstück-Ausdruck), zoomt darauf und
 // liefert einen Screenshot der Karte zurück. Wichtig: als eigener Canvas-
@@ -2869,7 +3033,6 @@ async function exportFlaechenkarten() {
   btn.disabled = true;
 
   // Ausgangszustand merken, um ihn nach dem Export exakt wiederherzustellen.
-  const tab = ensureTabActive('viewer');
   const savedCenter = map.getCenter();
   const savedZoom = map.getZoom();
   const savedBasemap = currentBasemap;
@@ -2911,7 +3074,6 @@ async function exportFlaechenkarten() {
     if (currentBasemap !== savedBasemap) setBasemap(savedBasemap);
     visibleLayerIds.forEach(id => layers[id] && layers[id].leafletLayer.addTo(map));
     map.setView(savedCenter, savedZoom);
-    tab.restore();
     btn.disabled = false;
   }
 }
@@ -2923,28 +3085,29 @@ document.getElementById('btn-export-flaechenkarten').addEventListener('click', e
 // aus einem Shapefile zu laden. Größe wird per turf.area() aus der
 // gezeichneten Geometrie berechnet, Name/Kulturart sind optional frei
 // eintragbar, Export nutzt dieselbe Flächenkarten-PDF-Logik wie der Viewer.
-let zeichnerMap = null;
-let zeichnerBasemaps = null;
-let currentZeichnerBasemap = 'osm';
-let zeichnerLayerGroup = null;
-const zeichnerParcels = []; // { id, nummer, name, kultur, areaHa, layer, color }
+let zeichnerInitDone = false;
+let zeichnerDrawPolygon = null; // Leaflet.draw-Handler, damit setActiveSegment() das Zeichnen beim Verlassen des Tabs abbrechen kann
+let zeichnerLayerId = null; // id der synthetischen "Flächenzeichner"-Ebene im geteilten layers-Bestand
+const zeichnerParcels = []; // featureIndex-Einträge der gezeichneten Flächen (gleicher Bestand wie überall sonst, nur gefiltert für diese Liste)
 let zeichnerParcelCounter = 0;
 let zeichnerColorIdx = 0;
 
-function initZeichnerMap() {
-  if (zeichnerMap) return;
-  zeichnerMap = L.map('zeichner-map', { zoomControl: true, attributionControl: true }).setView([51.16, 10.45], 6);
-  zeichnerBasemaps = createBasemaps();
-  zeichnerBasemaps.osm.addTo(zeichnerMap);
-  zeichnerLayerGroup = L.featureGroup().addTo(zeichnerMap);
+// Legt beim allerersten Zeichnen die geteilte "Flächenzeichner"-Ebene an —
+// alle weiteren gezeichneten Flächen werden per addFeatureToLayer() an
+// dieselbe Ebene angehängt, statt jedes Mal eine neue Ebene zu erzeugen.
+function ensureZeichnerLayer() {
+  if (zeichnerLayerId) return zeichnerLayerId;
+  const id = 'layer-' + (layerCounter++);
+  const color = COLORS[zeichnerColorIdx % COLORS.length];
+  const leafletLayer = L.geoJSON({ type: 'FeatureCollection', features: [] }, { renderer: L.canvas(), style: () => ({}) }).addTo(map);
+  layers[id] = { name: 'Flächenzeichner', geojson: { type: 'FeatureCollection', features: [] }, leafletLayer, color, visible: true, isTeilflaechen: false, count: 0 };
+  zeichnerLayerId = id;
+  return id;
+}
 
-  document.getElementById('zeichner-btn-basemap').addEventListener('click', () => {
-    zeichnerBasemaps[currentZeichnerBasemap].remove();
-    const nextIdx = (basemapOrder.indexOf(currentZeichnerBasemap) + 1) % basemapOrder.length;
-    currentZeichnerBasemap = basemapOrder[nextIdx];
-    zeichnerBasemaps[currentZeichnerBasemap].addTo(zeichnerMap);
-    document.getElementById('zeichner-btn-basemap').textContent = 'Basiskarte: ' + basemapLabels[currentZeichnerBasemap];
-  });
+function initZeichnerMap() {
+  if (zeichnerInitDone) return;
+  zeichnerInitDone = true;
 
   const drawBtn = document.getElementById('btn-zeichner-draw');
   if (typeof L.Draw === 'undefined') {
@@ -2953,46 +3116,57 @@ function initZeichnerMap() {
     return;
   }
 
-  const drawPolygon = new L.Draw.Polygon(zeichnerMap, {
+  zeichnerDrawPolygon = new L.Draw.Polygon(map, {
     shapeOptions: { color: '#8CB26B', weight: 1.8, fillColor: '#8CB26B', fillOpacity: 0.22 },
     showArea: true,
     metric: true,
     allowIntersection: false
   });
-  drawBtn.addEventListener('click', () => drawPolygon.enable());
+  drawBtn.addEventListener('click', () => zeichnerDrawPolygon.enable());
 
-  zeichnerMap.on(L.Draw.Event.DRAWSTART, () => {
+  map.on(L.Draw.Event.DRAWSTART, () => {
+    armedTool = 'draw-polygon';
     drawBtn.classList.add('active');
     drawBtn.textContent = 'Zeichnen läuft … (Esc zum Abbrechen)';
   });
-  zeichnerMap.on(L.Draw.Event.DRAWSTOP, () => {
+  map.on(L.Draw.Event.DRAWSTOP, () => {
+    if (armedTool === 'draw-polygon') armedTool = null;
     drawBtn.classList.remove('active');
     drawBtn.textContent = 'Fläche zeichnen';
   });
 
-  zeichnerMap.on(L.Draw.Event.CREATED, (e) => {
-    const layer = e.layer;
-    zeichnerLayerGroup.addLayer(layer);
+  // Rechtsklick während des Zeichnens entfernt den zuletzt gesetzten Punkt
+  // (deleteLastVertex ist eine öffentliche Methode von L.Draw.Polygon, sonst
+  // nur über die von uns nicht genutzte Standard-Toolbar erreichbar).
+  map.on('contextmenu', (e) => {
+    if (armedTool !== 'draw-polygon') return;
+    L.DomEvent.preventDefault(e);
+    zeichnerDrawPolygon.deleteLastVertex();
+  });
 
+  // Gezeichnete Flächen landen direkt im geteilten Datenbestand (layers/
+  // featureIndex) statt in einer eigenen, nur dem Flächenzeichner bekannten
+  // Liste — dadurch sind sie sofort auch im Viewer, im Jahresvergleich (als
+  // Jahr B) und im Obstbaumkataster (Baum-Zuordnung) nutzbar.
+  map.on(L.Draw.Event.CREATED, (e) => {
+    const layer = e.layer;
     const areaHa = turf.area(layer.toGeoJSON()) / 10000;
     const color = COLORS[zeichnerColorIdx % COLORS.length];
     zeichnerColorIdx++;
-    layer.setStyle({ color, weight: 1.6, fillColor: color, fillOpacity: 0.22 });
-
     zeichnerParcelCounter++;
-    const entry = {
-      id: 'parcel-' + zeichnerParcelCounter,
-      nummer: zeichnerParcelCounter,
-      name: '',
-      kultur: '',
-      areaHa,
-      layer,
-      color
+
+    const feature = {
+      type: 'Feature',
+      geometry: layer.toGeoJSON().geometry,
+      properties: { NUMMER: zeichnerParcelCounter, NAME: '', KULTURART: '', FLAECHE_HA: Number(areaHa.toFixed(4)) }
     };
+    const layerId = ensureZeichnerLayer();
+    const entry = addFeatureToLayer(layerId, feature, color);
+    entry.id = 'parcel-' + zeichnerParcelCounter;
+    entry.areaHa = areaHa;
     zeichnerParcels.push(entry);
-    layer.on('click', () => zoomToParcel(entry.id));
     renderParcelList();
-    setZeichnerStatus(`Fläche ${entry.nummer} gezeichnet (${areaHa.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ha).`);
+    setZeichnerStatus(`Fläche ${zeichnerParcelCounter} gezeichnet (${areaHa.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ha).`);
   });
 }
 
@@ -3007,16 +3181,16 @@ function showZeichnerError(msg) {
 }
 
 function zoomToParcel(id) {
-  const p = zeichnerParcels.find(x => x.id === id);
-  if (!p) return;
-  const bounds = p.layer.getBounds();
-  if (bounds.isValid()) zeichnerMap.fitBounds(bounds, { padding: [40, 40], maxZoom: 18 });
+  const entry = zeichnerParcels.find(x => x.id === id);
+  if (!entry || !entry.leafletLayer.getBounds) return;
+  const bounds = entry.leafletLayer.getBounds();
+  if (bounds.isValid()) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 18 });
 }
 
 function removeParcel(id) {
   const idx = zeichnerParcels.findIndex(x => x.id === id);
   if (idx === -1) return;
-  zeichnerLayerGroup.removeLayer(zeichnerParcels[idx].layer);
+  removeFeatureEntry(zeichnerParcels[idx]);
   zeichnerParcels.splice(idx, 1);
   renderParcelList();
 }
@@ -3032,7 +3206,7 @@ function renderParcelList() {
       <div class="parcel-row">
         <div class="swatch" style="background:${p.color}"></div>
         <div class="parcel-nummer">#${p.nummer}</div>
-        <input class="parcel-name" data-id="${p.id}" placeholder="Flächenname (optional)" value="${escapeHtml(p.name)}">
+        <input class="parcel-name" data-id="${p.id}" placeholder="Flächenname (optional)" value="${escapeHtml(p.featName)}">
         <div class="parcel-size">${p.areaHa.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ha</div>
       </div>
       <input class="parcel-kultur" data-id="${p.id}" placeholder="Kulturart (optional)" value="${escapeHtml(p.kultur)}">
@@ -3047,13 +3221,13 @@ function renderParcelList() {
   list.querySelectorAll('.parcel-name').forEach(input => {
     input.addEventListener('input', () => {
       const p = zeichnerParcels.find(x => x.id === input.getAttribute('data-id'));
-      if (p) p.name = input.value;
+      if (p) updateDrawnParcelEntry(p, { name: input.value });
     });
   });
   list.querySelectorAll('.parcel-kultur').forEach(input => {
     input.addEventListener('input', () => {
       const p = zeichnerParcels.find(x => x.id === input.getAttribute('data-id'));
-      if (p) p.kultur = input.value;
+      if (p) updateDrawnParcelEntry(p, { kultur: input.value });
     });
   });
   list.querySelectorAll('[data-action]').forEach(el => {
@@ -3066,48 +3240,19 @@ function renderParcelList() {
   });
 }
 
-// Property-Namen bewusst NICHT frei erfunden, sondern aus FIELD_CANDIDATES/
-// GROESSE_CANDIDATES (siehe oben) gewählt — nur so zeigt eine erneut als
-// Fläche geladene Datei (Viewer, Jahresvergleich, Obstbaumkataster) Name/
-// Größe/Kulturart auch tatsächlich an, statt überall "–" anzuzeigen.
-function zeichnerParcelToGeoJSONFeature(p) {
-  return {
-    type: 'Feature',
-    geometry: p.layer.toGeoJSON().geometry,
-    properties: {
-      NUMMER: p.nummer,
-      NAME: p.name,
-      KULTURART: p.kultur,
-      FLAECHE_HA: Number(p.areaHa.toFixed(4))
-    }
-  };
-}
-
 // Speichert die gezeichneten Flächen als reguläres GeoJSON — analog zum
 // Baumkataster-Export im Obstbaumkataster-Tab, z.B. für die Weiterverwendung
-// in einem GIS-Programm oder zum Sichern außerhalb des Browsers.
+// in einem GIS-Programm oder zum Sichern außerhalb des Browsers. Die
+// Feature-Objekte stecken (Geometrie + stets aktuelle NAME/KULTURART-Props
+// dank updateDrawnParcelEntry()) bereits fertig in entry.leafletLayer.feature.
 function exportZeichnerGeoJSON() {
   if (!zeichnerParcels.length) { showZeichnerError('Noch keine Fläche gezeichnet.'); return; }
-  const fc = { type: 'FeatureCollection', features: zeichnerParcels.map(zeichnerParcelToGeoJSONFeature) };
+  const fc = { type: 'FeatureCollection', features: zeichnerParcels.map(p => p.leafletLayer.feature) };
   const ts = new Date().toISOString().slice(0, 10);
   downloadBlob(JSON.stringify(fc, null, 2), `flaechenzeichner_${ts}.geojson`, 'application/geo+json');
   setZeichnerStatus('Als GeoJSON gespeichert.');
 }
 document.getElementById('btn-export-zeichner-geojson').addEventListener('click', exportZeichnerGeoJSON);
-
-// Übernimmt die gezeichneten Flächen direkt (ohne Umweg über Speichern +
-// erneutes Hochladen) als Flächen-Ebene ins Obstbaumkataster — praktisch,
-// um dort sofort Bäume auf den gerade gezeichneten Flächen zu setzen.
-function transferZeichnerToObstbaum() {
-  if (!zeichnerParcels.length) { showZeichnerError('Noch keine Fläche gezeichnet.'); return; }
-  const fc = { type: 'FeatureCollection', features: zeichnerParcels.map(zeichnerParcelToGeoJSONFeature) };
-  document.querySelector('.tab-btn[data-view="obstbaum"]').click();
-  setTimeout(() => {
-    addObstbaumParcelLayer('Flächenzeichner', fc);
-    setObstbaumStatus(`${zeichnerParcels.length} Fläche(n) aus dem Flächenzeichner übernommen.`);
-  }, 60);
-}
-document.getElementById('btn-zeichner-to-obstbaum').addEventListener('click', transferZeichnerToObstbaum);
 
 async function exportZeichnerFlaechenkarten() {
   if (typeof html2canvas === 'undefined') { showZeichnerError('Flächenkarten-Export nicht verfügbar (html2canvas konnte nicht geladen werden).'); return; }
@@ -3117,19 +3262,14 @@ async function exportZeichnerFlaechenkarten() {
   const btn = document.getElementById('btn-export-zeichner-flaechenkarten');
   btn.disabled = true;
 
-  const tab = ensureTabActive('zeichner');
-  const savedCenter = zeichnerMap.getCenter();
-  const savedZoom = zeichnerMap.getZoom();
-  const savedBasemap = currentZeichnerBasemap;
+  const savedCenter = map.getCenter();
+  const savedZoom = map.getZoom();
+  const savedBasemap = currentBasemap;
 
-  zeichnerMap.removeLayer(zeichnerLayerGroup);
-  if (currentZeichnerBasemap !== 'satellite') {
-    zeichnerBasemaps[currentZeichnerBasemap].remove();
-    currentZeichnerBasemap = 'satellite';
-    zeichnerBasemaps.satellite.addTo(zeichnerMap);
-    document.getElementById('zeichner-btn-basemap').textContent = 'Basiskarte: ' + basemapLabels.satellite;
-  }
-  zeichnerMap.removeControl(zeichnerMap.zoomControl);
+  const zeichnerLeafletLayer = zeichnerLayerId ? layers[zeichnerLayerId].leafletLayer : null;
+  if (zeichnerLeafletLayer) map.removeLayer(zeichnerLeafletLayer);
+  if (currentBasemap !== 'satellite') setBasemap('satellite');
+  map.removeControl(map.zoomControl);
 
   const doc = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
   const pageW = doc.internal.pageSize.getWidth();
@@ -3143,7 +3283,7 @@ async function exportZeichnerFlaechenkarten() {
 
       let canvas;
       try {
-        canvas = await captureParcelScreenshot(zeichnerMap, zeichnerBasemaps.satellite, 'zeichner-map', p.layer.toGeoJSON());
+        canvas = await captureParcelScreenshot(map, basemaps.satellite, 'map', p.leafletLayer.toGeoJSON());
       } catch (err) {
         console.error('Kartenbild-Erfassung fehlgeschlagen für', p.nummer, err);
         showZeichnerError('Kartenbild konnte nicht erfasst werden (evtl. CORS-Einschränkung der Kachel-Quelle).');
@@ -3153,7 +3293,7 @@ async function exportZeichnerFlaechenkarten() {
       if (i > 0) doc.addPage('a4', 'landscape');
       addFlaechenkartePage(doc, pageW, pageH, margin, canvas, {
         nummer: p.nummer,
-        featName: p.name,
+        featName: p.featName,
         groesse: String(p.areaHa),
         kultur: p.kultur,
         flaechenId: ''
@@ -3164,16 +3304,10 @@ async function exportZeichnerFlaechenkarten() {
     doc.save(`flaechenkarten_gezeichnet_${ts}.pdf`);
     setZeichnerStatus('Flächenkarten exportiert.');
   } finally {
-    zeichnerMap.zoomControl.addTo(zeichnerMap);
-    if (currentZeichnerBasemap !== savedBasemap) {
-      zeichnerBasemaps[currentZeichnerBasemap].remove();
-      currentZeichnerBasemap = savedBasemap;
-      zeichnerBasemaps[currentZeichnerBasemap].addTo(zeichnerMap);
-      document.getElementById('zeichner-btn-basemap').textContent = 'Basiskarte: ' + basemapLabels[currentZeichnerBasemap];
-    }
-    zeichnerLayerGroup.addTo(zeichnerMap);
-    zeichnerMap.setView(savedCenter, savedZoom);
-    tab.restore();
+    map.zoomControl.addTo(map);
+    if (currentBasemap !== savedBasemap) setBasemap(savedBasemap);
+    if (zeichnerLeafletLayer) zeichnerLeafletLayer.addTo(map);
+    map.setView(savedCenter, savedZoom);
     btn.disabled = false;
   }
 }
@@ -3277,33 +3411,24 @@ function saveFavoriteFruits() {
 }
 
 let favoriteFruitKeys = loadFavoriteFruits() || FRUIT_TYPES_TOP6.map(f => f.key);
-let obstbaumMap = null;
-let obstbaumBasemaps = null;
-let currentObstbaumBasemap = 'osm';
+let obstbaumInitDone = false;
 let obstbaumLayerGroup = null;
-let obstbaumParcelGroup = null;
 let obstbaumTablePanel = null;
-let obstbaumParcelTablePanel = null;
 const obstbaumTrees = []; // { id, nummer, art, latlng, marker, parcelId }
 let obstbaumTreeCounter = 0;
 let activeFruitKey = null;
 
-// Flächen, die zusätzlich zu den Bäumen geladen werden können (optional) —
-// Bäume, die innerhalb einer geladenen Fläche gesetzt werden, werden dieser
-// automatisch zugeordnet (Tabelle + Flächenkarten-Export gruppieren dann
-// danach statt nach geografischer Nähe).
-const obstbaumParcelLayers = {}; // id -> { name, geojson, leafletLayer, color, count }
-let obstbaumParcelLayerCounter = 0;
-const obstbaumParcelIndex = []; // flache Liste aller Flächen-Features über alle geladenen Ebenen
-let obstbaumParcelFeatureCounter = 0;
-let obstbaumHighlightedParcel = null;
+// Flächen kommen jetzt aus dem geteilten Datenbestand (layers/featureIndex,
+// siehe Viewer weiter oben) — dieselben Flächen, die im Viewer/Jahresvergleich/
+// Flächenzeichner sichtbar sind, stehen hier automatisch zur Baum-Zuordnung
+// bereit, ohne separat für das Obstbaumkataster hochgeladen werden zu müssen.
 
 // Ordnet eine Koordinate der ersten geladenen Fläche zu, die sie enthält
 // (null, falls keine Fläche geladen ist oder der Punkt außerhalb aller liegt).
 function findObstbaumParcelForLatLng(latlng) {
-  if (!obstbaumParcelIndex.length || typeof turf === 'undefined' || !turf.booleanPointInPolygon) return null;
+  if (!featureIndex.length || typeof turf === 'undefined' || !turf.booleanPointInPolygon) return null;
   const pt = turf.point([latlng.lng, latlng.lat]);
-  for (const entry of obstbaumParcelIndex) {
+  for (const entry of featureIndex) {
     const geomType = entry.leafletLayer.feature && entry.leafletLayer.feature.geometry && entry.leafletLayer.feature.geometry.type;
     if (geomType !== 'Polygon' && geomType !== 'MultiPolygon') continue;
     try {
@@ -3316,7 +3441,7 @@ function findObstbaumParcelForLatLng(latlng) {
 function reassignAllTreesToParcels() {
   obstbaumTrees.forEach(t => { t.parcelId = findObstbaumParcelForLatLng(t.latlng)?.id || null; });
   renderObstbaumTable();
-  renderObstbaumParcelTable();
+  renderFeatureTable();
 }
 
 // Baumanzahl je Obstart, gruppiert nach zugeordneter Fläche (Bäume ohne
@@ -3357,10 +3482,11 @@ function showObstbaumError(msg) {
 
 function setActiveFruitKey(key) {
   activeFruitKey = (activeFruitKey === key) ? null : key;
+  armedTool = activeFruitKey ? 'place-tree' : (armedTool === 'place-tree' ? null : armedTool);
   document.querySelectorAll('.fruit-btn, .fruit-list-row').forEach(el => {
     el.classList.toggle('active', el.getAttribute('data-key') === activeFruitKey);
   });
-  document.getElementById('obstbaum-map').classList.toggle('placing', !!activeFruitKey);
+  document.getElementById('map').classList.toggle('placing', !!activeFruitKey);
   setObstbaumStatus(activeFruitKey
     ? `${fruitOf(activeFruitKey).label} aktiv — auf die Karte klicken, um Bäume zu setzen.`
     : 'Bereit.');
@@ -3405,7 +3531,7 @@ function addTree(key, latlng) {
     entry.latlng = marker.getLatLng();
     entry.parcelId = findObstbaumParcelForLatLng(entry.latlng)?.id || null;
     renderObstbaumTable();
-    renderObstbaumParcelTable();
+    renderFeatureTable();
   });
   marker.addTo(obstbaumLayerGroup);
   entry.marker = marker;
@@ -3413,7 +3539,7 @@ function addTree(key, latlng) {
   obstbaumTrees.push(entry);
   renderObstbaumSummary();
   renderObstbaumTable();
-  renderObstbaumParcelTable();
+  renderFeatureTable();
   setObstbaumStatus(`${fruit.label} gesetzt (${obstbaumTrees.length} insgesamt).`);
   return entry;
 }
@@ -3426,32 +3552,33 @@ function removeTree(id) {
   obstbaumTrees.splice(idx, 1);
   renderObstbaumSummary();
   renderObstbaumTable();
-  renderObstbaumParcelTable();
+  renderFeatureTable();
   setObstbaumStatus(`${fruit.label} entfernt (${obstbaumTrees.length} verbleibend).`);
 }
 
 function zoomToTree(id) {
   const t = obstbaumTrees.find(x => x.id === id);
   if (!t) return;
-  obstbaumMap.setView(t.latlng, Math.max(obstbaumMap.getZoom(), 18));
+  map.setView(t.latlng, Math.max(map.getZoom(), 18));
 }
 
-// Zoomt auf alles, was in diesem Tab geladen/gesetzt ist — Flächen UND Bäume.
+// Zoomt auf alles, was für den Obstbaumkataster relevant ist — geladene
+// Flächen UND gesetzte Bäume.
 function fitObstbaumContent() {
   let bounds = null;
-  Object.values(obstbaumParcelLayers).forEach(l => {
+  Object.values(layers).forEach(l => {
     const b = l.leafletLayer.getBounds();
     if (b.isValid()) bounds = bounds ? bounds.extend(b) : L.latLngBounds(b.getSouthWest(), b.getNorthEast());
   });
   obstbaumTrees.forEach(t => {
     bounds = bounds ? bounds.extend(t.latlng) : L.latLngBounds(t.latlng, t.latlng);
   });
-  if (bounds && bounds.isValid()) obstbaumMap.fitBounds(bounds, { padding: [40, 40], maxZoom: 18 });
+  if (bounds && bounds.isValid()) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 18 });
 }
 
 function parcelLabelFor(parcelId) {
   if (!parcelId) return '–';
-  const p = obstbaumParcelIndex.find(x => x.id === parcelId);
+  const p = featureIndex.find(x => x.id === parcelId);
   return p ? escapeHtml(p.nummer || p.featName || '–') : '–';
 }
 
@@ -3502,26 +3629,13 @@ function renderObstbaumTable() {
 }
 
 function initObstbaumMap() {
-  if (obstbaumMap) return;
-  obstbaumMap = L.map('obstbaum-map', { zoomControl: true, attributionControl: true }).setView([51.16, 10.45], 6);
-  obstbaumBasemaps = createBasemaps();
-  obstbaumBasemaps.osm.addTo(obstbaumMap);
+  if (obstbaumInitDone) return;
+  obstbaumInitDone = true;
 
-  document.getElementById('obstbaum-btn-basemap').addEventListener('click', () => {
-    obstbaumBasemaps[currentObstbaumBasemap].remove();
-    const nextIdx = (basemapOrder.indexOf(currentObstbaumBasemap) + 1) % basemapOrder.length;
-    currentObstbaumBasemap = basemapOrder[nextIdx];
-    obstbaumBasemaps[currentObstbaumBasemap].addTo(obstbaumMap);
-    document.getElementById('obstbaum-btn-basemap').textContent = 'Basiskarte: ' + basemapLabels[currentObstbaumBasemap];
-  });
+  obstbaumLayerGroup = L.featureGroup().addTo(map);
 
-  // Flächen-Gruppe VOR der Baum-Gruppe hinzufügen, damit Baumpunkte optisch
-  // immer über den Flächenumrissen liegen.
-  obstbaumParcelGroup = L.featureGroup().addTo(obstbaumMap);
-  obstbaumLayerGroup = L.featureGroup().addTo(obstbaumMap);
-
-  obstbaumMap.on('click', (e) => {
-    if (!activeFruitKey) return;
+  map.on('click', (e) => {
+    if (armedTool !== 'place-tree' || !activeFruitKey) return;
     addTree(activeFruitKey, e.latlng);
   });
 
@@ -3530,249 +3644,31 @@ function initObstbaumMap() {
     handle: document.getElementById('obstbaum-table-resize-handle'),
     minimizeBtn: document.getElementById('obstbaum-table-minimize'),
     closeBtn: document.getElementById('obstbaum-table-close'),
-    boundsWrap: document.getElementById('obstbaum-map-wrap'),
+    boundsWrap: document.getElementById('map-wrap'),
     minHeight: TABLE_MIN_HEIGHT,
     defaultHeight: TABLE_DEFAULT_HEIGHT
   });
   document.getElementById('btn-obstbaum-table').addEventListener('click', () => {
-    document.getElementById('obstbaum-parcel-table-panel').classList.remove('open');
+    document.getElementById('table-panel').classList.remove('open');
     renderObstbaumTable();
     renderObstbaumSummary();
     obstbaumTablePanel.open();
   });
 
-  // Zweites Bodenleisten-Panel für die Flächentabelle — beide Panels teilen
-  // sich denselben Bereich, daher schließt das Öffnen des einen das andere.
-  obstbaumParcelTablePanel = initResizablePanel({
-    panel: document.getElementById('obstbaum-parcel-table-panel'),
-    handle: document.getElementById('obstbaum-parcel-table-resize-handle'),
-    minimizeBtn: document.getElementById('obstbaum-parcel-table-minimize'),
-    closeBtn: document.getElementById('obstbaum-parcel-table-close'),
-    boundsWrap: document.getElementById('obstbaum-map-wrap'),
-    minHeight: TABLE_MIN_HEIGHT,
-    defaultHeight: TABLE_DEFAULT_HEIGHT
-  });
+  // Flächentabelle ist jetzt dieselbe wie im Viewer (geteilter Datenbestand) —
+  // Öffnen schließt lediglich die Baumtabelle, da beide denselben Bodenbereich
+  // der Karte teilen.
   document.getElementById('btn-obstbaum-parcel-table').addEventListener('click', () => {
     document.getElementById('obstbaum-table-panel').classList.remove('open');
-    renderObstbaumParcelTable();
-    obstbaumParcelTablePanel.open();
+    openFeatureTable();
   });
 }
 
-// ---------- Flächen laden (optional) ----------
-// Nutzt dieselben Parser wie der Viewer (parseShapefileZip/mergeFeldstueckNutzung),
-// hält die Ergebnisse aber in einem eigenen Index statt in den Viewer-Ebenen —
-// beide Tabs haben unabhängige Kartenobjekte.
-function addObstbaumParcelLayer(name, geojson) {
-  const id = 'obparcel-' + (obstbaumParcelLayerCounter++);
-  const color = COLORS[colorIdx % COLORS.length];
-  colorIdx++;
-  const labelAnchors = [];
-
-  // Nur Flächen-Geometrien akzeptieren — beim "Kataster speichern"-Export
-  // lassen sich Bäume optional zusammen mit den Flächen in eine Datei packen;
-  // würde man diese Kombi-Datei versehentlich hier statt beim Baumkataster
-  // hochladen, sollen die Baum-Punkte darin einfach ignoriert werden statt
-  // als kaputte "Flächen" in der Tabelle aufzutauchen.
-  //
-  // renderer: L.canvas() ist hier Pflicht, nicht nur Stilfrage: anders als im
-  // Viewer/Zeichner bleiben die Flächen beim Obstbaum-Flächenkarten-Export
-  // durchgehend sichtbar (der Baumkontext soll ja mit ins Bild) statt vor der
-  // Aufnahme entfernt zu werden — mit dem SVG-Standard-Renderer berechnet
-  // html2canvas die CSS-Transform-Verschiebung von Leaflets SVG-Overlay-Pane
-  // falsch und der Umriss landet versetzt zu den Kacheln (siehe
-  // captureParcelScreenshot weiter oben für denselben Bug am Ursprung).
-  const leafletLayer = L.geoJSON(geojson, {
-    filter: (feature) => !!feature.geometry && (feature.geometry.type === 'Polygon' || feature.geometry.type === 'MultiPolygon'),
-    renderer: L.canvas(),
-    style: () => ({ color, weight: 1.6, fillColor: color, fillOpacity: 0.18 }),
-    onEachFeature: (feature, lyr) => {
-      const props = feature.properties || {};
-      const center = lyr.getBounds ? lyr.getBounds().getCenter() : lyr.getLatLng();
-      const entry = {
-        id: 'obparcelfeat-' + (obstbaumParcelFeatureCounter++),
-        layerId: id,
-        layerName: name,
-        props,
-        center,
-        leafletLayer: lyr,
-        color,
-        nummer: pickField(props, FIELD_CANDIDATES.nummer),
-        featName: pickField(props, FIELD_CANDIDATES.name),
-        groesse: pickGroesse(props),
-        kultur: pickField(props, FIELD_CANDIDATES.kultur),
-        flaechenId: pickField(props, FIELD_CANDIDATES.flaechenid),
-        besichtigt: false
-      };
-      obstbaumParcelIndex.push(entry);
-      lyr.on('click', () => highlightObstbaumParcel(entry));
-
-      const labelText = escapeHtml(entry.nummer) + (entry.featName ? '<br>' + escapeHtml(entry.featName) : '');
-      if (labelText.trim()) labelAnchors.push(createLabelAnchorAt(center, labelText));
-    }
-  });
-  labelAnchors.forEach(anchor => leafletLayer.addLayer(anchor));
-  leafletLayer.addTo(obstbaumParcelGroup);
-
-  let count = 0;
-  (geojson.features || []).forEach(() => count++);
-  obstbaumParcelLayers[id] = { name, geojson, leafletLayer, color, count };
-
-  renderObstbaumParcelList();
-  reassignAllTreesToParcels();
-  fitObstbaumContent();
-}
-
-function highlightObstbaumParcel(entry) {
-  if (obstbaumHighlightedParcel && obstbaumHighlightedParcel.leafletLayer.setStyle) {
-    obstbaumHighlightedParcel.leafletLayer.setStyle({ color: obstbaumHighlightedParcel.color, weight: 1.6 });
-  }
-  if (entry.leafletLayer.setStyle) entry.leafletLayer.setStyle({ color: '#ffffff', weight: 4 });
-  obstbaumHighlightedParcel = entry;
-}
-
-function zoomToObstbaumParcel(entry) {
-  highlightObstbaumParcel(entry);
-  const lyr = entry.leafletLayer;
-  if (lyr.getBounds) obstbaumMap.fitBounds(lyr.getBounds(), { padding: [40, 40], maxZoom: 18 });
-}
-
-function removeObstbaumParcelLayer(id) {
-  const l = obstbaumParcelLayers[id];
-  if (!l) return;
-  obstbaumParcelGroup.removeLayer(l.leafletLayer);
-  delete obstbaumParcelLayers[id];
-  for (let i = obstbaumParcelIndex.length - 1; i >= 0; i--) {
-    if (obstbaumParcelIndex[i].layerId === id) {
-      if (obstbaumHighlightedParcel === obstbaumParcelIndex[i]) obstbaumHighlightedParcel = null;
-      obstbaumParcelIndex.splice(i, 1);
-    }
-  }
-  renderObstbaumParcelList();
-  reassignAllTreesToParcels();
-}
-
-function renderObstbaumParcelList() {
-  const list = document.getElementById('obstbaum-parcel-list');
-  const ids = Object.keys(obstbaumParcelLayers);
-  document.getElementById('obstbaum-parcel-empty-hint').style.display = ids.length ? 'none' : 'block';
-  list.innerHTML = '';
-  ids.forEach(id => {
-    const l = obstbaumParcelLayers[id];
-    const item = document.createElement('div');
-    item.className = 'layer-item';
-    item.innerHTML = `
-      <div class="layer-row">
-        <div class="swatch" style="background:${l.color}"></div>
-        <div class="layer-name" title="${l.name}">${l.name}</div>
-        <div class="layer-count">${l.count}</div>
-      </div>
-      <div class="layer-actions">
-        <button data-id="${id}" data-action="zoom">Zoom</button>
-        <button data-id="${id}" data-action="remove" class="danger">Entfernen</button>
-      </div>
-    `;
-    list.appendChild(item);
-  });
-  list.querySelectorAll('[data-action]').forEach(el => {
-    el.addEventListener('click', () => {
-      const id = el.getAttribute('data-id');
-      const action = el.getAttribute('data-action');
-      if (action === 'zoom') {
-        const b = obstbaumParcelLayers[id].leafletLayer.getBounds();
-        if (b.isValid()) obstbaumMap.fitBounds(b, { padding: [24, 24] });
-      }
-      if (action === 'remove') removeObstbaumParcelLayer(id);
-    });
-  });
-}
-
-async function handleObstbaumParcelFiles(fileList) {
-  const files = Array.from(fileList);
-  for (const file of files) {
-    try {
-      setObstbaumStatus('Lese ' + file.name + ' …');
-      const ext = file.name.split('.').pop().toLowerCase();
-      if (ext === 'zip') {
-        let results = await parseShapefileZip(file);
-        if (!results.length) {
-          showObstbaumError(file.name + ': Keine Shapefile-Bestandteile (.shp/.dbf) im Zip gefunden.');
-          continue;
-        }
-        results = mergeFeldstueckNutzung(results);
-        results.forEach(r => addObstbaumParcelLayer(r.name, r.fc));
-        setObstbaumStatus(file.name + ': ' + results.length + ' Flächen-Ebene(n) geladen.');
-      } else if (ext === 'geojson' || ext === 'json') {
-        const text = await file.text();
-        const geojson = JSON.parse(text);
-        addObstbaumParcelLayer(file.name.replace(/\.\w+$/, ''), geojson);
-        setObstbaumStatus(file.name + ' geladen.');
-      } else {
-        showObstbaumError(file.name + ': Format nicht unterstützt (erwartet .zip, .geojson, .json)');
-      }
-    } catch (err) {
-      console.error(err);
-      showObstbaumError(file.name + ': Konnte Datei nicht lesen — ' + (err.message || 'unbekannter Fehler'));
-    }
-  }
-  document.getElementById('obstbaum-parcel-input').value = '';
-}
-document.getElementById('obstbaum-parcel-input').addEventListener('change', (e) => {
-  if (e.target.files.length) handleObstbaumParcelFiles(e.target.files);
-});
-
-function renderObstbaumParcelTable() {
-  const tbody = document.getElementById('obstbaum-parcel-table-body');
-  document.getElementById('obstbaum-parcel-table-count').textContent = obstbaumParcelIndex.length;
-  renderBesichtigtSummary('obstbaum-parcel-summary-row', obstbaumParcelIndex);
-  if (!obstbaumParcelIndex.length) {
-    tbody.innerHTML = '<tr><td colspan="8" style="color:var(--muted); padding:14px;">Noch keine Flächen geladen.</td></tr>';
-    return;
-  }
-  const treeCounts = computeObstbaumParcelTreeCounts();
-  const rows = obstbaumParcelIndex.slice().sort((a, b) =>
-    String(a.nummer).localeCompare(String(b.nummer), undefined, { numeric: true }));
-
-  tbody.innerHTML = rows.map(entry => {
-    const num = parseFloat(String(entry.groesse).replace(',', '.'));
-    const groesseText = isFinite(num)
-      ? num.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ha'
-      : (entry.groesse || '–');
-    const routeCell = entry.center
-      ? `<a class="table-route-link" href="${googleMapsDirectionsUrl(entry.center.lat, entry.center.lng)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Route ↗</a>`
-      : '–';
-    const counts = treeCounts.get(entry.id);
-    const treesCell = counts && counts.size
-      ? [...counts.entries()].map(([key, n]) => fruitChipHtml(key, ` <span class="n">${n}</span>`)).join('')
-      : '<span style="color:var(--muted);">–</span>';
-    return `<tr data-id="${entry.id}">
-      <td>${escapeHtml(entry.nummer || '–')}</td>
-      <td>${escapeHtml(entry.featName || '–')}</td>
-      <td>${escapeHtml(entry.flaechenId || '–')}</td>
-      <td>${groesseText}</td>
-      <td>${escapeHtml(entry.kultur || '–')}</td>
-      <td>${treesCell}</td>
-      <td class="besichtigt-cell"><input type="checkbox" class="besichtigt-checkbox" ${entry.besichtigt ? 'checked' : ''} onclick="event.stopPropagation()"></td>
-      <td>${routeCell}</td>
-    </tr>`;
-  }).join('');
-
-  tbody.querySelectorAll('tr[data-id]').forEach(tr => {
-    tr.addEventListener('click', (e) => {
-      if (e.target.closest('a') || e.target.closest('input')) return;
-      const entry = obstbaumParcelIndex.find(p => p.id === tr.getAttribute('data-id'));
-      if (entry) zoomToObstbaumParcel(entry);
-    });
-  });
-  tbody.querySelectorAll('.besichtigt-checkbox').forEach(cb => {
-    cb.addEventListener('change', () => {
-      const id = cb.closest('tr').getAttribute('data-id');
-      const entry = obstbaumParcelIndex.find(p => p.id === id);
-      if (entry) entry.besichtigt = cb.checked;
-      renderBesichtigtSummary('obstbaum-parcel-summary-row', obstbaumParcelIndex);
-    });
-  });
-}
+// Flächen kommen jetzt ausschließlich aus dem geteilten Datenbestand
+// (layers/featureIndex) — ein eigener Obstbaumkataster-Upload sowie eine
+// separate Flächenliste/-tabelle entfallen dadurch vollständig, siehe
+// findObstbaumParcelForLatLng() weiter oben und renderFeatureTable()/
+// highlightFeature()/zoomToLayer()/removeLayer() im Viewer-Abschnitt.
 
 // Obstart-Buttons (Favoriten) + "Sonstige"-Liste aufbauen — unabhängig vom
 // (erst beim ersten Tab-Wechsel lazy initialisierten) Kartenobjekt.
@@ -3907,6 +3803,11 @@ document.addEventListener('click', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && activeFruitKey) setActiveFruitKey(null);
   if (e.key === 'Escape' && !sonstigeList.hidden) closeSonstigeDropdown();
+  // Eigener Escape-Handler statt uns auf Leaflet.draws internes keyup auf dem
+  // Karten-Container zu verlassen — das feuert nur, wenn der Container selbst
+  // den Tastaturfokus hat, was nach einem Kartenklick nicht zuverlässig der
+  // Fall ist.
+  if (e.key === 'Escape' && armedTool === 'draw-polygon' && zeichnerDrawPolygon) zeichnerDrawPolygon.disable();
 });
 
 // ---------- Baumkataster laden/speichern (Format: GeoJSON) ----------
@@ -3927,7 +3828,7 @@ async function loadBaumkatasterFile(file) {
     // laden ist wichtig, damit beim gleich folgenden Setzen der Baum-Punkte
     // direkt die richtige Flächen-Zuordnung berechnet werden kann.
     if (parcelFeatures.length) {
-      addObstbaumParcelLayer(file.name.replace(/\.\w+$/, ''), { type: 'FeatureCollection', features: parcelFeatures });
+      addLayer(file.name.replace(/\.\w+$/, ''), { type: 'FeatureCollection', features: parcelFeatures });
     }
 
     let added = 0;
@@ -3963,10 +3864,9 @@ document.getElementById('obstbaum-file-input').addEventListener('change', (e) =>
   if (e.target.files[0]) loadBaumkatasterFile(e.target.files[0]);
 });
 
-// Property-Namen bewusst wie bei zeichnerParcelToGeoJSONFeature() gewählt
-// (von FIELD_CANDIDATES/GROESSE_CANDIDATES erkannt), damit eine mit
-// Flächen exportierte Kataster-Datei sich direkt wieder als Fläche laden
-// lässt (Viewer, Jahresvergleich, Obstbaumkataster).
+// Property-Namen bewusst aus FIELD_CANDIDATES/GROESSE_CANDIDATES gewählt,
+// damit eine mit Flächen exportierte Kataster-Datei sich direkt wieder als
+// Fläche laden lässt (Viewer, Jahresvergleich, Obstbaumkataster, Zeichner).
 function obstbaumParcelToGeoJSONFeature(p) {
   const num = parseFloat(String(p.groesse).replace(',', '.'));
   return {
@@ -3989,7 +3889,7 @@ function exportBaumkataster(includeParcels) {
     geometry: { type: 'Point', coordinates: [t.latlng.lng, t.latlng.lat] },
     properties: { nummer: t.nummer, art: t.art, label: fruitOf(t.art).label }
   }));
-  const parcelFeatures = includeParcels ? obstbaumParcelIndex.map(obstbaumParcelToGeoJSONFeature) : [];
+  const parcelFeatures = includeParcels ? featureIndex.map(obstbaumParcelToGeoJSONFeature) : [];
   const fc = { type: 'FeatureCollection', features: [...parcelFeatures, ...treeFeatures] };
   const ts = new Date().toISOString().slice(0, 10);
   downloadBlob(JSON.stringify(fc, null, 2), `baumkataster_${ts}.geojson`, 'application/geo+json');
@@ -3999,7 +3899,7 @@ function exportBaumkataster(includeParcels) {
 // ---------- Export-Popup: Bäume optional zusammen mit Flächen exportieren ----------
 function openObstbaumExportModal() {
   if (!obstbaumTrees.length) { showObstbaumError('Noch keine Bäume erfasst.'); return; }
-  const hasParcels = obstbaumParcelIndex.length > 0;
+  const hasParcels = featureIndex.length > 0;
   const checkbox = document.getElementById('obstbaum-export-include-parcels');
   checkbox.checked = hasParcels;
   checkbox.disabled = !hasParcels;
@@ -4166,7 +4066,7 @@ async function addObstbaumParcelPages(doc, parcelsWithTrees, treeLists, pageW, p
       setObstbaumStatus(`Exportiere Flächenkarten … (${i + 1}/${parcelsWithTrees.length}, Übersicht)`);
       let overviewCanvas;
       try {
-        overviewCanvas = await captureParcelScreenshot(obstbaumMap, obstbaumBasemaps.satellite, 'obstbaum-map', parcelEntry.leafletLayer.feature);
+        overviewCanvas = await captureParcelScreenshot(map, basemaps.satellite, 'map', parcelEntry.leafletLayer.feature);
       } catch (err) {
         console.error('Kartenbild-Erfassung fehlgeschlagen für', parcelEntry.nummer, err);
         showObstbaumError('Kartenbild konnte nicht erfasst werden (evtl. CORS-Einschränkung der Kachel-Quelle).');
@@ -4190,7 +4090,7 @@ async function addObstbaumParcelPages(doc, parcelsWithTrees, treeLists, pageW, p
       let canvas;
       try {
         canvas = await captureTreeClusterScreenshot(
-          obstbaumMap, obstbaumBasemaps.satellite, 'obstbaum-map',
+          map, basemaps.satellite, 'map',
           parcelEntry.leafletLayer.feature, subCluster.map(t => t.latlng)
         );
       } catch (err) {
@@ -4220,15 +4120,15 @@ async function addObstbaumClusterPages(doc, clusters, pageW, pageH, margin, page
     setObstbaumStatus(`Exportiere Flächenkarten${titlePrefix ? ' (' + titlePrefix + ')' : ''} … (${i + 1}/${clusters.length})`);
 
     if (cluster.length === 1) {
-      obstbaumMap.setView(cluster[0].latlng, 20);
+      map.setView(cluster[0].latlng, 20);
     } else {
-      obstbaumMap.fitBounds(L.latLngBounds(cluster.map(t => t.latlng)), { padding: [70, 70], maxZoom: 20 });
+      map.fitBounds(L.latLngBounds(cluster.map(t => t.latlng)), { padding: [70, 70], maxZoom: 20 });
     }
-    await waitForTilesFullyLoaded(obstbaumBasemaps.satellite, 'obstbaum-map', 6000);
+    await waitForTilesFullyLoaded(basemaps.satellite, 'map', 6000);
 
     let canvas;
     try {
-      canvas = await html2canvas(document.getElementById('obstbaum-map'), { useCORS: true, logging: false });
+      canvas = await html2canvas(document.getElementById('map'), { useCORS: true, logging: false });
     } catch (err) {
       console.error('Kartenbild-Erfassung fehlgeschlagen für Gruppe', i + 1, err);
       showObstbaumError('Kartenbild konnte nicht erfasst werden (evtl. CORS-Einschränkung der Kachel-Quelle).');
@@ -4284,18 +4184,12 @@ async function exportObstbaumFlaechenkarten() {
   const btn = document.getElementById('btn-export-obstbaum-flaechenkarten');
   btn.disabled = true;
 
-  const tab = ensureTabActive('obstbaum');
-  const savedCenter = obstbaumMap.getCenter();
-  const savedZoom = obstbaumMap.getZoom();
-  const savedBasemap = currentObstbaumBasemap;
+  const savedCenter = map.getCenter();
+  const savedZoom = map.getZoom();
+  const savedBasemap = currentBasemap;
 
-  if (currentObstbaumBasemap !== 'satellite') {
-    obstbaumBasemaps[currentObstbaumBasemap].remove();
-    currentObstbaumBasemap = 'satellite';
-    obstbaumBasemaps.satellite.addTo(obstbaumMap);
-    document.getElementById('obstbaum-btn-basemap').textContent = 'Basiskarte: ' + basemapLabels.satellite;
-  }
-  obstbaumMap.removeControl(obstbaumMap.zoomControl);
+  if (currentBasemap !== 'satellite') setBasemap('satellite');
+  map.removeControl(map.zoomControl);
 
   const grandTotal = new Map();
 
@@ -4306,12 +4200,12 @@ async function exportObstbaumFlaechenkarten() {
 
   try {
     let pageIdx = 0;
-    if (obstbaumParcelIndex.length) {
+    if (featureIndex.length) {
       // Flächen geladen: ein oder mehrere eng gezoomte Bilder je Fläche mit
       // zugeordneten Bäumen, Bäume ohne Fläche fallen weiterhin unter die
       // geografische Gruppierung.
       const treeLists = computeObstbaumParcelTreeLists();
-      const parcelsWithTrees = obstbaumParcelIndex
+      const parcelsWithTrees = featureIndex
         .filter(p => treeLists.has(p.id))
         .sort((a, b) => String(a.nummer).localeCompare(String(b.nummer), undefined, { numeric: true }));
       pageIdx = await addObstbaumParcelPages(doc, parcelsWithTrees, treeLists, pageW, pageH, margin, pageIdx, grandTotal);
@@ -4352,15 +4246,9 @@ async function exportObstbaumFlaechenkarten() {
     doc.save(`obstbaumkataster_flaechenkarten_${ts}.pdf`);
     setObstbaumStatus('Flächenkarten exportiert.');
   } finally {
-    obstbaumMap.zoomControl.addTo(obstbaumMap);
-    if (currentObstbaumBasemap !== savedBasemap) {
-      obstbaumBasemaps[currentObstbaumBasemap].remove();
-      currentObstbaumBasemap = savedBasemap;
-      obstbaumBasemaps[currentObstbaumBasemap].addTo(obstbaumMap);
-      document.getElementById('obstbaum-btn-basemap').textContent = 'Basiskarte: ' + basemapLabels[currentObstbaumBasemap];
-    }
-    obstbaumMap.setView(savedCenter, savedZoom);
-    tab.restore();
+    map.zoomControl.addTo(map);
+    if (currentBasemap !== savedBasemap) setBasemap(savedBasemap);
+    map.setView(savedCenter, savedZoom);
     btn.disabled = false;
   }
 }
@@ -4375,9 +4263,7 @@ document.getElementById('btn-export-obstbaum-flaechenkarten').addEventListener('
 // Kartenklick setzt direkt einen neuen Bienenstock.
 const BIENENFLUG_RADIUS_METERS = 3000;
 
-let bienenflugMap = null;
-let bienenflugBasemaps = null;
-let currentBienenflugBasemap = 'osm';
+let bienenflugInitDone = false;
 let bienenflugLayerGroup = null;
 const bienenflugPoints = []; // { id, nummer, latlng, marker, circle }
 let bienenflugCounter = 0;
@@ -4465,7 +4351,7 @@ function zoomToBeehive(id) {
   const entry = bienenflugPoints.find(e => e.id === id);
   if (!entry) return;
   highlightBeehive(entry);
-  bienenflugMap.fitBounds(entry.circle.getBounds(), { padding: [30, 30] });
+  map.fitBounds(entry.circle.getBounds(), { padding: [30, 30] });
 }
 
 function renderBienenflugList() {
@@ -4506,28 +4392,19 @@ function renderBienenflugList() {
 }
 
 function initBienenflugMap() {
-  if (bienenflugMap) return;
-  bienenflugMap = L.map('bienenflug-map', { zoomControl: true, attributionControl: true }).setView([51.16, 10.45], 6);
-  bienenflugBasemaps = createBasemaps();
-  bienenflugBasemaps.osm.addTo(bienenflugMap);
+  if (bienenflugInitDone) return;
+  bienenflugInitDone = true;
+  bienenflugLayerGroup = L.featureGroup().addTo(map);
 
-  document.getElementById('bienenflug-btn-basemap').addEventListener('click', () => {
-    bienenflugBasemaps[currentBienenflugBasemap].remove();
-    const nextIdx = (basemapOrder.indexOf(currentBienenflugBasemap) + 1) % basemapOrder.length;
-    currentBienenflugBasemap = basemapOrder[nextIdx];
-    bienenflugBasemaps[currentBienenflugBasemap].addTo(bienenflugMap);
-    document.getElementById('bienenflug-btn-basemap').textContent = 'Basiskarte: ' + basemapLabels[currentBienenflugBasemap];
+  map.on('click', (e) => {
+    if (armedTool === 'place-hive') addBeehive(e.latlng);
   });
-
-  bienenflugLayerGroup = L.featureGroup().addTo(bienenflugMap);
-
-  bienenflugMap.on('click', (e) => addBeehive(e.latlng));
 }
 
 async function captureBeehiveScreenshot(entry) {
-  bienenflugMap.fitBounds(entry.circle.getBounds(), { padding: [40, 40], maxZoom: 16 });
-  await waitForTilesFullyLoaded(bienenflugBasemaps.satellite, 'bienenflug-map', 6000);
-  return await html2canvas(document.getElementById('bienenflug-map'), { useCORS: true, logging: false });
+  map.fitBounds(entry.circle.getBounds(), { padding: [40, 40], maxZoom: 16 });
+  await waitForTilesFullyLoaded(basemaps.satellite, 'map', 6000);
+  return await html2canvas(document.getElementById('map'), { useCORS: true, logging: false });
 }
 
 function addBienenflugPage(doc, pageW, pageH, margin, canvas, entry) {
@@ -4559,18 +4436,12 @@ async function exportBienenflugFlaechenkarten() {
   const btn = document.getElementById('btn-export-bienenflug-flaechenkarten');
   btn.disabled = true;
 
-  const tab = ensureTabActive('bienenflug');
-  const savedCenter = bienenflugMap.getCenter();
-  const savedZoom = bienenflugMap.getZoom();
-  const savedBasemap = currentBienenflugBasemap;
+  const savedCenter = map.getCenter();
+  const savedZoom = map.getZoom();
+  const savedBasemap = currentBasemap;
 
-  if (currentBienenflugBasemap !== 'satellite') {
-    bienenflugBasemaps[currentBienenflugBasemap].remove();
-    currentBienenflugBasemap = 'satellite';
-    bienenflugBasemaps.satellite.addTo(bienenflugMap);
-    document.getElementById('bienenflug-btn-basemap').textContent = 'Basiskarte: ' + basemapLabels.satellite;
-  }
-  bienenflugMap.removeControl(bienenflugMap.zoomControl);
+  if (currentBasemap !== 'satellite') setBasemap('satellite');
+  map.removeControl(map.zoomControl);
 
   const doc = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
   const pageW = doc.internal.pageSize.getWidth();
@@ -4599,15 +4470,9 @@ async function exportBienenflugFlaechenkarten() {
     doc.save(`bienenflugkarten_${ts}.pdf`);
     setBienenflugStatus('Flächenkarten exportiert.');
   } finally {
-    bienenflugMap.zoomControl.addTo(bienenflugMap);
-    if (currentBienenflugBasemap !== savedBasemap) {
-      bienenflugBasemaps[currentBienenflugBasemap].remove();
-      currentBienenflugBasemap = savedBasemap;
-      bienenflugBasemaps[currentBienenflugBasemap].addTo(bienenflugMap);
-      document.getElementById('bienenflug-btn-basemap').textContent = 'Basiskarte: ' + basemapLabels[currentBienenflugBasemap];
-    }
-    bienenflugMap.setView(savedCenter, savedZoom);
-    tab.restore();
+    map.zoomControl.addTo(map);
+    if (currentBasemap !== savedBasemap) setBasemap(savedBasemap);
+    map.setView(savedCenter, savedZoom);
     btn.disabled = false;
   }
 }
