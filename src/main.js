@@ -1,3 +1,5 @@
+import { isSupabaseConfigured, signUp, signIn, signOut, getSession, saveState, loadState, uploadPhoto, getPhotoUrl, deletePhoto, requestAccess, listPendingAccessRequests, approveAccessRequest, declineAccessRequest } from './supabase.js';
+
 // ---------- Hell-/Dunkelmodus ----------
 // Die eigentliche Anwendung des gespeicherten Themes passiert schon synchron
 // im <head> (index.html), damit beim Neuladen nichts falsch aufblitzt — hier
@@ -1852,6 +1854,21 @@ function mergeFeldstueckNutzung(results) {
 // Erstaufbau und von addFeatureToLayer() für nachträglich einzeln
 // hinzugefügte Features (z.B. im Flächenzeichner gezeichnete Flächen)
 // gemeinsam genutzt, damit beide Wege exakt dieselbe Eintragsform erzeugen.
+// Liest die Foto-Pfadliste robust aus GeoJSON-properties ein — normalerweise
+// bereits ein Array (siehe setParcelNotes/addParcelPhoto unten), aber falls
+// eine Datei extern bearbeitet oder manuell hochgeladen wurde, auch ein
+// JSON-String oder ein fehlerhafter Wert möglich, statt daran zu crashen.
+function parsePhotoList(value) {
+  if (Array.isArray(value)) return value.filter(v => typeof v === 'string');
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed.filter(v => typeof v === 'string') : [];
+    } catch { return []; }
+  }
+  return [];
+}
+
 function buildFeatureEntry(feature, lyr, layerId, layerName, isTeilflaechen, color) {
   const props = feature.properties || {};
   const center = lyr.getBounds ? lyr.getBounds().getCenter() : lyr.getLatLng();
@@ -1871,7 +1888,9 @@ function buildFeatureEntry(feature, lyr, layerId, layerName, isTeilflaechen, col
     groesse: pickGroesse(props),
     kultur: pickField(props, FIELD_CANDIDATES.kultur),
     flaechenId: pickField(props, FIELD_CANDIDATES.flaechenid),
-    besichtigt: false
+    besichtigt: false,
+    notes: typeof props.feldfolio_notes === 'string' ? props.feldfolio_notes : '',
+    photos: parsePhotoList(props.feldfolio_photos)
   };
   featureIndex.push(entry);
   lyr.on('click', () => {
@@ -1990,6 +2009,29 @@ function updateDrawnParcelEntry(entry, { name, kultur }) {
   renderFeatureTable();
 }
 
+// Schreibt Notiz/Fotos einer Fläche synchron in entry.props UND
+// leafletLayer.feature.properties zurück (gleiches Muster wie
+// updateDrawnParcelEntry oben) — dadurch landet die Änderung automatisch im
+// geteilten layers[id].geojson (dieselbe Objektreferenz) und damit ohne
+// zusätzlichen Code auch in serializeCurrentState() fürs Cloud-Speichern.
+function setParcelNotes(entry, notes) {
+  entry.notes = notes;
+  entry.props.feldfolio_notes = notes;
+  if (entry.leafletLayer.feature) entry.leafletLayer.feature.properties = entry.props;
+}
+
+function addParcelPhoto(entry, path) {
+  entry.photos.push(path);
+  entry.props.feldfolio_photos = entry.photos;
+  if (entry.leafletLayer.feature) entry.leafletLayer.feature.properties = entry.props;
+}
+
+function removeParcelPhoto(entry, path) {
+  entry.photos = entry.photos.filter(p => p !== path);
+  entry.props.feldfolio_photos = entry.photos;
+  if (entry.leafletLayer.feature) entry.leafletLayer.feature.properties = entry.props;
+}
+
 function renderLayerList() {
   const list = document.getElementById('layer-list');
   const ids = Object.keys(layers);
@@ -2103,7 +2145,7 @@ function renderFeatureTable() {
   renderBesichtigtSummary('table-besichtigt-summary', rows);
 
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="8" style="color:var(--muted); padding:14px;">' +
+    tbody.innerHTML = '<tr><td colspan="9" style="color:var(--muted); padding:14px;">' +
       (featureIndex.length ? 'Keine Flächen in dieser Ansicht (Teilflächen sind ausgeblendet).' : 'Noch keine Flächen geladen.') +
       '</td></tr>';
     return;
@@ -2120,6 +2162,7 @@ function renderFeatureTable() {
     const treesCell = counts && counts.size
       ? [...counts.entries()].map(([key, n]) => fruitChipHtml(key, ` <span class="n">${n}</span>`)).join('')
       : '<span style="color:var(--muted);">–</span>';
+    const hasNotes = entry.notes || entry.photos.length;
     return `<tr data-idx="${entry.idx}">
       <td>${escapeHtml(entry.nummer || '–')}</td>
       <td>${escapeHtml(entry.featName || '–')}</td>
@@ -2128,6 +2171,7 @@ function renderFeatureTable() {
       <td>${escapeHtml(entry.kultur || '–')}</td>
       <td>${treesCell}</td>
       <td class="besichtigt-cell"><input type="checkbox" class="besichtigt-checkbox" ${entry.besichtigt ? 'checked' : ''} onclick="event.stopPropagation()"></td>
+      <td><button class="notes-btn${hasNotes ? ' has-notes' : ''}" data-action="notes" data-idx="${entry.idx}" onclick="event.stopPropagation()" title="Notiz &amp; Fotos">📝</button></td>
       <td>${routeCell}</td>
     </tr>`;
   }).join('');
@@ -2140,6 +2184,12 @@ function renderFeatureTable() {
       const idx = parseInt(cb.closest('tr').getAttribute('data-idx'), 10);
       featureIndex[idx].besichtigt = cb.checked;
       renderBesichtigtSummary('table-besichtigt-summary', getVisibleFeatureRows());
+    });
+  });
+  tbody.querySelectorAll('[data-action="notes"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt(btn.getAttribute('data-idx'), 10);
+      openNotesModal('parcel', featureIndex[idx]);
     });
   });
 }
@@ -2321,7 +2371,8 @@ const SEGMENT_CAPTIONS = {
   compare: 'Zwei Parzellen-Stände gegenüberstellen — Zugänge, Abgänge, Änderungen',
   zeichner: 'Eigene Parzellen direkt auf der Karte zeichnen',
   obstbaum: 'Obstbäume als farbige Punkte auf der Karte erfassen',
-  bienenflug: 'Bienenstöcke markieren — theoretischer Flugradius 3 km'
+  bienenflug: 'Bienenstöcke markieren — theoretischer Flugradius 3 km',
+  wochenplaner: 'Termine aus Excel importieren und in der Kalenderwoche navigieren'
 };
 
 function setActiveSegment(target) {
@@ -2352,6 +2403,20 @@ function setActiveSegment(target) {
   else if (target === 'obstbaum') initObstbaumMap();
   else if (target === 'bienenflug') { initBienenflugMap(); armedTool = 'place-hive'; }
   else if (target === 'compare') refreshCompareJahrBOptions();
+
+  // Wochenplaner hat eine eigene, zweite Leaflet-Karteninstanz statt der
+  // geteilten Parzellen-Karte — #map-wrap und #wochenplaner-view schließen
+  // sich deshalb gegenseitig aus statt wie die anderen Funktionen nur
+  // Layer auf derselben Karte umzuschalten.
+  document.getElementById('map-wrap').hidden = target === 'wochenplaner';
+  const wpView = document.getElementById('wochenplaner-view');
+  wpView.hidden = target !== 'wochenplaner';
+  // Shapefile-/GeoJSON-Upload und die geteilte Ebenenliste ergeben im
+  // Wochenplaner keinen Sinn (andere Datenwelt, eigene Karte) — dort
+  // ausgeblendet statt immer sichtbar wie in den anderen Funktionen.
+  document.getElementById('dropzone').hidden = target === 'wochenplaner';
+  document.getElementById('layer-section').hidden = target === 'wochenplaner';
+  if (target === 'wochenplaner') openWochenplaner();
 }
 
 // Es gibt keinen eigenen "Viewer"-Button mehr — Viewer ist die Standardansicht.
@@ -3522,12 +3587,14 @@ function addTree(key, latlng) {
     art: key,
     latlng,
     marker: null,
-    parcelId: findObstbaumParcelForLatLng(latlng)?.id || null
+    parcelId: findObstbaumParcelForLatLng(latlng)?.id || null,
+    notes: '',
+    photos: []
   };
 
   const marker = L.marker(latlng, { icon: createTreeIcon(fruit.color), draggable: true });
   marker.bindTooltip(fruit.label, { direction: 'top', offset: [0, -10] });
-  marker.on('click', (e) => { L.DomEvent.stopPropagation(e); zoomToTree(entry.id); });
+  marker.on('click', (e) => { L.DomEvent.stopPropagation(e); zoomToTree(entry.id); selectTreeInTable(entry.id); });
   // Rechtsklick auf einen Baum löscht ihn sofort — schnellste Korrektur bei
   // Fehlklicks beim Setzen, ohne erst die Baumtabelle öffnen zu müssen.
   marker.on('contextmenu', (e) => {
@@ -3613,19 +3680,25 @@ function renderObstbaumSummary() {
 function renderObstbaumTable() {
   const tbody = document.getElementById('obstbaum-table-body');
   if (!obstbaumTrees.length) {
-    tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted); padding:14px;">Noch keine Bäume erfasst.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted); padding:14px;">Noch keine Bäume erfasst.</td></tr>';
     return;
   }
-  tbody.innerHTML = obstbaumTrees.map(t => `<tr data-id="${t.id}">
+  tbody.innerHTML = obstbaumTrees.map(t => {
+    const hasNotes = t.notes || t.photos.length;
+    return `<tr data-id="${t.id}">
       <td>${t.nummer}</td>
       <td>${fruitChipHtml(t.art)}</td>
       <td>${parcelLabelFor(t.parcelId)}</td>
+      <td><button class="notes-btn${hasNotes ? ' has-notes' : ''}" data-id="${t.id}" data-action="notes" title="Notiz &amp; Fotos">📝</button></td>
       <td><button data-id="${t.id}" data-action="remove" class="table-remove-btn">Entfernen</button></td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
   tbody.querySelectorAll('tr[data-id]').forEach(tr => {
     tr.addEventListener('click', (e) => {
-      if (e.target.closest('[data-action="remove"]')) return;
-      zoomToTree(tr.getAttribute('data-id'));
+      if (e.target.closest('[data-action="remove"]') || e.target.closest('[data-action="notes"]')) return;
+      const id = tr.getAttribute('data-id');
+      zoomToTree(id);
+      highlightTreeRow(id);
     });
   });
   tbody.querySelectorAll('[data-action="remove"]').forEach(btn => {
@@ -3634,6 +3707,32 @@ function renderObstbaumTable() {
       removeTree(btn.getAttribute('data-id'));
     });
   });
+  tbody.querySelectorAll('[data-action="notes"]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const t = obstbaumTrees.find(x => x.id === btn.getAttribute('data-id'));
+      if (t) openNotesModal('tree', t);
+    });
+  });
+}
+
+function highlightTreeRow(id) {
+  document.querySelectorAll('#obstbaum-table-body tr.row-selected').forEach(r => r.classList.remove('row-selected'));
+  const row = document.querySelector('#obstbaum-table-body tr[data-id="' + id + '"]');
+  if (row) row.classList.add('row-selected');
+}
+
+// Öffnet die Baumtabelle (schließt dafür die Flächentabelle, beide teilen
+// sich denselben Bereich unter der Karte) und markiert die Zeile des per
+// Klick auf der Karte ausgewählten Baums.
+function selectTreeInTable(id) {
+  document.getElementById('table-panel').classList.remove('open');
+  obstbaumTablePanel.open();
+  renderObstbaumTable();
+  renderObstbaumSummary();
+  highlightTreeRow(id);
+  const row = document.querySelector('#obstbaum-table-body tr[data-id="' + id + '"]');
+  if (row) row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
 function initObstbaumMap() {
@@ -4486,6 +4585,962 @@ async function exportBienenflugFlaechenkarten() {
 }
 
 document.getElementById('btn-export-bienenflug-flaechenkarten').addEventListener('click', exportBienenflugFlaechenkarten);
+
+// ---------- FeldFolio Plus: Cloud-Konto ----------
+// Login-gated Cloud-Speicherung des gesamten Arbeitsstands (geteilte Ebenen +
+// Obstbäume + Bienenstöcke) — alles andere in der App funktioniert weiterhin
+// vollständig ohne Anmeldung, das hier ist ein reiner Zusatz obendrauf.
+const accountModal = document.getElementById('account-modal-overlay');
+const accountBtn = document.getElementById('btn-account');
+const accountNotConfigured = document.getElementById('account-not-configured');
+const accountAuthWrap = document.getElementById('account-auth-wrap');
+const accountAuthForm = document.getElementById('account-auth-form');
+const accountAuthHint = document.getElementById('account-auth-hint');
+const accountBtnSubmit = document.getElementById('account-btn-submit');
+const accountPasswordInput = document.getElementById('account-password');
+const accountModeButtons = document.querySelectorAll('.auth-mode-btn');
+const accountLoggedIn = document.getElementById('account-logged-in');
+const accountAuthError = document.getElementById('account-auth-error');
+const accountSyncStatus = document.getElementById('account-sync-status');
+const accountModeSwitch = document.querySelector('.auth-mode-switch');
+const accountEmailInput = document.getElementById('account-email');
+const accountDomainHint = document.getElementById('account-domain-hint');
+const accountRequestBlock = document.getElementById('account-request-block');
+const accountRequestEmail = document.getElementById('account-request-email');
+const accountRequestName = document.getElementById('account-request-name');
+const accountRequestMessage = document.getElementById('account-request-message');
+const accountRequestError = document.getElementById('account-request-error');
+const accountRequestStatus = document.getElementById('account-request-status');
+const accountRequestSubmitBtn = document.getElementById('account-request-submit');
+const accountAdminSection = document.getElementById('account-admin-requests');
+const accountAdminList = document.getElementById('account-admin-requests-list');
+const accountAdminError = document.getElementById('account-admin-error');
+let accountSession = null;
+let authMode = 'signin';
+
+// Registrierung ist grundsätzlich nur für @oekop.de-Adressen offen, alle
+// anderen müssen erst eine Zugangsanfrage stellen (siehe access_requests/
+// access_allowlist + Server-Trigger, Migrations-SQL im Plan). Diese Prüfung
+// hier ist nur für die Nutzerführung — die eigentliche Durchsetzung passiert
+// serverseitig per Datenbank-Trigger, ein Client-Check allein wäre keine
+// Sicherheit.
+function isOekopEmail(email) {
+  return /@oekop\.de$/i.test((email || '').trim());
+}
+
+// Ein Formular für Anmelden/Registrieren statt zwei Buttons nebeneinander —
+// der Tab-Umschalter oben macht unmissverständlich klar, in welchem Modus
+// man gerade ist (Hinweistext, Button-Beschriftung und Passwort-Autocomplete
+// wechseln mit).
+const AUTH_MODE_TEXT = {
+  signin: {
+    hint: 'Mit bestehendem Cloud-Konto anmelden, um den aktuellen Stand zu speichern und auf einem anderen Gerät weiterzuarbeiten.',
+    submit: 'Anmelden',
+    autocomplete: 'current-password'
+  },
+  signup: {
+    hint: 'Neues Cloud-Konto erstellen, um den aktuellen Stand künftig zu speichern und auf einem anderen Gerät weiterzuarbeiten.',
+    submit: 'Registrieren',
+    autocomplete: 'new-password'
+  }
+};
+
+function setAuthMode(mode) {
+  authMode = mode;
+  accountModeSwitch.hidden = false;
+  accountAuthForm.hidden = false;
+  accountRequestBlock.hidden = true;
+  accountModeButtons.forEach(btn => {
+    const active = btn.getAttribute('data-mode') === mode;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', String(active));
+  });
+  const t = AUTH_MODE_TEXT[mode];
+  accountAuthHint.textContent = t.hint;
+  accountBtnSubmit.textContent = t.submit;
+  accountPasswordInput.autocomplete = t.autocomplete;
+  showAccountError('');
+  updateDomainHint();
+}
+
+accountModeButtons.forEach(btn => {
+  btn.addEventListener('click', () => setAuthMode(btn.getAttribute('data-mode')));
+});
+
+// Reiner Komfort-Hinweis beim Tippen der E-Mail im Registrieren-Modus, keine
+// Sicherheitsprüfung (siehe isOekopEmail oben).
+function updateDomainHint() {
+  if (authMode !== 'signup') { accountDomainHint.hidden = true; return; }
+  const email = accountEmailInput.value.trim();
+  if (!email.includes('@')) { accountDomainHint.hidden = true; return; }
+  accountDomainHint.hidden = false;
+  if (isOekopEmail(email)) {
+    accountDomainHint.textContent = '✓ oekop.de-Adresse — Registrierung sofort möglich.';
+  } else {
+    accountDomainHint.innerHTML = 'Diese Adresse benötigt eine Freischaltung. <button type="button" id="account-domain-hint-request" class="inline-link">Direkt Zugang anfragen</button>';
+    document.getElementById('account-domain-hint-request').addEventListener('click', () => openRequestBlock(email));
+  }
+}
+accountEmailInput.addEventListener('input', updateDomainHint);
+
+function showAccountError(msg) {
+  accountAuthError.textContent = msg;
+  accountAuthError.hidden = !msg;
+}
+
+function renderAccountModal() {
+  accountNotConfigured.hidden = isSupabaseConfigured;
+  accountAuthWrap.hidden = !isSupabaseConfigured || !!accountSession;
+  accountLoggedIn.hidden = !isSupabaseConfigured || !accountSession;
+  accountSyncStatus.textContent = '';
+  if (accountSession) document.getElementById('account-email-display').textContent = accountSession.user.email;
+
+  // "Admin" ist hier bewusst einfach über die vertraute Domain definiert —
+  // dieselbe Domain, die auch zur Sofort-Registrierung berechtigt (siehe
+  // isOekopEmail). Keine separate Rollen-Tabelle in diesem ersten Ausbauschritt.
+  const isAdmin = !!accountSession && isOekopEmail(accountSession.user.email);
+  accountAdminSection.hidden = !isAdmin;
+  if (isAdmin) refreshAdminRequests();
+}
+
+function showAdminError(msg) {
+  accountAdminError.textContent = msg;
+  accountAdminError.hidden = !msg;
+}
+
+function renderAdminRequests(list) {
+  if (!list.length) {
+    accountAdminList.innerHTML = '<p class="modal-hint">Keine offenen Anfragen.</p>';
+    return;
+  }
+  accountAdminList.innerHTML = list.map(r => `
+    <div class="admin-request-row" data-id="${r.id}">
+      <div class="admin-request-info">
+        <strong>${escapeHtml(r.email)}</strong>${r.name ? ' · ' + escapeHtml(r.name) : ''}
+        <span class="admin-request-date">${new Date(r.created_at).toLocaleDateString('de-DE')}</span>
+        ${r.message ? `<p class="admin-request-msg">${escapeHtml(r.message)}</p>` : ''}
+      </div>
+      <div class="admin-request-actions">
+        <button type="button" data-action="approve" data-id="${r.id}" data-email="${escapeHtml(r.email)}">Freischalten</button>
+        <button type="button" data-action="decline" data-id="${r.id}">Ablehnen</button>
+      </div>
+    </div>`).join('');
+  accountAdminList.querySelectorAll('[data-action="approve"]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      showAdminError('');
+      try {
+        await approveAccessRequest(btn.getAttribute('data-id'), btn.getAttribute('data-email'));
+        await refreshAdminRequests();
+      } catch (err) {
+        btn.disabled = false;
+        showAdminError(err.message || 'Freischalten fehlgeschlagen.');
+      }
+    });
+  });
+  accountAdminList.querySelectorAll('[data-action="decline"]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      showAdminError('');
+      try {
+        await declineAccessRequest(btn.getAttribute('data-id'));
+        await refreshAdminRequests();
+      } catch (err) {
+        btn.disabled = false;
+        showAdminError(err.message || 'Ablehnen fehlgeschlagen.');
+      }
+    });
+  });
+}
+
+async function refreshAdminRequests() {
+  showAdminError('');
+  try {
+    renderAdminRequests(await listPendingAccessRequests());
+  } catch (err) {
+    showAdminError(err.message || 'Anfragen konnten nicht geladen werden.');
+  }
+}
+
+document.getElementById('account-admin-refresh').addEventListener('click', refreshAdminRequests);
+
+function updateAccountButton() {
+  if (accountSession) {
+    accountBtn.textContent = accountSession.user.email;
+    accountBtn.classList.add('logged-in');
+  } else {
+    accountBtn.textContent = 'Anmelden';
+    accountBtn.classList.remove('logged-in');
+  }
+}
+
+function openAccountModal() { setAuthMode('signin'); renderAccountModal(); accountModal.hidden = false; }
+function closeAccountModal() { accountModal.hidden = true; }
+
+accountBtn.addEventListener('click', openAccountModal);
+['account-modal-close-1', 'account-modal-close-2', 'account-modal-close-3'].forEach(id => {
+  document.getElementById(id).addEventListener('click', closeAccountModal);
+});
+accountModal.addEventListener('click', (e) => { if (e.target === accountModal) closeAccountModal(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !accountModal.hidden) closeAccountModal(); });
+
+if (isSupabaseConfigured) {
+  getSession().then(session => { accountSession = session; updateAccountButton(); });
+}
+
+accountAuthForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  showAccountError('');
+  const email = document.getElementById('account-email').value.trim();
+  const password = accountPasswordInput.value;
+  try {
+    if (authMode === 'signup') {
+      const data = await signUp(email, password);
+      if (data.session) {
+        accountSession = data.session;
+        updateAccountButton();
+        renderAccountModal();
+      } else {
+        showAccountError('Registrierung erfolgreich — bitte E-Mail bestätigen und dann anmelden.');
+      }
+    } else {
+      const data = await signIn(email, password);
+      accountSession = data.session;
+      updateAccountButton();
+      renderAccountModal();
+    }
+  } catch (err) {
+    // Registrierung für eine noch nicht freigeschaltete Nicht-oekop.de-Adresse
+    // schlägt serverseitig immer fehl (siehe Trigger check_signup_allowed) —
+    // statt der rohen (oft kryptischen) Datenbank-Fehlermeldung direkt die
+    // Zugangsanfrage anbieten, das ist der eigentlich erwartbare nächste Schritt.
+    if (authMode === 'signup' && !isOekopEmail(email)) {
+      openRequestBlock(email);
+    } else {
+      showAccountError(err.message || (authMode === 'signup' ? 'Registrierung fehlgeschlagen.' : 'Anmeldung fehlgeschlagen.'));
+    }
+  }
+});
+
+function showRequestError(msg) {
+  accountRequestError.textContent = msg;
+  accountRequestError.hidden = !msg;
+}
+
+function openRequestBlock(email) {
+  accountModeSwitch.hidden = true;
+  accountAuthForm.hidden = true;
+  accountRequestBlock.hidden = false;
+  accountRequestEmail.value = email;
+  accountRequestName.value = '';
+  accountRequestMessage.value = '';
+  accountRequestStatus.textContent = '';
+  accountRequestSubmitBtn.disabled = false;
+  showRequestError('');
+}
+
+document.getElementById('account-request-cancel').addEventListener('click', () => setAuthMode('signup'));
+
+accountRequestSubmitBtn.addEventListener('click', async () => {
+  showRequestError('');
+  const email = accountRequestEmail.value.trim();
+  try {
+    await requestAccess({
+      email,
+      name: accountRequestName.value.trim(),
+      message: accountRequestMessage.value.trim()
+    });
+    accountRequestStatus.textContent = 'Anfrage gesendet — du bekommst Bescheid, sobald sie freigeschaltet ist.';
+    accountRequestSubmitBtn.disabled = true;
+  } catch (err) {
+    showRequestError(err.message || 'Anfrage konnte nicht gesendet werden.');
+  }
+});
+
+document.getElementById('account-btn-signout').addEventListener('click', async () => {
+  await signOut();
+  accountSession = null;
+  updateAccountButton();
+  closeAccountModal();
+});
+
+// Baut den kompletten aktuellen Arbeitsstand als serialisierbares Objekt —
+// geteilte Ebenen als GeoJSON (identisch zur Upload-Form), Bäume/Bienenstöcke
+// als einfache Punktlisten.
+function serializeCurrentState() {
+  return {
+    // Notiz/Fotos an Flächen stecken bereits in l.geojson (siehe
+    // setParcelNotes/addParcelPhoto — schreiben direkt in die geteilte
+    // properties-Objektreferenz), reisen hier also automatisch mit.
+    layers: Object.values(layers).map(l => ({ name: l.name, geojson: l.geojson })),
+    obstbaumTrees: obstbaumTrees.map(t => ({ art: t.art, lat: t.latlng.lat, lng: t.latlng.lng, notes: t.notes, photos: t.photos })),
+    bienenflugPoints: bienenflugPoints.map(p => ({ name: p.name, lat: p.latlng.lat, lng: p.latlng.lng })),
+    // date als ISO-String, da Date-Objekte nicht JSON-fähig sind —
+    // restoreState() rekonstruiert es wieder zu Date. lat/lng/geocodeStatus
+    // reisen mit, damit nach dem Laden nicht erneut geokodiert werden muss.
+    wochenplanerEvents: wochenplanerEvents.map(e => ({
+      ...e, date: e.date.toISOString(), dateEnd: e.dateEnd ? e.dateEnd.toISOString() : null
+    }))
+  };
+}
+
+// Rekonstruiert einen gespeicherten Stand über exakt dieselben Funktionen, die
+// auch beim normalen Datei-Upload/Kartenklick laufen (addLayer/addTree/
+// addBeehive) — kein separater Rekonstruktions-Code-Pfad nötig. Ebenen zuerst,
+// damit addTree() die Flächen-Zuordnung sofort korrekt berechnen kann.
+function restoreState(data) {
+  if (!data) return;
+  (data.layers || []).forEach(l => addLayer(l.name, l.geojson));
+  if ((data.obstbaumTrees || []).length) {
+    initObstbaumMap();
+    data.obstbaumTrees.forEach(t => {
+      const entry = addTree(t.art, L.latLng(t.lat, t.lng));
+      entry.notes = t.notes || '';
+      entry.photos = Array.isArray(t.photos) ? t.photos : [];
+    });
+    renderObstbaumTable();
+  }
+  if ((data.bienenflugPoints || []).length) {
+    initBienenflugMap();
+    data.bienenflugPoints.forEach(p => {
+      const entry = addBeehive(L.latLng(p.lat, p.lng));
+      if (p.name) {
+        entry.name = p.name;
+        entry.marker.setTooltipContent(beehiveLabel(entry));
+        renderBienenflugList();
+      }
+    });
+  }
+  if ((data.wochenplanerEvents || []).length) {
+    wochenplanerEvents = data.wochenplanerEvents.map(e => ({
+      ...e, date: new Date(e.date), dateEnd: e.dateEnd ? new Date(e.dateEnd) : null
+    }));
+    renderWochenplanerSummary();
+    renderWochenplanerGrid();
+  }
+}
+
+document.getElementById('account-btn-save').addEventListener('click', async () => {
+  accountSyncStatus.textContent = 'Speichere …';
+  try {
+    await saveState(serializeCurrentState());
+    accountSyncStatus.textContent = 'Gespeichert.';
+  } catch (err) {
+    accountSyncStatus.textContent = 'Fehler: ' + (err.message || 'Speichern fehlgeschlagen.');
+  }
+});
+
+document.getElementById('account-btn-load').addEventListener('click', async () => {
+  accountSyncStatus.textContent = 'Lade …';
+  try {
+    const row = await loadState();
+    if (!row) { accountSyncStatus.textContent = 'Noch nichts gespeichert.'; return; }
+    restoreState(row.data);
+    accountSyncStatus.textContent = 'Geladen.';
+    closeAccountModal();
+  } catch (err) {
+    accountSyncStatus.textContent = 'Fehler: ' + (err.message || 'Laden fehlgeschlagen.');
+  }
+});
+
+// ---------- FeldFolio Plus: Notiz & Fotos an Fläche/Baum ----------
+// Wie der Cloud-Konto-Bereich rein additiv und komplett hinter dem Login —
+// ohne Session zeigt das Modal denselben "bitte anmelden"-Hinweis wie der
+// Account-Bereich, statt zu crashen oder still nichts zu tun.
+const notesModal = document.getElementById('notes-modal-overlay');
+const notesNotConfigured = document.getElementById('notes-not-configured');
+const notesEditor = document.getElementById('notes-editor');
+const notesTextarea = document.getElementById('notes-textarea');
+const notesPhotoGrid = document.getElementById('notes-photo-grid');
+const notesPhotoInput = document.getElementById('notes-photo-input');
+const notesError = document.getElementById('notes-error');
+const notesSyncStatus = document.getElementById('notes-sync-status');
+let notesTarget = null; // { kind: 'parcel'|'tree', entry }
+
+function showNotesError(msg) {
+  notesError.textContent = msg;
+  notesError.hidden = !msg;
+}
+
+// entry.photos enthält nur Storage-Pfade — Anzeige braucht pro Bild eine
+// frisch geholte Signed URL (Bucket ist privat, siehe supabase.js).
+async function renderNotesPhotoGrid() {
+  const photos = notesTarget.entry.photos;
+  if (!photos.length) { notesPhotoGrid.innerHTML = ''; return; }
+  notesPhotoGrid.innerHTML = photos.map(() => '<div class="notes-photo-thumb notes-photo-loading"></div>').join('');
+  const urls = await Promise.all(photos.map(p => getPhotoUrl(p).catch(() => null)));
+  notesPhotoGrid.innerHTML = photos.map((path, i) => urls[i]
+    ? `<div class="notes-photo-thumb"><img src="${urls[i]}" alt=""><button type="button" class="notes-photo-remove" data-path="${escapeHtml(path)}" title="Foto löschen">✕</button></div>`
+    : '<div class="notes-photo-thumb notes-photo-error" title="Foto konnte nicht geladen werden">⚠</div>'
+  ).join('');
+  notesPhotoGrid.querySelectorAll('.notes-photo-remove').forEach(btn => {
+    btn.addEventListener('click', () => removeNotesPhoto(btn.getAttribute('data-path')));
+  });
+}
+
+function openNotesModal(kind, entry) {
+  notesTarget = { kind, entry };
+  showNotesError('');
+  notesSyncStatus.textContent = '';
+  const loggedIn = isSupabaseConfigured && !!accountSession;
+  notesNotConfigured.hidden = loggedIn;
+  notesEditor.hidden = !loggedIn;
+  if (loggedIn) {
+    notesTextarea.value = entry.notes || '';
+    renderNotesPhotoGrid();
+  }
+  notesModal.hidden = false;
+}
+
+function closeNotesModal() { notesModal.hidden = true; notesTarget = null; }
+
+['notes-modal-close-1', 'notes-modal-close-2'].forEach(id => {
+  document.getElementById(id).addEventListener('click', closeNotesModal);
+});
+notesModal.addEventListener('click', (e) => { if (e.target === notesModal) closeNotesModal(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !notesModal.hidden) closeNotesModal(); });
+
+// Aktualisiert Tabellenzeile + Notiz-Icon nach jeder Änderung, ohne die
+// ganze Tabelle (und damit die Scroll-Position/Auswahl) neu aufzubauen.
+function refreshNotesIndicator() {
+  if (notesTarget.kind === 'parcel') renderFeatureTable();
+  else renderObstbaumTable();
+}
+
+document.getElementById('notes-btn-save').addEventListener('click', async () => {
+  const { kind, entry } = notesTarget;
+  const text = notesTextarea.value;
+  if (kind === 'parcel') setParcelNotes(entry, text); else entry.notes = text;
+  refreshNotesIndicator();
+  notesSyncStatus.textContent = 'Speichere …';
+  try {
+    await saveState(serializeCurrentState());
+    notesSyncStatus.textContent = 'Gespeichert.';
+  } catch (err) {
+    notesSyncStatus.textContent = 'Fehler: ' + (err.message || 'Speichern fehlgeschlagen.');
+  }
+});
+
+notesPhotoInput.addEventListener('change', async () => {
+  const file = notesPhotoInput.files[0];
+  notesPhotoInput.value = '';
+  if (!file) return;
+  const { kind, entry } = notesTarget;
+  showNotesError('');
+  notesSyncStatus.textContent = 'Foto wird hochgeladen …';
+  try {
+    const path = await uploadPhoto(file);
+    if (kind === 'parcel') addParcelPhoto(entry, path); else entry.photos.push(path);
+    refreshNotesIndicator();
+    await renderNotesPhotoGrid();
+    await saveState(serializeCurrentState());
+    notesSyncStatus.textContent = 'Foto gespeichert.';
+  } catch (err) {
+    showNotesError(err.message || 'Foto-Upload fehlgeschlagen.');
+    notesSyncStatus.textContent = '';
+  }
+});
+
+async function removeNotesPhoto(path) {
+  const { kind, entry } = notesTarget;
+  notesSyncStatus.textContent = 'Lösche …';
+  try {
+    await deletePhoto(path);
+    if (kind === 'parcel') removeParcelPhoto(entry, path); else entry.photos = entry.photos.filter(p => p !== path);
+    refreshNotesIndicator();
+    await renderNotesPhotoGrid();
+    await saveState(serializeCurrentState());
+    notesSyncStatus.textContent = 'Gelöscht.';
+  } catch (err) {
+    notesSyncStatus.textContent = 'Fehler: ' + (err.message || 'Löschen fehlgeschlagen.');
+  }
+}
+
+// ---------- FeldFolio Plus: Wochenplaner ----------
+// Eigener Tab mit eigener, zweiter Leaflet-Karteninstanz (getrennt von der
+// geteilten Parzellen-Karte) — Cloud-Konto-Funktion wie Notiz/Fotos, siehe
+// dortiges Gating-Muster (accountSession). Termine kommen aus einem
+// Excel-Export ("Intact Platform", Spalten wie Kunde/Auditart/Straße/PLZ/Ort/
+// Auditdatum) statt aus .ics — der Export enthält bereits strukturierte
+// Adressfelder (keine Text-Heuristik nötig wie zuvor bei .ics) und keine
+// Uhrzeiten, nur Tagesdaten — deshalb Tageskarten statt Stundenraster.
+// XLSX-Parsing läuft über die bereits per CDN geladene SheetJS-Bibliothek
+// (globales XLSX, siehe index.html — dieselbe, die auch für den Excel-Export
+// genutzt wird), keine neue Abhängigkeit nötig. Zusammenführen neuer Uploads
+// per Nr. Auditauftrag (AO-Code), Adressen werden über die öffentliche
+// Nominatim-API (OpenStreetMap) geokodiert — nur einmalig pro Termin,
+// Ergebnis wird mit gespeichert.
+let wochenplanerEvents = []; // { id, kunde, auditart, ..., date: Date, lat, lng, geocodeStatus }
+let wochenplanerInitDone = false;
+let wochenplanerMap = null;
+let wochenplanerMarkersLayer = null;
+let wochenplanerWeekStart = getMondayOfWeek(new Date());
+let wochenplanerSelectedId = null;
+
+const wpSleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+function getMondayOfWeek(date) {
+  const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const day = (d.getDay() + 6) % 7; // Montag=0 … Sonntag=6
+  d.setDate(d.getDate() - day);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+// Standard-ISO-8601-Wochennummer: über den Donnerstag der Woche bestimmt,
+// da die ISO-Woche zu dem Jahr gehört, das den Donnerstag dieser Woche enthält.
+function getISOWeek(date) {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = (d.getUTCDay() + 6) % 7;
+  d.setUTCDate(d.getUTCDate() - dayNum + 3);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const week = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+  return { week, year: d.getUTCFullYear() };
+}
+
+function parseGermanDate(s) {
+  const m = /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/.exec(String(s || '').trim());
+  if (!m) return null;
+  return new Date(+m[3], +m[2] - 1, +m[1]);
+}
+
+// ---- Excel-Parser (Intact-Platform-Export: Titelzeile, dann Kopfzeile,
+// dann eine Zeile je Termin) — Kopfzeile ist Zeile 2 (Index 1), daher range:1.
+function parseXlsxFile(arrayBuffer) {
+  const wb = XLSX.read(arrayBuffer, { type: 'array' });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { range: 1, defval: '' });
+  return rows.map(row => {
+    const kunde = String(row['Kunde'] || '').trim();
+    const date = parseGermanDate(row['Auditdatum (von)']);
+    if (!kunde || !date) return null; // leere/kaputte Zeilen überspringen
+    const strasse = String(row['Straße'] || '').trim();
+    const plz = String(row['PLZ'] || '').trim();
+    const ort = String(row['Ort'] || '').trim();
+    const address = [strasse, [plz, ort].filter(Boolean).join(' ')].filter(Boolean).join(', ') || null;
+    const id = String(row['Nr. Auditauftrag'] || '').trim() ||
+      [row['Kundennummer'], row['Auditdatum (von)'], row['Auditart']].filter(Boolean).join('|');
+    return {
+      id,
+      kunde,
+      auditart: String(row['Auditart'] || '').trim(),
+      dienstleistungen: String(row['Dienstleistungen'] || '').trim(),
+      format: String(row['Format'] || '').trim(),
+      date,
+      bestaetigt: String(row['Bestätigungsstatus'] || '').trim() === 'Termine bestätigt',
+      prioritaet: String(row['Priorität'] || '').trim(),
+      unangemeldet: String(row['Audit unangemeldet'] || '').trim() === '1',
+      telefon: String(row['Telefon'] || '').trim(),
+      mobil: String(row['Mobil'] || '').trim(),
+      email: String(row['E-Mail'] || '').trim(),
+      strasse, plz, ort, address,
+      hinweis: String(row['Hinweis Auditor 1'] || '').trim(),
+      kundennummer: String(row['Kundennummer'] || '').trim(),
+      lat: null, lng: null, geocodeStatus: 'none',
+      // Excel liefert nur ein Datum — Uhrzeit kommt optional über eine
+      // zusätzlich hochgeladene .ics-Datei dazu (siehe applyIcsTimes unten).
+      hasTime: false, dateEnd: null
+    };
+  }).filter(Boolean);
+}
+
+// ---- Zusammenführen per Nr. Auditauftrag (AO-Code) ----
+function mergeWochenplanerEvents(parsed) {
+  const byId = new Map(wochenplanerEvents.map(e => [e.id, e]));
+  let added = 0, updated = 0;
+  parsed.forEach(p => {
+    const existing = byId.get(p.id);
+    if (existing) {
+      const addressChanged = existing.address !== p.address;
+      const prevLat = existing.lat, prevLng = existing.lng, prevStatus = existing.geocodeStatus;
+      // Eine per .ics ergänzte Uhrzeit bleibt erhalten, solange sich das
+      // Excel-Datum für diesen Termin nicht geändert hat (sonst wäre die
+      // alte Uhrzeit für einen anderen Tag nicht mehr gültig).
+      const sameDay = existing.date && existing.date.toDateString() === p.date.toDateString();
+      const prevDate = existing.date, prevHasTime = existing.hasTime, prevDateEnd = existing.dateEnd;
+      Object.assign(existing, p);
+      if (!addressChanged) { existing.lat = prevLat; existing.lng = prevLng; existing.geocodeStatus = prevStatus; }
+      if (sameDay && prevHasTime) { existing.date = prevDate; existing.hasTime = true; existing.dateEnd = prevDateEnd; }
+      updated++;
+    } else {
+      wochenplanerEvents.push(p);
+      added++;
+    }
+  });
+  return { added, updated };
+}
+
+// ---- Terminuhrzeiten aus .ics ergänzen ----
+// Der Excel-Export liefert nur ein Datum, keine Uhrzeit. Eine zusätzliche
+// .ics-Datei (z.B. Kalender-Export desselben Auftragssystems) enthält echte
+// Uhrzeiten — Zuordnung läuft über den Auditauftrags-Code ("AO-XXXXXX"), der
+// im .ics-Termintitel steckt und exakt der Excel-Spalte "Nr. Auditauftrag"
+// entspricht (= id), nicht über die .ics-UID.
+const WP_AO_CODE_RE = /AO-\d+/;
+
+function unfoldIcsLines(text) {
+  const rawLines = text.split(/\r\n|\n|\r/);
+  const lines = [];
+  rawLines.forEach(line => {
+    if ((line.startsWith(' ') || line.startsWith('\t')) && lines.length) lines[lines.length - 1] += line.slice(1);
+    else lines.push(line);
+  });
+  return lines;
+}
+
+function parseIcsDate(value) {
+  const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(Z)?$/.exec(value);
+  if (!m) return null;
+  const [, y, mo, d, h, mi, s, z] = m;
+  return z ? new Date(Date.UTC(+y, +mo - 1, +d, +h, +mi, +s)) : new Date(+y, +mo - 1, +d, +h, +mi, +s);
+}
+
+// Schlanker Parser wie zuvor beim direkten .ics-Import — deckt nur ab, was
+// hier gebraucht wird (SUMMARY/DTSTART/DTEND), keine Wiederholungsregeln/
+// Zeitzonen-Blöcke. Unbekannte BEGIN/END-Blöcke innerhalb eines VEVENT
+// werden übersprungen statt zum Absturz zu führen.
+function parseIcsFile(text) {
+  const lines = unfoldIcsLines(text);
+  const events = [];
+  let cur = null;
+  let skipDepth = 0;
+  lines.forEach(rawLine => {
+    const line = rawLine.trim();
+    if (!line) return;
+    if (line.startsWith('BEGIN:')) {
+      const blockName = line.slice(6).trim();
+      if (blockName === 'VEVENT') cur = { summary: '', start: null, end: null };
+      else if (cur) skipDepth++;
+      return;
+    }
+    if (line.startsWith('END:')) {
+      const blockName = line.slice(4).trim();
+      if (blockName === 'VEVENT') { if (cur && cur.start) events.push(cur); cur = null; }
+      else if (skipDepth > 0) skipDepth--;
+      return;
+    }
+    if (!cur || skipDepth > 0) return;
+    const idx = line.indexOf(':');
+    if (idx === -1) return;
+    let key = line.slice(0, idx);
+    const semi = key.indexOf(';');
+    if (semi !== -1) key = key.slice(0, semi);
+    const value = line.slice(idx + 1);
+    if (key === 'SUMMARY') cur.summary = value.replace(/\\,/g, ',').replace(/\\;/g, ';').replace(/\\\\/g, '\\');
+    else if (key === 'DTSTART') cur.start = parseIcsDate(value.trim());
+    else if (key === 'DTEND') cur.end = parseIcsDate(value.trim());
+  });
+  return events.filter(e => e.start);
+}
+
+function applyIcsTimes(icsEvents) {
+  let matched = 0, unmatched = 0;
+  icsEvents.forEach(ic => {
+    const m = WP_AO_CODE_RE.exec(ic.summary);
+    const ev = m ? wochenplanerEvents.find(e => e.id === m[0]) : null;
+    if (ev) {
+      ev.date = ic.start;
+      ev.dateEnd = ic.end || null;
+      ev.hasTime = true;
+      matched++;
+    } else {
+      unmatched++;
+    }
+  });
+  return { matched, unmatched };
+}
+
+// ---- Geokodierung (OpenStreetMap Nominatim, öffentlich, kein API-Key) ----
+async function geocodeMissingAddresses() {
+  const pending = wochenplanerEvents.filter(e => e.address && e.lat == null && e.geocodeStatus !== 'failed');
+  for (let i = 0; i < pending.length; i++) {
+    const ev = pending[i];
+    setWochenplanerStatus(`Geokodiere Adressen … ${i + 1}/${pending.length}`);
+    try {
+      const res = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(ev.address));
+      const data = await res.json();
+      if (data && data[0]) {
+        ev.lat = parseFloat(data[0].lat);
+        ev.lng = parseFloat(data[0].lon);
+        ev.geocodeStatus = 'ok';
+      } else {
+        ev.geocodeStatus = 'failed';
+      }
+    } catch {
+      ev.geocodeStatus = 'failed';
+    }
+    renderWochenplanerSummary();
+    // Nominatim-Nutzungsbedingungen: max. 1 Anfrage/Sekunde.
+    if (i < pending.length - 1) await wpSleep(1100);
+  }
+  renderWochenplanerGrid();
+}
+
+function eventRouteUrl(ev) {
+  if (ev.lat != null && ev.lng != null) return googleMapsDirectionsUrl(ev.lat, ev.lng);
+  if (ev.address) return 'https://www.google.com/maps/dir/?api=1&destination=' + encodeURIComponent(ev.address) + '&travelmode=driving';
+  return null;
+}
+
+// ---- UI-Elemente ----
+const wochenplanerNotLoggedIn = document.getElementById('wochenplaner-not-logged-in');
+const wochenplanerControls = document.getElementById('wochenplaner-controls');
+const wochenplanerLoginGate = document.getElementById('wochenplaner-login-gate');
+const wochenplanerMainView = document.getElementById('wochenplaner-main');
+const wochenplanerStatusEl = document.getElementById('wochenplaner-status');
+const wochenplanerSummaryEl = document.getElementById('wochenplaner-summary');
+
+function setWochenplanerStatus(msg) { wochenplanerStatusEl.textContent = msg; }
+
+function renderWochenplanerSummary() {
+  if (!wochenplanerEvents.length) {
+    wochenplanerSummaryEl.textContent = 'Noch keine Termine geladen.';
+    return;
+  }
+  const withAddress = wochenplanerEvents.filter(e => e.address).length;
+  const geocoded = wochenplanerEvents.filter(e => e.lat != null).length;
+  const unbestaetigt = wochenplanerEvents.filter(e => !e.bestaetigt).length;
+  wochenplanerSummaryEl.textContent =
+    `${wochenplanerEvents.length} Termine geladen, davon ${withAddress} mit Adresse, ${geocoded} geokodiert, ${unbestaetigt} unbestätigt.`;
+}
+
+// Öffnet den Wochenplaner-Tab: prüft Login, initialisiert die zweite Karte
+// erst jetzt (Leaflet braucht einen sichtbaren Container mit echter Größe),
+// stößt danach ein invalidateSize() an, da die Karte beim init evtl. noch
+// unsichtbar war.
+function openWochenplaner() {
+  const loggedIn = isSupabaseConfigured && !!accountSession;
+  wochenplanerNotLoggedIn.hidden = loggedIn;
+  wochenplanerControls.hidden = !loggedIn;
+  wochenplanerLoginGate.hidden = loggedIn;
+  wochenplanerMainView.hidden = !loggedIn;
+  if (!loggedIn) return;
+  initWochenplanerMap();
+  renderWochenplanerSummary();
+  renderWochenplanerGrid();
+  requestAnimationFrame(() => wochenplanerMap && wochenplanerMap.invalidateSize());
+}
+
+function initWochenplanerMap() {
+  if (wochenplanerInitDone) return;
+  wochenplanerInitDone = true;
+  wochenplanerMap = L.map('wochenplaner-map', { zoomControl: true, attributionControl: true }).setView([51.16, 10.45], 6);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>-Mitwirkende',
+    maxZoom: 19
+  }).addTo(wochenplanerMap);
+  wochenplanerMarkersLayer = L.layerGroup().addTo(wochenplanerMap);
+}
+
+function renderWochenplanerMapPins(eventsWithCoords) {
+  if (!wochenplanerMap) return;
+  wochenplanerMarkersLayer.clearLayers();
+  const latlngs = [];
+  eventsWithCoords.forEach(e => {
+    const marker = L.marker([e.lat, e.lng]).bindTooltip(e.kunde);
+    marker.on('click', () => selectWochenplanerEvent(e.id));
+    marker.addTo(wochenplanerMarkersLayer);
+    latlngs.push([e.lat, e.lng]);
+  });
+  if (latlngs.length) wochenplanerMap.fitBounds(latlngs, { padding: [30, 30], maxZoom: 13 });
+}
+
+function renderWochenplanerDetail(ev) {
+  const el = document.getElementById('wochenplaner-detail');
+  if (!ev) { el.innerHTML = '<p class="empty-hint">Termin anklicken, um Details zu sehen.</p>'; return; }
+  let dateStr = ev.date.toLocaleDateString('de-DE', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' });
+  if (ev.hasTime) {
+    dateStr += ', ' + ev.date.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+    if (ev.dateEnd) dateStr += ' – ' + ev.dateEnd.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+  }
+  const routeUrl = eventRouteUrl(ev);
+  const badges = [`<span class="wp-badge ${ev.bestaetigt ? 'wp-badge-ok' : 'wp-badge-warn'}">${ev.bestaetigt ? 'Bestätigt' : 'Unbestätigt'}</span>`];
+  if (ev.prioritaet && ev.prioritaet !== 'Normal') badges.push(`<span class="wp-badge wp-badge-warn">${escapeHtml(ev.prioritaet)}</span>`);
+  if (ev.unangemeldet) badges.push('<span class="wp-badge wp-badge-warn">Unangemeldet</span>');
+  const contact = [ev.telefon, ev.mobil, ev.email].filter(Boolean).map(escapeHtml).join(' · ');
+  el.innerHTML = `
+    <h3>${escapeHtml(ev.kunde)}</h3>
+    <p class="wp-detail-time">${dateStr}</p>
+    <div class="wp-badges">${badges.join('')}</div>
+    <p class="wp-detail-desc"><strong>${escapeHtml(ev.auditart)}</strong>${ev.format ? ' · ' + escapeHtml(ev.format) : ''}</p>
+    ${ev.address ? `<p class="wp-detail-desc">${escapeHtml(ev.address)}</p>` : ''}
+    ${contact ? `<p class="wp-detail-desc">${contact}</p>` : ''}
+    ${ev.hinweis ? `<p class="wp-detail-desc">${escapeHtml(ev.hinweis).replace(/\n/g, '<br>')}</p>` : ''}
+    ${routeUrl ? `<a class="wp-gmaps-link" href="${routeUrl}" target="_blank" rel="noopener" title="In Google Maps öffnen" aria-label="In Google Maps öffnen">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+        <path d="M12 2C7.58 2 4 5.58 4 10c0 5.25 6.72 11.19 7.02 11.45a1.5 1.5 0 0 0 1.96 0C13.28 21.19 20 15.25 20 10c0-4.42-3.58-8-8-8z" fill="#EA4335"/>
+        <circle cx="12" cy="10" r="3.2" fill="#ffffff"/>
+      </svg>
+    </a>` : '<p class="empty-hint">Keine Adresse bekannt.</p>'}
+  `;
+}
+
+function selectWochenplanerEvent(id) {
+  wochenplanerSelectedId = id;
+  const ev = wochenplanerEvents.find(e => e.id === id);
+  document.querySelectorAll('.wp-card').forEach(el => el.classList.toggle('selected', el.getAttribute('data-id') === id));
+  renderWochenplanerDetail(ev);
+  if (ev && ev.lat != null && wochenplanerMap) wochenplanerMap.setView([ev.lat, ev.lng], 15);
+}
+
+const WP_WEEKDAY_LABELS = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
+
+function eventsForVisibleWeek() {
+  const weekEnd = new Date(wochenplanerWeekStart);
+  weekEnd.setDate(weekEnd.getDate() + 7);
+  return wochenplanerEvents.filter(e => e.date >= wochenplanerWeekStart && e.date < weekEnd);
+}
+
+// Verschiebt einen Termin per Drag&Drop auf einen anderen Wochentag — eine
+// evtl. per .ics ergänzte Uhrzeit bleibt dabei erhalten (nur der Kalendertag
+// ändert sich), reine Datumstermine bleiben weiterhin ohne Uhrzeit. Rein
+// lokale Änderung, wie bei allen anderen Wochenplaner-Bearbeitungen erst mit
+// "In Cloud speichern" dauerhaft.
+function moveWochenplanerEvent(id, targetDate) {
+  const ev = wochenplanerEvents.find(e => e.id === id);
+  if (!ev) return;
+  if (ev.date.toDateString() === targetDate.toDateString()) return;
+  const durationMs = ev.dateEnd ? ev.dateEnd - ev.date : null;
+  const newDate = new Date(targetDate);
+  newDate.setHours(ev.date.getHours(), ev.date.getMinutes(), ev.date.getSeconds(), 0);
+  ev.date = newDate;
+  if (durationMs != null) ev.dateEnd = new Date(newDate.getTime() + durationMs);
+  if (ev.id === wochenplanerSelectedId) renderWochenplanerDetail(ev);
+  renderWochenplanerGrid();
+  setWochenplanerStatus('Termin verschoben — nicht vergessen zu speichern.');
+}
+
+// Termine haben ohne .ics-Ergänzung keine Uhrzeit — statt eines fixen
+// Stundenrasters daher eine Kartenliste je Wochentag, mit Uhrzeit-Präfix
+// sobald eine per .ics bekannt ist. Karten sind per Drag&Drop auf einen
+// anderen Tag verschiebbar.
+function renderWochenplanerGrid() {
+  const weekEvents = eventsForVisibleWeek();
+
+  const { week, year } = getISOWeek(wochenplanerWeekStart);
+  const weekEndDisplay = new Date(wochenplanerWeekStart);
+  weekEndDisplay.setDate(weekEndDisplay.getDate() + 6);
+  const fmtShort = d => d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
+  document.getElementById('wp-week-label').textContent =
+    `KW ${week} · ${year} (${fmtShort(wochenplanerWeekStart)}–${fmtShort(weekEndDisplay)})`;
+
+  let html = '';
+  for (let d = 0; d < 7; d++) {
+    const dayDate = new Date(wochenplanerWeekStart);
+    dayDate.setDate(dayDate.getDate() + d);
+    const dayEvents = weekEvents
+      .filter(e => e.date.toDateString() === dayDate.toDateString())
+      .sort((a, b) => {
+        if (a.hasTime && b.hasTime) return a.date - b.date;
+        if (a.hasTime !== b.hasTime) return a.hasTime ? -1 : 1; // Termine mit Uhrzeit zuerst
+        return a.kunde.localeCompare(b.kunde, 'de');
+      });
+
+    const cardsHtml = dayEvents.map(e => {
+      const selected = e.id === wochenplanerSelectedId ? ' selected' : '';
+      const pin = e.lat != null ? ' 📍' : '';
+      const statusClass = e.bestaetigt ? 'wp-card-ok' : 'wp-card-warn';
+      const timePrefix = e.hasTime ? e.date.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) + ' · ' : '';
+      return `<div class="wp-card ${statusClass}${selected}" data-id="${escapeHtml(e.id)}" title="${escapeHtml(e.kunde)}" draggable="true">
+        <div class="wp-card-title">${escapeHtml(e.kunde)}</div>
+        <div class="wp-card-sub">${timePrefix}${escapeHtml(e.auditart)}${pin}</div>
+      </div>`;
+    }).join('');
+
+    const countBadge = dayEvents.length ? ` <span class="wp-day-count">${dayEvents.length}</span>` : '';
+    html += `<div class="wp-day-col">
+      <div class="wp-day-head">${WP_WEEKDAY_LABELS[d]} ${dayDate.getDate()}.${dayDate.getMonth() + 1}.${countBadge}</div>
+      <div class="wp-day-body" data-date="${dayDate.toISOString()}">${cardsHtml || '<p class="wp-day-empty">–</p>'}</div>
+    </div>`;
+  }
+
+  const grid = document.getElementById('wochenplaner-grid');
+  grid.innerHTML = html;
+  grid.querySelectorAll('.wp-card').forEach(el => {
+    el.addEventListener('click', () => selectWochenplanerEvent(el.getAttribute('data-id')));
+    el.addEventListener('dragstart', (e) => {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', el.getAttribute('data-id'));
+    });
+  });
+  grid.querySelectorAll('.wp-day-body').forEach(el => {
+    el.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; el.classList.add('wp-drop-target'); });
+    el.addEventListener('dragleave', () => el.classList.remove('wp-drop-target'));
+    el.addEventListener('drop', (e) => {
+      e.preventDefault();
+      el.classList.remove('wp-drop-target');
+      const id = e.dataTransfer.getData('text/plain');
+      if (id) moveWochenplanerEvent(id, new Date(el.getAttribute('data-date')));
+    });
+  });
+
+  renderWochenplanerMapPins(weekEvents.filter(e => e.lat != null));
+}
+
+function gotoWeek(delta) {
+  wochenplanerWeekStart = new Date(wochenplanerWeekStart);
+  wochenplanerWeekStart.setDate(wochenplanerWeekStart.getDate() + delta * 7);
+  renderWochenplanerGrid();
+}
+
+document.getElementById('wp-prev-week').addEventListener('click', () => gotoWeek(-1));
+document.getElementById('wp-next-week').addEventListener('click', () => gotoWeek(1));
+document.getElementById('wp-today').addEventListener('click', () => {
+  wochenplanerWeekStart = getMondayOfWeek(new Date());
+  renderWochenplanerGrid();
+});
+
+document.getElementById('wochenplaner-file-input').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  document.getElementById('wochenplaner-file-name').textContent = file.name;
+  document.getElementById('wochenplaner-drop').classList.add('filled');
+  setWochenplanerStatus('Lese Datei …');
+  try {
+    const buf = await file.arrayBuffer();
+    const parsed = parseXlsxFile(buf);
+    if (!parsed.length) throw new Error('Keine gültigen Termine in der Datei gefunden.');
+    const { added, updated } = mergeWochenplanerEvents(parsed);
+    renderWochenplanerSummary();
+    renderWochenplanerGrid();
+    setWochenplanerStatus(`${added} neu, ${updated} aktualisiert.`);
+    await geocodeMissingAddresses();
+    setWochenplanerStatus('Fertig.');
+  } catch (err) {
+    setWochenplanerStatus('Fehler: ' + (err.message || 'Datei konnte nicht gelesen werden.'));
+  }
+});
+
+document.getElementById('wochenplaner-ics-file-input').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  document.getElementById('wochenplaner-ics-file-name').textContent = file.name;
+  document.getElementById('wochenplaner-ics-drop').classList.add('filled');
+  if (!wochenplanerEvents.length) { setWochenplanerStatus('Bitte zuerst die Excel-Termine hochladen.'); return; }
+  setWochenplanerStatus('Lese Uhrzeiten …');
+  try {
+    const text = await file.text();
+    const icsEvents = parseIcsFile(text);
+    if (!icsEvents.length) throw new Error('Keine Termine in der .ics-Datei gefunden.');
+    const { matched, unmatched } = applyIcsTimes(icsEvents);
+    renderWochenplanerGrid();
+    setWochenplanerStatus(`${matched} Uhrzeiten übernommen, ${unmatched} ohne passenden Termin.`);
+  } catch (err) {
+    setWochenplanerStatus('Fehler: ' + (err.message || '.ics-Datei konnte nicht gelesen werden.'));
+  }
+});
+
+document.getElementById('wochenplaner-btn-save').addEventListener('click', async () => {
+  setWochenplanerStatus('Speichere …');
+  try {
+    await saveState(serializeCurrentState());
+    setWochenplanerStatus('Gespeichert.');
+  } catch (err) {
+    setWochenplanerStatus('Fehler: ' + (err.message || 'Speichern fehlgeschlagen.'));
+  }
+});
 
 // ---------- Dev-Tooling: Jahresvergleich-Inputs aus test-shapes/ vorbefüllen ----------
 // Vorerst deaktiviert: test-shapes/ enthält jetzt 16 einzelne Bundesland-
