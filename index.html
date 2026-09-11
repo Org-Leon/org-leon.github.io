@@ -53,6 +53,7 @@
       </svg>
     </span><span class="ff-txt">lio</span>
   </span>
+  <button id="btn-account" title="Cloud-Konto">Anmelden</button>
   <button id="theme-toggle" title="Hell-/Dunkelmodus umschalten" aria-label="Hell-/Dunkelmodus umschalten">
     <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2" fill="currentColor"/><g stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="12" y1="1.5" x2="12" y2="4.5"/><line x1="12" y1="19.5" x2="12" y2="22.5"/><line x1="1.5" y1="12" x2="4.5" y2="12"/><line x1="19.5" y1="12" x2="22.5" y2="12"/><line x1="4.4" y1="4.4" x2="6.5" y2="6.5"/><line x1="17.5" y1="17.5" x2="19.6" y2="19.6"/><line x1="4.4" y1="19.6" x2="6.5" y2="17.5"/><line x1="17.5" y1="6.5" x2="19.6" y2="4.4"/></g></svg>
     <span class="theme-thumb"></span>
@@ -63,9 +64,8 @@
 <div id="app-body">
 <div id="sidebar-backdrop"></div>
 <div id="sidebar">
-  <div id="brand">
-    <h1>FeldFolio</h1>
-    <p id="brand-caption">Shapefiles &amp; GeoJSON lokal auf der Karte darstellen</p>
+  <div id="wochenplaner-switcher">
+    <button class="segment-btn wochenplaner-standalone-btn" data-view="wochenplaner">Wochenplaner</button>
   </div>
 
   <div id="view-switcher">
@@ -73,6 +73,10 @@
     <button class="segment-btn" data-view="zeichner">Flächenzeichner</button>
     <button class="segment-btn" data-view="obstbaum">Obstbaumkataster</button>
     <button class="segment-btn" data-view="bienenflug">Bienenflugkarte</button>
+  </div>
+
+  <div id="brand">
+    <p id="brand-caption">Shapefiles &amp; GeoJSON lokal auf der Karte darstellen</p>
   </div>
 
   <div id="dropzone">
@@ -190,6 +194,32 @@
 
     <div id="bienenflug-status" class="status-line">Bereit.</div>
   </div>
+
+  <div class="sidebar-section" data-view="wochenplaner">
+    <div id="wochenplaner-not-logged-in" hidden>
+      <p class="modal-hint">Der Wochenplaner ist eine Cloud-Konto-Funktion. Bitte zuerst
+        anmelden (Konto-Button oben rechts), um ihn zu nutzen.</p>
+    </div>
+    <div id="wochenplaner-controls">
+      <div class="compare-upload">
+        <label class="compare-label">Termine (.xlsx) hochladen</label>
+        <div class="dropzone-mini" id="wochenplaner-drop">
+          <span id="wochenplaner-file-name">.xlsx auswählen…</span>
+          <input type="file" id="wochenplaner-file-input" accept=".xlsx,.xls">
+        </div>
+      </div>
+      <div class="compare-upload">
+        <label class="compare-label">Terminuhrzeiten (.ics) ergänzen</label>
+        <div class="dropzone-mini" id="wochenplaner-ics-drop">
+          <span id="wochenplaner-ics-file-name">.ics auswählen…</span>
+          <input type="file" id="wochenplaner-ics-file-input" accept=".ics">
+        </div>
+      </div>
+      <div id="wochenplaner-summary" class="empty-hint">Noch keine Termine geladen.</div>
+      <button id="wochenplaner-btn-save">In Cloud speichern</button>
+      <div id="wochenplaner-status" class="status-line">Bereit.</div>
+    </div>
+  </div>
 </div>
 
 <div id="map-wrap">
@@ -246,6 +276,7 @@
             <th>Kulturart</th>
             <th>Bäume</th>
             <th>Besichtigt</th>
+            <th>Notiz</th>
             <th>Route</th>
           </tr>
         </thead>
@@ -300,6 +331,7 @@
             <th>Obstart</th>
             <th>Fläche</th>
             <th></th>
+            <th></th>
           </tr>
         </thead>
         <tbody id="obstbaum-table-body"></tbody>
@@ -323,6 +355,141 @@
     </div>
   </div>
 </div>
+
+<div id="wochenplaner-view" hidden>
+  <div id="wochenplaner-login-gate" hidden>
+    <p class="modal-hint">Der Wochenplaner ist eine Cloud-Konto-Funktion. Bitte zuerst anmelden.</p>
+  </div>
+  <div id="wochenplaner-main">
+    <div id="wochenplaner-calendar">
+      <div id="wochenplaner-nav">
+        <button type="button" id="wp-prev-week" title="Vorherige Woche">‹</button>
+        <span id="wp-week-label">KW –</span>
+        <button type="button" id="wp-next-week" title="Nächste Woche">›</button>
+        <button type="button" id="wp-today">Heute</button>
+      </div>
+      <div id="wochenplaner-grid-wrap">
+        <div id="wochenplaner-grid"></div>
+      </div>
+    </div>
+    <div id="wochenplaner-side">
+      <div id="wochenplaner-map"></div>
+      <div id="wochenplaner-detail">
+        <p class="empty-hint">Termin anklicken, um Details zu sehen.</p>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ---------- FeldFolio Plus: Cloud-Konto ---------- -->
+<div id="account-modal-overlay" class="modal-overlay" hidden>
+  <div class="modal-card">
+    <h3>Cloud-Konto</h3>
+
+    <div id="account-not-configured" hidden>
+      <p class="modal-hint">Cloud-Speicherung ist auf dieser Instanz nicht eingerichtet
+        (fehlende Supabase-Zugangsdaten). Alle anderen Funktionen bleiben normal nutzbar.</p>
+      <div class="modal-actions">
+        <button type="button" id="account-modal-close-1">Schließen</button>
+      </div>
+    </div>
+
+    <div id="account-auth-wrap">
+      <div class="auth-mode-switch" role="tablist">
+        <button type="button" class="auth-mode-btn active" id="account-mode-signin" data-mode="signin" role="tab" aria-selected="true">Anmelden</button>
+        <button type="button" class="auth-mode-btn" id="account-mode-signup" data-mode="signup" role="tab" aria-selected="false">Registrieren</button>
+      </div>
+
+      <form id="account-auth-form">
+        <p class="modal-hint" id="account-auth-hint">Mit bestehendem Cloud-Konto anmelden, um den
+          aktuellen Stand zu speichern und auf einem anderen Gerät weiterzuarbeiten.</p>
+        <label class="compare-label" for="account-email">E-Mail</label>
+        <input type="email" id="account-email" class="account-input" required autocomplete="email">
+        <p class="modal-hint" id="account-domain-hint" hidden></p>
+        <label class="compare-label" for="account-password" style="margin-top:10px;">Passwort</label>
+        <input type="password" id="account-password" class="account-input" required autocomplete="current-password" minlength="6">
+        <p class="modal-hint modal-error" id="account-auth-error" hidden></p>
+        <div class="modal-actions">
+          <button type="button" id="account-modal-close-2">Abbrechen</button>
+          <button type="submit" id="account-btn-submit" class="primary">Anmelden</button>
+        </div>
+      </form>
+
+      <div id="account-request-block" hidden>
+        <p class="modal-hint">Diese Adresse ist noch nicht freigeschaltet. Zugangsanfrage
+          senden — du bekommst Bescheid, sobald sie freigeschaltet ist.</p>
+        <label class="compare-label" for="account-request-email">E-Mail</label>
+        <input type="email" id="account-request-email" class="account-input" readonly>
+        <label class="compare-label" for="account-request-name" style="margin-top:10px;">Name (optional)</label>
+        <input type="text" id="account-request-name" class="account-input" autocomplete="name">
+        <label class="compare-label" for="account-request-message" style="margin-top:10px;">Nachricht (optional)</label>
+        <textarea id="account-request-message" class="account-input" rows="3"></textarea>
+        <p class="modal-hint modal-error" id="account-request-error" hidden></p>
+        <p class="modal-hint" id="account-request-status"></p>
+        <div class="modal-actions">
+          <button type="button" id="account-request-cancel">Zurück</button>
+          <button type="button" id="account-request-submit" class="primary">Zugang anfragen</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="account-logged-in" hidden>
+      <p class="modal-hint">Angemeldet als <strong id="account-email-display"></strong>.</p>
+      <p class="modal-hint" id="account-sync-status"></p>
+      <div class="modal-actions" style="justify-content:flex-start; flex-wrap:wrap;">
+        <button type="button" id="account-btn-save">Cloud speichern</button>
+        <button type="button" id="account-btn-load">Cloud laden</button>
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="account-btn-signout">Abmelden</button>
+        <button type="button" id="account-modal-close-3" class="primary">Fertig</button>
+      </div>
+
+      <div id="account-admin-requests" hidden>
+        <div class="admin-requests-head">
+          <span>Offene Zugangsanfragen</span>
+          <button type="button" id="account-admin-refresh" title="Aktualisieren">↻</button>
+        </div>
+        <p class="modal-hint modal-error" id="account-admin-error" hidden></p>
+        <div id="account-admin-requests-list"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ---------- FeldFolio Plus: Notiz & Fotos an Fläche/Baum ---------- -->
+<div id="notes-modal-overlay" class="modal-overlay" hidden>
+  <div class="modal-card">
+    <h3 id="notes-modal-title">Notiz &amp; Fotos</h3>
+
+    <div id="notes-not-configured" hidden>
+      <p class="modal-hint">Notizen &amp; Fotos sind eine Cloud-Konto-Funktion. Bitte zuerst
+        anmelden (Konto-Button oben rechts), um sie zu nutzen.</p>
+      <div class="modal-actions">
+        <button type="button" id="notes-modal-close-1">Schließen</button>
+      </div>
+    </div>
+
+    <div id="notes-editor" hidden>
+      <label class="compare-label" for="notes-textarea">Anmerkung</label>
+      <textarea id="notes-textarea" class="account-input" rows="4" placeholder="Notiz eintragen …"></textarea>
+
+      <div id="notes-photo-grid"></div>
+
+      <label id="notes-photo-label" class="modal-hint" style="cursor:pointer; display:inline-block; margin-top:10px;">
+        <input type="file" id="notes-photo-input" accept="image/*" capture="environment" hidden>
+        📷 Foto aufnehmen
+      </label>
+
+      <p class="modal-hint modal-error" id="notes-error" hidden></p>
+      <p class="modal-hint" id="notes-sync-status"></p>
+      <div class="modal-actions">
+        <button type="button" id="notes-modal-close-2">Abbrechen</button>
+        <button type="button" id="notes-btn-save" class="primary">Speichern</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script type="module" src="/src/main.js"></script>

@@ -117,14 +117,31 @@
      für eine einzeilige Anordnung in der 300px-Sidebar zu lang. Aktiv-Klick
      auf den bereits aktiven Button schaltet zurück auf die Standardansicht
      (Viewer), siehe setActiveSegment() in main.js. */
+  /* Wochenplaner steht als eigene, andersartige Funktion (eigene zweite
+     Karteninstanz statt Werkzeug auf der geteilten Parzellen-Karte) bewusst
+     abgesetzt über den anderen vier Funktionen statt als fünfter Button im
+     selben Raster. */
+  #wochenplaner-switcher { margin: 14px 14px 0; flex-shrink: 0; }
+  .wochenplaner-standalone-btn {
+    display: block;
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+
   #view-switcher {
     display: grid;
     grid-template-columns: 1fr 1fr;
+    /* Trennlinien über gap+Hintergrund statt einzelner border-right/-bottom-
+       Regeln je Button — funktioniert unabhängig von der Button-Anzahl (auch
+       bei einer ungeraden letzten Reihe), die vorherige :nth-child-Logik war
+       exakt auf 4 Buttons in 2 Spalten zugeschnitten und brach bei 5. */
+    gap: 1px;
+    background: var(--border);
     border: 1px solid var(--border);
     border-radius: 8px;
     overflow: hidden;
-    background: var(--panel-2);
-    margin: 14px 14px 0;
+    margin: 8px 14px 0;
     /* flex-shrink:0 ist Pflicht, nicht nur Stilfrage: overflow:hidden (für die
        runden Ecken) setzt die automatische Mindestgröße als Flex-Kind sonst
        auf 0 — bei viel Sidebar-Inhalt (z.B. Obstbaumkataster) würde der
@@ -134,10 +151,8 @@
     flex-shrink: 0;
   }
   .segment-btn {
-    background: transparent;
+    background: var(--panel-2);
     border: none;
-    border-right: 1px solid var(--border);
-    border-bottom: 1px solid var(--border);
     color: var(--muted);
     font-family: var(--sans);
     font-size: 12px;
@@ -147,13 +162,11 @@
     text-align: center;
     transition: background-color .12s, color .12s;
   }
-  .segment-btn:nth-child(2n) { border-right: none; }
-  .segment-btn:nth-last-child(-n+2) { border-bottom: none; }
   .segment-btn:hover { color: var(--text); background: var(--panel); }
   .segment-btn.active { background: var(--accent); color: var(--on-accent); }
 
   #tabbar button#theme-toggle {
-    margin: auto 14px auto auto;
+    margin: 0 14px 0 0;
     padding: 0 5px;
     width: 52px;
     height: 26px;
@@ -220,14 +233,8 @@
     overflow-y: auto;
   }
   #brand {
-    padding: 16px 18px 14px;
+    padding: 12px 18px 14px;
     border-bottom: 1px solid var(--border);
-  }
-  #brand h1 {
-    font-size: 15px;
-    font-weight: 600;
-    margin: 0 0 2px;
-    letter-spacing: 0.2px;
   }
   #brand p {
     margin: 0;
@@ -1088,6 +1095,7 @@
   #obstbaum-table tbody td { padding: 8px 14px; border-bottom: 1px solid var(--border); }
   #obstbaum-table tbody tr { cursor: pointer; }
   #obstbaum-table tbody tr:hover td { background: var(--panel-2); }
+  #obstbaum-table tbody tr.row-selected td { background: var(--accent-tint); }
   .table-remove-btn {
     background: transparent;
     border: 1px solid var(--border);
@@ -1179,6 +1187,185 @@
     color: var(--on-accent);
   }
   .modal-actions button.primary:hover { background: var(--accent); }
+  .account-input {
+    width: 100%;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 12.5px;
+    padding: 8px 10px;
+  }
+  .account-input:focus { outline: none; border-color: var(--accent); }
+  textarea.account-input { resize: vertical; font-family: var(--sans); }
+  .modal-error { color: var(--warn); }
+
+  /* ---------- FeldFolio Plus: Anmelden/Registrieren-Umschalter ---------- */
+  .auth-mode-switch {
+    display: flex;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 14px;
+  }
+  .auth-mode-btn {
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    font-family: var(--sans);
+    font-size: 12.5px;
+    font-weight: 500;
+    padding: 9px 0;
+    cursor: pointer;
+    transition: background-color .12s, color .12s;
+  }
+  .auth-mode-btn + .auth-mode-btn { border-left: 1px solid var(--border); }
+  .auth-mode-btn:hover { color: var(--text); background: var(--panel-2); }
+  .auth-mode-btn.active { background: var(--accent); color: var(--on-accent); }
+
+  .inline-link {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent);
+    font-family: var(--sans);
+    font-size: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .inline-link:hover { color: var(--text); }
+
+  /* ---------- FeldFolio Plus: Admin — offene Zugangsanfragen ---------- */
+  #account-admin-requests {
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+  }
+  .admin-requests-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+  .admin-requests-head button {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    border-radius: 4px;
+    padding: 2px 7px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .admin-requests-head button:hover { border-color: var(--accent); color: var(--text); }
+  .admin-request-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 12.5px;
+  }
+  .admin-request-row:last-child { border-bottom: none; }
+  .admin-request-info { min-width: 0; }
+  .admin-request-date { color: var(--muted); font-size: 11px; margin-left: 6px; }
+  .admin-request-msg { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+  .admin-request-actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .admin-request-actions button {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    border-radius: 4px;
+    padding: 4px 9px;
+    font-size: 11px;
+    cursor: pointer;
+    font-family: var(--sans);
+  }
+  .admin-request-actions button[data-action="approve"]:hover { border-color: var(--accent); color: var(--accent); }
+  .admin-request-actions button[data-action="decline"]:hover { border-color: var(--warn); color: var(--warn); }
+
+  /* ---------- FeldFolio Plus: Notiz-Button (Flächen-/Baumtabelle) ---------- */
+  .notes-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-size: 12px;
+    line-height: 1.4;
+    cursor: pointer;
+    font-family: var(--sans);
+  }
+  .notes-btn:hover { border-color: var(--accent); }
+  .notes-btn.has-notes { border-color: var(--accent); background: var(--accent-tint); }
+
+  /* ---------- FeldFolio Plus: Notiz-Modal Foto-Grid ---------- */
+  #notes-photo-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    margin: 10px 0;
+  }
+  #notes-photo-grid:empty { margin: 0; }
+  .notes-photo-thumb {
+    position: relative;
+    aspect-ratio: 1;
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    font-size: 16px;
+  }
+  .notes-photo-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .notes-photo-loading { opacity: 0.5; }
+  .notes-photo-remove {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(0,0,0,0.6);
+    color: #fff;
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .notes-photo-remove:hover { background: var(--warn); }
+
+  /* ---------- FeldFolio Plus: Konto-Button (Tabbar) ---------- */
+  #btn-account {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-family: var(--sans);
+    font-size: 12px;
+    padding: 6px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    margin: 0 10px 0 auto;
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  #btn-account:hover { border-color: var(--accent); color: var(--text); }
+  #btn-account.logged-in { border-color: var(--accent); color: var(--accent); }
 
   /* ---------- Bienenflugkarte ---------- */
   #bienenflug-hint { margin-top: 12px; }
@@ -1232,6 +1419,195 @@
   /* Bienenstock-Icon (L.divIcon) — schlichter Korbschwarm/Skep als Inline-SVG,
      analog zum handgezeichneten GPS-Icon. */
   .beehive-marker-icon { background: transparent; border: none; }
+
+  /* ---------- FeldFolio Plus: Wochenplaner (Sidebar) ---------- */
+  #wochenplaner-summary { margin: 10px 14px; }
+  #wochenplaner-btn-save {
+    margin: 4px 14px 4px;
+    background: var(--accent-dim);
+    border: 1px solid var(--accent);
+    color: var(--on-accent);
+    padding: 9px 0;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    font-family: var(--sans);
+  }
+  #wochenplaner-btn-save:hover { background: var(--accent); }
+
+  /* ---------- FeldFolio Plus: Wochenplaner ---------- */
+  /* Eigener Geschwister-Container von #map-wrap (nicht Teil davon) — eigene
+     zweite Leaflet-Karteninstanz statt der geteilten Parzellen-Karte, siehe
+     main.js setActiveSegment(). #map-wrap hat kein eigenes display gesetzt,
+     daher reicht dort das Standard-[hidden]-Verhalten — hier explizit nötig,
+     da display:flex die [hidden]-UA-Regel sonst überstimmen würde. */
+  #wochenplaner-view {
+    flex: 1;
+    height: 100%;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--bg);
+  }
+  #wochenplaner-view[hidden] { display: none; }
+
+  #wochenplaner-login-gate { padding: 24px; }
+
+  #wochenplaner-main {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+    overflow: hidden;
+  }
+  #wochenplaner-main[hidden] { display: none; }
+
+  #wochenplaner-calendar {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border-right: 1px solid var(--border);
+  }
+
+  #wochenplaner-nav {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  #wochenplaner-nav button {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    border-radius: 6px;
+    padding: 5px 11px;
+    cursor: pointer;
+    font-family: var(--sans);
+    font-size: 12.5px;
+  }
+  #wochenplaner-nav button:hover { border-color: var(--accent); color: var(--text); }
+  #wp-week-label { font-weight: 600; color: var(--text); font-size: 13px; }
+  #wp-today { margin-left: auto; }
+
+  /* Keine Uhrzeiten in den Termindaten (Excel-Export liefert nur ein Datum)
+     — Wochentage als Spalten mit einer gestapelten Kartenliste statt eines
+     Stundenrasters. */
+  #wochenplaner-grid-wrap { flex: 1; overflow: auto; }
+  #wochenplaner-grid { display: flex; min-height: 100%; }
+  .wp-day-col {
+    flex: 1;
+    min-width: 130px;
+    display: flex;
+    flex-direction: column;
+    border-left: 1px solid var(--border);
+  }
+  .wp-day-col:first-child { border-left: none; }
+  .wp-day-head {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    padding: 7px 8px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--text);
+    text-align: center;
+    flex-shrink: 0;
+  }
+  .wp-day-count {
+    display: inline-block;
+    background: var(--accent-dim);
+    color: var(--on-accent);
+    border-radius: 999px;
+    padding: 0 6px;
+    font-size: 10px;
+    margin-left: 3px;
+  }
+  .wp-day-body {
+    flex: 1;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    /* Als Drop-Ziel braucht die Spalte auch bei wenigen/keinen Karten eine
+       nutzbare Mindesthöhe, sonst lässt sich nicht in einen leeren Tag ziehen. */
+    min-height: 60px;
+    transition: background-color .12s, outline-color .12s;
+  }
+  .wp-day-body.wp-drop-target { background: var(--accent-tint); outline: 2px dashed var(--accent); outline-offset: -2px; }
+  .wp-day-empty { margin: 0; color: var(--muted); font-size: 11.5px; text-align: center; pointer-events: none; }
+
+  .wp-card {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--muted);
+    border-radius: 6px;
+    padding: 6px 8px;
+    cursor: grab;
+    transition: background-color .12s;
+  }
+  .wp-card:hover { background: var(--panel); }
+  .wp-card:active { cursor: grabbing; }
+  .wp-card.selected { outline: 2px solid var(--text); }
+  .wp-card-ok { border-left-color: var(--accent); }
+  .wp-card-warn { border-left-color: var(--warn); }
+  .wp-card-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .wp-card-sub {
+    font-size: 11px;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  #wochenplaner-side {
+    width: 300px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  #wochenplaner-map { height: 240px; flex-shrink: 0; background: #0D0F13; }
+  #wochenplaner-detail { flex: 1; overflow-y: auto; padding: 14px; }
+  #wochenplaner-detail h3 { margin: 0 0 6px; font-size: 14px; color: var(--text); }
+  .wp-detail-time { margin: 0 0 8px; font-size: 12.5px; color: var(--muted); }
+  .wp-detail-desc { margin: 0 0 10px; font-size: 12.5px; color: var(--text); white-space: pre-wrap; }
+  .wp-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 10px; }
+  .wp-badge {
+    display: inline-block;
+    font-size: 10.5px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    color: var(--muted);
+  }
+  .wp-badge-ok { border-color: var(--accent); color: var(--accent); }
+  .wp-badge-warn { border-color: var(--warn); color: var(--warn); }
+
+  .wp-gmaps-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--panel-2);
+    transition: border-color .12s, background-color .12s;
+  }
+  .wp-gmaps-link:hover { border-color: var(--accent); background: var(--panel); }
 
   /* ================= Mobile (Smartphone/Tablet, Hochformat) =================
      Die feste 300px-Sidebar würde auf einem Telefon fast den ganzen Bildschirm
@@ -1291,6 +1667,16 @@
        statt Spalten zusammenzuquetschen. */
     #table-body-wrap, #compare-table-body-wrap, #obstbaum-table-body-wrap { overflow-x: auto; }
     #feature-table, #compare-table, #obstbaum-table { min-width: 640px; }
+
+    /* Wochenplaner: zweite Karte + Detail-Panel wandern unter den Kalender
+       statt daneben, Kalenderspalten bekommen eine Mindestbreite und
+       scrollen seitlich statt sich unlesbar zusammenzuquetschen. */
+    #wochenplaner-main { flex-direction: column; overflow-y: auto; overflow-x: hidden; }
+    #wochenplaner-calendar { border-right: none; border-bottom: 1px solid var(--border); flex: none; }
+    #wochenplaner-grid-wrap { overflow-x: auto; }
+    #wochenplaner-grid { min-width: 720px; }
+    #wochenplaner-side { width: auto; }
+    #wochenplaner-map { height: 200px; }
   }
 
   /* Sehr schmale Telefone (Hochformat, <400px) — Wortmarke und Theme-Toggle

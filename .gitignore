@@ -4,3 +4,5 @@ dist
 test-shapes
 .playwright-mcp
 *.png
+.env
+.env.*
