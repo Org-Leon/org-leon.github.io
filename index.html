@@ -5,7 +5,7 @@
 
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Shapefile-Viewer</title>
+<title>FeldFolio</title>
 <link rel="icon" type="image/svg+xml" href="/favicon-feldfolio.svg">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,900&display=swap">
@@ -53,6 +53,9 @@
       </svg>
     </span><span class="ff-txt">lio</span>
   </span>
+  <button id="btn-betrieb" title="Betrieb/Termin für Dateibenennung zuordnen">
+    <span id="btn-betrieb-label">Betrieb wählen</span>
+  </button>
   <button id="btn-account" title="Cloud-Konto">Anmelden</button>
   <button id="theme-toggle" title="Hell-/Dunkelmodus umschalten" aria-label="Hell-/Dunkelmodus umschalten">
     <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2" fill="currentColor"/><g stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="12" y1="1.5" x2="12" y2="4.5"/><line x1="12" y1="19.5" x2="12" y2="22.5"/><line x1="1.5" y1="12" x2="4.5" y2="12"/><line x1="19.5" y1="12" x2="22.5" y2="12"/><line x1="4.4" y1="4.4" x2="6.5" y2="6.5"/><line x1="17.5" y1="17.5" x2="19.6" y2="19.6"/><line x1="4.4" y1="19.6" x2="6.5" y2="17.5"/><line x1="17.5" y1="6.5" x2="19.6" y2="4.4"/></g></svg>
@@ -64,8 +67,8 @@
 <div id="app-body">
 <div id="sidebar-backdrop"></div>
 <div id="sidebar">
-  <div id="wochenplaner-switcher">
-    <button class="segment-btn wochenplaner-standalone-btn" data-view="wochenplaner">Wochenplaner</button>
+  <div id="terminkalender-switcher">
+    <button class="segment-btn terminkalender-standalone-btn" data-view="terminkalender">Terminkalender</button>
   </div>
 
   <div id="view-switcher">
@@ -195,29 +198,29 @@
     <div id="bienenflug-status" class="status-line">Bereit.</div>
   </div>
 
-  <div class="sidebar-section" data-view="wochenplaner">
-    <div id="wochenplaner-not-logged-in" hidden>
-      <p class="modal-hint">Der Wochenplaner ist eine Cloud-Konto-Funktion. Bitte zuerst
+  <div class="sidebar-section" data-view="terminkalender">
+    <div id="terminkalender-not-logged-in" hidden>
+      <p class="modal-hint">Der Terminkalender ist eine Cloud-Konto-Funktion. Bitte zuerst
         anmelden (Konto-Button oben rechts), um ihn zu nutzen.</p>
     </div>
-    <div id="wochenplaner-controls">
+    <div id="terminkalender-controls">
       <div class="compare-upload">
         <label class="compare-label">Termine (.xlsx) hochladen</label>
-        <div class="dropzone-mini" id="wochenplaner-drop">
-          <span id="wochenplaner-file-name">.xlsx auswählen…</span>
-          <input type="file" id="wochenplaner-file-input" accept=".xlsx,.xls">
+        <div class="dropzone-mini" id="terminkalender-drop">
+          <span id="terminkalender-file-name">.xlsx auswählen…</span>
+          <input type="file" id="terminkalender-file-input" accept=".xlsx,.xls">
         </div>
       </div>
       <div class="compare-upload">
         <label class="compare-label">Terminuhrzeiten (.ics) ergänzen</label>
-        <div class="dropzone-mini" id="wochenplaner-ics-drop">
-          <span id="wochenplaner-ics-file-name">.ics auswählen…</span>
-          <input type="file" id="wochenplaner-ics-file-input" accept=".ics">
+        <div class="dropzone-mini" id="terminkalender-ics-drop">
+          <span id="terminkalender-ics-file-name">.ics auswählen…</span>
+          <input type="file" id="terminkalender-ics-file-input" accept=".ics">
         </div>
       </div>
-      <div id="wochenplaner-summary" class="empty-hint">Noch keine Termine geladen.</div>
-      <button id="wochenplaner-btn-save">In Cloud speichern</button>
-      <div id="wochenplaner-status" class="status-line">Bereit.</div>
+      <div id="terminkalender-summary" class="empty-hint">Noch keine Termine geladen.</div>
+      <button id="terminkalender-btn-save">In Cloud speichern</button>
+      <div id="terminkalender-status" class="status-line">Bereit.</div>
     </div>
   </div>
 </div>
@@ -356,25 +359,25 @@
   </div>
 </div>
 
-<div id="wochenplaner-view" hidden>
-  <div id="wochenplaner-login-gate" hidden>
-    <p class="modal-hint">Der Wochenplaner ist eine Cloud-Konto-Funktion. Bitte zuerst anmelden.</p>
+<div id="terminkalender-view" hidden>
+  <div id="terminkalender-login-gate" hidden>
+    <p class="modal-hint">Der Terminkalender ist eine Cloud-Konto-Funktion. Bitte zuerst anmelden.</p>
   </div>
-  <div id="wochenplaner-main">
-    <div id="wochenplaner-calendar">
-      <div id="wochenplaner-nav">
-        <button type="button" id="wp-prev-week" title="Vorherige Woche">‹</button>
-        <span id="wp-week-label">KW –</span>
-        <button type="button" id="wp-next-week" title="Nächste Woche">›</button>
-        <button type="button" id="wp-today">Heute</button>
+  <div id="terminkalender-main">
+    <div id="terminkalender-calendar">
+      <div id="terminkalender-nav">
+        <button type="button" id="tk-prev-week" title="Vorherige Woche">‹</button>
+        <span id="tk-week-label">KW –</span>
+        <button type="button" id="tk-next-week" title="Nächste Woche">›</button>
+        <button type="button" id="tk-today">Heute</button>
       </div>
-      <div id="wochenplaner-grid-wrap">
-        <div id="wochenplaner-grid"></div>
+      <div id="terminkalender-grid-wrap">
+        <div id="terminkalender-grid"></div>
       </div>
     </div>
-    <div id="wochenplaner-side">
-      <div id="wochenplaner-map"></div>
-      <div id="wochenplaner-detail">
+    <div id="terminkalender-side">
+      <div id="terminkalender-map"></div>
+      <div id="terminkalender-detail">
         <p class="empty-hint">Termin anklicken, um Details zu sehen.</p>
       </div>
     </div>
@@ -487,6 +490,53 @@
       <div class="modal-actions">
         <button type="button" id="notes-modal-close-2">Abbrechen</button>
         <button type="button" id="notes-btn-save" class="primary">Speichern</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ---------- FeldFolio Plus: Betrieb/Termin-Zuordnung ---------- -->
+<div id="betrieb-modal-overlay" class="modal-overlay" hidden>
+  <div class="modal-card">
+    <h3>Betrieb / Termin zuordnen</h3>
+
+    <div id="betrieb-not-configured" hidden>
+      <p class="modal-hint">Die Betrieb-Zuordnung ist eine Cloud-Konto-Funktion (Betriebe kommen
+        u.a. aus dem Terminkalender). Bitte zuerst anmelden (Konto-Button oben rechts).</p>
+      <div class="modal-actions">
+        <button type="button" id="betrieb-modal-close-1">Schließen</button>
+      </div>
+    </div>
+
+    <div id="betrieb-editor" hidden>
+      <p class="modal-hint">Jeder Betrieb hat einen eigenen Arbeitsstand: Ebenen, Flächenzeichner,
+        Obstbaumkataster und Bienenflugkarte werden beim Wechsel automatisch getauscht (Cloud
+        wird dabei gesichert/geladen). Die Auswahl bestimmt außerdem die Dateinamen neuer Exporte
+        und hochgeladener Fotos/Dateien: <code>Jahr_Betrieb_Art</code>.</p>
+
+      <div id="betrieb-current" hidden>
+        <p class="modal-hint">Aktuell zugeordnet: <strong id="betrieb-current-label"></strong></p>
+        <button type="button" id="betrieb-btn-clear">Zuordnung entfernen</button>
+      </div>
+
+      <p class="modal-hint" id="betrieb-switch-status"></p>
+
+      <label class="compare-label" for="betrieb-search">Betrieb oder Termin suchen</label>
+      <input type="text" id="betrieb-search" class="account-input" placeholder="Name, Auditart, Datum …" autocomplete="off">
+
+      <div id="betrieb-list"></div>
+
+      <div id="betrieb-add-manual">
+        <label class="compare-label" for="betrieb-manual-input">Betrieb manuell hinzufügen</label>
+        <div class="betrieb-manual-row">
+          <input type="text" id="betrieb-manual-input" class="account-input" placeholder="Betriebsname …">
+          <button type="button" id="betrieb-manual-add">Hinzufügen</button>
+        </div>
+      </div>
+
+      <p class="modal-hint modal-error" id="betrieb-error" hidden></p>
+      <div class="modal-actions">
+        <button type="button" id="betrieb-modal-close-2" class="primary">Fertig</button>
       </div>
     </div>
   </div>

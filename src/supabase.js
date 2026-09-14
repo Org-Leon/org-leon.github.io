@@ -89,10 +89,14 @@ export async function uploadPhoto(file) {
 }
 
 // Bucket ist privat — Anzeige läuft über zeitlich begrenzte Signed URLs statt
-// dauerhafter öffentlicher Links (Datenschutz-Vorgabe).
-export async function getPhotoUrl(path) {
+// dauerhafter öffentlicher Links (Datenschutz-Vorgabe). downloadName (optional)
+// setzt den Content-Disposition-Dateinamen, den der Browser beim Herunterladen/
+// "Speichern unter" verwendet — z.B. das Jahr_Betrieb_Art-Namensschema, auch
+// wenn der Storage-Pfad selbst weiterhin eine UUID ist.
+export async function getPhotoUrl(path, downloadName) {
   if (!supabase) return null;
-  const { data, error } = await supabase.storage.from(PHOTO_BUCKET).createSignedUrl(path, 3600);
+  const { data, error } = await supabase.storage.from(PHOTO_BUCKET)
+    .createSignedUrl(path, 3600, downloadName ? { download: downloadName } : undefined);
   if (error) throw error;
   return data.signedUrl;
 }

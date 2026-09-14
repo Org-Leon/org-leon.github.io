@@ -117,12 +117,12 @@
      für eine einzeilige Anordnung in der 300px-Sidebar zu lang. Aktiv-Klick
      auf den bereits aktiven Button schaltet zurück auf die Standardansicht
      (Viewer), siehe setActiveSegment() in main.js. */
-  /* Wochenplaner steht als eigene, andersartige Funktion (eigene zweite
+  /* Terminkalender steht als eigene, andersartige Funktion (eigene zweite
      Karteninstanz statt Werkzeug auf der geteilten Parzellen-Karte) bewusst
      abgesetzt über den anderen vier Funktionen statt als fünfter Button im
      selben Raster. */
-  #wochenplaner-switcher { margin: 14px 14px 0; flex-shrink: 0; }
-  .wochenplaner-standalone-btn {
+  #terminkalender-switcher { margin: 14px 14px 0; flex-shrink: 0; }
+  .terminkalender-standalone-btn {
     display: block;
     width: 100%;
     border: 1px solid var(--border);
@@ -1357,7 +1357,7 @@
     padding: 6px 12px;
     border-radius: 6px;
     cursor: pointer;
-    margin: 0 10px 0 auto;
+    margin: 0 10px 0 0;
     max-width: 160px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1366,6 +1366,107 @@
   }
   #btn-account:hover { border-color: var(--accent); color: var(--text); }
   #btn-account.logged-in { border-color: var(--accent); color: var(--accent); }
+
+  /* ---------- FeldFolio Plus: Betrieb/Termin-Auswahl (Tabbar) ---------- */
+  #btn-betrieb {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-family: var(--sans);
+    font-size: 12px;
+    padding: 6px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    margin: 0 8px 0 auto;
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex-shrink: 1;
+    min-width: 0;
+  }
+  #btn-betrieb:hover { border-color: var(--accent); color: var(--text); }
+  #btn-betrieb.active { border-color: var(--accent); color: var(--accent); }
+
+  #betrieb-current {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 10px;
+    margin-bottom: 10px;
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    background: var(--panel-2);
+  }
+  #betrieb-current p { margin: 0; }
+  #betrieb-btn-clear {
+    flex-shrink: 0;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 11.5px;
+    padding: 4px 9px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  #betrieb-btn-clear:hover { border-color: var(--warn); color: var(--warn); }
+
+  #betrieb-list {
+    max-height: 260px;
+    overflow-y: auto;
+    margin: 10px 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .betrieb-list-group-title {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--muted);
+    padding: 8px 10px 4px;
+  }
+  .betrieb-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 7px 10px;
+    cursor: pointer;
+    font-size: 12.5px;
+    color: var(--text);
+    border-top: 1px solid var(--border);
+  }
+  .betrieb-list-group:first-child .betrieb-row:first-of-type { border-top: none; }
+  .betrieb-row:hover { background: var(--panel-2); }
+  .betrieb-row-main { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .betrieb-row-sub { color: var(--muted); font-size: 11px; }
+  .betrieb-row-remove {
+    flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .betrieb-row-remove:hover { background: var(--warn); color: #fff; }
+  .betrieb-list-empty { padding: 10px; font-size: 12px; color: var(--muted); }
+
+  .betrieb-manual-row { display: flex; gap: 8px; margin-top: 4px; }
+  .betrieb-manual-row .account-input { flex: 1; }
+  #betrieb-manual-add {
+    flex-shrink: 0;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 12px;
+    padding: 0 12px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  #betrieb-manual-add:hover { border-color: var(--accent); }
 
   /* ---------- Bienenflugkarte ---------- */
   #bienenflug-hint { margin-top: 12px; }
@@ -1420,9 +1521,9 @@
      analog zum handgezeichneten GPS-Icon. */
   .beehive-marker-icon { background: transparent; border: none; }
 
-  /* ---------- FeldFolio Plus: Wochenplaner (Sidebar) ---------- */
-  #wochenplaner-summary { margin: 10px 14px; }
-  #wochenplaner-btn-save {
+  /* ---------- FeldFolio Plus: Terminkalender (Sidebar) ---------- */
+  #terminkalender-summary { margin: 10px 14px; }
+  #terminkalender-btn-save {
     margin: 4px 14px 4px;
     background: var(--accent-dim);
     border: 1px solid var(--accent);
@@ -1433,15 +1534,15 @@
     cursor: pointer;
     font-family: var(--sans);
   }
-  #wochenplaner-btn-save:hover { background: var(--accent); }
+  #terminkalender-btn-save:hover { background: var(--accent); }
 
-  /* ---------- FeldFolio Plus: Wochenplaner ---------- */
+  /* ---------- FeldFolio Plus: Terminkalender ---------- */
   /* Eigener Geschwister-Container von #map-wrap (nicht Teil davon) — eigene
      zweite Leaflet-Karteninstanz statt der geteilten Parzellen-Karte, siehe
      main.js setActiveSegment(). #map-wrap hat kein eigenes display gesetzt,
      daher reicht dort das Standard-[hidden]-Verhalten — hier explizit nötig,
      da display:flex die [hidden]-UA-Regel sonst überstimmen würde. */
-  #wochenplaner-view {
+  #terminkalender-view {
     flex: 1;
     height: 100%;
     min-width: 0;
@@ -1450,19 +1551,19 @@
     overflow: hidden;
     background: var(--bg);
   }
-  #wochenplaner-view[hidden] { display: none; }
+  #terminkalender-view[hidden] { display: none; }
 
-  #wochenplaner-login-gate { padding: 24px; }
+  #terminkalender-login-gate { padding: 24px; }
 
-  #wochenplaner-main {
+  #terminkalender-main {
     flex: 1;
     display: flex;
     min-height: 0;
     overflow: hidden;
   }
-  #wochenplaner-main[hidden] { display: none; }
+  #terminkalender-main[hidden] { display: none; }
 
-  #wochenplaner-calendar {
+  #terminkalender-calendar {
     flex: 1;
     min-width: 0;
     display: flex;
@@ -1471,7 +1572,7 @@
     border-right: 1px solid var(--border);
   }
 
-  #wochenplaner-nav {
+  #terminkalender-nav {
     display: flex;
     align-items: center;
     gap: 10px;
@@ -1479,7 +1580,7 @@
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
   }
-  #wochenplaner-nav button {
+  #terminkalender-nav button {
     background: transparent;
     border: 1px solid var(--border);
     color: var(--muted);
@@ -1489,24 +1590,24 @@
     font-family: var(--sans);
     font-size: 12.5px;
   }
-  #wochenplaner-nav button:hover { border-color: var(--accent); color: var(--text); }
-  #wp-week-label { font-weight: 600; color: var(--text); font-size: 13px; }
-  #wp-today { margin-left: auto; }
+  #terminkalender-nav button:hover { border-color: var(--accent); color: var(--text); }
+  #tk-week-label { font-weight: 600; color: var(--text); font-size: 13px; }
+  #tk-today { margin-left: auto; }
 
   /* Keine Uhrzeiten in den Termindaten (Excel-Export liefert nur ein Datum)
      — Wochentage als Spalten mit einer gestapelten Kartenliste statt eines
      Stundenrasters. */
-  #wochenplaner-grid-wrap { flex: 1; overflow: auto; }
-  #wochenplaner-grid { display: flex; min-height: 100%; }
-  .wp-day-col {
+  #terminkalender-grid-wrap { flex: 1; overflow: auto; }
+  #terminkalender-grid { display: flex; min-height: 100%; }
+  .tk-day-col {
     flex: 1;
     min-width: 130px;
     display: flex;
     flex-direction: column;
     border-left: 1px solid var(--border);
   }
-  .wp-day-col:first-child { border-left: none; }
-  .wp-day-head {
+  .tk-day-col:first-child { border-left: none; }
+  .tk-day-head {
     position: sticky;
     top: 0;
     z-index: 1;
@@ -1519,7 +1620,7 @@
     text-align: center;
     flex-shrink: 0;
   }
-  .wp-day-count {
+  .tk-day-count {
     display: inline-block;
     background: var(--accent-dim);
     color: var(--on-accent);
@@ -1528,7 +1629,7 @@
     font-size: 10px;
     margin-left: 3px;
   }
-  .wp-day-body {
+  .tk-day-body {
     flex: 1;
     padding: 8px;
     display: flex;
@@ -1539,10 +1640,10 @@
     min-height: 60px;
     transition: background-color .12s, outline-color .12s;
   }
-  .wp-day-body.wp-drop-target { background: var(--accent-tint); outline: 2px dashed var(--accent); outline-offset: -2px; }
-  .wp-day-empty { margin: 0; color: var(--muted); font-size: 11.5px; text-align: center; pointer-events: none; }
+  .tk-day-body.tk-drop-target { background: var(--accent-tint); outline: 2px dashed var(--accent); outline-offset: -2px; }
+  .tk-day-empty { margin: 0; color: var(--muted); font-size: 11.5px; text-align: center; pointer-events: none; }
 
-  .wp-card {
+  .tk-card {
     background: var(--panel-2);
     border: 1px solid var(--border);
     border-left: 3px solid var(--muted);
@@ -1551,12 +1652,12 @@
     cursor: grab;
     transition: background-color .12s;
   }
-  .wp-card:hover { background: var(--panel); }
-  .wp-card:active { cursor: grabbing; }
-  .wp-card.selected { outline: 2px solid var(--text); }
-  .wp-card-ok { border-left-color: var(--accent); }
-  .wp-card-warn { border-left-color: var(--warn); }
-  .wp-card-title {
+  .tk-card:hover { background: var(--panel); }
+  .tk-card:active { cursor: grabbing; }
+  .tk-card.selected { outline: 2px solid var(--text); }
+  .tk-card-ok { border-left-color: var(--accent); }
+  .tk-card-warn { border-left-color: var(--warn); }
+  .tk-card-title {
     font-size: 12px;
     font-weight: 600;
     color: var(--text);
@@ -1564,7 +1665,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .wp-card-sub {
+  .tk-card-sub {
     font-size: 11px;
     color: var(--muted);
     overflow: hidden;
@@ -1572,20 +1673,39 @@
     white-space: nowrap;
   }
 
-  #wochenplaner-side {
+  #terminkalender-side {
     width: 300px;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
     overflow: hidden;
   }
-  #wochenplaner-map { height: 240px; flex-shrink: 0; background: #0D0F13; }
-  #wochenplaner-detail { flex: 1; overflow-y: auto; padding: 14px; }
-  #wochenplaner-detail h3 { margin: 0 0 6px; font-size: 14px; color: var(--text); }
-  .wp-detail-time { margin: 0 0 8px; font-size: 12.5px; color: var(--muted); }
-  .wp-detail-desc { margin: 0 0 10px; font-size: 12.5px; color: var(--text); white-space: pre-wrap; }
-  .wp-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 10px; }
-  .wp-badge {
+  #terminkalender-map { height: 240px; flex-shrink: 0; background: #0D0F13; }
+  #terminkalender-detail { flex: 1; overflow-y: auto; padding: 14px; }
+  #terminkalender-detail h3 { margin: 0 0 6px; font-size: 14px; color: var(--text); }
+  .tk-detail-time { margin: 0 0 8px; font-size: 12.5px; color: var(--muted); }
+  .tk-detail-desc { margin: 0 0 10px; font-size: 12.5px; color: var(--text); white-space: pre-wrap; }
+  .tk-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 10px; }
+
+  .tk-betrieb-assign { margin-bottom: 10px; }
+  .tk-betrieb-assign-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    font-size: 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel-2);
+    color: var(--text);
+    cursor: pointer;
+    transition: border-color .12s, background-color .12s, color .12s;
+  }
+  .tk-betrieb-assign-btn:hover { border-color: var(--accent); background: var(--panel); }
+  .tk-betrieb-assign-btn.active { border-color: var(--accent); color: var(--accent); }
+  .tk-betrieb-assign-btn:disabled { opacity: .6; cursor: default; }
+  #tk-betrieb-assign-status { margin: 4px 0 0; }
+  .tk-badge {
     display: inline-block;
     font-size: 10.5px;
     padding: 2px 8px;
@@ -1593,10 +1713,10 @@
     border: 1px solid var(--border);
     color: var(--muted);
   }
-  .wp-badge-ok { border-color: var(--accent); color: var(--accent); }
-  .wp-badge-warn { border-color: var(--warn); color: var(--warn); }
+  .tk-badge-ok { border-color: var(--accent); color: var(--accent); }
+  .tk-badge-warn { border-color: var(--warn); color: var(--warn); }
 
-  .wp-gmaps-link {
+  .tk-gmaps-link {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -1607,7 +1727,82 @@
     background: var(--panel-2);
     transition: border-color .12s, background-color .12s;
   }
-  .wp-gmaps-link:hover { border-color: var(--accent); background: var(--panel); }
+  .tk-gmaps-link:hover { border-color: var(--accent); background: var(--panel); }
+
+  .tk-attachments { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+  .tk-attachments-head { font-size: 12px; font-weight: 600; color: var(--text); margin-bottom: 8px; }
+  .tk-attachments-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .tk-attachment {
+    position: relative;
+    aspect-ratio: 1;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel-2);
+    overflow: hidden;
+  }
+  .tk-attachment-loading { background: linear-gradient(90deg, var(--panel-2), var(--panel), var(--panel-2)); }
+  .tk-attachment-error { display: flex; align-items: center; justify-content: center; color: var(--warn); font-size: 16px; }
+  .tk-attachment-link {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    padding: 4px;
+    text-align: center;
+    overflow: hidden;
+  }
+  .tk-attachment-link img { width: 100%; height: 100%; object-fit: cover; }
+  .tk-attachment-icon { font-size: 20px; line-height: 1; }
+  .tk-attachment-name {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    font-size: 9.5px;
+    color: var(--muted);
+    margin-top: 4px;
+    word-break: break-word;
+  }
+  .tk-attachment-remove {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(0,0,0,.55);
+    color: #fff;
+    font-size: 10px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .tk-attachment-remove:hover { background: var(--warn); }
+  .tk-attachments-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .tk-attachment-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    font-size: 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel-2);
+    color: var(--text);
+    cursor: pointer;
+    transition: border-color .12s, background-color .12s;
+  }
+  .tk-attachment-btn:hover { border-color: var(--accent); background: var(--panel); }
 
   /* ================= Mobile (Smartphone/Tablet, Hochformat) =================
      Die feste 300px-Sidebar würde auf einem Telefon fast den ganzen Bildschirm
@@ -1668,15 +1863,15 @@
     #table-body-wrap, #compare-table-body-wrap, #obstbaum-table-body-wrap { overflow-x: auto; }
     #feature-table, #compare-table, #obstbaum-table { min-width: 640px; }
 
-    /* Wochenplaner: zweite Karte + Detail-Panel wandern unter den Kalender
+    /* Terminkalender: zweite Karte + Detail-Panel wandern unter den Kalender
        statt daneben, Kalenderspalten bekommen eine Mindestbreite und
        scrollen seitlich statt sich unlesbar zusammenzuquetschen. */
-    #wochenplaner-main { flex-direction: column; overflow-y: auto; overflow-x: hidden; }
-    #wochenplaner-calendar { border-right: none; border-bottom: 1px solid var(--border); flex: none; }
-    #wochenplaner-grid-wrap { overflow-x: auto; }
-    #wochenplaner-grid { min-width: 720px; }
-    #wochenplaner-side { width: auto; }
-    #wochenplaner-map { height: 200px; }
+    #terminkalender-main { flex-direction: column; overflow-y: auto; overflow-x: hidden; }
+    #terminkalender-calendar { border-right: none; border-bottom: 1px solid var(--border); flex: none; }
+    #terminkalender-grid-wrap { overflow-x: auto; }
+    #terminkalender-grid { min-width: 720px; }
+    #terminkalender-side { width: auto; }
+    #terminkalender-map { height: 200px; }
   }
 
   /* Sehr schmale Telefone (Hochformat, <400px) — Wortmarke und Theme-Toggle
