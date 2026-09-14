@@ -1854,16 +1854,24 @@ function mergeFeldstueckNutzung(results) {
 // Erstaufbau und von addFeatureToLayer() für nachträglich einzeln
 // hinzugefügte Features (z.B. im Flächenzeichner gezeichnete Flächen)
 // gemeinsam genutzt, damit beide Wege exakt dieselbe Eintragsform erzeugen.
+// Ein Fotoeintrag ist {path, name} (name = Jahr_Betrieb_Art-Anzeigename,
+// siehe zuordnungFileName) — ältere gespeicherte Stände kennen nur den
+// nackten Storage-Pfad als String, daher hier normalisieren statt überall
+// sonst zwei Formen unterscheiden zu müssen.
+function normalizePhotoEntry(v) {
+  return typeof v === 'string' ? { path: v, name: null } : v;
+}
+
 // Liest die Foto-Pfadliste robust aus GeoJSON-properties ein — normalerweise
 // bereits ein Array (siehe setParcelNotes/addParcelPhoto unten), aber falls
 // eine Datei extern bearbeitet oder manuell hochgeladen wurde, auch ein
 // JSON-String oder ein fehlerhafter Wert möglich, statt daran zu crashen.
 function parsePhotoList(value) {
-  if (Array.isArray(value)) return value.filter(v => typeof v === 'string');
+  if (Array.isArray(value)) return value.filter(v => typeof v === 'string' || (v && typeof v.path === 'string')).map(normalizePhotoEntry);
   if (typeof value === 'string') {
     try {
       const parsed = JSON.parse(value);
-      return Array.isArray(parsed) ? parsed.filter(v => typeof v === 'string') : [];
+      return Array.isArray(parsed) ? parsed.filter(v => typeof v === 'string' || (v && typeof v.path === 'string')).map(normalizePhotoEntry) : [];
     } catch { return []; }
   }
   return [];
@@ -2020,14 +2028,17 @@ function setParcelNotes(entry, notes) {
   if (entry.leafletLayer.feature) entry.leafletLayer.feature.properties = entry.props;
 }
 
-function addParcelPhoto(entry, path) {
-  entry.photos.push(path);
+// name (optional) ist der Anzeige-/Downloadname nach dem Jahr_Betrieb_Art-
+// Schema (siehe zuordnungFileName weiter unten) — null, wenn beim Hochladen
+// kein Betrieb/Termin zugeordnet war.
+function addParcelPhoto(entry, path, name) {
+  entry.photos.push({ path, name: name || null });
   entry.props.feldfolio_photos = entry.photos;
   if (entry.leafletLayer.feature) entry.leafletLayer.feature.properties = entry.props;
 }
 
 function removeParcelPhoto(entry, path) {
-  entry.photos = entry.photos.filter(p => p !== path);
+  entry.photos = entry.photos.filter(p => p.path !== path);
   entry.props.feldfolio_photos = entry.photos;
   if (entry.leafletLayer.feature) entry.leafletLayer.feature.properties = entry.props;
 }
@@ -2372,7 +2383,7 @@ const SEGMENT_CAPTIONS = {
   zeichner: 'Eigene Parzellen direkt auf der Karte zeichnen',
   obstbaum: 'Obstbäume als farbige Punkte auf der Karte erfassen',
   bienenflug: 'Bienenstöcke markieren — theoretischer Flugradius 3 km',
-  wochenplaner: 'Termine aus Excel importieren und in der Kalenderwoche navigieren'
+  terminkalender: 'Termine aus Excel importieren und in der Kalenderwoche navigieren'
 };
 
 function setActiveSegment(target) {
@@ -2404,19 +2415,19 @@ function setActiveSegment(target) {
   else if (target === 'bienenflug') { initBienenflugMap(); armedTool = 'place-hive'; }
   else if (target === 'compare') refreshCompareJahrBOptions();
 
-  // Wochenplaner hat eine eigene, zweite Leaflet-Karteninstanz statt der
-  // geteilten Parzellen-Karte — #map-wrap und #wochenplaner-view schließen
+  // Terminkalender hat eine eigene, zweite Leaflet-Karteninstanz statt der
+  // geteilten Parzellen-Karte — #map-wrap und #terminkalender-view schließen
   // sich deshalb gegenseitig aus statt wie die anderen Funktionen nur
   // Layer auf derselben Karte umzuschalten.
-  document.getElementById('map-wrap').hidden = target === 'wochenplaner';
-  const wpView = document.getElementById('wochenplaner-view');
-  wpView.hidden = target !== 'wochenplaner';
+  document.getElementById('map-wrap').hidden = target === 'terminkalender';
+  const tkView = document.getElementById('terminkalender-view');
+  tkView.hidden = target !== 'terminkalender';
   // Shapefile-/GeoJSON-Upload und die geteilte Ebenenliste ergeben im
-  // Wochenplaner keinen Sinn (andere Datenwelt, eigene Karte) — dort
+  // Terminkalender keinen Sinn (andere Datenwelt, eigene Karte) — dort
   // ausgeblendet statt immer sichtbar wie in den anderen Funktionen.
-  document.getElementById('dropzone').hidden = target === 'wochenplaner';
-  document.getElementById('layer-section').hidden = target === 'wochenplaner';
-  if (target === 'wochenplaner') openWochenplaner();
+  document.getElementById('dropzone').hidden = target === 'terminkalender';
+  document.getElementById('layer-section').hidden = target === 'terminkalender';
+  if (target === 'terminkalender') openTerminkalender();
 }
 
 // Es gibt keinen eigenen "Viewer"-Button mehr — Viewer ist die Standardansicht.
@@ -2970,9 +2981,9 @@ function exportViewerTable(type) {
     return [e.nummer || '', e.featName || '', e.flaechenId || '', groesseText, e.kultur || '', e.layerName || ''];
   });
   const ts = new Date().toISOString().slice(0, 10);
-  if (type === 'csv') exportCsv(headers, data, `flaechenuebersicht_${ts}.csv`);
-  else if (type === 'xlsx') exportXlsx(headers, data, `flaechenuebersicht_${ts}.xlsx`, 'Flächen');
-  else if (type === 'pdf') exportPdf(headers, data, `flaechenuebersicht_${ts}.pdf`, 'Flächenübersicht');
+  if (type === 'csv') exportCsv(headers, data, zuordnungFileName('Flächenübersicht', 'csv') || `flaechenuebersicht_${ts}.csv`);
+  else if (type === 'xlsx') exportXlsx(headers, data, zuordnungFileName('Flächenübersicht', 'xlsx') || `flaechenuebersicht_${ts}.xlsx`, 'Flächen');
+  else if (type === 'pdf') exportPdf(headers, data, zuordnungFileName('Flächenübersicht', 'pdf') || `flaechenuebersicht_${ts}.pdf`, 'Flächenübersicht');
 }
 
 function exportCompareTable(type) {
@@ -2993,9 +3004,9 @@ function exportCompareTable(type) {
     ];
   });
   const ts = new Date().toISOString().slice(0, 10);
-  if (type === 'csv') exportCsv(headers, data, `jahresvergleich_${ts}.csv`);
-  else if (type === 'xlsx') exportXlsx(headers, data, `jahresvergleich_${ts}.xlsx`, 'Vergleich');
-  else if (type === 'pdf') exportPdf(headers, data, `jahresvergleich_${ts}.pdf`, 'Jahresvergleich');
+  if (type === 'csv') exportCsv(headers, data, zuordnungFileName('Jahresvergleich', 'csv') || `jahresvergleich_${ts}.csv`);
+  else if (type === 'xlsx') exportXlsx(headers, data, zuordnungFileName('Jahresvergleich', 'xlsx') || `jahresvergleich_${ts}.xlsx`, 'Vergleich');
+  else if (type === 'pdf') exportPdf(headers, data, zuordnungFileName('Jahresvergleich', 'pdf') || `jahresvergleich_${ts}.pdf`, 'Jahresvergleich');
 }
 
 document.querySelectorAll('.export-btn').forEach(btn => {
@@ -3139,7 +3150,7 @@ async function exportFlaechenkarten() {
     }
 
     const ts = new Date().toISOString().slice(0, 10);
-    doc.save(`flaechenkarten_${ts}.pdf`);
+    doc.save(zuordnungFileName('Flächenkarte', 'pdf') || `flaechenkarten_${ts}.pdf`);
     setStatus('Flächenkarten exportiert.');
   } finally {
     // Ursprünglichen Kartenzustand vollständig wiederherstellen.
@@ -3322,7 +3333,7 @@ function exportZeichnerGeoJSON() {
   if (!zeichnerParcels.length) { showZeichnerError('Noch keine Fläche gezeichnet.'); return; }
   const fc = { type: 'FeatureCollection', features: zeichnerParcels.map(p => p.leafletLayer.feature) };
   const ts = new Date().toISOString().slice(0, 10);
-  downloadBlob(JSON.stringify(fc, null, 2), `flaechenzeichner_${ts}.geojson`, 'application/geo+json');
+  downloadBlob(JSON.stringify(fc, null, 2), zuordnungFileName('Flächen Zeichner', 'geojson') || `flaechenzeichner_${ts}.geojson`, 'application/geo+json');
   setZeichnerStatus('Als GeoJSON gespeichert.');
 }
 document.getElementById('btn-export-zeichner-geojson').addEventListener('click', exportZeichnerGeoJSON);
@@ -3374,7 +3385,7 @@ async function exportZeichnerFlaechenkarten() {
     }
 
     const ts = new Date().toISOString().slice(0, 10);
-    doc.save(`flaechenkarten_gezeichnet_${ts}.pdf`);
+    doc.save(zuordnungFileName('Flächenkarte Zeichner', 'pdf') || `flaechenkarten_gezeichnet_${ts}.pdf`);
     setZeichnerStatus('Flächenkarten exportiert.');
   } finally {
     map.zoomControl.addTo(map);
@@ -3999,7 +4010,7 @@ function exportBaumkataster(includeParcels) {
   const parcelFeatures = includeParcels ? featureIndex.map(obstbaumParcelToGeoJSONFeature) : [];
   const fc = { type: 'FeatureCollection', features: [...parcelFeatures, ...treeFeatures] };
   const ts = new Date().toISOString().slice(0, 10);
-  downloadBlob(JSON.stringify(fc, null, 2), `baumkataster_${ts}.geojson`, 'application/geo+json');
+  downloadBlob(JSON.stringify(fc, null, 2), zuordnungFileName('Obstbaumkataster', 'geojson') || `baumkataster_${ts}.geojson`, 'application/geo+json');
   setObstbaumStatus(includeParcels ? 'Baumkataster inkl. Flächen gespeichert.' : 'Baumkataster gespeichert.');
 }
 
@@ -4350,7 +4361,7 @@ async function exportObstbaumFlaechenkarten() {
     doc.text(`Gesamt: ${total} Bäume`, margin, y + 5);
 
     const ts = new Date().toISOString().slice(0, 10);
-    doc.save(`obstbaumkataster_flaechenkarten_${ts}.pdf`);
+    doc.save(zuordnungFileName('Flächenkarte Obstbaum', 'pdf') || `obstbaumkataster_flaechenkarten_${ts}.pdf`);
     setObstbaumStatus('Flächenkarten exportiert.');
   } finally {
     map.zoomControl.addTo(map);
@@ -4574,7 +4585,7 @@ async function exportBienenflugFlaechenkarten() {
     }
 
     const ts = new Date().toISOString().slice(0, 10);
-    doc.save(`bienenflugkarten_${ts}.pdf`);
+    doc.save(zuordnungFileName('Flächenkarte Bienenflug', 'pdf') || `bienenflugkarten_${ts}.pdf`);
     setBienenflugStatus('Flächenkarten exportiert.');
   } finally {
     map.zoomControl.addTo(map);
@@ -4785,7 +4796,11 @@ accountModal.addEventListener('click', (e) => { if (e.target === accountModal) c
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !accountModal.hidden) closeAccountModal(); });
 
 if (isSupabaseConfigured) {
-  getSession().then(session => { accountSession = session; updateAccountButton(); });
+  getSession().then(session => {
+    accountSession = session;
+    updateAccountButton();
+    if (session) autoLoadCloudState();
+  });
 }
 
 accountAuthForm.addEventListener('submit', async (e) => {
@@ -4800,6 +4815,7 @@ accountAuthForm.addEventListener('submit', async (e) => {
         accountSession = data.session;
         updateAccountButton();
         renderAccountModal();
+        autoLoadCloudState();
       } else {
         showAccountError('Registrierung erfolgreich — bitte E-Mail bestätigen und dann anmelden.');
       }
@@ -4808,6 +4824,7 @@ accountAuthForm.addEventListener('submit', async (e) => {
       accountSession = data.session;
       updateAccountButton();
       renderAccountModal();
+      autoLoadCloudState();
     }
   } catch (err) {
     // Registrierung für eine noch nicht freigeschaltete Nicht-oekop.de-Adresse
@@ -4864,31 +4881,64 @@ document.getElementById('account-btn-signout').addEventListener('click', async (
   closeAccountModal();
 });
 
-// Baut den kompletten aktuellen Arbeitsstand als serialisierbares Objekt —
+// ---------- FeldFolio Plus: Pro-Betrieb getrennte Arbeitsstände ----------
+// Ebenen/Flächenzeichner/Obstbaumkataster/Bienenflugkarte gehören zu genau
+// einem "Arbeitsstand" (Workspace) — identifiziert über den Betriebsnamen aus
+// der Betrieb-Zuordnung (siehe weiter unten), oder NO_BETRIEB_KEY, solange
+// kein Betrieb ausgewählt ist. Terminkalender-Termine und die Betriebsliste
+// selbst (manualBetriebe) sind bewusst NICHT Teil eines Workspace, sondern
+// gelten immer betriebsübergreifend ("shared"). In der Cloud liegt weiterhin
+// nur EIN JSON-Blob pro Nutzer (keine neue Tabelle/Migration nötig) — die
+// Blob-Form ist jetzt { workspaces: { [betrieb]: {...} }, terminkalenderEvents,
+// manualBetriebe } statt der früheren flachen Form.
+const NO_BETRIEB_KEY = '__kein_betrieb__';
+let currentWorkspaceKey = NO_BETRIEB_KEY;
+
+// Ältere gespeicherte Stände kennen noch die flache Form (layers/obstbaumTrees/
+// bienenflugPoints direkt auf oberster Ebene, kein workspaces-Feld) — hier
+// einmalig in den "kein Betrieb"-Workspace übernehmen, statt sie beim ersten
+// Laden nach diesem Umbau kommentarlos verschwinden zu lassen.
+function migrateFullStateShape(full) {
+  if (!full.workspaces || typeof full.workspaces !== 'object') {
+    full.workspaces = {};
+    if (full.layers || full.obstbaumTrees || full.bienenflugPoints) {
+      full.workspaces[NO_BETRIEB_KEY] = {
+        layers: full.layers || [],
+        obstbaumTrees: full.obstbaumTrees || [],
+        bienenflugPoints: full.bienenflugPoints || []
+      };
+    }
+  }
+  return full;
+}
+
+// Holt den kompletten Cloud-Stand frisch (nicht aus einem lokalen Zwischen-
+// stand) — wichtig beim Betrieb-Wechsel, damit die Arbeitsstände anderer
+// Betriebe/Geräte nicht durch einen veralteten lokalen Blob überschrieben
+// werden (siehe switchWorkspace).
+async function getFreshFullState() {
+  const row = await loadState();
+  return migrateFullStateShape((row && row.data) || {});
+}
+
+// Nur der Teil des Arbeitsstands, der zu einem einzelnen Betrieb gehört —
 // geteilte Ebenen als GeoJSON (identisch zur Upload-Form), Bäume/Bienenstöcke
-// als einfache Punktlisten.
-function serializeCurrentState() {
+// als einfache Punktlisten. Notiz/Fotos an Flächen stecken bereits in
+// l.geojson (siehe setParcelNotes/addParcelPhoto — schreiben direkt in die
+// geteilte properties-Objektreferenz), reisen hier also automatisch mit.
+function serializeWorkspace() {
   return {
-    // Notiz/Fotos an Flächen stecken bereits in l.geojson (siehe
-    // setParcelNotes/addParcelPhoto — schreiben direkt in die geteilte
-    // properties-Objektreferenz), reisen hier also automatisch mit.
     layers: Object.values(layers).map(l => ({ name: l.name, geojson: l.geojson })),
     obstbaumTrees: obstbaumTrees.map(t => ({ art: t.art, lat: t.latlng.lat, lng: t.latlng.lng, notes: t.notes, photos: t.photos })),
-    bienenflugPoints: bienenflugPoints.map(p => ({ name: p.name, lat: p.latlng.lat, lng: p.latlng.lng })),
-    // date als ISO-String, da Date-Objekte nicht JSON-fähig sind —
-    // restoreState() rekonstruiert es wieder zu Date. lat/lng/geocodeStatus
-    // reisen mit, damit nach dem Laden nicht erneut geokodiert werden muss.
-    wochenplanerEvents: wochenplanerEvents.map(e => ({
-      ...e, date: e.date.toISOString(), dateEnd: e.dateEnd ? e.dateEnd.toISOString() : null
-    }))
+    bienenflugPoints: bienenflugPoints.map(p => ({ name: p.name, lat: p.latlng.lat, lng: p.latlng.lng }))
   };
 }
 
-// Rekonstruiert einen gespeicherten Stand über exakt dieselben Funktionen, die
-// auch beim normalen Datei-Upload/Kartenklick laufen (addLayer/addTree/
-// addBeehive) — kein separater Rekonstruktions-Code-Pfad nötig. Ebenen zuerst,
-// damit addTree() die Flächen-Zuordnung sofort korrekt berechnen kann.
-function restoreState(data) {
+// Rekonstruiert einen Workspace über exakt dieselben Funktionen, die auch
+// beim normalen Datei-Upload/Kartenklick laufen (addLayer/addTree/addBeehive)
+// — kein separater Rekonstruktions-Code-Pfad nötig. Ebenen zuerst, damit
+// addTree() die Flächen-Zuordnung sofort korrekt berechnen kann.
+function restoreWorkspace(data) {
   if (!data) return;
   (data.layers || []).forEach(l => addLayer(l.name, l.geojson));
   if ((data.obstbaumTrees || []).length) {
@@ -4896,7 +4946,7 @@ function restoreState(data) {
     data.obstbaumTrees.forEach(t => {
       const entry = addTree(t.art, L.latLng(t.lat, t.lng));
       entry.notes = t.notes || '';
-      entry.photos = Array.isArray(t.photos) ? t.photos : [];
+      entry.photos = Array.isArray(t.photos) ? t.photos.map(normalizePhotoEntry) : [];
     });
     renderObstbaumTable();
   }
@@ -4911,19 +4961,107 @@ function restoreState(data) {
       }
     });
   }
-  if ((data.wochenplanerEvents || []).length) {
-    wochenplanerEvents = data.wochenplanerEvents.map(e => ({
-      ...e, date: new Date(e.date), dateEnd: e.dateEnd ? new Date(e.dateEnd) : null
+}
+
+// Entfernt den kompletten aktuell geladenen Workspace-Inhalt von der Karte —
+// über dieselben Einzel-Entfern-Funktionen wie ein manuelles Löschen, damit
+// keine zweite Aufräum-Logik gepflegt werden muss. Flächenzeichner-Buchführung
+// (zeichnerLayerId/zeichnerParcels/…) kennt removeLayer() nicht, da gezeichnete
+// Flächen nur eine weitere ganz normale Ebene sind — daher hier separat
+// zurückgesetzt.
+function clearAllLayers() {
+  Object.keys(layers).forEach(id => removeLayer(id));
+  zeichnerLayerId = null;
+  zeichnerParcels.length = 0;
+  zeichnerColorIdx = 0;
+  zeichnerParcelCounter = 0;
+  renderParcelList();
+}
+function clearAllTrees() {
+  while (obstbaumTrees.length) removeTree(obstbaumTrees[0].id);
+}
+function clearAllBeehives() {
+  while (bienenflugPoints.length) removeBeehive(bienenflugPoints[0].id);
+}
+function clearWorkspace() {
+  clearAllLayers();
+  clearAllTrees();
+  clearAllBeehives();
+}
+
+// terminkalenderEvents/manualBetriebe gelten immer betriebsübergreifend,
+// werden also unabhängig vom aktuellen Workspace wiederhergestellt.
+function restoreSharedState(full) {
+  if ((full.terminkalenderEvents || []).length) {
+    terminkalenderEvents = full.terminkalenderEvents.map(e => ({
+      ...e, date: new Date(e.date), dateEnd: e.dateEnd ? new Date(e.dateEnd) : null,
+      attachments: Array.isArray(e.attachments) ? e.attachments : []
     }));
-    renderWochenplanerSummary();
-    renderWochenplanerGrid();
+    renderTerminkalenderSummary();
+    renderTerminkalenderGrid();
+  }
+  manualBetriebe = Array.isArray(full.manualBetriebe) ? full.manualBetriebe : [];
+}
+
+// Ersetzt im frisch geladenen Cloud-Stand nur den Slot des aktuell aktiven
+// Workspace durch den In-Memory-Stand (übrige Betriebe bleiben unverändert,
+// da full vom Server kommt) und schreibt shared-Felder immer mit — Ersatz für
+// das frühere direkte saveState(serializeCurrentState()) an jeder Speicherstelle.
+async function saveFullState() {
+  const full = await getFreshFullState();
+  full.workspaces[currentWorkspaceKey] = serializeWorkspace();
+  full.terminkalenderEvents = terminkalenderEvents.map(e => ({
+    ...e, date: e.date.toISOString(), dateEnd: e.dateEnd ? e.dateEnd.toISOString() : null
+  }));
+  full.manualBetriebe = manualBetriebe;
+  await saveState(full);
+}
+
+// Wechselt den aktiven Workspace: sichert zuerst den bisherigen Stand (aus dem
+// frisch geholten Cloud-Blob heraus, damit andere Betriebe/Geräte nicht
+// überschrieben werden), leert dann die Karte und baut den Ziel-Workspace aus
+// demselben, gerade gelesenen Blob wieder auf — ein Read + ein Write pro
+// Wechsel, kein Extra-Request für den Ziel-Workspace nötig.
+async function switchWorkspace(oldKey, newKey) {
+  const full = await getFreshFullState();
+  full.workspaces[oldKey] = serializeWorkspace();
+  full.terminkalenderEvents = terminkalenderEvents.map(e => ({
+    ...e, date: e.date.toISOString(), dateEnd: e.dateEnd ? e.dateEnd.toISOString() : null
+  }));
+  full.manualBetriebe = manualBetriebe;
+  await saveState(full);
+  clearWorkspace();
+  restoreWorkspace(full.workspaces[newKey]);
+}
+
+function restoreState(full) {
+  if (!full) return;
+  restoreSharedState(full);
+  clearWorkspace();
+  restoreWorkspace((full.workspaces || {})[currentWorkspaceKey]);
+}
+
+// Lädt den Cloud-Stand automatisch, sobald eine Anmeldung feststeht — beim
+// Start (bestehende Session) UND direkt nach einem Anmelden/Registrieren
+// (siehe die zwei Aufrufstellen unten) — damit "Cloud laden" nicht mehr von
+// Hand angestoßen werden muss. Der Button im Konto-Bereich bleibt trotzdem
+// bestehen, für ein manuelles Nachladen (z.B. nach einer Änderung auf einem
+// anderen Gerät).
+async function autoLoadCloudState() {
+  try {
+    const row = await loadState();
+    if (!row) return;
+    restoreState(migrateFullStateShape(row.data));
+    accountSyncStatus.textContent = 'Geladen.';
+  } catch (err) {
+    accountSyncStatus.textContent = 'Fehler: ' + (err.message || 'Laden fehlgeschlagen.');
   }
 }
 
 document.getElementById('account-btn-save').addEventListener('click', async () => {
   accountSyncStatus.textContent = 'Speichere …';
   try {
-    await saveState(serializeCurrentState());
+    await saveFullState();
     accountSyncStatus.textContent = 'Gespeichert.';
   } catch (err) {
     accountSyncStatus.textContent = 'Fehler: ' + (err.message || 'Speichern fehlgeschlagen.');
@@ -4935,7 +5073,7 @@ document.getElementById('account-btn-load').addEventListener('click', async () =
   try {
     const row = await loadState();
     if (!row) { accountSyncStatus.textContent = 'Noch nichts gespeichert.'; return; }
-    restoreState(row.data);
+    restoreState(migrateFullStateShape(row.data));
     accountSyncStatus.textContent = 'Geladen.';
     closeAccountModal();
   } catch (err) {
@@ -4962,15 +5100,16 @@ function showNotesError(msg) {
   notesError.hidden = !msg;
 }
 
-// entry.photos enthält nur Storage-Pfade — Anzeige braucht pro Bild eine
-// frisch geholte Signed URL (Bucket ist privat, siehe supabase.js).
+// entry.photos ist {path, name}[] — Anzeige braucht pro Bild eine frisch
+// geholte Signed URL (Bucket ist privat, siehe supabase.js); name (falls
+// vorhanden) setzt darüber den Jahr_Betrieb_Art-Downloadnamen.
 async function renderNotesPhotoGrid() {
   const photos = notesTarget.entry.photos;
   if (!photos.length) { notesPhotoGrid.innerHTML = ''; return; }
   notesPhotoGrid.innerHTML = photos.map(() => '<div class="notes-photo-thumb notes-photo-loading"></div>').join('');
-  const urls = await Promise.all(photos.map(p => getPhotoUrl(p).catch(() => null)));
-  notesPhotoGrid.innerHTML = photos.map((path, i) => urls[i]
-    ? `<div class="notes-photo-thumb"><img src="${urls[i]}" alt=""><button type="button" class="notes-photo-remove" data-path="${escapeHtml(path)}" title="Foto löschen">✕</button></div>`
+  const urls = await Promise.all(photos.map(p => getPhotoUrl(p.path, p.name).catch(() => null)));
+  notesPhotoGrid.innerHTML = photos.map((p, i) => urls[i]
+    ? `<div class="notes-photo-thumb"><img src="${urls[i]}" alt=""><button type="button" class="notes-photo-remove" data-path="${escapeHtml(p.path)}" title="Foto löschen">✕</button></div>`
     : '<div class="notes-photo-thumb notes-photo-error" title="Foto konnte nicht geladen werden">⚠</div>'
   ).join('');
   notesPhotoGrid.querySelectorAll('.notes-photo-remove').forEach(btn => {
@@ -5014,7 +5153,7 @@ document.getElementById('notes-btn-save').addEventListener('click', async () => 
   refreshNotesIndicator();
   notesSyncStatus.textContent = 'Speichere …';
   try {
-    await saveState(serializeCurrentState());
+    await saveFullState();
     notesSyncStatus.textContent = 'Gespeichert.';
   } catch (err) {
     notesSyncStatus.textContent = 'Fehler: ' + (err.message || 'Speichern fehlgeschlagen.');
@@ -5030,10 +5169,12 @@ notesPhotoInput.addEventListener('change', async () => {
   notesSyncStatus.textContent = 'Foto wird hochgeladen …';
   try {
     const path = await uploadPhoto(file);
-    if (kind === 'parcel') addParcelPhoto(entry, path); else entry.photos.push(path);
+    const ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
+    const name = zuordnungFileName(kind === 'parcel' ? 'Foto Fläche' : 'Foto Baum', ext);
+    if (kind === 'parcel') addParcelPhoto(entry, path, name); else entry.photos.push({ path, name });
     refreshNotesIndicator();
     await renderNotesPhotoGrid();
-    await saveState(serializeCurrentState());
+    await saveFullState();
     notesSyncStatus.textContent = 'Foto gespeichert.';
   } catch (err) {
     showNotesError(err.message || 'Foto-Upload fehlgeschlagen.');
@@ -5046,17 +5187,17 @@ async function removeNotesPhoto(path) {
   notesSyncStatus.textContent = 'Lösche …';
   try {
     await deletePhoto(path);
-    if (kind === 'parcel') removeParcelPhoto(entry, path); else entry.photos = entry.photos.filter(p => p !== path);
+    if (kind === 'parcel') removeParcelPhoto(entry, path); else entry.photos = entry.photos.filter(p => p.path !== path);
     refreshNotesIndicator();
     await renderNotesPhotoGrid();
-    await saveState(serializeCurrentState());
+    await saveFullState();
     notesSyncStatus.textContent = 'Gelöscht.';
   } catch (err) {
     notesSyncStatus.textContent = 'Fehler: ' + (err.message || 'Löschen fehlgeschlagen.');
   }
 }
 
-// ---------- FeldFolio Plus: Wochenplaner ----------
+// ---------- FeldFolio Plus: Terminkalender ----------
 // Eigener Tab mit eigener, zweiter Leaflet-Karteninstanz (getrennt von der
 // geteilten Parzellen-Karte) — Cloud-Konto-Funktion wie Notiz/Fotos, siehe
 // dortiges Gating-Muster (accountSession). Termine kommen aus einem
@@ -5070,14 +5211,14 @@ async function removeNotesPhoto(path) {
 // per Nr. Auditauftrag (AO-Code), Adressen werden über die öffentliche
 // Nominatim-API (OpenStreetMap) geokodiert — nur einmalig pro Termin,
 // Ergebnis wird mit gespeichert.
-let wochenplanerEvents = []; // { id, kunde, auditart, ..., date: Date, lat, lng, geocodeStatus }
-let wochenplanerInitDone = false;
-let wochenplanerMap = null;
-let wochenplanerMarkersLayer = null;
-let wochenplanerWeekStart = getMondayOfWeek(new Date());
-let wochenplanerSelectedId = null;
+let terminkalenderEvents = []; // { id, kunde, auditart, ..., date: Date, lat, lng, geocodeStatus }
+let terminkalenderInitDone = false;
+let terminkalenderMap = null;
+let terminkalenderMarkersLayer = null;
+let terminkalenderWeekStart = getMondayOfWeek(new Date());
+let terminkalenderSelectedId = null;
 
-const wpSleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const tkSleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function getMondayOfWeek(date) {
   const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
@@ -5139,14 +5280,18 @@ function parseXlsxFile(arrayBuffer) {
       lat: null, lng: null, geocodeStatus: 'none',
       // Excel liefert nur ein Datum — Uhrzeit kommt optional über eine
       // zusätzlich hochgeladene .ics-Datei dazu (siehe applyIcsTimes unten).
-      hasTime: false, dateEnd: null
+      hasTime: false, dateEnd: null,
+      // Fotos/Dateien, die man einem Termin manuell hinzufügt (siehe
+      // renderTerminkalenderAttachments unten) — bleiben bei einem erneuten
+      // Excel-Upload immer erhalten (siehe mergeTerminkalenderEvents).
+      attachments: []
     };
   }).filter(Boolean);
 }
 
 // ---- Zusammenführen per Nr. Auditauftrag (AO-Code) ----
-function mergeWochenplanerEvents(parsed) {
-  const byId = new Map(wochenplanerEvents.map(e => [e.id, e]));
+function mergeTerminkalenderEvents(parsed) {
+  const byId = new Map(terminkalenderEvents.map(e => [e.id, e]));
   let added = 0, updated = 0;
   parsed.forEach(p => {
     const existing = byId.get(p.id);
@@ -5158,12 +5303,14 @@ function mergeWochenplanerEvents(parsed) {
       // alte Uhrzeit für einen anderen Tag nicht mehr gültig).
       const sameDay = existing.date && existing.date.toDateString() === p.date.toDateString();
       const prevDate = existing.date, prevHasTime = existing.hasTime, prevDateEnd = existing.dateEnd;
+      const prevAttachments = existing.attachments;
       Object.assign(existing, p);
       if (!addressChanged) { existing.lat = prevLat; existing.lng = prevLng; existing.geocodeStatus = prevStatus; }
       if (sameDay && prevHasTime) { existing.date = prevDate; existing.hasTime = true; existing.dateEnd = prevDateEnd; }
+      existing.attachments = prevAttachments || [];
       updated++;
     } else {
-      wochenplanerEvents.push(p);
+      terminkalenderEvents.push(p);
       added++;
     }
   });
@@ -5176,7 +5323,7 @@ function mergeWochenplanerEvents(parsed) {
 // Uhrzeiten — Zuordnung läuft über den Auditauftrags-Code ("AO-XXXXXX"), der
 // im .ics-Termintitel steckt und exakt der Excel-Spalte "Nr. Auditauftrag"
 // entspricht (= id), nicht über die .ics-UID.
-const WP_AO_CODE_RE = /AO-\d+/;
+const TK_AO_CODE_RE = /AO-\d+/;
 
 function unfoldIcsLines(text) {
   const rawLines = text.split(/\r\n|\n|\r/);
@@ -5236,8 +5383,8 @@ function parseIcsFile(text) {
 function applyIcsTimes(icsEvents) {
   let matched = 0, unmatched = 0;
   icsEvents.forEach(ic => {
-    const m = WP_AO_CODE_RE.exec(ic.summary);
-    const ev = m ? wochenplanerEvents.find(e => e.id === m[0]) : null;
+    const m = TK_AO_CODE_RE.exec(ic.summary);
+    const ev = m ? terminkalenderEvents.find(e => e.id === m[0]) : null;
     if (ev) {
       ev.date = ic.start;
       ev.dateEnd = ic.end || null;
@@ -5252,10 +5399,10 @@ function applyIcsTimes(icsEvents) {
 
 // ---- Geokodierung (OpenStreetMap Nominatim, öffentlich, kein API-Key) ----
 async function geocodeMissingAddresses() {
-  const pending = wochenplanerEvents.filter(e => e.address && e.lat == null && e.geocodeStatus !== 'failed');
+  const pending = terminkalenderEvents.filter(e => e.address && e.lat == null && e.geocodeStatus !== 'failed');
   for (let i = 0; i < pending.length; i++) {
     const ev = pending[i];
-    setWochenplanerStatus(`Geokodiere Adressen … ${i + 1}/${pending.length}`);
+    setTerminkalenderStatus(`Geokodiere Adressen … ${i + 1}/${pending.length}`);
     try {
       const res = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(ev.address));
       const data = await res.json();
@@ -5269,11 +5416,11 @@ async function geocodeMissingAddresses() {
     } catch {
       ev.geocodeStatus = 'failed';
     }
-    renderWochenplanerSummary();
+    renderTerminkalenderSummary();
     // Nominatim-Nutzungsbedingungen: max. 1 Anfrage/Sekunde.
-    if (i < pending.length - 1) await wpSleep(1100);
+    if (i < pending.length - 1) await tkSleep(1100);
   }
-  renderWochenplanerGrid();
+  renderTerminkalenderGrid();
 }
 
 function eventRouteUrl(ev) {
@@ -5283,70 +5430,70 @@ function eventRouteUrl(ev) {
 }
 
 // ---- UI-Elemente ----
-const wochenplanerNotLoggedIn = document.getElementById('wochenplaner-not-logged-in');
-const wochenplanerControls = document.getElementById('wochenplaner-controls');
-const wochenplanerLoginGate = document.getElementById('wochenplaner-login-gate');
-const wochenplanerMainView = document.getElementById('wochenplaner-main');
-const wochenplanerStatusEl = document.getElementById('wochenplaner-status');
-const wochenplanerSummaryEl = document.getElementById('wochenplaner-summary');
+const terminkalenderNotLoggedIn = document.getElementById('terminkalender-not-logged-in');
+const terminkalenderControls = document.getElementById('terminkalender-controls');
+const terminkalenderLoginGate = document.getElementById('terminkalender-login-gate');
+const terminkalenderMainView = document.getElementById('terminkalender-main');
+const terminkalenderStatusEl = document.getElementById('terminkalender-status');
+const terminkalenderSummaryEl = document.getElementById('terminkalender-summary');
 
-function setWochenplanerStatus(msg) { wochenplanerStatusEl.textContent = msg; }
+function setTerminkalenderStatus(msg) { terminkalenderStatusEl.textContent = msg; }
 
-function renderWochenplanerSummary() {
-  if (!wochenplanerEvents.length) {
-    wochenplanerSummaryEl.textContent = 'Noch keine Termine geladen.';
+function renderTerminkalenderSummary() {
+  if (!terminkalenderEvents.length) {
+    terminkalenderSummaryEl.textContent = 'Noch keine Termine geladen.';
     return;
   }
-  const withAddress = wochenplanerEvents.filter(e => e.address).length;
-  const geocoded = wochenplanerEvents.filter(e => e.lat != null).length;
-  const unbestaetigt = wochenplanerEvents.filter(e => !e.bestaetigt).length;
-  wochenplanerSummaryEl.textContent =
-    `${wochenplanerEvents.length} Termine geladen, davon ${withAddress} mit Adresse, ${geocoded} geokodiert, ${unbestaetigt} unbestätigt.`;
+  const withAddress = terminkalenderEvents.filter(e => e.address).length;
+  const geocoded = terminkalenderEvents.filter(e => e.lat != null).length;
+  const unbestaetigt = terminkalenderEvents.filter(e => !e.bestaetigt).length;
+  terminkalenderSummaryEl.textContent =
+    `${terminkalenderEvents.length} Termine geladen, davon ${withAddress} mit Adresse, ${geocoded} geokodiert, ${unbestaetigt} unbestätigt.`;
 }
 
-// Öffnet den Wochenplaner-Tab: prüft Login, initialisiert die zweite Karte
+// Öffnet den Terminkalender-Tab: prüft Login, initialisiert die zweite Karte
 // erst jetzt (Leaflet braucht einen sichtbaren Container mit echter Größe),
 // stößt danach ein invalidateSize() an, da die Karte beim init evtl. noch
 // unsichtbar war.
-function openWochenplaner() {
+function openTerminkalender() {
   const loggedIn = isSupabaseConfigured && !!accountSession;
-  wochenplanerNotLoggedIn.hidden = loggedIn;
-  wochenplanerControls.hidden = !loggedIn;
-  wochenplanerLoginGate.hidden = loggedIn;
-  wochenplanerMainView.hidden = !loggedIn;
+  terminkalenderNotLoggedIn.hidden = loggedIn;
+  terminkalenderControls.hidden = !loggedIn;
+  terminkalenderLoginGate.hidden = loggedIn;
+  terminkalenderMainView.hidden = !loggedIn;
   if (!loggedIn) return;
-  initWochenplanerMap();
-  renderWochenplanerSummary();
-  renderWochenplanerGrid();
-  requestAnimationFrame(() => wochenplanerMap && wochenplanerMap.invalidateSize());
+  initTerminkalenderMap();
+  renderTerminkalenderSummary();
+  renderTerminkalenderGrid();
+  requestAnimationFrame(() => terminkalenderMap && terminkalenderMap.invalidateSize());
 }
 
-function initWochenplanerMap() {
-  if (wochenplanerInitDone) return;
-  wochenplanerInitDone = true;
-  wochenplanerMap = L.map('wochenplaner-map', { zoomControl: true, attributionControl: true }).setView([51.16, 10.45], 6);
+function initTerminkalenderMap() {
+  if (terminkalenderInitDone) return;
+  terminkalenderInitDone = true;
+  terminkalenderMap = L.map('terminkalender-map', { zoomControl: true, attributionControl: true }).setView([51.16, 10.45], 6);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>-Mitwirkende',
     maxZoom: 19
-  }).addTo(wochenplanerMap);
-  wochenplanerMarkersLayer = L.layerGroup().addTo(wochenplanerMap);
+  }).addTo(terminkalenderMap);
+  terminkalenderMarkersLayer = L.layerGroup().addTo(terminkalenderMap);
 }
 
-function renderWochenplanerMapPins(eventsWithCoords) {
-  if (!wochenplanerMap) return;
-  wochenplanerMarkersLayer.clearLayers();
+function renderTerminkalenderMapPins(eventsWithCoords) {
+  if (!terminkalenderMap) return;
+  terminkalenderMarkersLayer.clearLayers();
   const latlngs = [];
   eventsWithCoords.forEach(e => {
     const marker = L.marker([e.lat, e.lng]).bindTooltip(e.kunde);
-    marker.on('click', () => selectWochenplanerEvent(e.id));
-    marker.addTo(wochenplanerMarkersLayer);
+    marker.on('click', () => selectTerminkalenderEvent(e.id));
+    marker.addTo(terminkalenderMarkersLayer);
     latlngs.push([e.lat, e.lng]);
   });
-  if (latlngs.length) wochenplanerMap.fitBounds(latlngs, { padding: [30, 30], maxZoom: 13 });
+  if (latlngs.length) terminkalenderMap.fitBounds(latlngs, { padding: [30, 30], maxZoom: 13 });
 }
 
-function renderWochenplanerDetail(ev) {
-  const el = document.getElementById('wochenplaner-detail');
+function renderTerminkalenderDetail(ev) {
+  const el = document.getElementById('terminkalender-detail');
   if (!ev) { el.innerHTML = '<p class="empty-hint">Termin anklicken, um Details zu sehen.</p>'; return; }
   let dateStr = ev.date.toLocaleDateString('de-DE', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' });
   if (ev.hasTime) {
@@ -5354,50 +5501,176 @@ function renderWochenplanerDetail(ev) {
     if (ev.dateEnd) dateStr += ' – ' + ev.dateEnd.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
   }
   const routeUrl = eventRouteUrl(ev);
-  const badges = [`<span class="wp-badge ${ev.bestaetigt ? 'wp-badge-ok' : 'wp-badge-warn'}">${ev.bestaetigt ? 'Bestätigt' : 'Unbestätigt'}</span>`];
-  if (ev.prioritaet && ev.prioritaet !== 'Normal') badges.push(`<span class="wp-badge wp-badge-warn">${escapeHtml(ev.prioritaet)}</span>`);
-  if (ev.unangemeldet) badges.push('<span class="wp-badge wp-badge-warn">Unangemeldet</span>');
+  const badges = [`<span class="tk-badge ${ev.bestaetigt ? 'tk-badge-ok' : 'tk-badge-warn'}">${ev.bestaetigt ? 'Bestätigt' : 'Unbestätigt'}</span>`];
+  if (ev.prioritaet && ev.prioritaet !== 'Normal') badges.push(`<span class="tk-badge tk-badge-warn">${escapeHtml(ev.prioritaet)}</span>`);
+  if (ev.unangemeldet) badges.push('<span class="tk-badge tk-badge-warn">Unangemeldet</span>');
   const contact = [ev.telefon, ev.mobil, ev.email].filter(Boolean).map(escapeHtml).join(' · ');
+  const isActiveZuordnung = activeZuordnung && activeZuordnung.terminId === ev.id;
   el.innerHTML = `
     <h3>${escapeHtml(ev.kunde)}</h3>
-    <p class="wp-detail-time">${dateStr}</p>
-    <div class="wp-badges">${badges.join('')}</div>
-    <p class="wp-detail-desc"><strong>${escapeHtml(ev.auditart)}</strong>${ev.format ? ' · ' + escapeHtml(ev.format) : ''}</p>
-    ${ev.address ? `<p class="wp-detail-desc">${escapeHtml(ev.address)}</p>` : ''}
-    ${contact ? `<p class="wp-detail-desc">${contact}</p>` : ''}
-    ${ev.hinweis ? `<p class="wp-detail-desc">${escapeHtml(ev.hinweis).replace(/\n/g, '<br>')}</p>` : ''}
-    ${routeUrl ? `<a class="wp-gmaps-link" href="${routeUrl}" target="_blank" rel="noopener" title="In Google Maps öffnen" aria-label="In Google Maps öffnen">
+    <p class="tk-detail-time">${dateStr}</p>
+    <div class="tk-badges">${badges.join('')}</div>
+    <div class="tk-betrieb-assign">
+      <button type="button" class="tk-betrieb-assign-btn${isActiveZuordnung ? ' active' : ''}" id="tk-betrieb-assign-btn">
+        ${isActiveZuordnung ? '✓ Betrieb zugeordnet' : '🏢 Als Betrieb zuordnen'}
+      </button>
+      <p class="modal-hint" id="tk-betrieb-assign-status"></p>
+    </div>
+    <p class="tk-detail-desc"><strong>${escapeHtml(ev.auditart)}</strong>${ev.format ? ' · ' + escapeHtml(ev.format) : ''}</p>
+    ${ev.address ? `<p class="tk-detail-desc">${escapeHtml(ev.address)}</p>` : ''}
+    ${contact ? `<p class="tk-detail-desc">${contact}</p>` : ''}
+    ${ev.hinweis ? `<p class="tk-detail-desc">${escapeHtml(ev.hinweis).replace(/\n/g, '<br>')}</p>` : ''}
+    ${routeUrl ? `<a class="tk-gmaps-link" href="${routeUrl}" target="_blank" rel="noopener" title="In Google Maps öffnen" aria-label="In Google Maps öffnen">
       <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
         <path d="M12 2C7.58 2 4 5.58 4 10c0 5.25 6.72 11.19 7.02 11.45a1.5 1.5 0 0 0 1.96 0C13.28 21.19 20 15.25 20 10c0-4.42-3.58-8-8-8z" fill="#EA4335"/>
         <circle cx="12" cy="10" r="3.2" fill="#ffffff"/>
       </svg>
     </a>` : '<p class="empty-hint">Keine Adresse bekannt.</p>'}
+    <div class="tk-attachments">
+      <div class="tk-attachments-head">Fotos &amp; Dateien</div>
+      <div class="tk-attachments-grid" id="tk-attachments-grid"></div>
+      <div class="tk-attachments-actions">
+        <label class="tk-attachment-btn">
+          <input type="file" id="tk-photo-capture-input" accept="image/*" capture="environment" hidden>
+          📷 Foto aufnehmen
+        </label>
+        <label class="tk-attachment-btn">
+          <input type="file" id="tk-file-add-input" hidden>
+          📎 Datei hinzufügen
+        </label>
+      </div>
+      <p class="modal-hint" id="tk-attachment-status"></p>
+    </div>
   `;
+  renderTerminkalenderAttachments(ev);
+  document.getElementById('tk-photo-capture-input').addEventListener('change', (e) => handleTerminkalenderFileAdd(ev, e));
+  document.getElementById('tk-file-add-input').addEventListener('change', (e) => handleTerminkalenderFileAdd(ev, e));
+  document.getElementById('tk-betrieb-assign-btn').addEventListener('click', () => toggleTerminkalenderZuordnung(ev));
 }
 
-function selectWochenplanerEvent(id) {
-  wochenplanerSelectedId = id;
-  const ev = wochenplanerEvents.find(e => e.id === id);
-  document.querySelectorAll('.wp-card').forEach(el => el.classList.toggle('selected', el.getAttribute('data-id') === id));
-  renderWochenplanerDetail(ev);
-  if (ev && ev.lat != null && wochenplanerMap) wochenplanerMap.setView([ev.lat, ev.lng], 15);
+// Ordnet den Termin direkt aus der Kalenderansicht heraus als aktiven Betrieb
+// zu (bzw. entfernt die Zuordnung wieder) — nutzt dieselbe
+// applyZuordnungSelection()-Logik wie die Auswahl im Kopfzeilen-Dropdown,
+// inkl. automatischem Wechsel des Ebenen/Baum/Bienenflug-Workspace, falls sich
+// dadurch der Betrieb ändert (siehe switchWorkspace weiter unten).
+async function toggleTerminkalenderZuordnung(ev) {
+  if (betriebSwitchInProgress) return;
+  const btn = document.getElementById('tk-betrieb-assign-btn');
+  const statusEl = document.getElementById('tk-betrieb-assign-status');
+  const currentlyActive = activeZuordnung && activeZuordnung.terminId === ev.id;
+  if (btn) btn.disabled = true;
+  if (statusEl) statusEl.textContent = currentlyActive ? 'Entferne Zuordnung …' : 'Ordne zu …';
+  try {
+    if (currentlyActive) {
+      await applyZuordnungSelection(null);
+    } else {
+      await applyZuordnungSelection({ betrieb: ev.kunde, year: ev.date.getFullYear(), terminId: ev.id, terminLabel: `${tkFmtDate(ev.date)} · ${ev.auditart}` });
+    }
+    // applyZuordnungSelection() -> setActiveZuordnung() rendert Grid + Detail
+    // bereits neu (siehe dort) — hier ist nichts weiter zu tun.
+  } catch (err) {
+    if (statusEl) statusEl.textContent = 'Fehler: ' + (err.message || 'Zuordnung fehlgeschlagen.');
+    if (btn) btn.disabled = false;
+  }
 }
 
-const WP_WEEKDAY_LABELS = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
+// entry.attachments enthält nur Storage-Pfade + Metadaten — Anzeige braucht
+// pro Datei eine frisch geholte Signed URL (privater Bucket, gleiches Muster
+// wie die Flächen-Notizen-Fotos). Bilder werden als Vorschau angezeigt,
+// andere Dateitypen als Icon + Dateiname.
+async function renderTerminkalenderAttachments(ev) {
+  const grid = document.getElementById('tk-attachments-grid');
+  if (!grid) return;
+  const attachments = ev.attachments || [];
+  if (!attachments.length) { grid.innerHTML = '<p class="empty-hint">Noch keine Anhänge.</p>'; return; }
+  grid.innerHTML = attachments.map(() => '<div class="tk-attachment tk-attachment-loading"></div>').join('');
+  const urls = await Promise.all(attachments.map(a => getPhotoUrl(a.path, a.name).catch(() => null)));
+  grid.innerHTML = attachments.map((a, i) => {
+    const url = urls[i];
+    if (!url) return `<div class="tk-attachment tk-attachment-error" title="${escapeHtml(a.name)} konnte nicht geladen werden">⚠</div>`;
+    const isImage = (a.type || '').startsWith('image/');
+    const inner = isImage
+      ? `<img src="${url}" alt="${escapeHtml(a.name)}">`
+      : `<span class="tk-attachment-icon">📄</span><span class="tk-attachment-name">${escapeHtml(a.name)}</span>`;
+    return `<div class="tk-attachment">
+      <a href="${url}" target="_blank" rel="noopener" class="tk-attachment-link" title="${escapeHtml(a.name)}">${inner}</a>
+      <button type="button" class="tk-attachment-remove" data-path="${escapeHtml(a.path)}" title="Entfernen">✕</button>
+    </div>`;
+  }).join('');
+  grid.querySelectorAll('.tk-attachment-remove').forEach(btn => {
+    btn.addEventListener('click', () => removeTerminkalenderAttachment(ev.id, btn.getAttribute('data-path')));
+  });
+}
+
+async function handleTerminkalenderFileAdd(ev, e) {
+  const input = e.target;
+  const file = input.files[0];
+  input.value = '';
+  if (!file) return;
+  try {
+    const path = await uploadPhoto(file);
+    // Termine kennen ihren Betrieb (Kunde) und ihr Datum bereits selbst — die
+    // Jahr_Betrieb_Art-Benennung braucht hier also keine globale Zuordnung
+    // (siehe zuordnungFileName), sondern wird direkt aus dem Termin abgeleitet.
+    const isImage = (file.type || '').startsWith('image/');
+    const ext = (file.name.split('.').pop() || (isImage ? 'jpg' : 'dat')).toLowerCase();
+    const art = isImage ? 'Foto Termin' : 'Datei Termin';
+    const name = `${ev.date.getFullYear()}_${sanitizeFileNamePart(ev.kunde)}_${art}.${ext}`;
+    ev.attachments = ev.attachments || [];
+    ev.attachments.push({ path, name, size: file.size, type: file.type || '' });
+    renderTerminkalenderGrid();
+    if (terminkalenderSelectedId === ev.id) {
+      renderTerminkalenderDetail(ev);
+      const statusEl = document.getElementById('tk-attachment-status');
+      if (statusEl) statusEl.textContent = 'Hochgeladen — nicht vergessen zu speichern.';
+    }
+  } catch (err) {
+    const statusEl = document.getElementById('tk-attachment-status');
+    if (statusEl) statusEl.textContent = 'Fehler: ' + (err.message || 'Datei konnte nicht hochgeladen werden.');
+  }
+}
+
+async function removeTerminkalenderAttachment(id, path) {
+  const ev = terminkalenderEvents.find(e => e.id === id);
+  if (!ev) return;
+  const statusEl = document.getElementById('tk-attachment-status');
+  if (statusEl) statusEl.textContent = 'Lösche …';
+  try {
+    await deletePhoto(path);
+    ev.attachments = (ev.attachments || []).filter(a => a.path !== path);
+    renderTerminkalenderGrid();
+    renderTerminkalenderDetail(ev);
+    const freshStatus = document.getElementById('tk-attachment-status');
+    if (freshStatus) freshStatus.textContent = 'Entfernt — nicht vergessen zu speichern.';
+  } catch (err) {
+    const currentStatus = document.getElementById('tk-attachment-status');
+    if (currentStatus) currentStatus.textContent = 'Fehler: ' + (err.message || 'Löschen fehlgeschlagen.');
+  }
+}
+
+function selectTerminkalenderEvent(id) {
+  terminkalenderSelectedId = id;
+  const ev = terminkalenderEvents.find(e => e.id === id);
+  document.querySelectorAll('.tk-card').forEach(el => el.classList.toggle('selected', el.getAttribute('data-id') === id));
+  renderTerminkalenderDetail(ev);
+  if (ev && ev.lat != null && terminkalenderMap) terminkalenderMap.setView([ev.lat, ev.lng], 15);
+}
+
+const TK_WEEKDAY_LABELS = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
 
 function eventsForVisibleWeek() {
-  const weekEnd = new Date(wochenplanerWeekStart);
+  const weekEnd = new Date(terminkalenderWeekStart);
   weekEnd.setDate(weekEnd.getDate() + 7);
-  return wochenplanerEvents.filter(e => e.date >= wochenplanerWeekStart && e.date < weekEnd);
+  return terminkalenderEvents.filter(e => e.date >= terminkalenderWeekStart && e.date < weekEnd);
 }
 
 // Verschiebt einen Termin per Drag&Drop auf einen anderen Wochentag — eine
 // evtl. per .ics ergänzte Uhrzeit bleibt dabei erhalten (nur der Kalendertag
 // ändert sich), reine Datumstermine bleiben weiterhin ohne Uhrzeit. Rein
-// lokale Änderung, wie bei allen anderen Wochenplaner-Bearbeitungen erst mit
+// lokale Änderung, wie bei allen anderen Terminkalender-Bearbeitungen erst mit
 // "In Cloud speichern" dauerhaft.
-function moveWochenplanerEvent(id, targetDate) {
-  const ev = wochenplanerEvents.find(e => e.id === id);
+function moveTerminkalenderEvent(id, targetDate) {
+  const ev = terminkalenderEvents.find(e => e.id === id);
   if (!ev) return;
   if (ev.date.toDateString() === targetDate.toDateString()) return;
   const durationMs = ev.dateEnd ? ev.dateEnd - ev.date : null;
@@ -5405,28 +5678,28 @@ function moveWochenplanerEvent(id, targetDate) {
   newDate.setHours(ev.date.getHours(), ev.date.getMinutes(), ev.date.getSeconds(), 0);
   ev.date = newDate;
   if (durationMs != null) ev.dateEnd = new Date(newDate.getTime() + durationMs);
-  if (ev.id === wochenplanerSelectedId) renderWochenplanerDetail(ev);
-  renderWochenplanerGrid();
-  setWochenplanerStatus('Termin verschoben — nicht vergessen zu speichern.');
+  if (ev.id === terminkalenderSelectedId) renderTerminkalenderDetail(ev);
+  renderTerminkalenderGrid();
+  setTerminkalenderStatus('Termin verschoben — nicht vergessen zu speichern.');
 }
 
 // Termine haben ohne .ics-Ergänzung keine Uhrzeit — statt eines fixen
 // Stundenrasters daher eine Kartenliste je Wochentag, mit Uhrzeit-Präfix
 // sobald eine per .ics bekannt ist. Karten sind per Drag&Drop auf einen
 // anderen Tag verschiebbar.
-function renderWochenplanerGrid() {
+function renderTerminkalenderGrid() {
   const weekEvents = eventsForVisibleWeek();
 
-  const { week, year } = getISOWeek(wochenplanerWeekStart);
-  const weekEndDisplay = new Date(wochenplanerWeekStart);
+  const { week, year } = getISOWeek(terminkalenderWeekStart);
+  const weekEndDisplay = new Date(terminkalenderWeekStart);
   weekEndDisplay.setDate(weekEndDisplay.getDate() + 6);
   const fmtShort = d => d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
-  document.getElementById('wp-week-label').textContent =
-    `KW ${week} · ${year} (${fmtShort(wochenplanerWeekStart)}–${fmtShort(weekEndDisplay)})`;
+  document.getElementById('tk-week-label').textContent =
+    `KW ${week} · ${year} (${fmtShort(terminkalenderWeekStart)}–${fmtShort(weekEndDisplay)})`;
 
   let html = '';
   for (let d = 0; d < 7; d++) {
-    const dayDate = new Date(wochenplanerWeekStart);
+    const dayDate = new Date(terminkalenderWeekStart);
     dayDate.setDate(dayDate.getDate() + d);
     const dayEvents = weekEvents
       .filter(e => e.date.toDateString() === dayDate.toDateString())
@@ -5437,110 +5710,337 @@ function renderWochenplanerGrid() {
       });
 
     const cardsHtml = dayEvents.map(e => {
-      const selected = e.id === wochenplanerSelectedId ? ' selected' : '';
+      const selected = e.id === terminkalenderSelectedId ? ' selected' : '';
       const pin = e.lat != null ? ' 📍' : '';
-      const statusClass = e.bestaetigt ? 'wp-card-ok' : 'wp-card-warn';
+      const clip = (e.attachments && e.attachments.length) ? ' 📎' : '';
+      const betriebMark = (activeZuordnung && activeZuordnung.terminId === e.id) ? ' 🏢' : '';
+      const statusClass = e.bestaetigt ? 'tk-card-ok' : 'tk-card-warn';
       const timePrefix = e.hasTime ? e.date.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) + ' · ' : '';
-      return `<div class="wp-card ${statusClass}${selected}" data-id="${escapeHtml(e.id)}" title="${escapeHtml(e.kunde)}" draggable="true">
-        <div class="wp-card-title">${escapeHtml(e.kunde)}</div>
-        <div class="wp-card-sub">${timePrefix}${escapeHtml(e.auditart)}${pin}</div>
+      return `<div class="tk-card ${statusClass}${selected}" data-id="${escapeHtml(e.id)}" title="${escapeHtml(e.kunde)}" draggable="true">
+        <div class="tk-card-title">${escapeHtml(e.kunde)}</div>
+        <div class="tk-card-sub">${timePrefix}${escapeHtml(e.auditart)}${pin}${clip}${betriebMark}</div>
       </div>`;
     }).join('');
 
-    const countBadge = dayEvents.length ? ` <span class="wp-day-count">${dayEvents.length}</span>` : '';
-    html += `<div class="wp-day-col">
-      <div class="wp-day-head">${WP_WEEKDAY_LABELS[d]} ${dayDate.getDate()}.${dayDate.getMonth() + 1}.${countBadge}</div>
-      <div class="wp-day-body" data-date="${dayDate.toISOString()}">${cardsHtml || '<p class="wp-day-empty">–</p>'}</div>
+    const countBadge = dayEvents.length ? ` <span class="tk-day-count">${dayEvents.length}</span>` : '';
+    html += `<div class="tk-day-col">
+      <div class="tk-day-head">${TK_WEEKDAY_LABELS[d]} ${dayDate.getDate()}.${dayDate.getMonth() + 1}.${countBadge}</div>
+      <div class="tk-day-body" data-date="${dayDate.toISOString()}">${cardsHtml || '<p class="tk-day-empty">–</p>'}</div>
     </div>`;
   }
 
-  const grid = document.getElementById('wochenplaner-grid');
+  const grid = document.getElementById('terminkalender-grid');
   grid.innerHTML = html;
-  grid.querySelectorAll('.wp-card').forEach(el => {
-    el.addEventListener('click', () => selectWochenplanerEvent(el.getAttribute('data-id')));
+  grid.querySelectorAll('.tk-card').forEach(el => {
+    el.addEventListener('click', () => selectTerminkalenderEvent(el.getAttribute('data-id')));
     el.addEventListener('dragstart', (e) => {
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', el.getAttribute('data-id'));
     });
   });
-  grid.querySelectorAll('.wp-day-body').forEach(el => {
-    el.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; el.classList.add('wp-drop-target'); });
-    el.addEventListener('dragleave', () => el.classList.remove('wp-drop-target'));
+  grid.querySelectorAll('.tk-day-body').forEach(el => {
+    el.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; el.classList.add('tk-drop-target'); });
+    el.addEventListener('dragleave', () => el.classList.remove('tk-drop-target'));
     el.addEventListener('drop', (e) => {
       e.preventDefault();
-      el.classList.remove('wp-drop-target');
+      el.classList.remove('tk-drop-target');
       const id = e.dataTransfer.getData('text/plain');
-      if (id) moveWochenplanerEvent(id, new Date(el.getAttribute('data-date')));
+      if (id) moveTerminkalenderEvent(id, new Date(el.getAttribute('data-date')));
     });
   });
 
-  renderWochenplanerMapPins(weekEvents.filter(e => e.lat != null));
+  renderTerminkalenderMapPins(weekEvents.filter(e => e.lat != null));
 }
 
 function gotoWeek(delta) {
-  wochenplanerWeekStart = new Date(wochenplanerWeekStart);
-  wochenplanerWeekStart.setDate(wochenplanerWeekStart.getDate() + delta * 7);
-  renderWochenplanerGrid();
+  terminkalenderWeekStart = new Date(terminkalenderWeekStart);
+  terminkalenderWeekStart.setDate(terminkalenderWeekStart.getDate() + delta * 7);
+  renderTerminkalenderGrid();
 }
 
-document.getElementById('wp-prev-week').addEventListener('click', () => gotoWeek(-1));
-document.getElementById('wp-next-week').addEventListener('click', () => gotoWeek(1));
-document.getElementById('wp-today').addEventListener('click', () => {
-  wochenplanerWeekStart = getMondayOfWeek(new Date());
-  renderWochenplanerGrid();
+document.getElementById('tk-prev-week').addEventListener('click', () => gotoWeek(-1));
+document.getElementById('tk-next-week').addEventListener('click', () => gotoWeek(1));
+document.getElementById('tk-today').addEventListener('click', () => {
+  terminkalenderWeekStart = getMondayOfWeek(new Date());
+  renderTerminkalenderGrid();
 });
 
-document.getElementById('wochenplaner-file-input').addEventListener('change', async (e) => {
+document.getElementById('terminkalender-file-input').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   e.target.value = '';
   if (!file) return;
-  document.getElementById('wochenplaner-file-name').textContent = file.name;
-  document.getElementById('wochenplaner-drop').classList.add('filled');
-  setWochenplanerStatus('Lese Datei …');
+  document.getElementById('terminkalender-file-name').textContent = file.name;
+  document.getElementById('terminkalender-drop').classList.add('filled');
+  setTerminkalenderStatus('Lese Datei …');
   try {
     const buf = await file.arrayBuffer();
     const parsed = parseXlsxFile(buf);
     if (!parsed.length) throw new Error('Keine gültigen Termine in der Datei gefunden.');
-    const { added, updated } = mergeWochenplanerEvents(parsed);
-    renderWochenplanerSummary();
-    renderWochenplanerGrid();
-    setWochenplanerStatus(`${added} neu, ${updated} aktualisiert.`);
+    const { added, updated } = mergeTerminkalenderEvents(parsed);
+    renderTerminkalenderSummary();
+    renderTerminkalenderGrid();
+    setTerminkalenderStatus(`${added} neu, ${updated} aktualisiert.`);
     await geocodeMissingAddresses();
-    setWochenplanerStatus('Fertig.');
+    setTerminkalenderStatus('Fertig.');
   } catch (err) {
-    setWochenplanerStatus('Fehler: ' + (err.message || 'Datei konnte nicht gelesen werden.'));
+    setTerminkalenderStatus('Fehler: ' + (err.message || 'Datei konnte nicht gelesen werden.'));
   }
 });
 
-document.getElementById('wochenplaner-ics-file-input').addEventListener('change', async (e) => {
+document.getElementById('terminkalender-ics-file-input').addEventListener('change', async (e) => {
   const file = e.target.files[0];
   e.target.value = '';
   if (!file) return;
-  document.getElementById('wochenplaner-ics-file-name').textContent = file.name;
-  document.getElementById('wochenplaner-ics-drop').classList.add('filled');
-  if (!wochenplanerEvents.length) { setWochenplanerStatus('Bitte zuerst die Excel-Termine hochladen.'); return; }
-  setWochenplanerStatus('Lese Uhrzeiten …');
+  document.getElementById('terminkalender-ics-file-name').textContent = file.name;
+  document.getElementById('terminkalender-ics-drop').classList.add('filled');
+  if (!terminkalenderEvents.length) { setTerminkalenderStatus('Bitte zuerst die Excel-Termine hochladen.'); return; }
+  setTerminkalenderStatus('Lese Uhrzeiten …');
   try {
     const text = await file.text();
     const icsEvents = parseIcsFile(text);
     if (!icsEvents.length) throw new Error('Keine Termine in der .ics-Datei gefunden.');
     const { matched, unmatched } = applyIcsTimes(icsEvents);
-    renderWochenplanerGrid();
-    setWochenplanerStatus(`${matched} Uhrzeiten übernommen, ${unmatched} ohne passenden Termin.`);
+    renderTerminkalenderGrid();
+    setTerminkalenderStatus(`${matched} Uhrzeiten übernommen, ${unmatched} ohne passenden Termin.`);
   } catch (err) {
-    setWochenplanerStatus('Fehler: ' + (err.message || '.ics-Datei konnte nicht gelesen werden.'));
+    setTerminkalenderStatus('Fehler: ' + (err.message || '.ics-Datei konnte nicht gelesen werden.'));
   }
 });
 
-document.getElementById('wochenplaner-btn-save').addEventListener('click', async () => {
-  setWochenplanerStatus('Speichere …');
+document.getElementById('terminkalender-btn-save').addEventListener('click', async () => {
+  setTerminkalenderStatus('Speichere …');
   try {
-    await saveState(serializeCurrentState());
-    setWochenplanerStatus('Gespeichert.');
+    await saveFullState();
+    setTerminkalenderStatus('Gespeichert.');
   } catch (err) {
-    setWochenplanerStatus('Fehler: ' + (err.message || 'Speichern fehlgeschlagen.'));
+    setTerminkalenderStatus('Fehler: ' + (err.message || 'Speichern fehlgeschlagen.'));
   }
 });
+
+// ---------- FeldFolio Plus: Betrieb/Termin-Zuordnung ----------
+// Verbindet den Terminkalender mit den Flächen-Werkzeugen: eine globale, in
+// der Kopfzeile sitzende Auswahl (Betrieb oder ein konkreter Termin), die
+// bestimmt, wie neue Exporte und hochgeladene Fotos/Dateien in Jahresvergleich/
+// Flächenzeichner/Obstbaumkataster/Bienenflugkarte benannt werden: statt des
+// bisherigen generischen Datumsnamens dann Jahr_Betrieb_Art (siehe
+// zuordnungFileName). Terminkalender-Anhänge kennen ihren Betrieb/Jahr schon
+// über das jeweilige Termin selbst (siehe handleTerminkalenderFileAdd) und
+// hängen absichtlich NICHT von dieser globalen Auswahl ab. Betriebe kommen
+// automatisch aus den eindeutigen Kundennamen der hochgeladenen Termine.xlsx,
+// plus manuell ergänzbaren Namen (manualBetriebe, Cloud-persistiert) für
+// Betriebe ohne aktuellen Termin.
+let manualBetriebe = [];
+let activeZuordnung = null; // { betrieb, year, terminId, terminLabel } | null
+
+function sanitizeFileNamePart(s) {
+  return String(s).replace(/[\\/:*?"<>|]/g, '-').trim();
+}
+
+// null, wenn keine Zuordnung aktiv ist — Aufrufer fallen dann auf den
+// bisherigen generischen Dateinamen zurück (siehe Export-Funktionen).
+function zuordnungFileName(art, ext) {
+  if (!activeZuordnung) return null;
+  return `${activeZuordnung.year}_${sanitizeFileNamePart(activeZuordnung.betrieb)}_${art}.${ext}`;
+}
+
+function getBetriebNamesFromTermine() {
+  return [...new Set(terminkalenderEvents.map(e => e.kunde).filter(Boolean))];
+}
+
+function getAllBetriebNamen() {
+  return [...new Set([...getBetriebNamesFromTermine(), ...manualBetriebe])].sort((a, b) => a.localeCompare(b, 'de'));
+}
+
+const btnBetrieb = document.getElementById('btn-betrieb');
+const btnBetriebLabel = document.getElementById('btn-betrieb-label');
+const betriebModal = document.getElementById('betrieb-modal-overlay');
+const betriebNotConfigured = document.getElementById('betrieb-not-configured');
+const betriebEditor = document.getElementById('betrieb-editor');
+const betriebSearch = document.getElementById('betrieb-search');
+const betriebCurrent = document.getElementById('betrieb-current');
+const betriebCurrentLabel = document.getElementById('betrieb-current-label');
+const betriebListEl = document.getElementById('betrieb-list');
+const betriebError = document.getElementById('betrieb-error');
+const betriebManualInput = document.getElementById('betrieb-manual-input');
+const betriebSwitchStatus = document.getElementById('betrieb-switch-status');
+let betriebSwitchInProgress = false;
+
+function showBetriebError(msg) {
+  betriebError.textContent = msg;
+  betriebError.hidden = !msg;
+}
+
+function tkFmtDate(d) {
+  return d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+function updateBetriebButton() {
+  btnBetrieb.classList.toggle('active', !!activeZuordnung);
+  btnBetriebLabel.textContent = activeZuordnung ? `🏢 ${activeZuordnung.betrieb}` : 'Betrieb wählen';
+}
+
+function updateBetriebCurrentBox() {
+  if (activeZuordnung) {
+    betriebCurrent.hidden = false;
+    betriebCurrentLabel.textContent = activeZuordnung.terminId
+      ? `${activeZuordnung.betrieb} — ${activeZuordnung.terminLabel}`
+      : activeZuordnung.betrieb;
+  } else {
+    betriebCurrent.hidden = true;
+  }
+}
+
+function setActiveZuordnung(z) {
+  activeZuordnung = z;
+  updateBetriebButton();
+  updateBetriebCurrentBox();
+  // Aktualisiert das 🏢-Zeichen an den Kalenderkarten und das Zuordnen-Icon im
+  // Detail-Panel — läuft für JEDEN Auswahlweg (Kopfzeilen-Dropdown UND der
+  // "Als Betrieb zuordnen"-Button im Terminkalender selbst), da beide über
+  // diese Funktion gehen.
+  if (typeof renderTerminkalenderGrid === 'function') renderTerminkalenderGrid();
+  if (typeof terminkalenderSelectedId !== 'undefined' && terminkalenderSelectedId) {
+    const selectedEv = terminkalenderEvents.find(e => e.id === terminkalenderSelectedId);
+    if (selectedEv) renderTerminkalenderDetail(selectedEv);
+  }
+}
+
+function renderBetriebList() {
+  const q = betriebSearch.value.trim().toLowerCase();
+  const betriebe = getAllBetriebNamen().filter(n => !q || n.toLowerCase().includes(q));
+  const manualSet = new Set(manualBetriebe);
+
+  let html = '<div class="betrieb-list-group"><div class="betrieb-list-group-title">Betriebe</div>';
+  if (betriebe.length) {
+    html += betriebe.map(name => `
+      <div class="betrieb-row" data-action="select-betrieb" data-name="${escapeHtml(name)}">
+        <span class="betrieb-row-main">${escapeHtml(name)}</span>
+        ${manualSet.has(name) ? `<button type="button" class="betrieb-row-remove" data-action="remove-manual" data-name="${escapeHtml(name)}" title="Manuell hinzugefügten Betrieb entfernen">✕</button>` : ''}
+      </div>`).join('');
+  } else {
+    html += '<div class="betrieb-list-empty">Keine Betriebe gefunden.</div>';
+  }
+  html += '</div>';
+
+  if (q) {
+    const termine = terminkalenderEvents.filter(e => `${e.kunde} ${e.auditart} ${tkFmtDate(e.date)}`.toLowerCase().includes(q))
+      .sort((a, b) => a.date - b.date)
+      .slice(0, 30);
+    html += '<div class="betrieb-list-group"><div class="betrieb-list-group-title">Termine</div>';
+    if (termine.length) {
+      html += termine.map(e => `
+        <div class="betrieb-row" data-action="select-termin" data-id="${escapeHtml(e.id)}">
+          <span class="betrieb-row-main">${escapeHtml(e.kunde)}<span class="betrieb-row-sub"> · ${tkFmtDate(e.date)} · ${escapeHtml(e.auditart)}</span></span>
+        </div>`).join('');
+    } else {
+      html += '<div class="betrieb-list-empty">Keine Termine gefunden.</div>';
+    }
+    html += '</div>';
+  }
+
+  betriebListEl.innerHTML = html;
+}
+
+// Wechselt — falls nötig — den geladenen Ebenen/Baum/Bienenflug-Workspace auf
+// den zum gewählten Betrieb gehörenden (siehe switchWorkspace weiter oben):
+// wählt man nur einen ANDEREN Termin DESSELBEN bereits aktiven Betriebs, ist
+// der Workspace identisch — dann wird nur die Zuordnung (fürs Dateinamen-
+// Schema) aktualisiert, ohne Karten-Neuladen.
+async function applyZuordnungSelection(z) {
+  const newKey = z ? z.betrieb : NO_BETRIEB_KEY;
+  if (newKey === currentWorkspaceKey) {
+    setActiveZuordnung(z);
+    closeBetriebModal();
+    return;
+  }
+  betriebSwitchInProgress = true;
+  betriebSwitchStatus.textContent = `Wechsle zu „${newKey === NO_BETRIEB_KEY ? 'kein Betrieb' : newKey}" …`;
+  try {
+    await switchWorkspace(currentWorkspaceKey, newKey);
+    currentWorkspaceKey = newKey;
+    setActiveZuordnung(z);
+    betriebSwitchStatus.textContent = '';
+    closeBetriebModal();
+  } catch (err) {
+    betriebSwitchStatus.textContent = 'Fehler: ' + (err.message || 'Betrieb-Wechsel fehlgeschlagen.');
+  } finally {
+    betriebSwitchInProgress = false;
+  }
+}
+
+betriebListEl.addEventListener('click', async (e) => {
+  if (betriebSwitchInProgress) return;
+  const row = e.target.closest('[data-action]');
+  if (!row) return;
+  const action = row.getAttribute('data-action');
+  if (action === 'select-betrieb') {
+    await applyZuordnungSelection({ betrieb: row.getAttribute('data-name'), year: new Date().getFullYear(), terminId: null, terminLabel: null });
+  } else if (action === 'select-termin') {
+    const ev = terminkalenderEvents.find(x => x.id === row.getAttribute('data-id'));
+    if (!ev) return;
+    await applyZuordnungSelection({ betrieb: ev.kunde, year: ev.date.getFullYear(), terminId: ev.id, terminLabel: `${tkFmtDate(ev.date)} · ${ev.auditart}` });
+  } else if (action === 'remove-manual') {
+    const name = row.getAttribute('data-name');
+    const wasActive = activeZuordnung && !activeZuordnung.terminId && activeZuordnung.betrieb === name;
+    manualBetriebe = manualBetriebe.filter(n => n !== name);
+    if (wasActive) {
+      // applyZuordnungSelection() wechselt den Workspace UND speichert dabei
+      // bereits den aktualisierten manualBetriebe-Stand mit — ein zusätzliches
+      // saveFullState() danach wäre nur ein überflüssiger zweiter Request.
+      await applyZuordnungSelection(null);
+      renderBetriebList();
+    } else {
+      renderBetriebList();
+      try { await saveFullState(); } catch (err) { showBetriebError(err.message || 'Speichern fehlgeschlagen.'); }
+    }
+  }
+});
+
+betriebSearch.addEventListener('input', renderBetriebList);
+
+document.getElementById('betrieb-manual-add').addEventListener('click', async () => {
+  const name = betriebManualInput.value.trim();
+  if (!name) return;
+  showBetriebError('');
+  if (!getAllBetriebNamen().includes(name)) manualBetriebe.push(name);
+  betriebManualInput.value = '';
+  renderBetriebList();
+  try {
+    await saveFullState();
+  } catch (err) {
+    showBetriebError(err.message || 'Speichern fehlgeschlagen.');
+  }
+});
+betriebManualInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); document.getElementById('betrieb-manual-add').click(); }
+});
+
+document.getElementById('betrieb-btn-clear').addEventListener('click', () => {
+  if (betriebSwitchInProgress) return;
+  applyZuordnungSelection(null);
+});
+
+function openBetriebModal() {
+  showBetriebError('');
+  betriebSwitchStatus.textContent = '';
+  betriebSearch.value = '';
+  const loggedIn = isSupabaseConfigured && !!accountSession;
+  betriebNotConfigured.hidden = loggedIn;
+  betriebEditor.hidden = !loggedIn;
+  if (loggedIn) {
+    updateBetriebCurrentBox();
+    renderBetriebList();
+  }
+  betriebModal.hidden = false;
+}
+function closeBetriebModal() { betriebModal.hidden = true; }
+
+btnBetrieb.addEventListener('click', openBetriebModal);
+['betrieb-modal-close-1', 'betrieb-modal-close-2'].forEach(id => {
+  document.getElementById(id).addEventListener('click', closeBetriebModal);
+});
+betriebModal.addEventListener('click', (e) => { if (e.target === betriebModal) closeBetriebModal(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !betriebModal.hidden) closeBetriebModal(); });
 
 // ---------- Dev-Tooling: Jahresvergleich-Inputs aus test-shapes/ vorbefüllen ----------
 // Vorerst deaktiviert: test-shapes/ enthält jetzt 16 einzelne Bundesland-
