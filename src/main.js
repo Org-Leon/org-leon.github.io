@@ -2962,12 +2962,74 @@ function exportXlsx(headers, rows, filename, sheetName) {
   XLSX.writeFile(wb, filename);
 }
 
-function exportPdf(headers, rows, filename, title) {
+// ---------- FeldFolio Plus: dezenter Schriftzug in PDF-Exporten ----------
+// Rendert den kompletten Wortmarken-Schriftzug ("Feld" + "F" + Apfel-Grafik +
+// "lio", exakt dieselbe Struktur/Klassen wie #brand-logo in der Kopfzeile)
+// einmalig als Bild um (jsPDF kann kein SVG/Web-Font direkt einbetten, nur
+// Raster-Bilder) und cached das Ergebnis als {dataUrl, aspectRatio}, damit
+// nicht bei jedem Export erneut gerendert werden muss. Feste Markenfarbe
+// (Light-Mode-Grün) statt var(--accent), da das PDF-Papier immer weiß ist,
+// unabhängig vom gerade aktiven Dark-/Hellmodus der App.
+let feldfolioLogoDataUrlPromise = null;
+function getFeldFolioLogoDataUrl() {
+  if (!feldfolioLogoDataUrlPromise) {
+    feldfolioLogoDataUrlPromise = (async () => {
+      if (typeof html2canvas === 'undefined') return null;
+      const source = document.getElementById('brand-logo');
+      if (!source) return null;
+      const clone = source.cloneNode(true);
+      clone.style.position = 'fixed';
+      clone.style.left = '-99999px';
+      clone.style.top = '0';
+      clone.style.margin = '0';
+      clone.style.padding = '6px 10px';
+      clone.style.fontSize = '64px';
+      clone.style.color = '#607E60';
+      clone.style.background = '#ffffff';
+      document.body.appendChild(clone);
+      try {
+        if (document.fonts && document.fonts.ready) await document.fonts.ready;
+        const canvas = await html2canvas(clone, { backgroundColor: '#ffffff', scale: 2 });
+        return { dataUrl: canvas.toDataURL('image/png'), aspectRatio: canvas.width / canvas.height };
+      } catch {
+        return null;
+      } finally {
+        document.body.removeChild(clone);
+      }
+    })();
+  }
+  return feldfolioLogoDataUrlPromise;
+}
+
+// Stempelt den Schriftzug klein und halbtransparent in die untere rechte Ecke
+// jeder Seite eines fertigen PDF-Dokuments — rein dekoratives Branding, daher
+// bewusst zurückhaltend (kleine Größe, reduzierte Deckkraft) statt wie ein
+// aufdringliches Wasserzeichen über dem eigentlichen Seiteninhalt zu liegen.
+// logo darf null sein (z.B. wenn das Bild nicht gerendert werden konnte) —
+// dann wird einfach nichts gestempelt, kein Fehler.
+function stampFeldFolioLogo(doc, logo) {
+  if (!logo) return;
+  const h = 6;
+  const w = h * logo.aspectRatio;
+  const pageCount = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
+    const hasGState = typeof doc.setGState === 'function' && typeof doc.GState === 'function';
+    if (hasGState) doc.setGState(new doc.GState({ opacity: 0.55 }));
+    doc.addImage(logo.dataUrl, 'PNG', pageW - w - 6, pageH - h - 6, w, h);
+    if (hasGState) doc.setGState(new doc.GState({ opacity: 1 }));
+  }
+}
+
+async function exportPdf(headers, rows, filename, title) {
   if (typeof window.jspdf === 'undefined') { showError('PDF-Export nicht verfügbar (Bibliothek konnte nicht geladen werden).'); return; }
   const doc = new window.jspdf.jsPDF({ orientation: 'landscape' });
   doc.setFontSize(12);
   doc.text(title || '', 14, 12);
   doc.autoTable({ head: [headers], body: rows, startY: 16, styles: { fontSize: 8 }, headStyles: { fillColor: [79, 184, 175] } });
+  stampFeldFolioLogo(doc, await getFeldFolioLogoDataUrl());
   doc.save(filename);
 }
 
@@ -3149,6 +3211,7 @@ async function exportFlaechenkarten() {
       addFlaechenkartePage(doc, pageW, pageH, margin, canvas, row);
     }
 
+    stampFeldFolioLogo(doc, await getFeldFolioLogoDataUrl());
     const ts = new Date().toISOString().slice(0, 10);
     doc.save(zuordnungFileName('Flächenkarte', 'pdf') || `flaechenkarten_${ts}.pdf`);
     setStatus('Flächenkarten exportiert.');
@@ -3384,6 +3447,7 @@ async function exportZeichnerFlaechenkarten() {
       });
     }
 
+    stampFeldFolioLogo(doc, await getFeldFolioLogoDataUrl());
     const ts = new Date().toISOString().slice(0, 10);
     doc.save(zuordnungFileName('Flächenkarte Zeichner', 'pdf') || `flaechenkarten_gezeichnet_${ts}.pdf`);
     setZeichnerStatus('Flächenkarten exportiert.');
@@ -4360,6 +4424,7 @@ async function exportObstbaumFlaechenkarten() {
     doc.setFont('helvetica', 'bold');
     doc.text(`Gesamt: ${total} Bäume`, margin, y + 5);
 
+    stampFeldFolioLogo(doc, await getFeldFolioLogoDataUrl());
     const ts = new Date().toISOString().slice(0, 10);
     doc.save(zuordnungFileName('Flächenkarte Obstbaum', 'pdf') || `obstbaumkataster_flaechenkarten_${ts}.pdf`);
     setObstbaumStatus('Flächenkarten exportiert.');
@@ -4584,6 +4649,7 @@ async function exportBienenflugFlaechenkarten() {
       addBienenflugPage(doc, pageW, pageH, margin, canvas, entry);
     }
 
+    stampFeldFolioLogo(doc, await getFeldFolioLogoDataUrl());
     const ts = new Date().toISOString().slice(0, 10);
     doc.save(zuordnungFileName('Flächenkarte Bienenflug', 'pdf') || `bienenflugkarten_${ts}.pdf`);
     setBienenflugStatus('Flächenkarten exportiert.');
