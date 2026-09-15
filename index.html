@@ -56,6 +56,10 @@
   <button id="btn-betrieb" title="Betrieb/Termin für Dateibenennung zuordnen">
     <span id="btn-betrieb-label">Betrieb wählen</span>
   </button>
+  <button id="btn-sync" class="sync-toggle" type="button" role="switch" aria-checked="true" title="Automatische Cloud-Synchronisation">
+    <span class="sync-toggle-label">Sync</span>
+    <span class="sync-toggle-switch"><span class="sync-toggle-thumb"></span></span>
+  </button>
   <button id="btn-account" title="Cloud-Konto">Anmelden</button>
   <button id="theme-toggle" title="Hell-/Dunkelmodus umschalten" aria-label="Hell-/Dunkelmodus umschalten">
     <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2" fill="currentColor"/><g stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="12" y1="1.5" x2="12" y2="4.5"/><line x1="12" y1="19.5" x2="12" y2="22.5"/><line x1="1.5" y1="12" x2="4.5" y2="12"/><line x1="19.5" y1="12" x2="22.5" y2="12"/><line x1="4.4" y1="4.4" x2="6.5" y2="6.5"/><line x1="17.5" y1="17.5" x2="19.6" y2="19.6"/><line x1="4.4" y1="19.6" x2="6.5" y2="17.5"/><line x1="17.5" y1="6.5" x2="19.6" y2="4.4"/></g></svg>
@@ -141,8 +145,7 @@
   </div>
 
   <div class="sidebar-section" data-view="zeichner">
-    <button id="btn-zeichner-draw">Fläche zeichnen</button>
-    <div class="empty-hint" id="zeichner-empty-hint">Noch keine Fläche gezeichnet. „Fläche zeichnen" klicken, dann Eckpunkte per Klick setzen und mit Doppelklick abschließen. Rechtsklick entfernt den zuletzt gesetzten Punkt, Esc bricht das Zeichnen ganz ab. Gezeichnete Flächen erscheinen sofort auch in der Ebenenliste oben und stehen dort allen Werkzeugen zur Verfügung.</div>
+    <div class="empty-hint" id="zeichner-empty-hint">Noch keine Fläche gezeichnet. „Zeichnen" in der Werkzeugleiste über der Karte anklicken, dann Eckpunkte per Klick setzen und mit Doppelklick abschließen. Rechtsklick entfernt den zuletzt gesetzten Punkt, Esc bricht das Zeichnen ganz ab. Gezeichnete Flächen erscheinen sofort auch in der Ebenenliste oben und stehen dort allen Werkzeugen zur Verfügung.</div>
     <div id="zeichner-section">
       <h2>Gezeichnete Flächen</h2>
       <div id="zeichner-list"></div>
@@ -233,6 +236,24 @@
   <div id="obstbaum-error-toast"></div>
   <div id="bienenflug-error-toast"></div>
   <div id="topbar">
+    <div class="topbar-extra" id="shape-toolbar" data-view="zeichner">
+      <button type="button" id="shape-tool-draw" class="shape-tool-btn" title="Neue Fläche zeichnen">
+        <span class="shape-tool-icon">✏️</span> Zeichnen
+      </button>
+      <button type="button" id="shape-tool-edit" class="shape-tool-btn" title="Fläche auf der Karte anklicken, um ihre Eckpunkte per Ziehen zu bearbeiten">
+        <span class="shape-tool-icon">🖊️</span> Bearbeiten
+      </button>
+      <button type="button" id="shape-tool-split" class="shape-tool-btn" title="Fläche anklicken, dann Schnittlinie ziehen, um sie in zwei Teile zu zerlegen">
+        <span class="shape-tool-icon">✂️</span> Teilen
+      </button>
+      <button type="button" id="shape-tool-delete" class="shape-tool-btn" title="Fläche auf der Karte anklicken, um sie zu löschen">
+        <span class="shape-tool-icon">🗑️</span> Löschen
+      </button>
+      <button type="button" id="shape-tool-undo" class="shape-tool-btn" title="Letzte Änderung rückgängig machen" disabled>
+        <span class="shape-tool-icon">↩️</span> Rückgängig
+      </button>
+      <span id="shape-toolbar-status"></span>
+    </div>
     <button id="btn-basemap">Basiskarte: Standard</button>
     <button id="btn-fit">Auf Inhalt zoomen</button>
     <button id="btn-locate" title="Mein Standort" aria-label="Mein Standort">
@@ -280,6 +301,7 @@
             <th>Bäume</th>
             <th>Besichtigt</th>
             <th>Notiz</th>
+            <th>Anbauplanung</th>
             <th>Route</th>
           </tr>
         </thead>
@@ -490,6 +512,69 @@
       <div class="modal-actions">
         <button type="button" id="notes-modal-close-2">Abbrechen</button>
         <button type="button" id="notes-btn-save" class="primary">Speichern</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ---------- FeldFolio Plus: Anbauplanung (Gartenbau-Kulturplan) ---------- -->
+<div id="kulturplan-modal-overlay" class="modal-overlay" hidden>
+  <div class="modal-card modal-card-wide">
+    <h3 id="kulturplan-modal-title">Anbauplanung</h3>
+
+    <div id="kulturplan-not-configured" hidden>
+      <p class="modal-hint">Die Anbauplanung ist eine Cloud-Konto-Funktion. Bitte zuerst
+        anmelden (Konto-Button oben rechts), um sie zu nutzen.</p>
+      <div class="modal-actions">
+        <button type="button" id="kulturplan-modal-close-1">Schließen</button>
+      </div>
+    </div>
+
+    <div id="kulturplan-editor" hidden>
+      <p class="modal-hint">Welche Kultur steht wann auf dieser Fläche — konkreter als die
+        offizielle Nutzungsart, inkl. Folgekulturen im selben Jahr. Balken per Ziehen
+        verschieben, an den Rändern ziehen zum Anpassen des Zeitraums, anklicken zum Bearbeiten.</p>
+
+      <div id="kulturplan-year-nav">
+        <button type="button" id="kulturplan-year-prev" title="Vorheriges Jahr">‹</button>
+        <span id="kulturplan-year-label"></span>
+        <button type="button" id="kulturplan-year-next" title="Nächstes Jahr">›</button>
+      </div>
+
+      <div id="kulturplan-timeline"></div>
+
+      <div id="kulturplan-form">
+        <label class="compare-label" for="kulturplan-kultur-input">Kultur</label>
+        <input type="text" id="kulturplan-kultur-input" class="account-input" placeholder="z.B. Spinat, Kopfsalat, Brache …" list="kulturplan-kultur-suggestions" autocomplete="off">
+        <datalist id="kulturplan-kultur-suggestions"></datalist>
+        <div id="kulturplan-month-row">
+          <div>
+            <label class="compare-label" for="kulturplan-start-select">Von</label>
+            <select id="kulturplan-start-select"></select>
+          </div>
+          <div>
+            <label class="compare-label" for="kulturplan-end-select">Bis</label>
+            <select id="kulturplan-end-select"></select>
+          </div>
+          <div>
+            <label class="compare-label" for="kulturplan-flaeche-input">Fläche (m²)</label>
+            <input type="number" id="kulturplan-flaeche-input" class="account-input" placeholder="z.B. 400" min="0" step="1">
+          </div>
+        </div>
+        <label class="compare-label" for="kulturplan-duengung-input">Düngung / Pflanzenschutz (optional)</label>
+        <input type="text" id="kulturplan-duengung-input" class="account-input" placeholder="z.B. 2 dt Rindermist">
+
+        <p class="modal-hint modal-error" id="kulturplan-error" hidden></p>
+        <div class="modal-actions" style="justify-content:flex-start; flex-wrap:wrap;">
+          <button type="button" id="kulturplan-btn-delete" hidden>Löschen</button>
+          <button type="button" id="kulturplan-btn-cancel-edit" hidden>Abbrechen</button>
+          <button type="button" id="kulturplan-btn-add" class="primary">Hinzufügen</button>
+        </div>
+      </div>
+
+      <p class="modal-hint" id="kulturplan-sync-status"></p>
+      <div class="modal-actions">
+        <button type="button" id="kulturplan-modal-close-2" class="primary">Fertig</button>
       </div>
     </div>
   </div>

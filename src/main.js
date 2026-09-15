@@ -164,7 +164,17 @@ const map = L.map('map', { zoomControl: true, attributionControl: true }).setVie
 // denselben Karten-Klick-Event — armedTool sorgt dafür, dass immer nur genau
 // ein Werkzeug auf einen Kartenklick reagiert, statt dass sich mehrere
 // gegenseitig ins Gehege kommen.
-let armedTool = null; // null | 'draw-polygon' | 'place-tree' | 'place-hive'
+let armedTool = null; // null | 'draw-polygon' | 'place-tree' | 'place-hive' | 'split-line'
+
+// ---------- Flächen-Werkzeugleiste (oberhalb der Karte) ----------
+// mapToolMode bestimmt, was ein Klick auf eine vorhandene Fläche auf der
+// Karte auslöst, solange "Bearbeiten"/"Löschen"/"Teilen" in der
+// Werkzeugleiste aktiv ist — unabhängig von armedTool, das nur läuft, wenn
+// tatsächlich ein Leaflet.draw-Zeichenmodus aktiv ist (Polygon/Schnittlinie).
+let mapToolMode = null; // null | 'edit' | 'delete' | 'split'
+const shapeUndoStack = [];
+const SHAPE_UNDO_MAX = 20;
+let shapeEditBeforeGeometry = null; // Geometrie-Schnappschuss beim Start einer Eckpunkt-Bearbeitung, fürs Rückgängig
 
 // Eine Leaflet-Kachelebene kann immer nur auf EINER Karte aktiv sein — Viewer,
 // Jahresvergleich und Flächenzeichner haben je eine eigene Leaflet-Map-Instanz
@@ -1877,6 +1887,23 @@ function parsePhotoList(value) {
   return [];
 }
 
+// Ein Kulturplan-Eintrag: { id, jahr, kultur, startMonth, endMonth, duengung }
+// — startMonth/endMonth sind 1-12 (Monatsraster, siehe Anbauplanung weiter
+// unten). Liest robust wie parsePhotoList, statt bei kaputten/fremden Daten
+// abzustürzen.
+function parseKulturplan(value) {
+  const isValid = e => e && typeof e === 'object' && typeof e.kultur === 'string'
+    && Number.isFinite(e.startMonth) && Number.isFinite(e.endMonth) && Number.isFinite(e.jahr);
+  if (Array.isArray(value)) return value.filter(isValid);
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed.filter(isValid) : [];
+    } catch { return []; }
+  }
+  return [];
+}
+
 function buildFeatureEntry(feature, lyr, layerId, layerName, isTeilflaechen, color) {
   const props = feature.properties || {};
   const center = lyr.getBounds ? lyr.getBounds().getCenter() : lyr.getLatLng();
@@ -1898,15 +1925,29 @@ function buildFeatureEntry(feature, lyr, layerId, layerName, isTeilflaechen, col
     flaechenId: pickField(props, FIELD_CANDIDATES.flaechenid),
     besichtigt: false,
     notes: typeof props.feldfolio_notes === 'string' ? props.feldfolio_notes : '',
-    photos: parsePhotoList(props.feldfolio_photos)
+    photos: parsePhotoList(props.feldfolio_photos),
+    kulturplan: parseKulturplan(props.feldfolio_kulturplan)
   };
   featureIndex.push(entry);
+  // Solange ein Flächen-Werkzeug (Bearbeiten/Löschen/Teilen) in der
+  // Werkzeugleiste über der Karte aktiv ist, lenkt ein Klick auf die Fläche
+  // dieses Werkzeug um, statt sie nur auszuwählen — siehe mapToolMode weiter
+  // oben und die Werkzeugleisten-Verdrahtung weiter unten.
   lyr.on('click', () => {
+    if (mapToolMode === 'edit') { toggleShapeEdit(entry); return; }
+    if (mapToolMode === 'delete') { deleteShapeViaTool(entry); return; }
+    if (mapToolMode === 'split') { mapToolMode = null; updateShapeToolbar(); startParcelSplit(entry); return; }
     highlightFeature(entry);
     selectFeatureInTable(entry);
   });
   const labelText = escapeHtml(entry.nummer) + (entry.featName ? '<br>' + escapeHtml(entry.featName) : '');
   if (labelText.trim()) entry.labelAnchor = createLabelAnchorAt(center, labelText);
+  // Leaflet.draw stattet jedes Polygon automatisch mit einer .editing-Instanz
+  // aus (L.Edit.Poly), unabhängig davon, ob es gezeichnet, hochgeladen oder
+  // aus der Cloud wiederhergestellt wurde — universell hier verdrahtet, damit
+  // "Form bearbeiten" für JEDE Fläche verfügbar ist (siehe toggleShapeEdit
+  // weiter unten). Das 'edit'-Ereignis feuert bei jedem Eckpunkt-Zug.
+  lyr.on('edit', () => syncShapeGeometryLive(entry));
   return entry;
 }
 
@@ -1926,6 +1967,7 @@ function addLayer(name, geojson) {
   // läuft synchron WÄHREND des Konstruktoraufrufs, die Variable leafletLayer
   // ist zu diesem Zeitpunkt noch nicht zugewiesen.
   const labelAnchors = [];
+  const builtEntries = [];
 
   const leafletLayer = L.geoJSON(geojson, {
     // Canvas- statt SVG-Renderer für alle Ebenen — verhindert einen html2canvas/
@@ -1939,6 +1981,7 @@ function addLayer(name, geojson) {
     onEachFeature: (feature, lyr) => {
       const entry = buildFeatureEntry(feature, lyr, id, name, isTeilflaechen, color);
       if (entry.labelAnchor) labelAnchors.push(entry.labelAnchor);
+      builtEntries.push(entry);
     }
   });
   labelAnchors.forEach(anchor => leafletLayer.addLayer(anchor));
@@ -1948,8 +1991,23 @@ function addLayer(name, geojson) {
   (geojson.features || []).forEach(() => count++);
 
   layers[id] = { name, geojson, leafletLayer, color, visible: startVisible, isTeilflaechen, count };
+  // Eine wiederhergestellte/erneut hochgeladene "Flächenzeichner"-Ebene (z.B.
+  // nach Neuladen oder Betrieb-Wechsel) muss ihre Flächen wieder in
+  // zeichnerParcels eintragen, sonst kennt der Flächenzeichner sie nicht mehr
+  // (keine "Form bearbeiten"/"Teilen"-Buttons in dessen eigener Liste, und die
+  // Nummerierung neu gezeichneter Flächen würde wieder bei 1 anfangen, siehe
+  // nextZeichnerNummer()).
+  if (name === 'Flächenzeichner' && !isTeilflaechen) {
+    zeichnerLayerId = id;
+    // areaHa ist ein Flächenzeichner-eigenes Feld (buildFeatureEntry kennt nur
+    // das allgemeine groesse-Feld) — für wiederhergestellte Flächen fehlt es
+    // sonst und lässt renderParcelList() beim Formatieren abstürzen.
+    builtEntries.forEach(entry => { entry.areaHa = turf.area(entry.leafletLayer.toGeoJSON()) / 10000; });
+    zeichnerParcels.push(...builtEntries);
+  }
   renderLayerList();
   renderFeatureTable();
+  renderParcelList();
   fitAllLayers();
   // Neue Fläche könnte bereits gesetzte Obstbäume neu "einfangen" — ohne
   // geladene Flächen bleiben Bäume sonst dauerhaft ohne Flächen-Zuordnung,
@@ -2043,6 +2101,15 @@ function removeParcelPhoto(entry, path) {
   if (entry.leafletLayer.feature) entry.leafletLayer.feature.properties = entry.props;
 }
 
+// Gleiches Muster wie setParcelNotes — schreibt den kompletten Kulturplan
+// (alle Jahre) synchron in entry.props zurück, damit er automatisch mit dem
+// geteilten layers[id].geojson und damit dem Cloud-Speichern mitreist.
+function setParcelKulturplan(entry, plan) {
+  entry.kulturplan = plan;
+  entry.props.feldfolio_kulturplan = plan;
+  if (entry.leafletLayer.feature) entry.leafletLayer.feature.properties = entry.props;
+}
+
 function renderLayerList() {
   const list = document.getElementById('layer-list');
   const ids = Object.keys(layers);
@@ -2104,10 +2171,24 @@ function removeLayer(id) {
   for (let i = featureIndex.length - 1; i >= 0; i--) {
     if (featureIndex[i].layerId === id) {
       if (highlightedEntry === featureIndex[i]) highlightedEntry = null;
+      if (shapeEditingEntryId === featureIndex[i].id) shapeEditingEntryId = null;
       featureIndex.splice(i, 1);
     }
   }
   featureIndex.forEach((entry, i) => { entry.idx = i; }); // Indizes neu durchnummerieren
+  // Wird die komplette Flächenzeichner-Ebene entfernt (z.B. über "Entfernen"
+  // in der Ebenenliste statt einzeln über den Flächenzeichner), müssen ihre
+  // Einträge auch aus zeichnerParcels verschwinden — sonst blieben dort
+  // Karteileichen mit toten leafletLayer-Referenzen zurück.
+  if (id === zeichnerLayerId) {
+    zeichnerLayerId = null;
+    zeichnerParcels.length = 0;
+    renderParcelList();
+  } else {
+    for (let i = zeichnerParcels.length - 1; i >= 0; i--) {
+      if (zeichnerParcels[i].layerId === id) zeichnerParcels.splice(i, 1);
+    }
+  }
   renderLayerList();
   renderFeatureTable();
   reassignAllTreesToParcels(); // Bäume, deren Fläche gerade entfernt wurde, wieder als "ohne Fläche" markieren
@@ -2156,7 +2237,7 @@ function renderFeatureTable() {
   renderBesichtigtSummary('table-besichtigt-summary', rows);
 
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="9" style="color:var(--muted); padding:14px;">' +
+    tbody.innerHTML = '<tr><td colspan="10" style="color:var(--muted); padding:14px;">' +
       (featureIndex.length ? 'Keine Flächen in dieser Ansicht (Teilflächen sind ausgeblendet).' : 'Noch keine Flächen geladen.') +
       '</td></tr>';
     return;
@@ -2174,6 +2255,7 @@ function renderFeatureTable() {
       ? [...counts.entries()].map(([key, n]) => fruitChipHtml(key, ` <span class="n">${n}</span>`)).join('')
       : '<span style="color:var(--muted);">–</span>';
     const hasNotes = entry.notes || entry.photos.length;
+    const hasKulturplan = entry.kulturplan.length > 0;
     return `<tr data-idx="${entry.idx}">
       <td>${escapeHtml(entry.nummer || '–')}</td>
       <td>${escapeHtml(entry.featName || '–')}</td>
@@ -2183,6 +2265,7 @@ function renderFeatureTable() {
       <td>${treesCell}</td>
       <td class="besichtigt-cell"><input type="checkbox" class="besichtigt-checkbox" ${entry.besichtigt ? 'checked' : ''} onclick="event.stopPropagation()"></td>
       <td><button class="notes-btn${hasNotes ? ' has-notes' : ''}" data-action="notes" data-idx="${entry.idx}" onclick="event.stopPropagation()" title="Notiz &amp; Fotos">📝</button></td>
+      <td><button class="notes-btn${hasKulturplan ? ' has-notes' : ''}" data-action="kulturplan" data-idx="${entry.idx}" onclick="event.stopPropagation()" title="Anbauplanung">🌱</button></td>
       <td>${routeCell}</td>
     </tr>`;
   }).join('');
@@ -2201,6 +2284,12 @@ function renderFeatureTable() {
     btn.addEventListener('click', () => {
       const idx = parseInt(btn.getAttribute('data-idx'), 10);
       openNotesModal('parcel', featureIndex[idx]);
+    });
+  });
+  tbody.querySelectorAll('[data-action="kulturplan"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt(btn.getAttribute('data-idx'), 10);
+      openKulturplanModal(featureIndex[idx]);
     });
   });
 }
@@ -2393,8 +2482,16 @@ function setActiveSegment(target) {
   // Zuerst das ggf. scharfe Werkzeug der vorherigen Sektion entwaffnen, bevor
   // die neue Sektion (ggf. mit eigenem Werkzeug) aktiv wird.
   if (armedTool === 'draw-polygon' && zeichnerDrawPolygon) zeichnerDrawPolygon.disable();
+  if (armedTool === 'split-line' && zeichnerDrawLine) zeichnerDrawLine.disable();
+  disableShapeEditing();
   if (armedTool === 'place-tree') setActiveFruitKey(null);
   armedTool = null;
+  // Die Werkzeugleiste ist nur im Flächenzeichner sichtbar (Teil von #topbar,
+  // dort per .topbar-extra ein-/ausgeblendet) — ein weiterhin "scharfes"
+  // Bearbeiten/Löschen/Teilen-Werkzeug beim Verlassen des Tabs wäre unsichtbar
+  // und damit verwirrend, deshalb hier immer zurückgesetzt.
+  if (target !== 'zeichner' && mapToolMode) { mapToolMode = null; setShapeToolbarStatus(''); }
+  updateShapeToolbar();
   if (target !== 'compare') { restoreCompareHiddenLayer(); compareTablePanel.close(); }
   document.getElementById('map').classList.toggle('placing', target === 'bienenflug');
 
@@ -3234,10 +3331,27 @@ document.getElementById('btn-export-flaechenkarten').addEventListener('click', e
 // eintragbar, Export nutzt dieselbe Flächenkarten-PDF-Logik wie der Viewer.
 let zeichnerInitDone = false;
 let zeichnerDrawPolygon = null; // Leaflet.draw-Handler, damit setActiveSegment() das Zeichnen beim Verlassen des Tabs abbrechen kann
+let zeichnerDrawLine = null; // Leaflet.draw-Handler für die Schnittlinie bei "Fläche teilen"
 let zeichnerLayerId = null; // id der synthetischen "Flächenzeichner"-Ebene im geteilten layers-Bestand
-const zeichnerParcels = []; // featureIndex-Einträge der gezeichneten Flächen (gleicher Bestand wie überall sonst, nur gefiltert für diese Liste)
-let zeichnerParcelCounter = 0;
+const zeichnerParcels = []; // featureIndex-Einträge der gezeichneten Flächen (gleicher Bestand wie überall sonst, nur gefiltert für diese Liste) — bei Neuladen/Betrieb-Wechsel aus einer wiederhergestellten "Flächenzeichner"-Ebene erneut befüllt, siehe addLayer()
 let zeichnerColorIdx = 0;
+let shapeEditingEntryId = null; // id der Fläche (beliebiger Herkunft — gezeichnet, hochgeladen oder wiederhergestellt), deren Eckpunkte gerade per Ziehen bearbeitbar sind (immer nur eine gleichzeitig)
+let shapeGeometryCommitTimer = null;
+let zeichnerSplitTargetId = null; // id der Fläche, die gerade per Schnittlinie geteilt wird
+
+// Liefert die nächste freie, lückenlose Fläche-Nummer für neu gezeichnete
+// Flächen — aus dem aktuellen Bestand berechnet statt aus einem simplen
+// Zähler, der nach einem Neuladen/Betrieb-Wechsel nicht mehr zum tatsächlich
+// geladenen Stand passt (sonst fängt "Fläche 1" nach jedem Neuladen wieder
+// von vorne an, obwohl schon Flächen 1-3 existieren).
+function nextZeichnerNummer() {
+  let max = 0;
+  zeichnerParcels.forEach(p => {
+    const n = parseInt(p.props.NUMMER, 10);
+    if (isFinite(n) && n > max) max = n;
+  });
+  return max + 1;
+}
 
 // Legt beim allerersten Zeichnen die geteilte "Flächenzeichner"-Ebene an —
 // alle weiteren gezeichneten Flächen werden per addFeatureToLayer() an
@@ -3256,9 +3370,9 @@ function initZeichnerMap() {
   if (zeichnerInitDone) return;
   zeichnerInitDone = true;
 
-  const drawBtn = document.getElementById('btn-zeichner-draw');
   if (typeof L.Draw === 'undefined') {
-    drawBtn.disabled = true;
+    shapeToolDrawBtn.disabled = true;
+    shapeToolSplitBtn.disabled = true;
     showZeichnerError('Zeichenwerkzeug nicht verfügbar (Leaflet.draw konnte nicht geladen werden).');
     return;
   }
@@ -3269,26 +3383,43 @@ function initZeichnerMap() {
     metric: true,
     allowIntersection: false
   });
-  drawBtn.addEventListener('click', () => zeichnerDrawPolygon.enable());
 
-  map.on(L.Draw.Event.DRAWSTART, () => {
-    armedTool = 'draw-polygon';
-    drawBtn.classList.add('active');
-    drawBtn.textContent = 'Zeichnen läuft … (Esc zum Abbrechen)';
+  // Schnittlinien-Werkzeug für "Fläche teilen" — wird nicht direkt über die
+  // Werkzeugleiste scharf gestellt, sondern erst nach Anklicken einer
+  // konkreten Zielfläche (siehe startParcelSplit weiter unten), da es immer
+  // eine Zielfläche braucht (zeichnerSplitTargetId).
+  zeichnerDrawLine = new L.Draw.Polyline(map, {
+    shapeOptions: { color: '#EB5C4E', weight: 2.5, dashArray: '6,6' },
+    metric: true,
+    allowIntersection: true
   });
-  map.on(L.Draw.Event.DRAWSTOP, () => {
-    if (armedTool === 'draw-polygon') armedTool = null;
-    drawBtn.classList.remove('active');
-    drawBtn.textContent = 'Fläche zeichnen';
+
+  map.on(L.Draw.Event.DRAWSTART, (e) => {
+    if (e.layerType === 'polyline') {
+      armedTool = 'split-line';
+      setZeichnerStatus('Schnittlinie quer über die Fläche ziehen, mit Doppelklick abschließen (Esc zum Abbrechen).');
+    } else {
+      armedTool = 'draw-polygon';
+      setZeichnerStatus('Zeichnen läuft … Eckpunkte anklicken, mit Doppelklick abschließen (Esc zum Abbrechen).');
+    }
+    updateShapeToolbar();
+  });
+  map.on(L.Draw.Event.DRAWSTOP, (e) => {
+    if (e.layerType === 'polyline') {
+      if (armedTool === 'split-line') { armedTool = null; zeichnerSplitTargetId = null; }
+    } else if (armedTool === 'draw-polygon') {
+      armedTool = null;
+    }
+    updateShapeToolbar();
   });
 
   // Rechtsklick während des Zeichnens entfernt den zuletzt gesetzten Punkt
-  // (deleteLastVertex ist eine öffentliche Methode von L.Draw.Polygon, sonst
-  // nur über die von uns nicht genutzte Standard-Toolbar erreichbar).
+  // (deleteLastVertex ist eine öffentliche Methode von L.Draw.Polygon/
+  // Polyline, sonst nur über die von uns nicht genutzte Standard-Toolbar
+  // erreichbar).
   map.on('contextmenu', (e) => {
-    if (armedTool !== 'draw-polygon') return;
-    L.DomEvent.preventDefault(e);
-    zeichnerDrawPolygon.deleteLastVertex();
+    if (armedTool === 'draw-polygon') { L.DomEvent.preventDefault(e); zeichnerDrawPolygon.deleteLastVertex(); }
+    else if (armedTool === 'split-line') { L.DomEvent.preventDefault(e); zeichnerDrawLine.deleteLastVertex(); }
   });
 
   // Gezeichnete Flächen landen direkt im geteilten Datenbestand (layers/
@@ -3296,24 +3427,29 @@ function initZeichnerMap() {
   // Liste — dadurch sind sie sofort auch im Viewer, im Jahresvergleich (als
   // Jahr B) und im Obstbaumkataster (Baum-Zuordnung) nutzbar.
   map.on(L.Draw.Event.CREATED, (e) => {
+    if (e.layerType === 'polyline') {
+      finishParcelSplit(e.layer);
+      return;
+    }
     const layer = e.layer;
     const areaHa = turf.area(layer.toGeoJSON()) / 10000;
     const color = COLORS[zeichnerColorIdx % COLORS.length];
     zeichnerColorIdx++;
-    zeichnerParcelCounter++;
+    const nummer = nextZeichnerNummer();
 
     const feature = {
       type: 'Feature',
       geometry: layer.toGeoJSON().geometry,
-      properties: { NUMMER: zeichnerParcelCounter, NAME: '', KULTURART: '', FLAECHE_HA: Number(areaHa.toFixed(4)) }
+      properties: { NUMMER: nummer, NAME: '', KULTURART: '', FLAECHE_HA: Number(areaHa.toFixed(4)) }
     };
     const layerId = ensureZeichnerLayer();
     const entry = addFeatureToLayer(layerId, feature, color);
-    entry.id = 'parcel-' + zeichnerParcelCounter;
+    entry.id = 'parcel-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
     entry.areaHa = areaHa;
     zeichnerParcels.push(entry);
+    pushShapeUndo({ type: 'add', entryId: entry.id });
     renderParcelList();
-    setZeichnerStatus(`Fläche ${zeichnerParcelCounter} gezeichnet (${areaHa.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ha).`);
+    setZeichnerStatus(`Fläche ${nummer} gezeichnet (${areaHa.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ha).`);
   });
 }
 
@@ -3335,12 +3471,345 @@ function zoomToParcel(id) {
 }
 
 function removeParcel(id) {
-  const idx = zeichnerParcels.findIndex(x => x.id === id);
-  if (idx === -1) return;
-  removeFeatureEntry(zeichnerParcels[idx]);
-  zeichnerParcels.splice(idx, 1);
+  const entry = zeichnerParcels.find(x => x.id === id);
+  if (!entry) return;
+  pushShapeUndo({
+    type: 'delete',
+    layerId: entry.layerId,
+    color: entry.color,
+    feature: cloneFeature(entry.leafletLayer.feature),
+    wasZeichnerOrigin: true
+  });
+  removeEntryEverywhere(entry);
+  updateShapeToolbar();
+}
+
+// Kurzer Statustext an der richtigen Stelle — je nachdem, ob die betroffene
+// Fläche zur Flächenzeichner-Ebene gehört (Zeichner-Statuszeile) oder
+// hochgeladen/wiederhergestellt ist (allgemeine Viewer-Statuszeile).
+function shapeStatus(entry, msg) {
+  if (entry.layerId === zeichnerLayerId) setZeichnerStatus(msg);
+  else setStatus(msg);
+}
+
+function cloneFeature(feature) { return JSON.parse(JSON.stringify(feature)); }
+
+// Entfernt eine Fläche vollständig aus allen Beständen (featureIndex über
+// removeFeatureEntry, zusätzlich zeichnerParcels und eine ggf. laufende
+// Eckpunkt-Bearbeitung) — gemeinsam genutzt von Löschen-Werkzeug, "Entfernen"
+// und den Rückgängig-Pfaden von Zeichnen/Teilen, damit diese Aufräum-Logik
+// nur an einer Stelle gepflegt werden muss.
+function removeEntryEverywhere(entry) {
+  if (shapeEditingEntryId === entry.id) { shapeEditingEntryId = null; shapeEditBeforeGeometry = null; }
+  const zIdx = zeichnerParcels.findIndex(p => p.id === entry.id);
+  if (zIdx !== -1) zeichnerParcels.splice(zIdx, 1);
+  removeFeatureEntry(entry); // rendert bereits Ebenenliste/Flächentabelle neu
   renderParcelList();
 }
+
+// ---------- Rückgängig ----------
+// Ein gemeinsamer Verlaufsspeicher für Zeichnen/Bearbeiten/Löschen/Teilen —
+// jeder Eintrag trägt genug Rohdaten (geklonte GeoJSON-Feature, betroffene
+// Ebene/Farbe), um die Aktion ohne separaten Code-Pfad je Aktionsart wieder
+// herzustellen.
+function pushShapeUndo(action) {
+  shapeUndoStack.push(action);
+  if (shapeUndoStack.length > SHAPE_UNDO_MAX) shapeUndoStack.shift();
+  updateShapeToolbar();
+}
+
+function undoLastShapeAction() {
+  const action = shapeUndoStack.pop();
+  if (!action) return;
+  if (action.type === 'add') {
+    const entry = featureIndex.find(e => e.id === action.entryId);
+    if (entry) removeEntryEverywhere(entry);
+    setShapeToolbarStatus('Zeichnen rückgängig gemacht.');
+  } else if (action.type === 'delete' || action.type === 'split') {
+    if (action.type === 'split') {
+      action.newEntryIds.forEach(id => {
+        const e = featureIndex.find(x => x.id === id);
+        if (e) removeEntryEverywhere(e);
+      });
+    }
+    const entry = addFeatureToLayer(action.layerId, action.feature, action.color);
+    if (action.wasZeichnerOrigin) {
+      entry.areaHa = turf.area(entry.leafletLayer.toGeoJSON()) / 10000;
+      zeichnerParcels.push(entry);
+    }
+    renderParcelList();
+    setShapeToolbarStatus(action.type === 'split' ? 'Teilen rückgängig gemacht.' : 'Löschen rückgängig gemacht.');
+  } else if (action.type === 'edit') {
+    const entry = featureIndex.find(e => e.id === action.entryId);
+    if (entry) {
+      applyGeometryToEntry(entry, action.beforeGeometry);
+      renderFeatureTable();
+      renderParcelList();
+    }
+    setShapeToolbarStatus('Bearbeitung rückgängig gemacht.');
+  }
+  reassignAllTreesToParcels();
+  updateShapeToolbar();
+}
+
+// Setzt die Geometrie eines Eintrags direkt (ohne Eckpunkt-Bearbeitung) auf
+// einen früheren Stand zurück — für Rückgängig einer Formänderung.
+function applyGeometryToEntry(entry, geometry) {
+  const depth = geometry.type === 'MultiPolygon' ? 2 : 1;
+  entry.leafletLayer.setLatLngs(L.GeoJSON.coordsToLatLngs(geometry.coordinates, depth));
+  entry.leafletLayer.feature.geometry = geometry;
+  entry.center = entry.leafletLayer.getBounds().getCenter();
+  if (entry.labelAnchor && entry.labelAnchor.setLatLng) entry.labelAnchor.setLatLng(entry.center);
+  const areaHa = turf.area(entry.leafletLayer.toGeoJSON()) / 10000;
+  entry.areaHa = areaHa;
+  entry.groesse = String(areaHa);
+  entry.props.FLAECHE_HA = Number(areaHa.toFixed(4));
+}
+
+// Löschen-Werkzeug in der Kartenleiste: Klick auf eine Fläche entfernt sie
+// sofort (mit Rückgängig-Möglichkeit statt einer zusätzlichen Rückfrage).
+function deleteShapeViaTool(entry) {
+  const label = entry.nummer || entry.featName || '';
+  pushShapeUndo({
+    type: 'delete',
+    layerId: entry.layerId,
+    color: entry.color,
+    feature: cloneFeature(entry.leafletLayer.feature),
+    wasZeichnerOrigin: zeichnerParcels.some(p => p.id === entry.id)
+  });
+  removeEntryEverywhere(entry);
+  shapeStatus(entry, `Fläche ${label} gelöscht.`);
+  updateShapeToolbar();
+}
+
+// ---------- Eckpunkte einer Fläche per Ziehen anpassen ----------
+// Nutzt L.Edit.Poly aus Leaflet.draw (steckt automatisch in jedem Polygon,
+// egal ob gezeichnet, hochgeladen oder aus der Cloud wiederhergestellt, siehe
+// die .on('edit', …)-Verdrahtung in buildFeatureEntry) — kein eigenes
+// Zieh-Handling nötig, nur enable()/disable() und das Nachziehen von
+// Fläche/Mittelpunkt/Baum-Zuordnung, wenn sich die Form ändert. Funktioniert
+// für jede Fläche in featureIndex, nicht nur gezeichnete.
+function disableShapeEditing() {
+  if (!shapeEditingEntryId) return;
+  const entry = featureIndex.find(x => x.id === shapeEditingEntryId);
+  if (entry && entry.leafletLayer.editing) {
+    entry.leafletLayer.editing.disable();
+    if (shapeEditBeforeGeometry && JSON.stringify(shapeEditBeforeGeometry) !== JSON.stringify(entry.leafletLayer.feature.geometry)) {
+      pushShapeUndo({ type: 'edit', entryId: entry.id, beforeGeometry: shapeEditBeforeGeometry });
+    }
+  }
+  shapeEditBeforeGeometry = null;
+  shapeEditingEntryId = null;
+  updateShapeToolbar();
+}
+
+function toggleShapeEdit(entry) {
+  if (!entry || !entry.leafletLayer.editing) return;
+  if (shapeEditingEntryId === entry.id) {
+    disableShapeEditing();
+  } else {
+    disableShapeEditing(); // vorherige Bearbeitung zuerst sauber beenden (inkl. Rückgängig-Eintrag)
+    shapeEditBeforeGeometry = cloneFeature(entry.leafletLayer.feature).geometry;
+    entry.leafletLayer.editing.enable();
+    shapeEditingEntryId = entry.id;
+    shapeStatus(entry, `Fläche ${entry.nummer || ''}: Eckpunkte ziehen, um Form/Standort zu ändern.`);
+  }
+  renderFeatureTable();
+  renderParcelList();
+  updateShapeToolbar();
+}
+
+// Feuert bei JEDEM Eckpunkt-Zug (auch während des Ziehens) — hält Geometrie
+// und Label-Position sofort sichtbar aktuell, verschiebt die teureren
+// Neuberechnungen (Fläche, Baum-Zuordnung, Tabellen-Neuaufbau) aber per
+// Debounce ans Ende der Zieh-Geste, statt bei jedem Zwischenschritt neu zu
+// rendern.
+function syncShapeGeometryLive(entry) {
+  const freshGeoJson = entry.leafletLayer.toGeoJSON();
+  // Gleiche Objektreferenz wie in layers[id].geojson.features (siehe
+  // addFeatureToLayer) — die Mutation reicht, kein erneutes Einsetzen nötig.
+  entry.leafletLayer.feature.geometry = freshGeoJson.geometry;
+  entry.center = entry.leafletLayer.getBounds().getCenter();
+  if (entry.labelAnchor && entry.labelAnchor.setLatLng) entry.labelAnchor.setLatLng(entry.center);
+  clearTimeout(shapeGeometryCommitTimer);
+  shapeGeometryCommitTimer = setTimeout(() => commitShapeGeometry(entry), 200);
+}
+
+function commitShapeGeometry(entry) {
+  const newAreaHa = turf.area(entry.leafletLayer.toGeoJSON()) / 10000;
+  entry.areaHa = newAreaHa;
+  entry.groesse = String(newAreaHa);
+  entry.props.FLAECHE_HA = Number(newAreaHa.toFixed(4));
+  reassignAllTreesToParcels();
+  renderFeatureTable();
+  renderParcelList();
+  shapeStatus(entry, `Fläche ${entry.nummer || ''} angepasst (${newAreaHa.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ha).`);
+}
+
+// ---------- Fläche teilen ----------
+// Zerschneidet eine Fläche entlang einer frei gezeichneten Linie in zwei
+// Teilflächen — funktioniert für jede geladene Fläche, nicht nur gezeichnete.
+function startParcelSplit(entry) {
+  initZeichnerMap(); // stellt sicher, dass zeichnerDrawLine existiert, auch wenn der Flächenzeichner-Tab noch nie geöffnet wurde
+  if (!zeichnerDrawLine) { showZeichnerError('Schnittwerkzeug nicht verfügbar.'); return; }
+  disableShapeEditing();
+  zeichnerSplitTargetId = entry.id;
+  zeichnerDrawLine.enable();
+}
+
+// Verlängert die gezogene Linie an beiden Enden weit über die Fläche hinaus
+// und baut daraus ein großes Halbebenen-Rechteck auf einer Seite — turf.
+// intersect() liefert damit die eine Teilfläche, turf.difference() die
+// komplementäre andere. Robuster als ein direkter Linienschnitt, da die
+// gezogene Linie die Fläche nicht exakt bis zum Rand treffen muss.
+function splitPolygonByLine(polygonFeature, linePoints) {
+  const bbox = turf.bbox(polygonFeature);
+  const diagKm = turf.distance(turf.point([bbox[0], bbox[1]]), turf.point([bbox[2], bbox[3]]), { units: 'kilometers' });
+  const ext = Math.max(diagKm * 3, 0.5);
+
+  const first = linePoints[0];
+  const last = linePoints[linePoints.length - 1];
+  const bearingFwd = turf.bearing(turf.point(first), turf.point(last));
+  const startExt = turf.destination(turf.point(first), ext, bearingFwd + 180, { units: 'kilometers' }).geometry.coordinates;
+  const endExt = turf.destination(turf.point(last), ext, bearingFwd, { units: 'kilometers' }).geometry.coordinates;
+  const extendedLine = [startExt, ...linePoints, endExt];
+
+  const perpBearing = bearingFwd + 90;
+  const offsetSide = extendedLine.map(pt =>
+    turf.destination(turf.point(pt), ext, perpBearing, { units: 'kilometers' }).geometry.coordinates
+  );
+  const halfPoly = turf.polygon([[...extendedLine, ...offsetSide.slice().reverse(), extendedLine[0]]]);
+
+  let pieceA = null, pieceB = null;
+  try {
+    pieceA = turf.intersect(polygonFeature, halfPoly);
+    pieceB = turf.difference(polygonFeature, halfPoly);
+  } catch {
+    return null;
+  }
+  if (!pieceA || !pieceB) return null;
+  return { pieceA, pieceB };
+}
+
+function finishParcelSplit(lineLayer) {
+  const targetId = zeichnerSplitTargetId;
+  zeichnerSplitTargetId = null;
+  const entry = featureIndex.find(x => x.id === targetId);
+  if (!entry) { setZeichnerStatus('Zielfläche nicht mehr vorhanden — Teilen abgebrochen.'); return; }
+
+  const linePoints = lineLayer.toGeoJSON().geometry.coordinates;
+  if (linePoints.length < 2) { shapeStatus(entry, 'Schnittlinie braucht mindestens zwei Punkte.'); return; }
+
+  const result = splitPolygonByLine(entry.leafletLayer.feature, linePoints);
+  if (!result) {
+    showZeichnerError('Fläche konnte nicht geteilt werden — Schnittlinie muss die Fläche komplett durchqueren.');
+    return;
+  }
+  const { pieceA, pieceB } = result;
+  const areaA = turf.area(pieceA) / 10000;
+  const areaB = turf.area(pieceB) / 10000;
+  if (areaA <= 0 || areaB <= 0) {
+    showZeichnerError('Fläche konnte nicht geteilt werden — beide Teile müssen eine sichtbare Größe haben.');
+    return;
+  }
+
+  const layerId = entry.layerId;
+  const color = entry.color;
+  const isZeichnerOrigin = zeichnerParcels.some(p => p.id === entry.id);
+  const baseName = entry.featName || '';
+  const baseNummer = entry.props.NUMMER;
+
+  const undoAction = {
+    type: 'split',
+    layerId, color,
+    feature: cloneFeature(entry.leafletLayer.feature),
+    wasZeichnerOrigin: isZeichnerOrigin,
+    newEntryIds: []
+  };
+
+  removeEntryEverywhere(entry);
+
+  [[pieceA, areaA, 'A'], [pieceB, areaB, 'B']].forEach(([piece, areaHa, suffix]) => {
+    const nummer = isZeichnerOrigin ? nextZeichnerNummer() : `${baseNummer}-${suffix}`;
+    const feature = {
+      type: 'Feature',
+      geometry: piece.geometry,
+      properties: { ...entry.props, NUMMER: nummer, NAME: baseName ? `${baseName} (Teil ${suffix})` : '', FLAECHE_HA: Number(areaHa.toFixed(4)) }
+    };
+    const newEntry = addFeatureToLayer(layerId, feature, color);
+    if (isZeichnerOrigin) {
+      newEntry.id = 'parcel-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+      newEntry.areaHa = areaHa;
+      zeichnerParcels.push(newEntry);
+    }
+    undoAction.newEntryIds.push(newEntry.id);
+  });
+  pushShapeUndo(undoAction);
+
+  renderParcelList();
+  reassignAllTreesToParcels();
+  shapeStatus(entry, `Fläche geteilt in ${areaA.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ha und ${areaB.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ha.`);
+}
+
+// ---------- Werkzeugleiste oberhalb der Karte ----------
+// Bündelt Zeichnen/Bearbeiten/Teilen/Löschen/Rückgängig an einer Stelle,
+// statt sie doppelt als Zeilen-Buttons in der Flächenzeichner-Liste UND der
+// Flächentabelle vorzuhalten — die Werkzeuge wirken auf jede Fläche, die auf
+// der Karte angeklickt wird, unabhängig vom gerade aktiven Reiter.
+const shapeToolDrawBtn = document.getElementById('shape-tool-draw');
+const shapeToolEditBtn = document.getElementById('shape-tool-edit');
+const shapeToolSplitBtn = document.getElementById('shape-tool-split');
+const shapeToolDeleteBtn = document.getElementById('shape-tool-delete');
+const shapeToolUndoBtn = document.getElementById('shape-tool-undo');
+const shapeToolbarStatusEl = document.getElementById('shape-toolbar-status');
+
+function setShapeToolbarStatus(msg) { shapeToolbarStatusEl.textContent = msg || ''; }
+
+function updateShapeToolbar() {
+  shapeToolDrawBtn.classList.toggle('active', armedTool === 'draw-polygon');
+  shapeToolEditBtn.classList.toggle('active', mapToolMode === 'edit');
+  shapeToolDeleteBtn.classList.toggle('active', mapToolMode === 'delete');
+  shapeToolSplitBtn.classList.toggle('active', mapToolMode === 'split' || armedTool === 'split-line');
+  shapeToolUndoBtn.disabled = shapeUndoStack.length === 0;
+}
+
+// Bearbeiten/Löschen bleiben "scharf", bis man sie erneut anklickt (oder Esc
+// drückt) — man kann so mehrere Flächen hintereinander anklicken, ohne das
+// Werkzeug jedes Mal neu auswählen zu müssen.
+function setMapToolMode(mode) {
+  disableShapeEditing();
+  mapToolMode = mapToolMode === mode ? null : mode;
+  if (mapToolMode === 'edit') setShapeToolbarStatus('Fläche anklicken, um ihre Eckpunkte zu bearbeiten.');
+  else if (mapToolMode === 'delete') setShapeToolbarStatus('Fläche anklicken, um sie zu löschen.');
+  else setShapeToolbarStatus('');
+  updateShapeToolbar();
+}
+
+shapeToolDrawBtn.addEventListener('click', () => {
+  initZeichnerMap(); // funktioniert von jedem Reiter aus, auch ohne den Flächenzeichner-Tab je geöffnet zu haben
+  if (zeichnerDrawPolygon) zeichnerDrawPolygon.enable();
+});
+shapeToolEditBtn.addEventListener('click', () => setMapToolMode('edit'));
+shapeToolDeleteBtn.addEventListener('click', () => setMapToolMode('delete'));
+shapeToolSplitBtn.addEventListener('click', () => {
+  if (mapToolMode === 'split' || armedTool === 'split-line') {
+    mapToolMode = null;
+    if (zeichnerDrawLine) zeichnerDrawLine.disable();
+    setShapeToolbarStatus('');
+  } else {
+    disableShapeEditing();
+    mapToolMode = 'split';
+    setShapeToolbarStatus('Fläche anklicken, um sie zu teilen.');
+  }
+  updateShapeToolbar();
+});
+shapeToolUndoBtn.addEventListener('click', undoLastShapeAction);
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && mapToolMode) { mapToolMode = null; setShapeToolbarStatus(''); updateShapeToolbar(); }
+});
+
+updateShapeToolbar();
 
 function renderParcelList() {
   const list = document.getElementById('zeichner-list');
@@ -3990,6 +4459,7 @@ document.addEventListener('keydown', (e) => {
   // den Tastaturfokus hat, was nach einem Kartenklick nicht zuverlässig der
   // Fall ist.
   if (e.key === 'Escape' && armedTool === 'draw-polygon' && zeichnerDrawPolygon) zeichnerDrawPolygon.disable();
+  if (e.key === 'Escape' && armedTool === 'split-line' && zeichnerDrawLine) zeichnerDrawLine.disable();
 });
 
 // ---------- Baumkataster laden/speichern (Format: GeoJSON) ----------
@@ -4866,6 +5336,7 @@ if (isSupabaseConfigured) {
     accountSession = session;
     updateAccountButton();
     if (session) autoLoadCloudState();
+    refreshAutoSyncTimer();
   });
 }
 
@@ -4882,6 +5353,7 @@ accountAuthForm.addEventListener('submit', async (e) => {
         updateAccountButton();
         renderAccountModal();
         autoLoadCloudState();
+        refreshAutoSyncTimer();
       } else {
         showAccountError('Registrierung erfolgreich — bitte E-Mail bestätigen und dann anmelden.');
       }
@@ -4891,6 +5363,7 @@ accountAuthForm.addEventListener('submit', async (e) => {
       updateAccountButton();
       renderAccountModal();
       autoLoadCloudState();
+      refreshAutoSyncTimer();
     }
   } catch (err) {
     // Registrierung für eine noch nicht freigeschaltete Nicht-oekop.de-Adresse
@@ -4945,7 +5418,78 @@ document.getElementById('account-btn-signout').addEventListener('click', async (
   accountSession = null;
   updateAccountButton();
   closeAccountModal();
+  refreshAutoSyncTimer();
 });
+
+// ---------- FeldFolio Plus: Automatische Cloud-Synchronisation ----------
+// Speichert den aktuellen Arbeitsstand periodisch im Hintergrund über
+// saveFullState() (siehe weiter unten), statt dass man nach jeder Änderung
+// selbst an "Cloud speichern" denken muss — über den Sync-Schalter in der
+// Kopfzeile ein-/ausschaltbar, die Einstellung bleibt per localStorage über
+// ein Neuladen hinweg erhalten. Läuft nur, wenn sowohl der Schalter an ist
+// als auch eine Anmeldung besteht (refreshAutoSyncTimer() wird darum bei
+// jeder An-/Abmeldung erneut aufgerufen, siehe oben).
+const AUTO_SYNC_STORAGE_KEY = 'feldfolio-autosync';
+const AUTO_SYNC_INTERVAL_MS = 30000;
+let autoSyncEnabled = true;
+try {
+  const savedAutoSync = localStorage.getItem(AUTO_SYNC_STORAGE_KEY);
+  if (savedAutoSync !== null) autoSyncEnabled = savedAutoSync === 'true';
+} catch {}
+let autoSyncTimer = null;
+let autoSyncInFlight = false;
+const btnSync = document.getElementById('btn-sync');
+
+function updateSyncButton() {
+  btnSync.classList.toggle('active', autoSyncEnabled);
+  btnSync.setAttribute('aria-checked', String(autoSyncEnabled));
+  if (!autoSyncEnabled) {
+    btnSync.title = 'Automatische Cloud-Synchronisation: aus';
+  } else if (!isSupabaseConfigured || !accountSession) {
+    btnSync.title = 'Automatische Cloud-Synchronisation: an (wird erst nach der Anmeldung aktiv)';
+  } else {
+    btnSync.title = `Automatische Cloud-Synchronisation: an — speichert alle ${AUTO_SYNC_INTERVAL_MS / 1000}s im Hintergrund`;
+  }
+}
+
+async function runAutoSync() {
+  if (autoSyncInFlight || !autoSyncEnabled || !isSupabaseConfigured || !accountSession) return;
+  autoSyncInFlight = true;
+  btnSync.classList.add('syncing');
+  try {
+    await saveFullState();
+    btnSync.title = `Automatische Cloud-Synchronisation: an — zuletzt synchronisiert um ${new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}`;
+  } catch (err) {
+    btnSync.title = 'Automatische Cloud-Synchronisation: Fehler — ' + (err.message || 'Synchronisation fehlgeschlagen.');
+  } finally {
+    autoSyncInFlight = false;
+    btnSync.classList.remove('syncing');
+  }
+}
+
+function refreshAutoSyncTimer() {
+  if (autoSyncTimer) { clearInterval(autoSyncTimer); autoSyncTimer = null; }
+  updateSyncButton();
+  if (autoSyncEnabled && isSupabaseConfigured && accountSession) {
+    autoSyncTimer = setInterval(runAutoSync, AUTO_SYNC_INTERVAL_MS);
+  }
+}
+
+btnSync.addEventListener('click', () => {
+  autoSyncEnabled = !autoSyncEnabled;
+  try { localStorage.setItem(AUTO_SYNC_STORAGE_KEY, String(autoSyncEnabled)); } catch {}
+  refreshAutoSyncTimer();
+});
+
+// Sofort synchronisieren, sobald der Tab in den Hintergrund wechselt (App-
+// Wechsel, Bildschirm sperren, …) statt bis zum nächsten Intervall-Tick zu
+// warten — das ist der Moment, in dem ungespeicherte Änderungen am ehesten
+// verloren gehen könnten, z.B. weil der Tab danach ganz geschlossen wird.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) runAutoSync();
+});
+
+updateSyncButton();
 
 // ---------- FeldFolio Plus: Pro-Betrieb getrennte Arbeitsstände ----------
 // Ebenen/Flächenzeichner/Obstbaumkataster/Bienenflugkarte gehören zu genau
@@ -5040,7 +5584,7 @@ function clearAllLayers() {
   zeichnerLayerId = null;
   zeichnerParcels.length = 0;
   zeichnerColorIdx = 0;
-  zeichnerParcelCounter = 0;
+  shapeEditingEntryId = null;
   renderParcelList();
 }
 function clearAllTrees() {
@@ -5261,6 +5805,303 @@ async function removeNotesPhoto(path) {
   } catch (err) {
     notesSyncStatus.textContent = 'Fehler: ' + (err.message || 'Löschen fehlgeschlagen.');
   }
+}
+
+// ---------- FeldFolio Plus: Anbauplanung (Gartenbau-Kulturplan) ----------
+// Konkretisiert pro Fläche, welche Kultur wann angebaut wird — feiner als die
+// offizielle Nutzungsart/NC im Nutzungsverzeichnis (oft nur grob, z.B.
+// "Freilandgemüse", und unterjährig nicht änderbar), obwohl auf derselben
+// Fläche mehrere Kulturen nacheinander stehen können (siehe Ergänzungsblatt
+// Gartenbau). Gleiches Cloud-Konto-Gating wie Notiz/Fotos, Speicherung direkt
+// in entry.props (siehe setParcelKulturplan oben) — reist also automatisch
+// mit dem geteilten layers[id].geojson mit, keine eigene Tabelle nötig.
+const KP_MONTHS = ['JAN', 'FEB', 'MÄR', 'APR', 'MAI', 'JUNI', 'JULI', 'AUG', 'SEPT', 'OKT', 'NOV', 'DEZ'];
+
+// Bekannte Gartenbau-Kulturen gruppiert nach Kulturart, je mit einer eigenen
+// Balkenfarbe — dient sowohl als Autovervollständigung (Datalist) als auch
+// zur automatischen Einfärbung neuer Balken (siehe kulturColor unten). Freie
+// Eingaben, die keinem Namen hier entsprechen, behalten die neutrale
+// Standardfarbe (--accent-dim).
+const KULTUR_CATALOG = [
+  { kategorie: 'Blattgemüse', farbe: '#5B8C3A', namen: ['Spinat', 'Kopfsalat', 'Eisbergsalat', 'Feldsalat', 'Rucola', 'Mangold', 'Endivie', 'Radicchio', 'Pflücksalat', 'Bataviasalat', 'Portulak'] },
+  { kategorie: 'Kohlgemüse', farbe: '#3E6B5C', namen: ['Weißkohl', 'Rotkohl', 'Wirsing', 'Blumenkohl', 'Brokkoli', 'Kohlrabi', 'Rosenkohl', 'Grünkohl', 'Chinakohl', 'Pak Choi'] },
+  { kategorie: 'Wurzel-/Knollengemüse', farbe: '#C1793A', namen: ['Möhren', 'Rote Bete', 'Pastinaken', 'Petersilienwurzel', 'Rettich', 'Radieschen', 'Schwarzwurzel', 'Steckrübe', 'Knollensellerie'] },
+  { kategorie: 'Zwiebelgemüse', farbe: '#7A5C8C', namen: ['Zwiebeln', 'Lauch', 'Knoblauch', 'Schalotten', 'Frühlingszwiebeln'] },
+  { kategorie: 'Fruchtgemüse', farbe: '#C1543A', namen: ['Tomaten', 'Gurken', 'Zucchini', 'Kürbis', 'Paprika', 'Auberginen', 'Melonen', 'Zuckermais'] },
+  { kategorie: 'Hülsenfrüchte', farbe: '#8CAA4E', namen: ['Buschbohnen', 'Stangenbohnen', 'Erbsen', 'Zuckerschoten', 'Dicke Bohnen'] },
+  { kategorie: 'Kartoffeln/Knollen', farbe: '#8A6A45', namen: ['Kartoffeln', 'Topinambur'] },
+  { kategorie: 'Kräuter', farbe: '#4B8C82', namen: ['Petersilie', 'Basilikum', 'Dill', 'Schnittlauch', 'Koriander', 'Kerbel', 'Majoran', 'Thymian'] },
+  { kategorie: 'Dauerkulturen', farbe: '#9B6B8C', namen: ['Erdbeeren', 'Spargel', 'Rhabarber'] },
+  { kategorie: 'Brache/Gründüngung', farbe: '#9C8F73', namen: ['Brache', 'Gründüngung: Wicken/Erbsen', 'Gründüngung: Phacelia', 'Gründüngung: Senf'] }
+];
+
+// Exakter Treffer zuerst, sonst Teilstring-Abgleich (deckt z.B. "Möhren
+// (Bund)" oder die zusammengesetzten Gründüngung-Einträge ab) — liefert null
+// für unbekannte Kulturen, Aufrufer fällt dann auf die neutrale Standardfarbe
+// zurück.
+function kulturColor(name) {
+  const lower = (name || '').trim().toLowerCase();
+  if (!lower) return null;
+  for (const gruppe of KULTUR_CATALOG) {
+    if (gruppe.namen.some(n => n.toLowerCase() === lower)) return gruppe.farbe;
+  }
+  for (const gruppe of KULTUR_CATALOG) {
+    if (gruppe.namen.some(n => lower.includes(n.toLowerCase()))) return gruppe.farbe;
+  }
+  return null;
+}
+
+let kulturplanTarget = null; // entry (immer eine Fläche, anders als bei Notiz/Fotos)
+let kulturplanYear = new Date().getFullYear();
+let kulturplanEditingId = null; // id des gerade im Formular bearbeiteten Eintrags, null = "neu anlegen"
+let kulturplanDragMoved = false; // unterscheidet Klick (öffnet Bearbeiten) von Drag-Ende (nicht öffnen)
+
+const kulturplanModal = document.getElementById('kulturplan-modal-overlay');
+const kulturplanNotConfigured = document.getElementById('kulturplan-not-configured');
+const kulturplanEditor = document.getElementById('kulturplan-editor');
+const kulturplanYearLabel = document.getElementById('kulturplan-year-label');
+const kulturplanTimelineEl = document.getElementById('kulturplan-timeline');
+const kulturplanKulturInput = document.getElementById('kulturplan-kultur-input');
+const kulturplanStartSelect = document.getElementById('kulturplan-start-select');
+const kulturplanEndSelect = document.getElementById('kulturplan-end-select');
+const kulturplanFlaecheInput = document.getElementById('kulturplan-flaeche-input');
+const kulturplanDuengungInput = document.getElementById('kulturplan-duengung-input');
+const kulturplanError = document.getElementById('kulturplan-error');
+const kulturplanSyncStatus = document.getElementById('kulturplan-sync-status');
+const kulturplanBtnAdd = document.getElementById('kulturplan-btn-add');
+const kulturplanBtnDelete = document.getElementById('kulturplan-btn-delete');
+const kulturplanBtnCancelEdit = document.getElementById('kulturplan-btn-cancel-edit');
+
+KP_MONTHS.forEach((label, i) => {
+  const month = String(i + 1);
+  kulturplanStartSelect.add(new Option(label, month));
+  kulturplanEndSelect.add(new Option(label, month));
+});
+
+const kulturplanSuggestionsList = document.getElementById('kulturplan-kultur-suggestions');
+KULTUR_CATALOG.forEach(gruppe => {
+  gruppe.namen.forEach(n => kulturplanSuggestionsList.appendChild(new Option(n)));
+});
+
+function showKulturplanError(msg) {
+  kulturplanError.textContent = msg;
+  kulturplanError.hidden = !msg;
+}
+
+// Aktualisiert nur das 🌱-Icon in der Flächentabelle, ohne die ganze
+// Anbauplanung neu aufzubauen — gleiches Muster wie refreshNotesIndicator().
+function refreshKulturplanIndicator() { renderFeatureTable(); }
+
+function resetKulturplanForm() {
+  kulturplanEditingId = null;
+  kulturplanKulturInput.value = '';
+  kulturplanStartSelect.value = '1';
+  kulturplanEndSelect.value = '1';
+  kulturplanFlaecheInput.value = '';
+  kulturplanDuengungInput.value = '';
+  kulturplanBtnAdd.textContent = 'Hinzufügen';
+  kulturplanBtnDelete.hidden = true;
+  kulturplanBtnCancelEdit.hidden = true;
+  showKulturplanError('');
+}
+
+function fillKulturplanFormFrom(entryData) {
+  kulturplanEditingId = entryData.id;
+  kulturplanKulturInput.value = entryData.kultur;
+  kulturplanStartSelect.value = String(entryData.startMonth);
+  kulturplanEndSelect.value = String(entryData.endMonth);
+  kulturplanFlaecheInput.value = entryData.flaeche != null ? String(entryData.flaeche) : '';
+  kulturplanDuengungInput.value = entryData.duengung || '';
+  kulturplanBtnAdd.textContent = 'Speichern';
+  kulturplanBtnDelete.hidden = false;
+  kulturplanBtnCancelEdit.hidden = false;
+  showKulturplanError('');
+}
+
+function openKulturplanModal(entry) {
+  kulturplanTarget = entry;
+  kulturplanYear = new Date().getFullYear();
+  showKulturplanError('');
+  kulturplanSyncStatus.textContent = '';
+  const loggedIn = isSupabaseConfigured && !!accountSession;
+  kulturplanNotConfigured.hidden = loggedIn;
+  kulturplanEditor.hidden = !loggedIn;
+  if (loggedIn) {
+    resetKulturplanForm();
+    renderKulturplanEditor();
+  }
+  kulturplanModal.hidden = false;
+}
+function closeKulturplanModal() { kulturplanModal.hidden = true; kulturplanTarget = null; }
+
+['kulturplan-modal-close-1', 'kulturplan-modal-close-2'].forEach(id => {
+  document.getElementById(id).addEventListener('click', closeKulturplanModal);
+});
+kulturplanModal.addEventListener('click', (e) => { if (e.target === kulturplanModal) closeKulturplanModal(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !kulturplanModal.hidden) closeKulturplanModal(); });
+
+document.getElementById('kulturplan-year-prev').addEventListener('click', () => { kulturplanYear--; renderKulturplanEditor(); });
+document.getElementById('kulturplan-year-next').addEventListener('click', () => { kulturplanYear++; renderKulturplanEditor(); });
+kulturplanBtnCancelEdit.addEventListener('click', () => { resetKulturplanForm(); renderKulturplanEditor(); });
+
+async function persistKulturplanChange(successMsg) {
+  setParcelKulturplan(kulturplanTarget, kulturplanTarget.kulturplan);
+  refreshKulturplanIndicator();
+  kulturplanSyncStatus.textContent = 'Speichere …';
+  try {
+    await saveFullState();
+    kulturplanSyncStatus.textContent = successMsg || 'Gespeichert.';
+  } catch (err) {
+    kulturplanSyncStatus.textContent = 'Fehler: ' + (err.message || 'Speichern fehlgeschlagen.');
+  }
+}
+
+kulturplanBtnAdd.addEventListener('click', async () => {
+  const kultur = kulturplanKulturInput.value.trim();
+  const startMonth = parseInt(kulturplanStartSelect.value, 10);
+  const endMonth = parseInt(kulturplanEndSelect.value, 10);
+  const flaecheRaw = kulturplanFlaecheInput.value.trim();
+  const flaeche = flaecheRaw ? parseFloat(flaecheRaw.replace(',', '.')) : null;
+  const duengung = kulturplanDuengungInput.value.trim();
+  showKulturplanError('');
+  if (!kultur) { showKulturplanError('Bitte eine Kultur eintragen.'); return; }
+  if (endMonth < startMonth) { showKulturplanError('Der Endmonat darf nicht vor dem Startmonat liegen.'); return; }
+  if (flaecheRaw && (!isFinite(flaeche) || flaeche < 0)) { showKulturplanError('Bitte eine gültige Fläche in m² eintragen.'); return; }
+
+  if (kulturplanEditingId) {
+    const existing = kulturplanTarget.kulturplan.find(e => e.id === kulturplanEditingId);
+    if (existing) { existing.kultur = kultur; existing.startMonth = startMonth; existing.endMonth = endMonth; existing.flaeche = flaeche; existing.duengung = duengung; }
+  } else {
+    kulturplanTarget.kulturplan.push({
+      id: 'kp-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7),
+      jahr: kulturplanYear, kultur, startMonth, endMonth, flaeche, duengung
+    });
+  }
+  resetKulturplanForm();
+  renderKulturplanEditor();
+  await persistKulturplanChange();
+});
+
+kulturplanBtnDelete.addEventListener('click', async () => {
+  if (!kulturplanEditingId) return;
+  kulturplanTarget.kulturplan = kulturplanTarget.kulturplan.filter(e => e.id !== kulturplanEditingId);
+  resetKulturplanForm();
+  renderKulturplanEditor();
+  await persistKulturplanChange('Gelöscht.');
+});
+
+// Weist überlappenden Einträgen unterschiedliche "Spuren" (Zeilen) zu, damit
+// z.B. eine parallele Gründüngung nicht dieselbe Zeile wie die Hauptkultur
+// belegt — einfacher Greedy-Algorithmus (erste freie Spur ab Startmonat),
+// kein Anspruch auf eine optimale Zeilenzahl.
+function assignKulturplanLanes(entries) {
+  const sorted = [...entries].sort((a, b) => a.startMonth - b.startMonth);
+  const laneEnds = []; // letzter belegter Monat je Spur
+  const laneOf = new Map();
+  sorted.forEach(e => {
+    let lane = laneEnds.findIndex(end => end < e.startMonth);
+    if (lane === -1) { lane = laneEnds.length; laneEnds.push(e.endMonth); }
+    else { laneEnds[lane] = e.endMonth; }
+    laneOf.set(e.id, lane);
+  });
+  return { laneOf, laneCount: laneEnds.length };
+}
+
+// Pointer-basiertes Verschieben/Skalieren eines Balkens — bewusst nur auf
+// volle Monate einrastend (kein pixelgenaues Ziehen), das hält die Bedienung
+// einfach und lesbar. Live-Feedback per direktem grid-column-Update während
+// des Ziehens, gespeichert wird erst bei pointerup.
+function wireKulturplanBarDrag(barEl, entryData) {
+  const handleLeft = barEl.querySelector('.kp-bar-handle-left');
+  const handleRight = barEl.querySelector('.kp-bar-handle-right');
+
+  function startDrag(e, mode) {
+    e.preventDefault();
+    e.stopPropagation();
+    const laneRect = barEl.parentElement.getBoundingClientRect();
+    const monthWidth = laneRect.width / 12;
+    const startX = e.clientX;
+    const origStart = entryData.startMonth;
+    const origEnd = entryData.endMonth;
+    kulturplanDragMoved = false;
+
+    function onMove(ev) {
+      const deltaPx = ev.clientX - startX;
+      if (Math.abs(deltaPx) > 3) kulturplanDragMoved = true;
+      const deltaMonths = Math.round(deltaPx / monthWidth);
+      if (mode === 'move') {
+        const span = origEnd - origStart;
+        const newStart = Math.min(Math.max(origStart + deltaMonths, 1), 12 - span);
+        entryData.startMonth = newStart;
+        entryData.endMonth = newStart + span;
+      } else if (mode === 'resize-left') {
+        entryData.startMonth = Math.min(Math.max(origStart + deltaMonths, 1), origEnd);
+      } else if (mode === 'resize-right') {
+        entryData.endMonth = Math.max(Math.min(origEnd + deltaMonths, 12), origStart);
+      }
+      barEl.style.gridColumn = `${entryData.startMonth} / ${entryData.endMonth + 1}`;
+    }
+    function onUp() {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      if (kulturplanDragMoved) {
+        if (kulturplanEditingId === entryData.id) fillKulturplanFormFrom(entryData);
+        persistKulturplanChange('Verschoben — gespeichert.');
+        renderKulturplanEditor();
+      }
+    }
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+  }
+
+  barEl.addEventListener('pointerdown', (e) => startDrag(e, 'move'));
+  handleLeft.addEventListener('pointerdown', (e) => startDrag(e, 'resize-left'));
+  handleRight.addEventListener('pointerdown', (e) => startDrag(e, 'resize-right'));
+  barEl.addEventListener('click', (e) => {
+    if (e.target.closest('.kp-bar-handle')) return;
+    if (kulturplanDragMoved) { kulturplanDragMoved = false; return; }
+    fillKulturplanFormFrom(entryData);
+    renderKulturplanEditor();
+  });
+}
+
+function renderKulturplanEditor() {
+  kulturplanYearLabel.textContent = String(kulturplanYear);
+  const entries = kulturplanTarget.kulturplan.filter(e => e.jahr === kulturplanYear);
+  const monthsHeader = '<div class="kp-months-header">' + KP_MONTHS.map(m => `<div class="kp-month-label">${m}</div>`).join('') + '</div>';
+
+  if (!entries.length) {
+    kulturplanTimelineEl.innerHTML = monthsHeader + '<p class="kp-timeline-empty">Noch keine Kultur für dieses Jahr eingetragen.</p>';
+    return;
+  }
+
+  const { laneOf, laneCount } = assignKulturplanLanes(entries);
+  const lanes = Array.from({ length: laneCount }, () => []);
+  entries.forEach(e => lanes[laneOf.get(e.id)].push(e));
+
+  const lanesHtml = lanes.map(laneEntries => {
+    const barsHtml = laneEntries.map(e => {
+      const flaecheText = e.flaeche != null ? `${e.flaeche.toLocaleString('de-DE')} m²` : '';
+      const color = kulturColor(e.kultur);
+      const label = flaecheText ? `${e.kultur} · ${flaecheText}` : e.kultur;
+      const title = `${e.kultur}${flaecheText ? ' · ' + flaecheText : ''} (${KP_MONTHS[e.startMonth - 1]}–${KP_MONTHS[e.endMonth - 1]})`;
+      return `
+      <div class="kp-bar${e.id === kulturplanEditingId ? ' selected' : ''}" data-id="${escapeHtml(e.id)}"
+           style="grid-column: ${e.startMonth} / ${e.endMonth + 1};${color ? ` background:${color};` : ''}"
+           title="${escapeHtml(title)}">
+        <span class="kp-bar-handle kp-bar-handle-left"></span>
+        <span class="kp-bar-label">${escapeHtml(label)}</span>
+        <span class="kp-bar-handle kp-bar-handle-right"></span>
+      </div>`;
+    }).join('');
+    return `<div class="kp-lane">${barsHtml}</div>`;
+  }).join('');
+
+  kulturplanTimelineEl.innerHTML = monthsHeader + lanesHtml;
+  kulturplanTimelineEl.querySelectorAll('.kp-bar').forEach(barEl => {
+    const entryData = kulturplanTarget.kulturplan.find(e => e.id === barEl.getAttribute('data-id'));
+    wireKulturplanBarDrag(barEl, entryData);
+  });
 }
 
 // ---------- FeldFolio Plus: Terminkalender ----------
@@ -5495,6 +6336,52 @@ function eventRouteUrl(ev) {
   return null;
 }
 
+// Reduziert eine roh aus der Excel übernommene Telefonnummer (z.B. "0341
+// 3150555") auf die für tel:-Links zulässigen Zeichen (Ziffern + führendes
+// "+"), damit ein Tap auf die Zeile auf dem Handy zuverlässig den Wähler öffnet.
+function telHref(raw) {
+  return raw.replace(/[^\d+]/g, '');
+}
+
+const TK_ICON_PIN = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 2C7.58 2 4 5.58 4 10c0 5.25 6.72 11.19 7.02 11.45a1.5 1.5 0 0 0 1.96 0C13.28 21.19 20 15.25 20 10c0-4.42-3.58-8-8-8z" fill="#EA4335"/><circle cx="12" cy="10" r="3.2" fill="#ffffff"/></svg>';
+const TK_ICON_PHONE = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M6.62 10.79a15.05 15.05 0 0 0 6.59 6.59l2.2-2.2a1 1 0 0 1 1.01-.24c1.12.37 2.33.57 3.58.57a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1C10.61 21 3 13.39 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.25.2 2.46.57 3.58a1 1 0 0 1-.25 1.01l-2.2 2.2z"/></svg>';
+const TK_ICON_MAIL = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M4 4h16a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm14.5 2.4L12 11.5 5.5 6.4v1.7L12 13.5l6.5-5.4z"/></svg>';
+
+// Baut die klickbaren Kontakt-Zeilen (Adresse mit Google-Maps-Link, Telefon/
+// Mobil mit tel:-Link + Telefonhörer-Symbol in Accent-Farbe, E-Mail mit
+// mailto:-Link) — als ganze Zeile tappbar statt nur ein kleines Icon, damit
+// das auf dem Handy zuverlässig trifft.
+function renderTerminkalenderContactRows(ev) {
+  const routeUrl = eventRouteUrl(ev);
+  const rows = [];
+  if (ev.address) {
+    rows.push(`<a class="tk-contact-row" href="${routeUrl}" target="_blank" rel="noopener">
+      <span class="tk-contact-icon">${TK_ICON_PIN}</span>
+      <span class="tk-contact-text">${escapeHtml(ev.address)}</span>
+    </a>`);
+  }
+  if (ev.telefon) {
+    rows.push(`<a class="tk-contact-row tk-contact-row-call" href="tel:${escapeHtml(telHref(ev.telefon))}">
+      <span class="tk-contact-icon">${TK_ICON_PHONE}</span>
+      <span class="tk-contact-text">Telefon: ${escapeHtml(ev.telefon)}</span>
+    </a>`);
+  }
+  if (ev.mobil) {
+    rows.push(`<a class="tk-contact-row tk-contact-row-call" href="tel:${escapeHtml(telHref(ev.mobil))}">
+      <span class="tk-contact-icon">${TK_ICON_PHONE}</span>
+      <span class="tk-contact-text">Mobil: ${escapeHtml(ev.mobil)}</span>
+    </a>`);
+  }
+  if (ev.email) {
+    rows.push(`<a class="tk-contact-row" href="mailto:${escapeHtml(ev.email)}">
+      <span class="tk-contact-icon">${TK_ICON_MAIL}</span>
+      <span class="tk-contact-text">${escapeHtml(ev.email)}</span>
+    </a>`);
+  }
+  if (!rows.length) return '<p class="empty-hint">Keine Adresse/Kontaktdaten bekannt.</p>';
+  return `<div class="tk-contact-list">${rows.join('')}</div>`;
+}
+
 // ---- UI-Elemente ----
 const terminkalenderNotLoggedIn = document.getElementById('terminkalender-not-logged-in');
 const terminkalenderControls = document.getElementById('terminkalender-controls');
@@ -5566,11 +6453,9 @@ function renderTerminkalenderDetail(ev) {
     dateStr += ', ' + ev.date.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
     if (ev.dateEnd) dateStr += ' – ' + ev.dateEnd.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
   }
-  const routeUrl = eventRouteUrl(ev);
   const badges = [`<span class="tk-badge ${ev.bestaetigt ? 'tk-badge-ok' : 'tk-badge-warn'}">${ev.bestaetigt ? 'Bestätigt' : 'Unbestätigt'}</span>`];
   if (ev.prioritaet && ev.prioritaet !== 'Normal') badges.push(`<span class="tk-badge tk-badge-warn">${escapeHtml(ev.prioritaet)}</span>`);
   if (ev.unangemeldet) badges.push('<span class="tk-badge tk-badge-warn">Unangemeldet</span>');
-  const contact = [ev.telefon, ev.mobil, ev.email].filter(Boolean).map(escapeHtml).join(' · ');
   const isActiveZuordnung = activeZuordnung && activeZuordnung.terminId === ev.id;
   el.innerHTML = `
     <h3>${escapeHtml(ev.kunde)}</h3>
@@ -5583,20 +6468,13 @@ function renderTerminkalenderDetail(ev) {
       <p class="modal-hint" id="tk-betrieb-assign-status"></p>
     </div>
     <p class="tk-detail-desc"><strong>${escapeHtml(ev.auditart)}</strong>${ev.format ? ' · ' + escapeHtml(ev.format) : ''}</p>
-    ${ev.address ? `<p class="tk-detail-desc">${escapeHtml(ev.address)}</p>` : ''}
-    ${contact ? `<p class="tk-detail-desc">${contact}</p>` : ''}
+    ${renderTerminkalenderContactRows(ev)}
     ${ev.hinweis ? `<p class="tk-detail-desc">${escapeHtml(ev.hinweis).replace(/\n/g, '<br>')}</p>` : ''}
-    ${routeUrl ? `<a class="tk-gmaps-link" href="${routeUrl}" target="_blank" rel="noopener" title="In Google Maps öffnen" aria-label="In Google Maps öffnen">
-      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
-        <path d="M12 2C7.58 2 4 5.58 4 10c0 5.25 6.72 11.19 7.02 11.45a1.5 1.5 0 0 0 1.96 0C13.28 21.19 20 15.25 20 10c0-4.42-3.58-8-8-8z" fill="#EA4335"/>
-        <circle cx="12" cy="10" r="3.2" fill="#ffffff"/>
-      </svg>
-    </a>` : '<p class="empty-hint">Keine Adresse bekannt.</p>'}
     <div class="tk-attachments">
       <div class="tk-attachments-head">Fotos &amp; Dateien</div>
       <div class="tk-attachments-grid" id="tk-attachments-grid"></div>
       <div class="tk-attachments-actions">
-        <label class="tk-attachment-btn">
+        <label class="tk-attachment-btn tk-attachment-btn-primary">
           <input type="file" id="tk-photo-capture-input" accept="image/*" capture="environment" hidden>
           📷 Foto aufnehmen
         </label>

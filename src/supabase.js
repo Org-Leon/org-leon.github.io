@@ -71,6 +71,28 @@ export async function loadState() {
   return data; // null, falls noch nie gespeichert wurde
 }
 
+// crypto.randomUUID() ist nur in "sicheren Kontexten" verfügbar (HTTPS oder
+// localhost) — ruft man die App über die lokale Netzwerk-IP per HTTP auf
+// (z.B. vom Handy aus, siehe vite.config.js host:true), fehlt die Funktion
+// und der Foto-Upload bricht mit "crypto.randomUUID is not a function" ab.
+// crypto.getRandomValues() bleibt dagegen immer verfügbar, daher hier ein
+// eigener RFC4122-v4-Fallback statt der Bequemlichkeitsfunktion.
+function randomUuid() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  const bytes = new Uint8Array(16);
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = [...bytes].map(b => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 // Pfad bewusst flach unter der user_id abgelegt (keine Kennung von Fläche/
 // Baum enthalten) — welches Foto zu welcher Fläche gehört, ergibt sich
 // allein daraus, dass der zurückgegebene Pfad im photos-Array dieser Fläche
@@ -80,7 +102,7 @@ export async function uploadPhoto(file) {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Nicht angemeldet.');
   const ext = (file.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
-  const path = `${user.id}/${crypto.randomUUID()}.${ext}`;
+  const path = `${user.id}/${randomUuid()}.${ext}`;
   const { error } = await supabase.storage.from(PHOTO_BUCKET).upload(path, file, {
     contentType: file.type || 'image/jpeg'
   });
