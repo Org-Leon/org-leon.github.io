@@ -111,6 +111,13 @@
     transform: translateY(0.04em);
   }
   #brand-logo .ff-apple svg { height: 100%; width: auto; display: block; }
+  #brand-logo .ff-plus {
+    display: none;
+    color: #EB5D4F;
+    margin-left: 0.05em;
+    font-weight: 900;
+  }
+  #brand-logo.is-logged-in .ff-plus { display: inline; }
 
   /* ---------- Funktions-Umschalter (SelectButton-Stil, Sidebar) ----------
      2×2-Raster statt einer horizontalen Leiste — die vier Funktionsnamen sind
@@ -164,6 +171,9 @@
   }
   .segment-btn:hover { color: var(--text); background: var(--panel); }
   .segment-btn.active { background: var(--accent); color: var(--on-accent); }
+  /* Eine ungerade letzte Reihe (z.B. der 5. Button) bekäme sonst eine leere
+     Lücke daneben — stattdessen über die volle Breite spannen. */
+  .segment-btn:last-child:nth-child(odd) { grid-column: 1 / -1; }
 
   #tabbar button#theme-toggle {
     margin: 0 14px 0 0;
@@ -460,8 +470,10 @@
   #topbar button#btn-locate.active { filter: drop-shadow(0 0 6px rgba(46,134,255,0.75)); }
   .gps-icon { flex-shrink: 0; display: block; }
 
-  #btn-export-flaechenkarten {
-    margin: 4px 14px 14px;
+  .export-flaechenkarten-btn {
+    display: block;
+    width: 100%;
+    margin: 4px 14px 8px;
     background: var(--accent-dim);
     border: 1px solid var(--accent);
     color: var(--on-accent);
@@ -470,8 +482,11 @@
     font-size: 13px;
     cursor: pointer;
     font-family: var(--sans);
+    box-sizing: border-box;
   }
-  #btn-export-flaechenkarten:hover { background: var(--accent); }
+  .export-flaechenkarten-btn:hover { background: var(--accent); }
+  #gesamtexport-buttons { display: flex; flex-direction: column; }
+  #gesamtexport-buttons .export-flaechenkarten-btn:last-child { margin-bottom: 14px; }
 
   #coord-readout {
     position: absolute;
@@ -850,6 +865,35 @@
     border-radius: 4px;
   }
   #shape-toolbar-status:empty { display: none; }
+
+  /* ---------- Hofplan ---------- */
+  #hofplan-export-buttons { margin: 4px 14px 0; flex-direction: column; }
+  #hofplan-export-buttons .export-btn { text-align: center; padding: 7px 4px; }
+  #btn-export-hofplan-uebersicht {
+    margin: 8px 14px 14px;
+    background: var(--accent-dim);
+    border: 1px solid var(--accent);
+    color: var(--on-accent);
+    padding: 9px 0;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    font-family: var(--sans);
+  }
+  #btn-export-hofplan-uebersicht:hover { background: var(--accent); }
+  .hofplan-color-input {
+    width: 15px;
+    height: 15px;
+    padding: 0;
+    border: 1px solid rgba(255,255,255,0.15);
+    border-radius: 3px;
+    background: none;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .hofplan-color-input::-webkit-color-swatch-wrapper { padding: 0; }
+  .hofplan-color-input::-webkit-color-swatch { border: none; border-radius: 2px; }
+  .hofplan-color-input::-moz-color-swatch { border: none; border-radius: 2px; }
   @media (max-width: 860px) {
     .shape-tool-btn { padding: 6px 8px; font-size: 12px; }
     #shape-toolbar-status { flex-basis: 100%; order: 10; }
@@ -1629,6 +1673,18 @@
     cursor: pointer;
   }
   .betrieb-row-remove:hover { background: var(--warn); color: #fff; }
+  .betrieb-row-assign {
+    flex-shrink: 0;
+    border: 1px solid var(--accent);
+    background: var(--accent-dim);
+    color: var(--on-accent);
+    border-radius: 5px;
+    padding: 3px 8px;
+    font-size: 11px;
+    cursor: pointer;
+    font-family: var(--sans);
+  }
+  .betrieb-row-assign:hover { background: var(--accent); }
   .betrieb-list-empty { padding: 10px; font-size: 12px; color: var(--muted); }
 
   .betrieb-manual-row { display: flex; gap: 8px; margin-top: 4px; }

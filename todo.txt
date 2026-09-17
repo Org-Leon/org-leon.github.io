@@ -1,7 +1,12 @@
+Exporte schöner machen 
+Gebäudeplan Namen sichtbar machen auf PDF Export
+Termin Kalender ausblenden im normaler Ansicht
+Änderungen nur mit der Flächennr. erkennbar machen und Zusammenlegungen
 
-
-
-
+Bigger Todos
+Tutorial zu einzelnen Funktionen
+Stallplaner
+Anbauplaner überarbeiten
 
 
 === Bundesland-Kompatibilität Testdaten (test-shapes/) — Stand 2026-09-03 ===
