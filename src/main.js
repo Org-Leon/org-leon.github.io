@@ -2472,6 +2472,7 @@ const SEGMENT_CAPTIONS = {
   zeichner: 'Eigene Parzellen direkt auf der Karte zeichnen',
   obstbaum: 'Obstbäume als farbige Punkte auf der Karte erfassen',
   bienenflug: 'Bienenstöcke markieren — theoretischer Flugradius 3 km',
+  hofplan: 'Hof- und Gebäudepläne direkt auf dem Satellitenbild einzeichnen',
   terminkalender: 'Termine aus Excel importieren und in der Kalenderwoche navigieren'
 };
 
@@ -2485,6 +2486,9 @@ function setActiveSegment(target) {
   if (armedTool === 'split-line' && zeichnerDrawLine) zeichnerDrawLine.disable();
   disableShapeEditing();
   if (armedTool === 'place-tree') setActiveFruitKey(null);
+  if (armedTool === 'draw-hofplan-rect' && hofplanDrawRect) hofplanDrawRect.disable();
+  if (armedTool === 'draw-hofplan-poly' && hofplanDrawPoly) hofplanDrawPoly.disable();
+  disableHofplanEditing();
   armedTool = null;
   // Die Werkzeugleiste ist nur im Flächenzeichner sichtbar (Teil von #topbar,
   // dort per .topbar-extra ein-/ausgeblendet) — ein weiterhin "scharfes"
@@ -2492,6 +2496,9 @@ function setActiveSegment(target) {
   // und damit verwirrend, deshalb hier immer zurückgesetzt.
   if (target !== 'zeichner' && mapToolMode) { mapToolMode = null; setShapeToolbarStatus(''); }
   updateShapeToolbar();
+  // Gleiches Prinzip für die Hofplan-Werkzeugleiste.
+  if (target !== 'hofplan' && hofplanToolMode) hofplanToolMode = null;
+  updateHofplanToolbar();
   if (target !== 'compare') { restoreCompareHiddenLayer(); compareTablePanel.close(); }
   document.getElementById('map').classList.toggle('placing', target === 'bienenflug');
 
@@ -2511,6 +2518,7 @@ function setActiveSegment(target) {
   else if (target === 'obstbaum') initObstbaumMap();
   else if (target === 'bienenflug') { initBienenflugMap(); armedTool = 'place-hive'; }
   else if (target === 'compare') refreshCompareJahrBOptions();
+  else if (target === 'hofplan') initHofplanMap();
 
   // Terminkalender hat eine eigene, zweite Leaflet-Karteninstanz statt der
   // geteilten Parzellen-Karte — #map-wrap und #terminkalender-view schließen
@@ -3398,10 +3406,16 @@ function initZeichnerMap() {
     if (e.layerType === 'polyline') {
       armedTool = 'split-line';
       setZeichnerStatus('Schnittlinie quer über die Fläche ziehen, mit Doppelklick abschließen (Esc zum Abbrechen).');
-    } else {
-      armedTool = 'draw-polygon';
+    } else if (armedTool === 'draw-polygon') {
+      // armedTool wird vom "Zeichnen"-Button VOR dem enable() gesetzt (siehe
+      // shapeToolDrawBtn weiter unten) — layerType allein reicht hier nicht
+      // zur Unterscheidung, da der Hofplan-Abschnitt ebenfalls einen
+      // L.Draw.Polygon-Handler mit demselben layerType 'polygon' nutzt.
       setZeichnerStatus('Zeichnen läuft … Eckpunkte anklicken, mit Doppelklick abschließen (Esc zum Abbrechen).');
     }
+    // Andere Werte (z.B. 'draw-hofplan-rect'/'draw-hofplan-poly') gehören zu
+    // einem anderen Zeichenwerkzeug — dessen eigener DRAWSTART-Handler kümmert
+    // sich um Statuszeile/Toolbar, hier bewusst nichts tun.
     updateShapeToolbar();
   });
   map.on(L.Draw.Event.DRAWSTOP, (e) => {
@@ -3431,6 +3445,11 @@ function initZeichnerMap() {
       finishParcelSplit(e.layer);
       return;
     }
+    // Guard nötig, seit der Hofplan-Abschnitt ebenfalls Polygone (und
+    // Rechtecke) über denselben globalen CREATED-Event zeichnet — ohne diesen
+    // Check würde ein dort gezeichnetes Gebäude hier zusätzlich fälschlich
+    // als neue Flächenzeichner-Parzelle angelegt.
+    if (armedTool !== 'draw-polygon') return;
     const layer = e.layer;
     const areaHa = turf.area(layer.toGeoJSON()) / 10000;
     const color = COLORS[zeichnerColorIdx % COLORS.length];
@@ -3787,6 +3806,10 @@ function setMapToolMode(mode) {
 
 shapeToolDrawBtn.addEventListener('click', () => {
   initZeichnerMap(); // funktioniert von jedem Reiter aus, auch ohne den Flächenzeichner-Tab je geöffnet zu haben
+  // Vor enable() setzen, nicht erst im DRAWSTART-Handler — der muss anhand von
+  // armedTool zwischen diesem Werkzeug und dem gleichartigen Hofplan-Freiform-
+  // Werkzeug unterscheiden (beide nutzen layerType 'polygon').
+  armedTool = 'draw-polygon';
   if (zeichnerDrawPolygon) zeichnerDrawPolygon.enable();
 });
 shapeToolEditBtn.addEventListener('click', () => setMapToolMode('edit'));
@@ -5133,6 +5156,708 @@ async function exportBienenflugFlaechenkarten() {
 
 document.getElementById('btn-export-bienenflug-flaechenkarten').addEventListener('click', exportBienenflugFlaechenkarten);
 
+// ---------- Hofplan ----------
+// Freies Zeichentool für Hof-/Gebäudepläne auf der Satellitenkarte: Gebäude
+// (Wohnhaus, Maschinenhalle, Stall, …) als Rechteck oder Freiform-Polygon
+// direkt einzeichnen, Kategorie/Name per Dropdown bzw. Textfeld zuweisen.
+// Eigener, unabhängiger Datenbestand (hofplanShapes) auf einer eigenen
+// Kartenebene — bewusst NICHT über layers/featureIndex registriert wie
+// Flächenzeichner-Parzellen, da Gebäude-Metadaten (Typ/Name) nicht in die
+// Flächentabelle gehören. Architektur mischt zwei bestehende Muster: die
+// Zeichnen/Bearbeiten/Löschen/Undo-Werkzeugleiste des Flächenzeichners und
+// die eigene, lazy initialisierte Kartenebene + Kategorie-Katalog des
+// Obstbaumkatasters.
+const GEBAEUDE_KATALOG = [
+  { kategorie: 'Wohnhaus', farbe: '#B5533C' },
+  { kategorie: 'Hofgebäude/Betriebsgebäude', farbe: '#8C7A5E' },
+  { kategorie: 'Maschinenhalle', farbe: '#4A6FA5' },
+  { kategorie: 'Stall', farbe: '#6E5B3E' },
+  { kategorie: 'Lagerhalle/Scheune', farbe: '#A68A3C' },
+  { kategorie: 'Fahrsilo/Güllebehälter', farbe: '#5C7A7A' },
+  { kategorie: 'Sonstiges', farbe: '#7D7D7D' }
+];
+const HOFPLAN_DEFAULT_COLOR = '#7D7D7D';
+
+function gebaeudeColor(kategorie) {
+  const gruppe = GEBAEUDE_KATALOG.find(g => g.kategorie === kategorie);
+  return gruppe ? gruppe.farbe : HOFPLAN_DEFAULT_COLOR;
+}
+
+// Frei wählbare Farbe hat Vorrang vor der Kategorie-Standardfarbe — so lässt
+// sich z.B. ein zweiter Stall optisch von einem ersten unterscheiden, ohne
+// dafür eine eigene Kategorie anlegen zu müssen.
+function hofplanEffectiveColor(shape) {
+  return shape.color || gebaeudeColor(shape.kategorie);
+}
+
+let hofplanInitDone = false;
+let hofplanLayerGroup = null;
+let hofplanDrawRect = null;
+let hofplanDrawPoly = null;
+const hofplanShapes = []; // { id, kategorie, name, color, leafletLayer, labelAnchor, areaQm }
+let hofplanToolMode = null; // null | 'edit' | 'delete'
+let hofplanEditingId = null;
+let hofplanEditBeforeGeometry = null;
+let hofplanGeometryCommitTimer = null;
+const hofplanUndoStack = [];
+const HOFPLAN_UNDO_MAX = 20;
+
+function setHofplanStatus(msg) { document.getElementById('hofplan-status').textContent = msg; }
+
+function showHofplanError(msg) {
+  const el = document.getElementById('hofplan-error-toast');
+  el.textContent = msg;
+  el.style.display = 'block';
+  clearTimeout(showHofplanError._t);
+  showHofplanError._t = setTimeout(() => el.style.display = 'none', 6000);
+}
+
+function hofplanLabelText(shape) {
+  const typ = shape.kategorie || 'Gebäude';
+  return shape.name ? `${escapeHtml(typ)}<br>${escapeHtml(shape.name)}` : escapeHtml(typ);
+}
+
+function updateHofplanShapeStyle(shape) {
+  const color = hofplanEffectiveColor(shape);
+  if (shape.leafletLayer.setStyle) shape.leafletLayer.setStyle({ color, fillColor: color });
+  if (shape.labelAnchor && shape.labelAnchor.setTooltipContent) {
+    shape.labelAnchor.setTooltipContent(hofplanLabelText(shape));
+  }
+}
+
+function computeHofplanArea(shape) {
+  try { return turf.area(shape.leafletLayer.toGeoJSON()); } catch (err) { return 0; }
+}
+
+// Erzeugt einen Gebäude-Eintrag aus einem bereits vorhandenen Leaflet-Layer
+// (frisch gezeichnet, aus einem Rückgängig-Schritt rekonstruiert oder beim
+// Laden des Workspace wiederhergestellt) — verdrahtet Klick-Routing
+// (Bearbeiten/Löschen je nach hofplanToolMode) und das dauerhafte Label,
+// löst aber selbst KEINEN Rückgängig-Eintrag aus (das macht der jeweilige
+// Aufrufer gezielt, siehe CREATED-Handler weiter unten).
+function addHofplanShapeFromLayer(layer, kategorie, name, idOverride, colorOverride) {
+  const shape = {
+    id: idOverride || 'gebaeude-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7),
+    kategorie: kategorie || '',
+    name: name || '',
+    color: colorOverride || null,
+    leafletLayer: layer,
+    labelAnchor: null,
+    areaQm: 0
+  };
+  const color = hofplanEffectiveColor(shape);
+  layer.setStyle({ color, weight: 2, fillColor: color, fillOpacity: 0.32 });
+  layer.addTo(hofplanLayerGroup);
+  layer.on('click', () => {
+    if (hofplanToolMode === 'edit') { toggleHofplanEdit(shape); return; }
+    if (hofplanToolMode === 'delete') { deleteHofplanShape(shape); return; }
+  });
+  layer.on('edit', () => syncHofplanGeometryLive(shape));
+  shape.areaQm = computeHofplanArea(shape);
+  const center = layer.getBounds().getCenter();
+  shape.labelAnchor = createLabelAnchorAt(center, hofplanLabelText(shape));
+  shape.labelAnchor.addTo(hofplanLayerGroup);
+  hofplanShapes.push(shape);
+  return shape;
+}
+
+function removeHofplanShapeEverywhere(shape) {
+  if (hofplanEditingId === shape.id) { hofplanEditingId = null; hofplanEditBeforeGeometry = null; }
+  const idx = hofplanShapes.findIndex(x => x.id === shape.id);
+  if (idx !== -1) hofplanShapes.splice(idx, 1);
+  hofplanLayerGroup.removeLayer(shape.leafletLayer);
+  if (shape.labelAnchor) hofplanLayerGroup.removeLayer(shape.labelAnchor);
+  renderHofplanList();
+}
+
+function restoreHofplanShapeFromFeature(feature, kategorie, name, idOverride, color) {
+  const layer = L.geoJSON(feature).getLayers()[0];
+  const shape = addHofplanShapeFromLayer(layer, kategorie, name, idOverride, color);
+  renderHofplanList();
+  return shape;
+}
+
+// ---------- Rückgängig (Hofplan) ----------
+// Eigener, kleiner Verlaufsspeicher statt Wiederverwendung des Flächenzeichner-
+// Stacks — Gebäude sind ein eigenständiger Datenbestand (siehe oben), analog
+// zur bereits bestehenden Trennung von clearAllLayers/clearAllTrees/
+// clearAllBeehives je Feature-Typ.
+function pushHofplanUndo(action) {
+  hofplanUndoStack.push(action);
+  if (hofplanUndoStack.length > HOFPLAN_UNDO_MAX) hofplanUndoStack.shift();
+  updateHofplanToolbar();
+}
+
+function undoLastHofplanAction() {
+  const action = hofplanUndoStack.pop();
+  if (!action) return;
+  if (action.type === 'add') {
+    const shape = hofplanShapes.find(s => s.id === action.shapeId);
+    if (shape) removeHofplanShapeEverywhere(shape);
+    setHofplanStatus('Zeichnen rückgängig gemacht.');
+  } else if (action.type === 'delete') {
+    restoreHofplanShapeFromFeature(action.feature, action.kategorie, action.name, undefined, action.color);
+    setHofplanStatus('Löschen rückgängig gemacht.');
+  } else if (action.type === 'edit') {
+    const shape = hofplanShapes.find(s => s.id === action.shapeId);
+    if (shape) { applyGeometryToHofplanShape(shape, action.beforeGeometry); renderHofplanList(); }
+    setHofplanStatus('Bearbeitung rückgängig gemacht.');
+  }
+  updateHofplanToolbar();
+}
+
+function deleteHofplanShape(shape) {
+  const label = shape.name || shape.kategorie;
+  pushHofplanUndo({
+    type: 'delete',
+    kategorie: shape.kategorie,
+    name: shape.name,
+    color: shape.color,
+    feature: cloneFeature(shape.leafletLayer.toGeoJSON())
+  });
+  removeHofplanShapeEverywhere(shape);
+  setHofplanStatus(label ? `Gebäude „${label}" gelöscht.` : 'Gebäude gelöscht.');
+  updateHofplanToolbar();
+}
+
+// ---------- Eckpunkte eines Gebäudes per Ziehen anpassen ----------
+// Nutzt dasselbe L.Edit.Poly/L.Edit.Rectangle aus Leaflet.draw wie der
+// Flächenzeichner (steckt automatisch in jedem per L.Draw oder L.GeoJSON
+// erzeugten Polygon/Rechteck) — nur enable()/disable() nötig.
+function disableHofplanEditing() {
+  if (!hofplanEditingId) return;
+  const shape = hofplanShapes.find(s => s.id === hofplanEditingId);
+  if (shape && shape.leafletLayer.editing) {
+    shape.leafletLayer.editing.disable();
+    const afterGeometry = shape.leafletLayer.toGeoJSON().geometry;
+    if (hofplanEditBeforeGeometry && JSON.stringify(hofplanEditBeforeGeometry) !== JSON.stringify(afterGeometry)) {
+      pushHofplanUndo({ type: 'edit', shapeId: shape.id, beforeGeometry: hofplanEditBeforeGeometry });
+    }
+  }
+  hofplanEditBeforeGeometry = null;
+  hofplanEditingId = null;
+  updateHofplanToolbar();
+}
+
+function toggleHofplanEdit(shape) {
+  if (!shape || !shape.leafletLayer.editing) return;
+  if (hofplanEditingId === shape.id) {
+    disableHofplanEditing();
+  } else {
+    disableHofplanEditing(); // vorherige Bearbeitung zuerst sauber beenden (inkl. Rückgängig-Eintrag)
+    hofplanEditBeforeGeometry = cloneFeature(shape.leafletLayer.toGeoJSON()).geometry;
+    shape.leafletLayer.editing.enable();
+    hofplanEditingId = shape.id;
+    const label = shape.name || shape.kategorie;
+    setHofplanStatus(`${label ? 'Gebäude „' + label + '"' : 'Gebäude'}: Eckpunkte ziehen, um Form/Standort zu ändern.`);
+  }
+  renderHofplanList();
+  updateHofplanToolbar();
+}
+
+function applyGeometryToHofplanShape(shape, geometry) {
+  const depth = geometry.type === 'MultiPolygon' ? 2 : 1;
+  shape.leafletLayer.setLatLngs(L.GeoJSON.coordsToLatLngs(geometry.coordinates, depth));
+  const center = shape.leafletLayer.getBounds().getCenter();
+  if (shape.labelAnchor && shape.labelAnchor.setLatLng) shape.labelAnchor.setLatLng(center);
+  shape.areaQm = computeHofplanArea(shape);
+}
+
+// Feuert bei jedem Eckpunkt-Zug — Label-Position sofort mitziehen, die
+// teurere Flächen-Neuberechnung + Listen-Update per Debounce ans Ende der
+// Zieh-Geste verschieben (gleiches Prinzip wie syncShapeGeometryLive beim
+// Flächenzeichner).
+function syncHofplanGeometryLive(shape) {
+  const center = shape.leafletLayer.getBounds().getCenter();
+  if (shape.labelAnchor && shape.labelAnchor.setLatLng) shape.labelAnchor.setLatLng(center);
+  clearTimeout(hofplanGeometryCommitTimer);
+  hofplanGeometryCommitTimer = setTimeout(() => {
+    shape.areaQm = computeHofplanArea(shape);
+    renderHofplanList();
+  }, 200);
+}
+
+function zoomToHofplanShape(id) {
+  const shape = hofplanShapes.find(s => s.id === id);
+  if (!shape || !shape.leafletLayer.getBounds) return;
+  const bounds = shape.leafletLayer.getBounds();
+  if (bounds.isValid()) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 20 });
+}
+
+function renderHofplanList() {
+  const list = document.getElementById('hofplan-list');
+  document.getElementById('hofplan-empty-hint').style.display = hofplanShapes.length ? 'none' : 'block';
+  list.innerHTML = '';
+  hofplanShapes.forEach((s, i) => {
+    const item = document.createElement('div');
+    item.className = 'parcel-item';
+    const optionsHtml = GEBAEUDE_KATALOG.map(g =>
+      `<option value="${escapeHtml(g.kategorie)}" ${s.kategorie === g.kategorie ? 'selected' : ''}>${escapeHtml(g.kategorie)}</option>`
+    ).join('');
+    item.innerHTML = `
+      <div class="parcel-row">
+        <input type="color" class="hofplan-color-input" data-id="${s.id}" value="${hofplanEffectiveColor(s)}" title="Farbe ändern">
+        <div class="parcel-nummer">#${i + 1}</div>
+        <input class="parcel-name" data-id="${s.id}" placeholder="Gebäudename (optional)" value="${escapeHtml(s.name)}">
+        <div class="parcel-size">${Math.round(s.areaQm).toLocaleString('de-DE')} m²</div>
+      </div>
+      <select class="parcel-kultur" data-id="${s.id}">
+        <option value="" ${s.kategorie ? '' : 'selected'}>– Gebäudetyp wählen –</option>
+        ${optionsHtml}
+      </select>
+      <div class="layer-actions">
+        ${s.color ? `<button data-id="${s.id}" data-action="reset-color">Farbe zurücksetzen</button>` : ''}
+        <button data-id="${s.id}" data-action="zoom">Zoom</button>
+        <button data-id="${s.id}" data-action="remove" class="danger">Entfernen</button>
+      </div>
+    `;
+    list.appendChild(item);
+  });
+
+  list.querySelectorAll('.hofplan-color-input').forEach(input => {
+    input.addEventListener('input', () => {
+      const s = hofplanShapes.find(x => x.id === input.getAttribute('data-id'));
+      if (s) { s.color = input.value; updateHofplanShapeStyle(s); }
+    });
+    input.addEventListener('change', () => renderHofplanList());
+  });
+  list.querySelectorAll('.parcel-name').forEach(input => {
+    input.addEventListener('input', () => {
+      const s = hofplanShapes.find(x => x.id === input.getAttribute('data-id'));
+      if (s) { s.name = input.value; updateHofplanShapeStyle(s); }
+    });
+  });
+  list.querySelectorAll('.parcel-kultur').forEach(select => {
+    select.addEventListener('change', () => {
+      const s = hofplanShapes.find(x => x.id === select.getAttribute('data-id'));
+      if (s) { s.kategorie = select.value; updateHofplanShapeStyle(s); renderHofplanList(); }
+    });
+  });
+  list.querySelectorAll('[data-action]').forEach(el => {
+    el.addEventListener('click', () => {
+      const id = el.getAttribute('data-id');
+      const action = el.getAttribute('data-action');
+      const s = hofplanShapes.find(x => x.id === id);
+      if (action === 'zoom') zoomToHofplanShape(id);
+      if (action === 'remove' && s) deleteHofplanShape(s);
+      if (action === 'reset-color' && s) { s.color = null; updateHofplanShapeStyle(s); renderHofplanList(); }
+    });
+  });
+}
+
+function initHofplanMap() {
+  if (hofplanInitDone) return;
+  hofplanInitDone = true;
+
+  hofplanLayerGroup = L.featureGroup().addTo(map);
+
+  if (typeof L.Draw === 'undefined') {
+    hofplanToolRectBtn.disabled = true;
+    hofplanToolPolyBtn.disabled = true;
+    showHofplanError('Zeichenwerkzeug nicht verfügbar (Leaflet.draw konnte nicht geladen werden).');
+    return;
+  }
+
+  hofplanDrawRect = new L.Draw.Rectangle(map, {
+    shapeOptions: { color: HOFPLAN_DEFAULT_COLOR, weight: 2, fillColor: HOFPLAN_DEFAULT_COLOR, fillOpacity: 0.32 }
+  });
+  hofplanDrawPoly = new L.Draw.Polygon(map, {
+    shapeOptions: { color: HOFPLAN_DEFAULT_COLOR, weight: 2, fillColor: HOFPLAN_DEFAULT_COLOR, fillOpacity: 0.32 },
+    showArea: true,
+    metric: true,
+    allowIntersection: false
+  });
+
+  // Eigene DRAWSTART/DRAWSTOP/CREATED-Handler, per armedTool von den
+  // gleichnamigen Flächenzeichner-Handlern unterschieden (siehe dortiger
+  // Guard bei layerType 'polygon' — Rechteck nutzt ohnehin einen eigenen,
+  // dort nicht behandelten layerType 'rectangle').
+  map.on(L.Draw.Event.DRAWSTART, () => {
+    if (armedTool === 'draw-hofplan-rect') setHofplanStatus('Rechteck aufziehen, um ein Gebäude zu zeichnen (Esc zum Abbrechen).');
+    else if (armedTool === 'draw-hofplan-poly') setHofplanStatus('Eckpunkte anklicken, mit Doppelklick abschließen (Esc zum Abbrechen).');
+    updateHofplanToolbar();
+  });
+  map.on(L.Draw.Event.DRAWSTOP, () => {
+    if (armedTool === 'draw-hofplan-rect' || armedTool === 'draw-hofplan-poly') armedTool = null;
+    updateHofplanToolbar();
+  });
+  map.on('contextmenu', (e) => {
+    if (armedTool === 'draw-hofplan-poly') { L.DomEvent.preventDefault(e); hofplanDrawPoly.deleteLastVertex(); }
+  });
+  map.on(L.Draw.Event.CREATED, (e) => {
+    if (armedTool !== 'draw-hofplan-rect' && armedTool !== 'draw-hofplan-poly') return;
+    const shape = addHofplanShapeFromLayer(e.layer, '', '');
+    pushHofplanUndo({ type: 'add', shapeId: shape.id });
+    renderHofplanList();
+    setHofplanStatus(`Gebäude gezeichnet (${Math.round(shape.areaQm).toLocaleString('de-DE')} m²) — Typ in der Liste zuweisen.`);
+  });
+}
+
+// ---------- Werkzeugleiste oberhalb der Karte (Hofplan) ----------
+const hofplanToolRectBtn = document.getElementById('hofplan-tool-rect');
+const hofplanToolPolyBtn = document.getElementById('hofplan-tool-poly');
+const hofplanToolEditBtn = document.getElementById('hofplan-tool-edit');
+const hofplanToolDeleteBtn = document.getElementById('hofplan-tool-delete');
+const hofplanToolUndoBtn = document.getElementById('hofplan-tool-undo');
+
+function updateHofplanToolbar() {
+  hofplanToolRectBtn.classList.toggle('active', armedTool === 'draw-hofplan-rect');
+  hofplanToolPolyBtn.classList.toggle('active', armedTool === 'draw-hofplan-poly');
+  hofplanToolEditBtn.classList.toggle('active', hofplanToolMode === 'edit');
+  hofplanToolDeleteBtn.classList.toggle('active', hofplanToolMode === 'delete');
+  hofplanToolUndoBtn.disabled = hofplanUndoStack.length === 0;
+}
+
+// Bearbeiten/Löschen bleiben "scharf", bis man sie erneut anklickt (oder Esc
+// drückt) — mehrere Gebäude hintereinander anklicken, ohne das Werkzeug
+// jedes Mal neu auswählen zu müssen (gleiches Prinzip wie setMapToolMode).
+function setHofplanToolMode(mode) {
+  disableHofplanEditing();
+  hofplanToolMode = hofplanToolMode === mode ? null : mode;
+  if (hofplanToolMode === 'edit') setHofplanStatus('Gebäude anklicken, um seine Eckpunkte zu bearbeiten.');
+  else if (hofplanToolMode === 'delete') setHofplanStatus('Gebäude anklicken, um es zu löschen.');
+  updateHofplanToolbar();
+}
+
+hofplanToolRectBtn.addEventListener('click', () => {
+  initHofplanMap();
+  armedTool = 'draw-hofplan-rect';
+  if (hofplanDrawRect) hofplanDrawRect.enable();
+});
+hofplanToolPolyBtn.addEventListener('click', () => {
+  initHofplanMap();
+  armedTool = 'draw-hofplan-poly';
+  if (hofplanDrawPoly) hofplanDrawPoly.enable();
+});
+hofplanToolEditBtn.addEventListener('click', () => setHofplanToolMode('edit'));
+hofplanToolDeleteBtn.addEventListener('click', () => setHofplanToolMode('delete'));
+hofplanToolUndoBtn.addEventListener('click', undoLastHofplanAction);
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (hofplanToolMode) { hofplanToolMode = null; updateHofplanToolbar(); }
+  if (armedTool === 'draw-hofplan-rect' && hofplanDrawRect) hofplanDrawRect.disable();
+  if (armedTool === 'draw-hofplan-poly' && hofplanDrawPoly) hofplanDrawPoly.disable();
+});
+
+updateHofplanToolbar();
+
+// Speichert die gezeichneten Gebäude als reguläres GeoJSON, analog zum
+// Flächenzeichner-Export.
+function exportHofplanGeoJSON() {
+  if (!hofplanShapes.length) { showHofplanError('Noch kein Gebäude gezeichnet.'); return; }
+  const fc = {
+    type: 'FeatureCollection',
+    features: hofplanShapes.map(s => ({
+      type: 'Feature',
+      geometry: s.leafletLayer.toGeoJSON().geometry,
+      properties: { kategorie: s.kategorie, name: s.name, farbe: hofplanEffectiveColor(s), flaeche_qm: Math.round(s.areaQm) }
+    }))
+  };
+  const ts = new Date().toISOString().slice(0, 10);
+  downloadBlob(JSON.stringify(fc, null, 2), zuordnungFileName('Hofplan', 'geojson') || `hofplan_${ts}.geojson`, 'application/geo+json');
+  setHofplanStatus('Als GeoJSON gespeichert.');
+}
+document.getElementById('btn-export-hofplan-geojson').addEventListener('click', exportHofplanGeoJSON);
+
+// ---------- Lageplan exportieren (ein Satellitenbild mit allen Gebäuden + Legende) ----------
+// Im Unterschied zu den übrigen Flächenkarten-Exporten (eine Seite pro
+// Fläche) hier bewusst EINE Gesamtübersicht: alle Gebäude zusammen als ein
+// PDF, mit Legende statt Einzel-Infozeile — ein Hofplan ist als Ganzes
+// gedacht, nicht als Sammlung einzelner Blätter.
+async function captureHofplanScreenshot(targetMap, satelliteLayer, mapElId, featureCollection) {
+  const highlightLayer = L.geoJSON(featureCollection, {
+    renderer: L.canvas(),
+    style: (feature) => {
+      const color = feature.properties.farbe;
+      return { color, weight: 2.5, opacity: 1, fillColor: color, fillOpacity: 0.4 };
+    }
+  }).addTo(targetMap);
+  try {
+    const bounds = highlightLayer.getBounds();
+    if (bounds.isValid()) targetMap.fitBounds(bounds, { padding: [60, 60], maxZoom: 20 });
+    await waitForTilesFullyLoaded(satelliteLayer, mapElId, 6000);
+    return await html2canvas(document.getElementById(mapElId), { useCORS: true, logging: false });
+  } finally {
+    targetMap.removeLayer(highlightLayer);
+  }
+}
+
+function computeHofplanLegend() {
+  const seen = new Map();
+  hofplanShapes.forEach(s => {
+    const label = s.kategorie || 'Ohne Typ';
+    const color = hofplanEffectiveColor(s);
+    seen.set(label + '|' + color, { label, color });
+  });
+  return [...seen.values()];
+}
+
+function addHofplanUebersichtPage(doc, pageW, pageH, margin, canvas, legendItems) {
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(15);
+  doc.text('Hofplan – Lageplan', margin, margin + 4);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9.5);
+  const legendY = margin + 11;
+  const swatch = 3.2;
+  let lx = margin;
+  legendItems.forEach((item) => {
+    doc.setFillColor(item.color);
+    doc.rect(lx, legendY - swatch, swatch, swatch, 'F');
+    doc.text(item.label, lx + swatch + 1.6, legendY);
+    lx += swatch + 1.6 + doc.getTextWidth(item.label) + 8;
+  });
+
+  const imageTop = legendY + 6;
+  const maxW = pageW - margin * 2;
+  const maxH = pageH - imageTop - margin;
+  const scale = Math.min(maxW / canvas.width, maxH / canvas.height);
+  const imgW = canvas.width * scale;
+  const imgH = canvas.height * scale;
+  const imgX = (pageW - imgW) / 2;
+  doc.addImage(canvas.toDataURL('image/jpeg', 0.85), 'JPEG', imgX, imageTop, imgW, imgH);
+}
+
+async function exportHofplanUebersicht() {
+  if (typeof html2canvas === 'undefined') { showHofplanError('Lageplan-Export nicht verfügbar (html2canvas konnte nicht geladen werden).'); return; }
+  if (typeof window.jspdf === 'undefined') { showHofplanError('Lageplan-Export nicht verfügbar (jsPDF konnte nicht geladen werden).'); return; }
+  if (!hofplanShapes.length) { showHofplanError('Noch kein Gebäude gezeichnet.'); return; }
+
+  const btn = document.getElementById('btn-export-hofplan-uebersicht');
+  btn.disabled = true;
+
+  // Ein noch scharf gestelltes Zeichenwerkzeug hinterlässt sonst seinen
+  // Hinweis-Tooltip ("Click and drag to draw rectangle." o.ä.) mitten im
+  // Screenshot, da der Tooltip Teil des Karten-DOM ist und von html2canvas
+  // mit erfasst wird.
+  if (armedTool === 'draw-hofplan-rect' && hofplanDrawRect) hofplanDrawRect.disable();
+  if (armedTool === 'draw-hofplan-poly' && hofplanDrawPoly) hofplanDrawPoly.disable();
+  disableHofplanEditing();
+
+  const savedCenter = map.getCenter();
+  const savedZoom = map.getZoom();
+  const savedBasemap = currentBasemap;
+
+  map.removeLayer(hofplanLayerGroup);
+  if (currentBasemap !== 'satellite') setBasemap('satellite');
+  map.removeControl(map.zoomControl);
+
+  try {
+    const fc = {
+      type: 'FeatureCollection',
+      features: hofplanShapes.map(s => ({
+        type: 'Feature',
+        geometry: s.leafletLayer.toGeoJSON().geometry,
+        properties: { kategorie: s.kategorie, farbe: hofplanEffectiveColor(s) }
+      }))
+    };
+
+    setHofplanStatus('Exportiere Lageplan …');
+    let canvas;
+    try {
+      canvas = await captureHofplanScreenshot(map, basemaps.satellite, 'map', fc);
+    } catch (err) {
+      console.error('Kartenbild-Erfassung für Hofplan fehlgeschlagen', err);
+      showHofplanError('Kartenbild konnte nicht erfasst werden (evtl. CORS-Einschränkung der Kachel-Quelle).');
+      return;
+    }
+
+    const doc = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
+    addHofplanUebersichtPage(doc, pageW, pageH, 12, canvas, computeHofplanLegend());
+    stampFeldFolioLogo(doc, await getFeldFolioLogoDataUrl());
+    const ts = new Date().toISOString().slice(0, 10);
+    doc.save(zuordnungFileName('Hofplan Lageplan', 'pdf') || `hofplan_lageplan_${ts}.pdf`);
+    setHofplanStatus('Lageplan exportiert.');
+  } finally {
+    map.zoomControl.addTo(map);
+    if (currentBasemap !== savedBasemap) setBasemap(savedBasemap);
+    hofplanLayerGroup.addTo(map);
+    map.setView(savedCenter, savedZoom);
+    btn.disabled = false;
+  }
+}
+document.getElementById('btn-export-hofplan-uebersicht').addEventListener('click', exportHofplanUebersicht);
+
+// ---------- Gesamtexport (Flächenzeichner + Obstbaumkataster + Hofplan) ----------
+// Kombiniert genau die Funktionen, die auch einzeln als GeoJSON exportierbar
+// sind (Bienenflugkarte hat keinen eigenen GeoJSON-Export und bleibt daher
+// hier bewusst außen vor) — einmal als eine gemeinsame .geojson-Datei,
+// einmal als ein gemeinsames PDF mit Deckblatt + einem Abschnitt je
+// Funktion. Nutzt für das PDF dieselben Seiten-Bausteine wie die einzelnen
+// Flächenkarten-Exporte (addFlaechenkartePage/addObstbaumParcelPages/
+// addObstbaumClusterPages/addHofplanUebersichtPage), nur mit einem
+// gemeinsamen jsPDF-Dokument statt je einem eigenen.
+function exportKombiniertesGeoJSON() {
+  const zeichnerFeatures = zeichnerParcels.map(p => ({
+    ...cloneFeature(p.leafletLayer.feature),
+    properties: { ...p.leafletLayer.feature.properties, quelle: 'Flächenzeichner' }
+  }));
+  const obstbaumFeatures = obstbaumTrees.map(t => ({
+    type: 'Feature',
+    geometry: { type: 'Point', coordinates: [t.latlng.lng, t.latlng.lat] },
+    properties: { nummer: t.nummer, art: t.art, label: fruitOf(t.art).label, quelle: 'Obstbaumkataster' }
+  }));
+  const hofplanFeatures = hofplanShapes.map(s => ({
+    type: 'Feature',
+    geometry: s.leafletLayer.toGeoJSON().geometry,
+    properties: { kategorie: s.kategorie, name: s.name, farbe: hofplanEffectiveColor(s), flaeche_qm: Math.round(s.areaQm), quelle: 'Hofplan' }
+  }));
+  const allFeatures = [...zeichnerFeatures, ...obstbaumFeatures, ...hofplanFeatures];
+  if (!allFeatures.length) { showError('Noch keine Inhalte zum Exportieren vorhanden.'); return; }
+  const fc = { type: 'FeatureCollection', features: allFeatures };
+  const ts = new Date().toISOString().slice(0, 10);
+  downloadBlob(JSON.stringify(fc, null, 2), zuordnungFileName('FeldFolio', 'geojson') || `FeldFolio_${ts}.geojson`, 'application/geo+json');
+  setStatus('Gesamtübersicht als GeoJSON gespeichert.');
+}
+document.getElementById('btn-export-gesamt-geojson').addEventListener('click', exportKombiniertesGeoJSON);
+
+async function exportKombiniertesPDF() {
+  if (typeof html2canvas === 'undefined') { showError('Export nicht verfügbar (html2canvas konnte nicht geladen werden).'); return; }
+  if (typeof window.jspdf === 'undefined') { showError('Export nicht verfügbar (jsPDF konnte nicht geladen werden).'); return; }
+  if (!zeichnerParcels.length && !obstbaumTrees.length && !hofplanShapes.length) {
+    showError('Noch keine Inhalte zum Exportieren vorhanden.');
+    return;
+  }
+
+  const btnPdf = document.getElementById('btn-export-gesamt-pdf');
+  const btnGeo = document.getElementById('btn-export-gesamt-geojson');
+  btnPdf.disabled = true;
+  btnGeo.disabled = true;
+
+  const savedCenter = map.getCenter();
+  const savedZoom = map.getZoom();
+  const savedBasemap = currentBasemap;
+  // Alle Ebenen (inkl. der Flächenzeichner-Ebene, die wie jede andere Fläche
+  // Teil von layers{} ist) und die Hofplan-Ebene ausblenden — jeder Abschnitt
+  // zeigt sonst zusätzlich noch die farbig gefüllten Formen der jeweils
+  // ANDEREN Funktionen im Hintergrund. Baumpunkte (obstbaumLayerGroup) sind
+  // bewusst NICHT Teil von layers{} und bleiben daher sichtbar.
+  const visibleLayerIds = Object.keys(layers).filter(id => layers[id].visible);
+  visibleLayerIds.forEach(id => map.removeLayer(layers[id].leafletLayer));
+  if (hofplanLayerGroup) map.removeLayer(hofplanLayerGroup);
+  if (armedTool === 'draw-hofplan-rect' && hofplanDrawRect) hofplanDrawRect.disable();
+  if (armedTool === 'draw-hofplan-poly' && hofplanDrawPoly) hofplanDrawPoly.disable();
+  disableHofplanEditing();
+  if (currentBasemap !== 'satellite') setBasemap('satellite');
+  map.removeControl(map.zoomControl);
+
+  const doc = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const margin = 12;
+
+  try {
+    // Deckblatt
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(20);
+    doc.text('FeldFolio – Gesamtübersicht', margin, margin + 12);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(12);
+    doc.text(activeZuordnung ? activeZuordnung.betrieb : 'Kein Betrieb zugeordnet', margin, margin + 22);
+    doc.text(new Date().toLocaleDateString('de-DE'), margin, margin + 29);
+    doc.setFontSize(11);
+    let sy = margin + 42;
+    if (zeichnerParcels.length) { doc.text(`${zeichnerParcels.length} gezeichnete Fläche(n)`, margin, sy); sy += 7; }
+    if (obstbaumTrees.length) { doc.text(`${obstbaumTrees.length} Baum/Bäume`, margin, sy); sy += 7; }
+    if (hofplanShapes.length) { doc.text(`${hofplanShapes.length} Gebäude`, margin, sy); sy += 7; }
+
+    let pageIdx = 1; // Deckblatt zählt bereits als erste Seite
+
+    if (zeichnerParcels.length) {
+      doc.addPage('a4', 'landscape');
+      pageIdx++;
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(16);
+      doc.text('Flächenzeichner', margin, margin + 6);
+      for (let i = 0; i < zeichnerParcels.length; i++) {
+        const p = zeichnerParcels[i];
+        setStatus(`Gesamtexport … Flächenzeichner (${i + 1}/${zeichnerParcels.length})`);
+        let canvas;
+        try {
+          canvas = await captureParcelScreenshot(map, basemaps.satellite, 'map', p.leafletLayer.toGeoJSON());
+        } catch (err) {
+          console.error('Kartenbild-Erfassung fehlgeschlagen für', p.nummer, err);
+          showError('Kartenbild konnte nicht erfasst werden (evtl. CORS-Einschränkung der Kachel-Quelle).');
+          return;
+        }
+        // Immer eine neue Seite, auch beim ersten Durchlauf — die aktuelle
+        // Seite trägt bereits die Abschnitts-Überschrift, addFlaechenkartePage
+        // schreibt sonst ihren eigenen Titel darüber (Überlappung).
+        doc.addPage('a4', 'landscape');
+        pageIdx++;
+        addFlaechenkartePage(doc, pageW, pageH, margin, canvas, {
+          nummer: p.nummer, featName: p.featName, groesse: String(p.areaHa), kultur: p.kultur, flaechenId: ''
+        });
+      }
+    }
+
+    if (obstbaumTrees.length) {
+      doc.addPage('a4', 'landscape');
+      pageIdx++;
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(16);
+      doc.text('Obstbaumkataster', margin, margin + 6);
+      const grandTotal = new Map();
+      if (featureIndex.length) {
+        const treeLists = computeObstbaumParcelTreeLists();
+        const parcelsWithTrees = featureIndex
+          .filter(p => treeLists.has(p.id))
+          .sort((a, b) => String(a.nummer).localeCompare(String(b.nummer), undefined, { numeric: true }));
+        pageIdx = await addObstbaumParcelPages(doc, parcelsWithTrees, treeLists, pageW, pageH, margin, pageIdx, grandTotal);
+        const unassigned = obstbaumTrees.filter(t => !t.parcelId);
+        if (unassigned.length) {
+          const clusters = clusterTrees(unassigned, TREE_VISIBILITY_RADIUS);
+          pageIdx = await addObstbaumClusterPages(doc, clusters, pageW, pageH, margin, pageIdx, grandTotal, 'Nicht zugeordnet');
+        }
+      } else {
+        const clusters = clusterTrees(obstbaumTrees, TREE_VISIBILITY_RADIUS);
+        pageIdx = await addObstbaumClusterPages(doc, clusters, pageW, pageH, margin, pageIdx, grandTotal, '');
+      }
+    }
+
+    if (hofplanShapes.length) {
+      doc.addPage('a4', 'landscape');
+      pageIdx++;
+      setStatus('Gesamtexport … Hofplan');
+      const fc = {
+        type: 'FeatureCollection',
+        features: hofplanShapes.map(s => ({
+          type: 'Feature',
+          geometry: s.leafletLayer.toGeoJSON().geometry,
+          properties: { kategorie: s.kategorie, farbe: hofplanEffectiveColor(s) }
+        }))
+      };
+      let canvas;
+      try {
+        canvas = await captureHofplanScreenshot(map, basemaps.satellite, 'map', fc);
+      } catch (err) {
+        console.error('Kartenbild-Erfassung für Hofplan fehlgeschlagen', err);
+        showError('Kartenbild konnte nicht erfasst werden (evtl. CORS-Einschränkung der Kachel-Quelle).');
+        return;
+      }
+      addHofplanUebersichtPage(doc, pageW, pageH, margin, canvas, computeHofplanLegend());
+    }
+
+    stampFeldFolioLogo(doc, await getFeldFolioLogoDataUrl());
+    const ts = new Date().toISOString().slice(0, 10);
+    doc.save(zuordnungFileName('FeldFolio', 'pdf') || `FeldFolio_${ts}.pdf`);
+    setStatus('Gesamtübersicht als PDF exportiert.');
+  } finally {
+    map.zoomControl.addTo(map);
+    if (currentBasemap !== savedBasemap) setBasemap(savedBasemap);
+    visibleLayerIds.forEach(id => layers[id] && layers[id].leafletLayer.addTo(map));
+    if (hofplanLayerGroup) hofplanLayerGroup.addTo(map);
+    map.setView(savedCenter, savedZoom);
+    btnPdf.disabled = false;
+    btnGeo.disabled = false;
+  }
+}
+document.getElementById('btn-export-gesamt-pdf').addEventListener('click', exportKombiniertesPDF);
+
 // ---------- FeldFolio Plus: Cloud-Konto ----------
 // Login-gated Cloud-Speicherung des gesamten Arbeitsstands (geteilte Ebenen +
 // Obstbäume + Bienenstöcke) — alles andere in der App funktioniert weiterhin
@@ -5319,6 +6044,9 @@ function updateAccountButton() {
     accountBtn.textContent = 'Anmelden';
     accountBtn.classList.remove('logged-in');
   }
+  // Das "+" in der Wortmarke (FeldFolio+) markiert die Cloud-Funktionen, die
+  // erst nach der Anmeldung nutzbar sind — deshalb nur dann sichtbar.
+  document.getElementById('brand-logo').classList.toggle('is-logged-in', !!accountSession);
 }
 
 function openAccountModal() { setAuthMode('signin'); renderAccountModal(); accountModal.hidden = false; }
@@ -5540,7 +6268,8 @@ function serializeWorkspace() {
   return {
     layers: Object.values(layers).map(l => ({ name: l.name, geojson: l.geojson })),
     obstbaumTrees: obstbaumTrees.map(t => ({ art: t.art, lat: t.latlng.lat, lng: t.latlng.lng, notes: t.notes, photos: t.photos })),
-    bienenflugPoints: bienenflugPoints.map(p => ({ name: p.name, lat: p.latlng.lat, lng: p.latlng.lng }))
+    bienenflugPoints: bienenflugPoints.map(p => ({ name: p.name, lat: p.latlng.lat, lng: p.latlng.lng })),
+    hofplanShapes: hofplanShapes.map(s => ({ kategorie: s.kategorie, name: s.name, color: s.color, geometry: s.leafletLayer.toGeoJSON().geometry }))
   };
 }
 
@@ -5571,6 +6300,14 @@ function restoreWorkspace(data) {
       }
     });
   }
+  if ((data.hofplanShapes || []).length) {
+    initHofplanMap();
+    data.hofplanShapes.forEach(s => {
+      const layer = L.geoJSON({ type: 'Feature', geometry: s.geometry, properties: {} }).getLayers()[0];
+      addHofplanShapeFromLayer(layer, s.kategorie || '', s.name || '', undefined, s.color || null);
+    });
+    renderHofplanList();
+  }
 }
 
 // Entfernt den kompletten aktuell geladenen Workspace-Inhalt von der Karte —
@@ -5593,10 +6330,14 @@ function clearAllTrees() {
 function clearAllBeehives() {
   while (bienenflugPoints.length) removeBeehive(bienenflugPoints[0].id);
 }
+function clearAllHofplanShapes() {
+  while (hofplanShapes.length) removeHofplanShapeEverywhere(hofplanShapes[0]);
+}
 function clearWorkspace() {
   clearAllLayers();
   clearAllTrees();
   clearAllBeehives();
+  clearAllHofplanShapes();
 }
 
 // terminkalenderEvents/manualBetriebe gelten immer betriebsübergreifend,
@@ -5644,6 +6385,49 @@ async function switchWorkspace(oldKey, newKey) {
   restoreWorkspace(full.workspaces[newKey]);
 }
 
+// Prüft den aktuell GELADENEN (In-Memory-)Workspace auf Inhalt — anders als
+// ein leeres serialisiertes Workspace-Objekt zu prüfen, da hier der gerade
+// sichtbare Stand gemeint ist, bevor er überhaupt gespeichert wurde.
+function currentWorkspaceHasContent() {
+  return !!(Object.keys(layers).length || obstbaumTrees.length || bienenflugPoints.length || hofplanShapes.length);
+}
+
+// Hängt die vier Bestandslisten zweier serialisierter Workspaces aneinander
+// (Ziel-Betrieb zuerst) — für "Inhalte ohne Betrieb einem Betrieb
+// zuordnen": bestehender Inhalt des Ziel-Betriebs bleibt erhalten, die
+// verschobenen Inhalte kommen dazu, statt ihn zu überschreiben.
+function mergeWorkspaces(target, moved) {
+  return {
+    layers: [...(target.layers || []), ...(moved.layers || [])],
+    obstbaumTrees: [...(target.obstbaumTrees || []), ...(moved.obstbaumTrees || [])],
+    bienenflugPoints: [...(target.bienenflugPoints || []), ...(moved.bienenflugPoints || [])],
+    hofplanShapes: [...(target.hofplanShapes || []), ...(moved.hofplanShapes || [])]
+  };
+}
+
+// Verschiebt den aktuell geladenen "Kein Betrieb"-Workspace in einen echten
+// Betrieb, statt ihn beim nächsten Wechsel nur unverändert in seinem eigenen
+// Slot zu belassen (das macht switchWorkspace() bereits automatisch, lässt
+// die Inhalte aber dauerhaft von den echten Betrieben getrennt). Ablauf wie
+// switchWorkspace(), nur dass der NO_BETRIEB-Stand in den Ziel-Workspace
+// EINGEMISCHT statt nur zurückgeschrieben wird, und der NO_BETRIEB-Slot
+// danach leer ist.
+async function assignNoBetriebContentTo(z) {
+  const movedContent = serializeWorkspace();
+  const full = await getFreshFullState();
+  full.workspaces[z.betrieb] = mergeWorkspaces(full.workspaces[z.betrieb] || {}, movedContent);
+  full.workspaces[NO_BETRIEB_KEY] = {};
+  full.terminkalenderEvents = terminkalenderEvents.map(e => ({
+    ...e, date: e.date.toISOString(), dateEnd: e.dateEnd ? e.dateEnd.toISOString() : null
+  }));
+  full.manualBetriebe = manualBetriebe;
+  await saveState(full);
+  clearWorkspace();
+  restoreWorkspace(full.workspaces[z.betrieb]);
+  currentWorkspaceKey = z.betrieb;
+  setActiveZuordnung(z);
+}
+
 function restoreState(full) {
   if (!full) return;
   restoreSharedState(full);
@@ -5667,29 +6451,6 @@ async function autoLoadCloudState() {
     accountSyncStatus.textContent = 'Fehler: ' + (err.message || 'Laden fehlgeschlagen.');
   }
 }
-
-document.getElementById('account-btn-save').addEventListener('click', async () => {
-  accountSyncStatus.textContent = 'Speichere …';
-  try {
-    await saveFullState();
-    accountSyncStatus.textContent = 'Gespeichert.';
-  } catch (err) {
-    accountSyncStatus.textContent = 'Fehler: ' + (err.message || 'Speichern fehlgeschlagen.');
-  }
-});
-
-document.getElementById('account-btn-load').addEventListener('click', async () => {
-  accountSyncStatus.textContent = 'Lade …';
-  try {
-    const row = await loadState();
-    if (!row) { accountSyncStatus.textContent = 'Noch nichts gespeichert.'; return; }
-    restoreState(migrateFullStateShape(row.data));
-    accountSyncStatus.textContent = 'Geladen.';
-    closeAccountModal();
-  } catch (err) {
-    accountSyncStatus.textContent = 'Fehler: ' + (err.message || 'Laden fehlgeschlagen.');
-  }
-});
 
 // ---------- FeldFolio Plus: Notiz & Fotos an Fläche/Baum ----------
 // Wie der Cloud-Konto-Bereich rein additiv und komplett hinter dem Login —
@@ -6803,6 +7564,7 @@ const betriebEditor = document.getElementById('betrieb-editor');
 const betriebSearch = document.getElementById('betrieb-search');
 const betriebCurrent = document.getElementById('betrieb-current');
 const betriebCurrentLabel = document.getElementById('betrieb-current-label');
+const betriebNoassignHint = document.getElementById('betrieb-noassign-hint');
 const betriebListEl = document.getElementById('betrieb-list');
 const betriebError = document.getElementById('betrieb-error');
 const betriebManualInput = document.getElementById('betrieb-manual-input');
@@ -6849,16 +7611,27 @@ function setActiveZuordnung(z) {
   }
 }
 
+// Solange im "Kein Betrieb"-Workspace etwas geladen ist, bekommt jede Zeile
+// zusätzlich einen "Zuordnen"-Button (siehe renderBetriebList) — der klare
+// Weg für "das hier ohne Betrieb Gezeichnete jetzt einem Betrieb zuordnen",
+// statt nur wortlos zu wechseln (was den Inhalt in seinem eigenen Slot
+// beließe, siehe assignNoBetriebContentTo weiter oben).
+function canAssignNoBetriebContent() {
+  return currentWorkspaceKey === NO_BETRIEB_KEY && currentWorkspaceHasContent();
+}
+
 function renderBetriebList() {
   const q = betriebSearch.value.trim().toLowerCase();
   const betriebe = getAllBetriebNamen().filter(n => !q || n.toLowerCase().includes(q));
   const manualSet = new Set(manualBetriebe);
+  const showAssign = canAssignNoBetriebContent();
 
   let html = '<div class="betrieb-list-group"><div class="betrieb-list-group-title">Betriebe</div>';
   if (betriebe.length) {
     html += betriebe.map(name => `
       <div class="betrieb-row" data-action="select-betrieb" data-name="${escapeHtml(name)}">
         <span class="betrieb-row-main">${escapeHtml(name)}</span>
+        ${showAssign ? `<button type="button" class="betrieb-row-assign" data-action="assign-betrieb" data-name="${escapeHtml(name)}" title="Inhalte ohne Betrieb diesem Betrieb zuordnen">Zuordnen</button>` : ''}
         ${manualSet.has(name) ? `<button type="button" class="betrieb-row-remove" data-action="remove-manual" data-name="${escapeHtml(name)}" title="Manuell hinzugefügten Betrieb entfernen">✕</button>` : ''}
       </div>`).join('');
   } else {
@@ -6875,6 +7648,7 @@ function renderBetriebList() {
       html += termine.map(e => `
         <div class="betrieb-row" data-action="select-termin" data-id="${escapeHtml(e.id)}">
           <span class="betrieb-row-main">${escapeHtml(e.kunde)}<span class="betrieb-row-sub"> · ${tkFmtDate(e.date)} · ${escapeHtml(e.auditart)}</span></span>
+          ${showAssign ? `<button type="button" class="betrieb-row-assign" data-action="assign-termin" data-id="${escapeHtml(e.id)}" title="Inhalte ohne Betrieb diesem Betrieb zuordnen">Zuordnen</button>` : ''}
         </div>`).join('');
     } else {
       html += '<div class="betrieb-list-empty">Keine Termine gefunden.</div>';
@@ -6912,6 +7686,22 @@ async function applyZuordnungSelection(z) {
   }
 }
 
+// Wie applyZuordnungSelection(), aber verschiebt statt nur zu wechseln —
+// siehe assignNoBetriebContentTo() weiter oben.
+async function applyAssignSelection(z) {
+  betriebSwitchInProgress = true;
+  betriebSwitchStatus.textContent = `Ordne Inhalte „${z.betrieb}" zu …`;
+  try {
+    await assignNoBetriebContentTo(z);
+    betriebSwitchStatus.textContent = '';
+    closeBetriebModal();
+  } catch (err) {
+    betriebSwitchStatus.textContent = 'Fehler: ' + (err.message || 'Zuordnen fehlgeschlagen.');
+  } finally {
+    betriebSwitchInProgress = false;
+  }
+}
+
 betriebListEl.addEventListener('click', async (e) => {
   if (betriebSwitchInProgress) return;
   const row = e.target.closest('[data-action]');
@@ -6923,6 +7713,12 @@ betriebListEl.addEventListener('click', async (e) => {
     const ev = terminkalenderEvents.find(x => x.id === row.getAttribute('data-id'));
     if (!ev) return;
     await applyZuordnungSelection({ betrieb: ev.kunde, year: ev.date.getFullYear(), terminId: ev.id, terminLabel: `${tkFmtDate(ev.date)} · ${ev.auditart}` });
+  } else if (action === 'assign-betrieb') {
+    await applyAssignSelection({ betrieb: row.getAttribute('data-name'), year: new Date().getFullYear(), terminId: null, terminLabel: null });
+  } else if (action === 'assign-termin') {
+    const ev = terminkalenderEvents.find(x => x.id === row.getAttribute('data-id'));
+    if (!ev) return;
+    await applyAssignSelection({ betrieb: ev.kunde, year: ev.date.getFullYear(), terminId: ev.id, terminLabel: `${tkFmtDate(ev.date)} · ${ev.auditart}` });
   } else if (action === 'remove-manual') {
     const name = row.getAttribute('data-name');
     const wasActive = activeZuordnung && !activeZuordnung.terminId && activeZuordnung.betrieb === name;
@@ -6973,6 +7769,7 @@ function openBetriebModal() {
   betriebEditor.hidden = !loggedIn;
   if (loggedIn) {
     updateBetriebCurrentBox();
+    betriebNoassignHint.hidden = !canAssignNoBetriebContent();
     renderBetriebList();
   }
   betriebModal.hidden = false;
