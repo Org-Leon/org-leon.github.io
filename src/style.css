@@ -472,7 +472,6 @@
 
   .export-flaechenkarten-btn {
     display: block;
-    width: 100%;
     margin: 4px 14px 8px;
     background: var(--accent-dim);
     border: 1px solid var(--accent);
@@ -482,7 +481,6 @@
     font-size: 13px;
     cursor: pointer;
     font-family: var(--sans);
-    box-sizing: border-box;
   }
   .export-flaechenkarten-btn:hover { background: var(--accent); }
   #gesamtexport-buttons { display: flex; flex-direction: column; }
