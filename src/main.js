@@ -159,6 +159,13 @@ function renderBesichtigtSummary(elId, rows) {
 }
 
 const map = L.map('map', { zoomControl: true, attributionControl: true }).setView([51.16, 10.45], 6);
+// Nur im Dev-Server sichtbar (import.meta.env.DEV wird im Produktions-Build
+// zu `false` und der Zweig per Dead-Code-Elimination entfernt) — die
+// Playwright-Regressionstests (tests/e2e/) brauchen Zugriff auf die
+// modul-interne map-Instanz, z.B. um map.fire('draw:created', {...}) direkt
+// auszulösen, da Leaflet.draw synthetische Maus-Events unzuverlässig
+// verarbeitet.
+if (import.meta.env.DEV) window.__ffTestMap = map;
 
 // Alle Werkzeuge (Zeichnen, Baum setzen, Bienenstock setzen) teilen sich jetzt
 // denselben Karten-Klick-Event — armedTool sorgt dafür, dass immer nur genau
