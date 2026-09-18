@@ -43,3 +43,18 @@
    interaktive Playwright-MCP-Anbindung nutzen — Screenshots danach löschen
    (`.playwright-mcp/`, bereits gitignored). Das ersetzt aber nicht Punkt 1:
    funktionale Änderungen brauchen einen Platz in der `tests/e2e/`-Suite.
+
+4. **Icons**: Alle funktionalen Icons in der App sind Google Material
+   Symbols (Stil Rounded, Icon-Name als Ligatur-Text, z.B.
+   `<span class="material-symbols-rounded icon">draw</span>`) — Ausnahme
+   ist die Apfel-Illustration im `#brand-logo`-Schriftzug, die bleibt
+   unangetastet (Markenzeichen, kein UI-Icon). Die volle
+   `material-symbols`-Variable-Font wiegt 5+ MB; eingebunden ist
+   stattdessen eine auf die tatsächlich genutzten Icon-Namen UND auf eine
+   feste Achsen-Instanz reduzierte Datei (`src/assets/material-symbols-
+   rounded-subset.woff2`, ~270 KB, per `@font-face` in `src/style.css`).
+   **Bei einem neuen Icon-Namen** die Liste `ICON_NAMES` in
+   `scripts/subset-icons.mjs` ergänzen und `node scripts/subset-icons.mjs`
+   erneut ausführen — sonst zeigt das neue Icon nur den Rohtext statt der
+   Glyphe. `material-symbols` (die volle Font, Quelle fürs Subsetting) und
+   `subset-font` (das Subsetting-Werkzeug) sind reine Dev-Dependencies.

@@ -1,4 +1,9 @@
 import { isSupabaseConfigured, signUp, signIn, signOut, getSession, saveState, loadState, uploadPhoto, getPhotoUrl, deletePhoto, requestAccess, listPendingAccessRequests, approveAccessRequest, declineAccessRequest } from './supabase.js';
+// Icon-Font selbst NICHT über das npm-Paket eingebunden (5+ MB Variable-Font
+// mit allen ~3000 Icons) — stattdessen ein auf die tatsächlich genutzten
+// Icon-Namen zugeschnittenes, auf eine feste Achsen-Instanz reduziertes
+// woff2 (~270 KB, siehe scripts/subset-icons.mjs), per @font-face in
+// style.css eingebunden.
 
 // ---------- Hell-/Dunkelmodus ----------
 // Die eigentliche Anwendung des gespeicherten Themes passiert schon synchron
@@ -180,6 +185,7 @@ let armedTool = null; // null | 'draw-polygon' | 'place-tree' | 'place-hive' | '
 // tatsächlich ein Leaflet.draw-Zeichenmodus aktiv ist (Polygon/Schnittlinie).
 let mapToolMode = null; // null | 'edit' | 'delete' | 'split'
 const shapeUndoStack = [];
+const shapeRedoStack = [];
 const SHAPE_UNDO_MAX = 20;
 let shapeEditBeforeGeometry = null; // Geometrie-Schnappschuss beim Start einer Eckpunkt-Bearbeitung, fürs Rückgängig
 
@@ -2255,7 +2261,7 @@ function renderFeatureTable() {
     const num = parseFloat(String(entry.groesse).replace(',', '.'));
     const groesseText = isFinite(num) ? num.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ha' : (entry.groesse || '–');
     const routeCell = entry.center
-      ? `<a class="table-route-link" href="${googleMapsDirectionsUrl(entry.center.lat, entry.center.lng)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Route ↗</a>`
+      ? `<a class="table-route-link" href="${googleMapsDirectionsUrl(entry.center.lat, entry.center.lng)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Route <span class="material-symbols-rounded icon">open_in_new</span></a>`
       : '–';
     const counts = treeCounts.get(entry.id);
     const treesCell = counts && counts.size
@@ -2271,8 +2277,8 @@ function renderFeatureTable() {
       <td>${escapeHtml(entry.kultur || '–')}</td>
       <td>${treesCell}</td>
       <td class="besichtigt-cell"><input type="checkbox" class="besichtigt-checkbox" ${entry.besichtigt ? 'checked' : ''} onclick="event.stopPropagation()"></td>
-      <td><button class="notes-btn${hasNotes ? ' has-notes' : ''}" data-action="notes" data-idx="${entry.idx}" onclick="event.stopPropagation()" title="Notiz &amp; Fotos">📝</button></td>
-      <td><button class="notes-btn${hasKulturplan ? ' has-notes' : ''}" data-action="kulturplan" data-idx="${entry.idx}" onclick="event.stopPropagation()" title="Anbauplanung">🌱</button></td>
+      <td><button class="notes-btn${hasNotes ? ' has-notes' : ''}" data-action="notes" data-idx="${entry.idx}" onclick="event.stopPropagation()" title="Notiz &amp; Fotos"><span class="material-symbols-rounded icon">sticky_note_2</span></button></td>
+      <td><button class="notes-btn${hasKulturplan ? ' has-notes' : ''}" data-action="kulturplan" data-idx="${entry.idx}" onclick="event.stopPropagation()" title="Anbauplanung"><span class="material-symbols-rounded icon">eco</span></button></td>
       <td>${routeCell}</td>
     </tr>`;
   }).join('');
@@ -2349,7 +2355,7 @@ function initResizablePanel({ panel, handle, minimizeBtn, closeBtn, boundsWrap, 
     // die ganze Karte.
     const maxHeight = boundsWrap.getBoundingClientRect().height * 0.85;
     panel.style.height = Math.min(lastExpandedHeight, maxHeight) + 'px';
-    minimizeBtn.textContent = '▁';
+    minimizeBtn.querySelector('.icon').textContent = 'expand_more';
     panel.classList.add('open');
   }
 
@@ -2361,11 +2367,11 @@ function initResizablePanel({ panel, handle, minimizeBtn, closeBtn, boundsWrap, 
     if (minimizing) {
       lastExpandedHeight = panel.getBoundingClientRect().height;
       panel.classList.add('minimized');
-      minimizeBtn.textContent = '▲';
+      minimizeBtn.querySelector('.icon').textContent = 'expand_less';
     } else {
       panel.classList.remove('minimized');
       panel.style.height = lastExpandedHeight + 'px';
-      minimizeBtn.textContent = '▁';
+      minimizeBtn.querySelector('.icon').textContent = 'expand_more';
     }
   });
 
@@ -2497,13 +2503,12 @@ function setActiveSegment(target) {
   if (armedTool === 'draw-hofplan-poly' && hofplanDrawPoly) hofplanDrawPoly.disable();
   disableHofplanEditing();
   armedTool = null;
-  // Die Werkzeugleiste ist nur im Flächenzeichner sichtbar (Teil von #topbar,
-  // dort per .topbar-extra ein-/ausgeblendet) — ein weiterhin "scharfes"
-  // Bearbeiten/Löschen/Teilen-Werkzeug beim Verlassen des Tabs wäre unsichtbar
-  // und damit verwirrend, deshalb hier immer zurückgesetzt.
-  if (target !== 'zeichner' && mapToolMode) { mapToolMode = null; setShapeToolbarStatus(''); }
+  // Die schwebende Werkzeugleiste (#edit-toolbar) zeigt je nach Tab nur eine
+  // ihrer beiden Gruppen (Zeichner/Hofplan) — ein weiterhin "scharfes"
+  // Bearbeiten/Löschen/Teilen-Werkzeug der GERADE VERLASSENEN Gruppe wäre
+  // dann unsichtbar und damit verwirrend, deshalb hier immer zurückgesetzt.
+  if (target !== 'zeichner' && mapToolMode) mapToolMode = null;
   updateShapeToolbar();
-  // Gleiches Prinzip für die Hofplan-Werkzeugleiste.
   if (target !== 'hofplan' && hofplanToolMode) hofplanToolMode = null;
   updateHofplanToolbar();
   if (target !== 'compare') { restoreCompareHiddenLayer(); compareTablePanel.close(); }
@@ -2512,6 +2517,11 @@ function setActiveSegment(target) {
   document.querySelectorAll('.segment-btn').forEach(b => b.classList.toggle('active', b.getAttribute('data-view') === target));
   document.querySelectorAll('.sidebar-section').forEach(el => el.classList.toggle('active', el.getAttribute('data-view') === target));
   document.querySelectorAll('.topbar-extra').forEach(el => el.classList.toggle('active', el.getAttribute('data-view') === target));
+  // #edit-toolbar selbst trägt keine eigene .topbar-extra-Sichtbarkeit (das
+  // generische data-view-Matching oben ist auf genau EINEN Tab zugeschnitten,
+  // die Leiste soll aber auf zwei Tabs erscheinen) — daher hier separat
+  // sichtbar geschaltet, sobald eine ihrer beiden Gruppen aktiv sein könnte.
+  document.getElementById('edit-toolbar').classList.toggle('active', target === 'zeichner' || target === 'hofplan');
   document.getElementById('brand-caption').textContent = SEGMENT_CAPTIONS[target] || '';
   // "Auf Inhalt zoomen" fittet auf layers/featureIndex — im Jahresvergleich
   // wird stattdessen automatisch auf das Vergleichsergebnis gezoomt, daher
@@ -3541,18 +3551,48 @@ function removeEntryEverywhere(entry) {
 function pushShapeUndo(action) {
   shapeUndoStack.push(action);
   if (shapeUndoStack.length > SHAPE_UNDO_MAX) shapeUndoStack.shift();
+  // Eine echte neue Aktion verwirft die Redo-Historie (Standard-Undo/Redo-
+  // Semantik) — anders als pushShapeUndoKeepRedo(), das redoLastShapeAction()
+  // selbst benutzt, um die soeben wiederhergestellte Aktion erneut auf den
+  // Undo-Stack zu legen, ohne den Rest der Redo-Historie zu verwerfen.
+  shapeRedoStack.length = 0;
   updateShapeToolbar();
 }
 
+function pushShapeUndoKeepRedo(action) {
+  shapeUndoStack.push(action);
+  if (shapeUndoStack.length > SHAPE_UNDO_MAX) shapeUndoStack.shift();
+  updateShapeToolbar();
+}
+
+// Baut beim Rückgängig-Machen zusätzlich die passende Redo-Gegenaktion —
+// da das rückgängig gemachte Objekt dabei gerade entfernt/verändert wird,
+// muss die Redo-Aktion alle nötigen Daten selbst mitbringen (nicht nur eine
+// ID, die es dann evtl. gar nicht mehr gibt).
 function undoLastShapeAction() {
   const action = shapeUndoStack.pop();
   if (!action) return;
+  let redoAction = null;
   if (action.type === 'add') {
     const entry = featureIndex.find(e => e.id === action.entryId);
-    if (entry) removeEntryEverywhere(entry);
-    setShapeToolbarStatus('Zeichnen rückgängig gemacht.');
+    if (entry) {
+      redoAction = {
+        type: 'add',
+        layerId: entry.layerId,
+        color: entry.color,
+        feature: cloneFeature(entry.leafletLayer.feature),
+        wasZeichnerOrigin: zeichnerParcels.some(p => p.id === entry.id)
+      };
+      removeEntryEverywhere(entry);
+    }
+    setZeichnerStatus('Zeichnen rückgängig gemacht.');
   } else if (action.type === 'delete' || action.type === 'split') {
+    let removedPieces = null;
     if (action.type === 'split') {
+      removedPieces = action.newEntryIds
+        .map(id => featureIndex.find(x => x.id === id))
+        .filter(Boolean)
+        .map(e => ({ feature: cloneFeature(e.leafletLayer.feature), color: e.color }));
       action.newEntryIds.forEach(id => {
         const e = featureIndex.find(x => x.id === id);
         if (e) removeEntryEverywhere(e);
@@ -3564,15 +3604,83 @@ function undoLastShapeAction() {
       zeichnerParcels.push(entry);
     }
     renderParcelList();
-    setShapeToolbarStatus(action.type === 'split' ? 'Teilen rückgängig gemacht.' : 'Löschen rückgängig gemacht.');
+    redoAction = action.type === 'split'
+      ? { type: 'split', entryId: entry.id, pieces: removedPieces }
+      : { type: 'delete', entryId: entry.id };
+    setZeichnerStatus(action.type === 'split' ? 'Teilen rückgängig gemacht.' : 'Löschen rückgängig gemacht.');
   } else if (action.type === 'edit') {
     const entry = featureIndex.find(e => e.id === action.entryId);
     if (entry) {
+      const currentGeometry = cloneFeature(entry.leafletLayer.feature).geometry;
       applyGeometryToEntry(entry, action.beforeGeometry);
       renderFeatureTable();
       renderParcelList();
+      redoAction = { type: 'edit', entryId: entry.id, geometry: currentGeometry };
     }
-    setShapeToolbarStatus('Bearbeitung rückgängig gemacht.');
+    setZeichnerStatus('Bearbeitung rückgängig gemacht.');
+  }
+  if (redoAction) shapeRedoStack.push(redoAction);
+  reassignAllTreesToParcels();
+  updateShapeToolbar();
+}
+
+function redoLastShapeAction() {
+  const action = shapeRedoStack.pop();
+  if (!action) return;
+  if (action.type === 'add') {
+    const entry = addFeatureToLayer(action.layerId, action.feature, action.color);
+    if (action.wasZeichnerOrigin) {
+      entry.areaHa = turf.area(entry.leafletLayer.toGeoJSON()) / 10000;
+      zeichnerParcels.push(entry);
+    }
+    renderParcelList();
+    pushShapeUndoKeepRedo({ type: 'add', entryId: entry.id });
+    setZeichnerStatus('Zeichnen wiederhergestellt.');
+  } else if (action.type === 'delete') {
+    const entry = featureIndex.find(e => e.id === action.entryId);
+    if (entry) {
+      pushShapeUndoKeepRedo({
+        type: 'delete',
+        layerId: entry.layerId,
+        color: entry.color,
+        feature: cloneFeature(entry.leafletLayer.feature),
+        wasZeichnerOrigin: zeichnerParcels.some(p => p.id === entry.id)
+      });
+      removeEntryEverywhere(entry);
+    }
+    setZeichnerStatus('Löschen wiederhergestellt.');
+  } else if (action.type === 'split') {
+    const entry = featureIndex.find(e => e.id === action.entryId);
+    if (entry) {
+      const undoFeature = cloneFeature(entry.leafletLayer.feature);
+      const undoColor = entry.color;
+      const layerId = entry.layerId;
+      const isZeichnerOrigin = zeichnerParcels.some(p => p.id === entry.id);
+      removeEntryEverywhere(entry);
+      const newEntryIds = [];
+      (action.pieces || []).forEach(p => {
+        const newEntry = addFeatureToLayer(layerId, p.feature, p.color);
+        if (isZeichnerOrigin) {
+          newEntry.id = 'parcel-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+          newEntry.areaHa = turf.area(newEntry.leafletLayer.toGeoJSON()) / 10000;
+          zeichnerParcels.push(newEntry);
+        }
+        newEntryIds.push(newEntry.id);
+      });
+      renderParcelList();
+      pushShapeUndoKeepRedo({ type: 'split', layerId, color: undoColor, feature: undoFeature, wasZeichnerOrigin: isZeichnerOrigin, newEntryIds });
+    }
+    setZeichnerStatus('Teilen wiederhergestellt.');
+  } else if (action.type === 'edit') {
+    const entry = featureIndex.find(e => e.id === action.entryId);
+    if (entry) {
+      const beforeGeometry = cloneFeature(entry.leafletLayer.feature).geometry;
+      applyGeometryToEntry(entry, action.geometry);
+      renderFeatureTable();
+      renderParcelList();
+      pushShapeUndoKeepRedo({ type: 'edit', entryId: entry.id, beforeGeometry });
+    }
+    setZeichnerStatus('Bearbeitung wiederhergestellt.');
   }
   reassignAllTreesToParcels();
   updateShapeToolbar();
@@ -3777,19 +3885,79 @@ function finishParcelSplit(lineLayer) {
   shapeStatus(entry, `Fläche geteilt in ${areaA.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ha und ${areaB.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ha.`);
 }
 
-// ---------- Werkzeugleiste oberhalb der Karte ----------
-// Bündelt Zeichnen/Bearbeiten/Teilen/Löschen/Rückgängig an einer Stelle,
-// statt sie doppelt als Zeilen-Buttons in der Flächenzeichner-Liste UND der
-// Flächentabelle vorzuhalten — die Werkzeuge wirken auf jede Fläche, die auf
+// ---------- Schwebende Werkzeugleiste: frei verschiebbar per Drag&Drop ----------
+// #edit-toolbar ist EIN gemeinsames, an Illustrator angelehntes Panel für
+// beide Zeichenwerkzeuge (Flächenzeichner-Gruppe hier, Hofplan-Gruppe weiter
+// unten) — schwebt über der Karte statt in #topbar zu stecken, damit es sich
+// unabhängig von den festen Kartensteuerungen (Basiskarte/Auf Inhalt zoomen/
+// GPS, bleiben in #topbar) verschieben lässt. Nach dem Muster von
+// wireKulturplanBarDrag() (Pointer Events: pointerdown auf dem Griff,
+// pointermove/pointerup am document, Start-Offset merken, Listener nach
+// pointerup wieder entfernen). Beim Loslassen nah am oberen/unteren
+// Kartenrand schaltet die Leiste auf horizontale Ausrichtung um und dockt
+// dort an, sonst bleibt sie vertikal an der losgelassenen Stelle.
+function wireEditToolbarDrag(toolbar, handle, boundsWrap) {
+  const DOCK_THRESHOLD = 50;
+
+  function clampToWrap(leftPx, topPx) {
+    const wrapRect = boundsWrap.getBoundingClientRect();
+    const left = Math.min(Math.max(leftPx, 0), Math.max(wrapRect.width - toolbar.offsetWidth, 0));
+    const top = Math.min(Math.max(topPx, 0), Math.max(wrapRect.height - toolbar.offsetHeight, 0));
+    return { left, top };
+  }
+
+  handle.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    const barRect = toolbar.getBoundingClientRect();
+    const offsetX = e.clientX - barRect.left;
+    const offsetY = e.clientY - barRect.top;
+    toolbar.classList.add('dragging');
+
+    function onMove(ev) {
+      const wrapRect = boundsWrap.getBoundingClientRect();
+      const { left, top } = clampToWrap(ev.clientX - wrapRect.left - offsetX, ev.clientY - wrapRect.top - offsetY);
+      toolbar.style.left = left + 'px';
+      toolbar.style.top = top + 'px';
+    }
+
+    function onUp() {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      toolbar.classList.remove('dragging');
+
+      const wrapRect = boundsWrap.getBoundingClientRect();
+      const barRect = toolbar.getBoundingClientRect();
+      const distTop = barRect.top - wrapRect.top;
+      const distBottom = wrapRect.bottom - barRect.bottom;
+      if (distTop <= DOCK_THRESHOLD || distBottom <= DOCK_THRESHOLD) {
+        toolbar.classList.add('horizontal');
+        const dockedTop = distTop <= DOCK_THRESHOLD ? 12 : wrapRect.height - toolbar.offsetHeight - 12;
+        const { left, top } = clampToWrap(barRect.left - wrapRect.left, dockedTop);
+        toolbar.style.left = left + 'px';
+        toolbar.style.top = top + 'px';
+      } else {
+        toolbar.classList.remove('horizontal');
+      }
+    }
+
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+  });
+}
+wireEditToolbarDrag(document.getElementById('edit-toolbar'), document.getElementById('edit-toolbar-handle'), document.getElementById('map-wrap'));
+
+// ---------- Werkzeugleiste: Flächenzeichner-Gruppe ----------
+// Bündelt Zeichnen/Bearbeiten/Teilen/Löschen/Rückgängig/Wiederherstellen an
+// einer Stelle, statt sie doppelt als Zeilen-Buttons in der Flächenzeichner-
+// Liste UND der Flächentabelle vorzuhalten — die Werkzeuge wirken auf jede
+// Fläche, die auf
 // der Karte angeklickt wird, unabhängig vom gerade aktiven Reiter.
 const shapeToolDrawBtn = document.getElementById('shape-tool-draw');
 const shapeToolEditBtn = document.getElementById('shape-tool-edit');
 const shapeToolSplitBtn = document.getElementById('shape-tool-split');
 const shapeToolDeleteBtn = document.getElementById('shape-tool-delete');
 const shapeToolUndoBtn = document.getElementById('shape-tool-undo');
-const shapeToolbarStatusEl = document.getElementById('shape-toolbar-status');
-
-function setShapeToolbarStatus(msg) { shapeToolbarStatusEl.textContent = msg || ''; }
+const shapeToolRedoBtn = document.getElementById('shape-tool-redo');
 
 function updateShapeToolbar() {
   shapeToolDrawBtn.classList.toggle('active', armedTool === 'draw-polygon');
@@ -3797,17 +3965,20 @@ function updateShapeToolbar() {
   shapeToolDeleteBtn.classList.toggle('active', mapToolMode === 'delete');
   shapeToolSplitBtn.classList.toggle('active', mapToolMode === 'split' || armedTool === 'split-line');
   shapeToolUndoBtn.disabled = shapeUndoStack.length === 0;
+  shapeToolRedoBtn.disabled = shapeRedoStack.length === 0;
 }
 
 // Bearbeiten/Löschen bleiben "scharf", bis man sie erneut anklickt (oder Esc
 // drückt) — man kann so mehrere Flächen hintereinander anklicken, ohne das
-// Werkzeug jedes Mal neu auswählen zu müssen.
+// Werkzeug jedes Mal neu auswählen zu müssen. Die Werkzeugleiste zeigt nur
+// noch Icons (siehe #edit-toolbar) — Hinweistexte laufen daher über die
+// normale Statuszeile (setZeichnerStatus), nicht mehr über ein eigenes
+// Textfeld in der Werkzeugleiste selbst.
 function setMapToolMode(mode) {
   disableShapeEditing();
   mapToolMode = mapToolMode === mode ? null : mode;
-  if (mapToolMode === 'edit') setShapeToolbarStatus('Fläche anklicken, um ihre Eckpunkte zu bearbeiten.');
-  else if (mapToolMode === 'delete') setShapeToolbarStatus('Fläche anklicken, um sie zu löschen.');
-  else setShapeToolbarStatus('');
+  if (mapToolMode === 'edit') setZeichnerStatus('Fläche anklicken, um ihre Eckpunkte zu bearbeiten.');
+  else if (mapToolMode === 'delete') setZeichnerStatus('Fläche anklicken, um sie zu löschen.');
   updateShapeToolbar();
 }
 
@@ -3825,18 +3996,18 @@ shapeToolSplitBtn.addEventListener('click', () => {
   if (mapToolMode === 'split' || armedTool === 'split-line') {
     mapToolMode = null;
     if (zeichnerDrawLine) zeichnerDrawLine.disable();
-    setShapeToolbarStatus('');
   } else {
     disableShapeEditing();
     mapToolMode = 'split';
-    setShapeToolbarStatus('Fläche anklicken, um sie zu teilen.');
+    setZeichnerStatus('Fläche anklicken, um sie zu teilen.');
   }
   updateShapeToolbar();
 });
 shapeToolUndoBtn.addEventListener('click', undoLastShapeAction);
+shapeToolRedoBtn.addEventListener('click', redoLastShapeAction);
 
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && mapToolMode) { mapToolMode = null; setShapeToolbarStatus(''); updateShapeToolbar(); }
+  if (e.key === 'Escape' && mapToolMode) { mapToolMode = null; updateShapeToolbar(); }
 });
 
 updateShapeToolbar();
@@ -4263,7 +4434,7 @@ function renderObstbaumTable() {
       <td>${t.nummer}</td>
       <td>${fruitChipHtml(t.art)}</td>
       <td>${parcelLabelFor(t.parcelId)}</td>
-      <td><button class="notes-btn${hasNotes ? ' has-notes' : ''}" data-id="${t.id}" data-action="notes" title="Notiz &amp; Fotos">📝</button></td>
+      <td><button class="notes-btn${hasNotes ? ' has-notes' : ''}" data-id="${t.id}" data-action="notes" title="Notiz &amp; Fotos"><span class="material-symbols-rounded icon">sticky_note_2</span></button></td>
       <td><button data-id="${t.id}" data-action="remove" class="table-remove-btn">Entfernen</button></td>
     </tr>`;
   }).join('');
@@ -5207,6 +5378,7 @@ let hofplanEditingId = null;
 let hofplanEditBeforeGeometry = null;
 let hofplanGeometryCommitTimer = null;
 const hofplanUndoStack = [];
+const hofplanRedoStack = [];
 const HOFPLAN_UNDO_MAX = 20;
 
 function setHofplanStatus(msg) { document.getElementById('hofplan-status').textContent = msg; }
@@ -5292,23 +5464,86 @@ function restoreHofplanShapeFromFeature(feature, kategorie, name, idOverride, co
 function pushHofplanUndo(action) {
   hofplanUndoStack.push(action);
   if (hofplanUndoStack.length > HOFPLAN_UNDO_MAX) hofplanUndoStack.shift();
+  // Neue Aktion verwirft die Redo-Historie — siehe pushHofplanUndoKeepRedo(),
+  // das redoLastHofplanAction() selbst nutzt, um die wiederhergestellte
+  // Aktion erneut auf den Undo-Stack zu legen, ohne den Rest der Redo-
+  // Historie zu verwerfen.
+  hofplanRedoStack.length = 0;
+  updateHofplanToolbar();
+}
+
+function pushHofplanUndoKeepRedo(action) {
+  hofplanUndoStack.push(action);
+  if (hofplanUndoStack.length > HOFPLAN_UNDO_MAX) hofplanUndoStack.shift();
   updateHofplanToolbar();
 }
 
 function undoLastHofplanAction() {
   const action = hofplanUndoStack.pop();
   if (!action) return;
+  let redoAction = null;
   if (action.type === 'add') {
     const shape = hofplanShapes.find(s => s.id === action.shapeId);
-    if (shape) removeHofplanShapeEverywhere(shape);
+    if (shape) {
+      redoAction = {
+        type: 'add',
+        kategorie: shape.kategorie,
+        name: shape.name,
+        color: shape.color,
+        feature: cloneFeature(shape.leafletLayer.toGeoJSON())
+      };
+      removeHofplanShapeEverywhere(shape);
+    }
     setHofplanStatus('Zeichnen rückgängig gemacht.');
   } else if (action.type === 'delete') {
-    restoreHofplanShapeFromFeature(action.feature, action.kategorie, action.name, undefined, action.color);
+    const shape = restoreHofplanShapeFromFeature(action.feature, action.kategorie, action.name, undefined, action.color);
+    redoAction = { type: 'delete', shapeId: shape.id };
     setHofplanStatus('Löschen rückgängig gemacht.');
   } else if (action.type === 'edit') {
     const shape = hofplanShapes.find(s => s.id === action.shapeId);
-    if (shape) { applyGeometryToHofplanShape(shape, action.beforeGeometry); renderHofplanList(); }
+    if (shape) {
+      const currentGeometry = cloneFeature(shape.leafletLayer.toGeoJSON()).geometry;
+      applyGeometryToHofplanShape(shape, action.beforeGeometry);
+      renderHofplanList();
+      redoAction = { type: 'edit', shapeId: shape.id, geometry: currentGeometry };
+    }
     setHofplanStatus('Bearbeitung rückgängig gemacht.');
+  }
+  if (redoAction) hofplanRedoStack.push(redoAction);
+  updateHofplanToolbar();
+}
+
+function redoLastHofplanAction() {
+  const action = hofplanRedoStack.pop();
+  if (!action) return;
+  if (action.type === 'add') {
+    const layer = L.geoJSON(action.feature).getLayers()[0];
+    const shape = addHofplanShapeFromLayer(layer, action.kategorie, action.name, undefined, action.color);
+    renderHofplanList();
+    pushHofplanUndoKeepRedo({ type: 'add', shapeId: shape.id });
+    setHofplanStatus('Zeichnen wiederhergestellt.');
+  } else if (action.type === 'delete') {
+    const shape = hofplanShapes.find(s => s.id === action.shapeId);
+    if (shape) {
+      pushHofplanUndoKeepRedo({
+        type: 'delete',
+        kategorie: shape.kategorie,
+        name: shape.name,
+        color: shape.color,
+        feature: cloneFeature(shape.leafletLayer.toGeoJSON())
+      });
+      removeHofplanShapeEverywhere(shape);
+    }
+    setHofplanStatus('Löschen wiederhergestellt.');
+  } else if (action.type === 'edit') {
+    const shape = hofplanShapes.find(s => s.id === action.shapeId);
+    if (shape) {
+      const beforeGeometry = cloneFeature(shape.leafletLayer.toGeoJSON()).geometry;
+      applyGeometryToHofplanShape(shape, action.geometry);
+      renderHofplanList();
+      pushHofplanUndoKeepRedo({ type: 'edit', shapeId: shape.id, beforeGeometry });
+    }
+    setHofplanStatus('Bearbeitung wiederhergestellt.');
   }
   updateHofplanToolbar();
 }
@@ -5500,12 +5735,13 @@ function initHofplanMap() {
   });
 }
 
-// ---------- Werkzeugleiste oberhalb der Karte (Hofplan) ----------
+// ---------- Werkzeugleiste: Hofplan-Gruppe (Teil von #edit-toolbar) ----------
 const hofplanToolRectBtn = document.getElementById('hofplan-tool-rect');
 const hofplanToolPolyBtn = document.getElementById('hofplan-tool-poly');
 const hofplanToolEditBtn = document.getElementById('hofplan-tool-edit');
 const hofplanToolDeleteBtn = document.getElementById('hofplan-tool-delete');
 const hofplanToolUndoBtn = document.getElementById('hofplan-tool-undo');
+const hofplanToolRedoBtn = document.getElementById('hofplan-tool-redo');
 
 function updateHofplanToolbar() {
   hofplanToolRectBtn.classList.toggle('active', armedTool === 'draw-hofplan-rect');
@@ -5513,6 +5749,7 @@ function updateHofplanToolbar() {
   hofplanToolEditBtn.classList.toggle('active', hofplanToolMode === 'edit');
   hofplanToolDeleteBtn.classList.toggle('active', hofplanToolMode === 'delete');
   hofplanToolUndoBtn.disabled = hofplanUndoStack.length === 0;
+  hofplanToolRedoBtn.disabled = hofplanRedoStack.length === 0;
 }
 
 // Bearbeiten/Löschen bleiben "scharf", bis man sie erneut anklickt (oder Esc
@@ -5539,6 +5776,7 @@ hofplanToolPolyBtn.addEventListener('click', () => {
 hofplanToolEditBtn.addEventListener('click', () => setHofplanToolMode('edit'));
 hofplanToolDeleteBtn.addEventListener('click', () => setHofplanToolMode('delete'));
 hofplanToolUndoBtn.addEventListener('click', undoLastHofplanAction);
+hofplanToolRedoBtn.addEventListener('click', redoLastHofplanAction);
 
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
@@ -5580,6 +5818,16 @@ async function captureHofplanScreenshot(targetMap, satelliteLayer, mapElId, feat
       return { color, weight: 2.5, opacity: 1, fillColor: color, fillOpacity: 0.4 };
     }
   }).addTo(targetMap);
+  // Gebäudenamen (bzw. Kategorie ohne Namen) als Label direkt auf dem
+  // Kartenbild — dieselbe Beschriftung wie auf der Live-Karte
+  // (hofplanLabelText), nur als eigene temporäre Layer, da hofplanLayerGroup
+  // für den Export ausgeblendet ist und ihre Labels sonst fehlen würden.
+  const labelLayers = featureCollection.features
+    .filter(feature => feature.properties.label)
+    .map((feature) => {
+      const center = L.geoJSON(feature).getBounds().getCenter();
+      return createLabelAnchorAt(center, feature.properties.label).addTo(targetMap);
+    });
   try {
     const bounds = highlightLayer.getBounds();
     if (bounds.isValid()) targetMap.fitBounds(bounds, { padding: [60, 60], maxZoom: 20 });
@@ -5587,6 +5835,7 @@ async function captureHofplanScreenshot(targetMap, satelliteLayer, mapElId, feat
     return await html2canvas(document.getElementById(mapElId), { useCORS: true, logging: false });
   } finally {
     targetMap.removeLayer(highlightLayer);
+    labelLayers.forEach(l => targetMap.removeLayer(l));
   }
 }
 
@@ -5657,7 +5906,7 @@ async function exportHofplanUebersicht() {
       features: hofplanShapes.map(s => ({
         type: 'Feature',
         geometry: s.leafletLayer.toGeoJSON().geometry,
-        properties: { kategorie: s.kategorie, farbe: hofplanEffectiveColor(s) }
+        properties: { kategorie: s.kategorie, farbe: hofplanEffectiveColor(s), label: hofplanLabelText(s) }
       }))
     };
 
@@ -5835,7 +6084,7 @@ async function exportKombiniertesPDF() {
         features: hofplanShapes.map(s => ({
           type: 'Feature',
           geometry: s.leafletLayer.toGeoJSON().geometry,
-          properties: { kategorie: s.kategorie, farbe: hofplanEffectiveColor(s) }
+          properties: { kategorie: s.kategorie, farbe: hofplanEffectiveColor(s), label: hofplanLabelText(s) }
         }))
       };
       let canvas;
@@ -5954,7 +6203,7 @@ function updateDomainHint() {
   if (!email.includes('@')) { accountDomainHint.hidden = true; return; }
   accountDomainHint.hidden = false;
   if (isOekopEmail(email)) {
-    accountDomainHint.textContent = '✓ oekop.de-Adresse — Registrierung sofort möglich.';
+    accountDomainHint.innerHTML = '<span class="material-symbols-rounded icon">check</span> oekop.de-Adresse — Registrierung sofort möglich.';
   } else {
     accountDomainHint.innerHTML = 'Diese Adresse benötigt eine Freischaltung. <button type="button" id="account-domain-hint-request" class="inline-link">Direkt Zugang anfragen</button>';
     document.getElementById('account-domain-hint-request').addEventListener('click', () => openRequestBlock(email));
@@ -6054,6 +6303,11 @@ function updateAccountButton() {
   // Das "+" in der Wortmarke (FeldFolio+) markiert die Cloud-Funktionen, die
   // erst nach der Anmeldung nutzbar sind — deshalb nur dann sichtbar.
   document.getElementById('brand-logo').classList.toggle('is-logged-in', !!accountSession);
+  // Der Terminkalender ist ohne Anmeldung ohnehin nur ein "bitte anmelden"-
+  // Hinweis (siehe #terminkalender-not-logged-in) — der eigene, groß
+  // abgesetzte Umschalter-Button lenkt in der normalen (nicht angemeldeten)
+  // Ansicht nur unnötig ab und erscheint daher erst nach der Anmeldung.
+  document.getElementById('terminkalender-switcher').hidden = !accountSession;
 }
 
 function openAccountModal() { setAuthMode('signin'); renderAccountModal(); accountModal.hidden = false; }
@@ -6487,8 +6741,8 @@ async function renderNotesPhotoGrid() {
   notesPhotoGrid.innerHTML = photos.map(() => '<div class="notes-photo-thumb notes-photo-loading"></div>').join('');
   const urls = await Promise.all(photos.map(p => getPhotoUrl(p.path, p.name).catch(() => null)));
   notesPhotoGrid.innerHTML = photos.map((p, i) => urls[i]
-    ? `<div class="notes-photo-thumb"><img src="${urls[i]}" alt=""><button type="button" class="notes-photo-remove" data-path="${escapeHtml(p.path)}" title="Foto löschen">✕</button></div>`
-    : '<div class="notes-photo-thumb notes-photo-error" title="Foto konnte nicht geladen werden">⚠</div>'
+    ? `<div class="notes-photo-thumb"><img src="${urls[i]}" alt=""><button type="button" class="notes-photo-remove" data-path="${escapeHtml(p.path)}" title="Foto löschen"><span class="material-symbols-rounded icon">close</span></button></div>`
+    : '<div class="notes-photo-thumb notes-photo-error" title="Foto konnte nicht geladen werden"><span class="material-symbols-rounded icon">warning</span></div>'
   ).join('');
   notesPhotoGrid.querySelectorAll('.notes-photo-remove').forEach(btn => {
     btn.addEventListener('click', () => removeNotesPhoto(btn.getAttribute('data-path')));
@@ -6656,7 +6910,7 @@ function showKulturplanError(msg) {
   kulturplanError.hidden = !msg;
 }
 
-// Aktualisiert nur das 🌱-Icon in der Flächentabelle, ohne die ganze
+// Aktualisiert nur das Anbauplanungs-Icon in der Flächentabelle, ohne die ganze
 // Anbauplanung neu aufzubauen — gleiches Muster wie refreshNotesIndicator().
 function refreshKulturplanIndicator() { renderFeatureTable(); }
 
@@ -7111,9 +7365,9 @@ function telHref(raw) {
   return raw.replace(/[^\d+]/g, '');
 }
 
-const TK_ICON_PIN = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 2C7.58 2 4 5.58 4 10c0 5.25 6.72 11.19 7.02 11.45a1.5 1.5 0 0 0 1.96 0C13.28 21.19 20 15.25 20 10c0-4.42-3.58-8-8-8z" fill="#EA4335"/><circle cx="12" cy="10" r="3.2" fill="#ffffff"/></svg>';
-const TK_ICON_PHONE = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M6.62 10.79a15.05 15.05 0 0 0 6.59 6.59l2.2-2.2a1 1 0 0 1 1.01-.24c1.12.37 2.33.57 3.58.57a1 1 0 0 1 1 1V20a1 1 0 0 1-1 1C10.61 21 3 13.39 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.25.2 2.46.57 3.58a1 1 0 0 1-.25 1.01l-2.2 2.2z"/></svg>';
-const TK_ICON_MAIL = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M4 4h16a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm14.5 2.4L12 11.5 5.5 6.4v1.7L12 13.5l6.5-5.4z"/></svg>';
+const TK_ICON_PIN = '<span class="material-symbols-rounded icon tk-contact-icon-pin" aria-hidden="true">location_on</span>';
+const TK_ICON_PHONE = '<span class="material-symbols-rounded icon" aria-hidden="true">call</span>';
+const TK_ICON_MAIL = '<span class="material-symbols-rounded icon" aria-hidden="true">mail</span>';
 
 // Baut die klickbaren Kontakt-Zeilen (Adresse mit Google-Maps-Link, Telefon/
 // Mobil mit tel:-Link + Telefonhörer-Symbol in Accent-Farbe, E-Mail mit
@@ -7231,7 +7485,9 @@ function renderTerminkalenderDetail(ev) {
     <div class="tk-badges">${badges.join('')}</div>
     <div class="tk-betrieb-assign">
       <button type="button" class="tk-betrieb-assign-btn${isActiveZuordnung ? ' active' : ''}" id="tk-betrieb-assign-btn">
-        ${isActiveZuordnung ? '✓ Betrieb zugeordnet' : '🏢 Als Betrieb zuordnen'}
+        ${isActiveZuordnung
+          ? '<span class="material-symbols-rounded icon">check</span> Betrieb zugeordnet'
+          : '<span class="material-symbols-rounded icon">business</span> Als Betrieb zuordnen'}
       </button>
       <p class="modal-hint" id="tk-betrieb-assign-status"></p>
     </div>
@@ -7244,11 +7500,11 @@ function renderTerminkalenderDetail(ev) {
       <div class="tk-attachments-actions">
         <label class="tk-attachment-btn tk-attachment-btn-primary">
           <input type="file" id="tk-photo-capture-input" accept="image/*" capture="environment" hidden>
-          📷 Foto aufnehmen
+          <span class="material-symbols-rounded icon">photo_camera</span> Foto aufnehmen
         </label>
         <label class="tk-attachment-btn">
           <input type="file" id="tk-file-add-input" hidden>
-          📎 Datei hinzufügen
+          <span class="material-symbols-rounded icon">attach_file</span> Datei hinzufügen
         </label>
       </div>
       <p class="modal-hint" id="tk-attachment-status"></p>
@@ -7299,14 +7555,14 @@ async function renderTerminkalenderAttachments(ev) {
   const urls = await Promise.all(attachments.map(a => getPhotoUrl(a.path, a.name).catch(() => null)));
   grid.innerHTML = attachments.map((a, i) => {
     const url = urls[i];
-    if (!url) return `<div class="tk-attachment tk-attachment-error" title="${escapeHtml(a.name)} konnte nicht geladen werden">⚠</div>`;
+    if (!url) return `<div class="tk-attachment tk-attachment-error" title="${escapeHtml(a.name)} konnte nicht geladen werden"><span class="material-symbols-rounded icon">warning</span></div>`;
     const isImage = (a.type || '').startsWith('image/');
     const inner = isImage
       ? `<img src="${url}" alt="${escapeHtml(a.name)}">`
-      : `<span class="tk-attachment-icon">📄</span><span class="tk-attachment-name">${escapeHtml(a.name)}</span>`;
+      : `<span class="tk-attachment-icon material-symbols-rounded icon">description</span><span class="tk-attachment-name">${escapeHtml(a.name)}</span>`;
     return `<div class="tk-attachment">
       <a href="${url}" target="_blank" rel="noopener" class="tk-attachment-link" title="${escapeHtml(a.name)}">${inner}</a>
-      <button type="button" class="tk-attachment-remove" data-path="${escapeHtml(a.path)}" title="Entfernen">✕</button>
+      <button type="button" class="tk-attachment-remove" data-path="${escapeHtml(a.path)}" title="Entfernen"><span class="material-symbols-rounded icon">close</span></button>
     </div>`;
   }).join('');
   grid.querySelectorAll('.tk-attachment-remove').forEach(btn => {
@@ -7423,9 +7679,9 @@ function renderTerminkalenderGrid() {
 
     const cardsHtml = dayEvents.map(e => {
       const selected = e.id === terminkalenderSelectedId ? ' selected' : '';
-      const pin = e.lat != null ? ' 📍' : '';
-      const clip = (e.attachments && e.attachments.length) ? ' 📎' : '';
-      const betriebMark = (activeZuordnung && activeZuordnung.terminId === e.id) ? ' 🏢' : '';
+      const pin = e.lat != null ? ' <span class="material-symbols-rounded icon">location_on</span>' : '';
+      const clip = (e.attachments && e.attachments.length) ? ' <span class="material-symbols-rounded icon">attach_file</span>' : '';
+      const betriebMark = (activeZuordnung && activeZuordnung.terminId === e.id) ? ' <span class="material-symbols-rounded icon">business</span>' : '';
       const statusClass = e.bestaetigt ? 'tk-card-ok' : 'tk-card-warn';
       const timePrefix = e.hasTime ? e.date.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) + ' · ' : '';
       return `<div class="tk-card ${statusClass}${selected}" data-id="${escapeHtml(e.id)}" title="${escapeHtml(e.kunde)}" draggable="true">
@@ -7589,7 +7845,9 @@ function tkFmtDate(d) {
 
 function updateBetriebButton() {
   btnBetrieb.classList.toggle('active', !!activeZuordnung);
-  btnBetriebLabel.textContent = activeZuordnung ? `🏢 ${activeZuordnung.betrieb}` : 'Betrieb wählen';
+  btnBetriebLabel.innerHTML = activeZuordnung
+    ? `<span class="material-symbols-rounded icon">business</span> ${escapeHtml(activeZuordnung.betrieb)}`
+    : 'Betrieb wählen';
 }
 
 function updateBetriebCurrentBox() {
@@ -7607,7 +7865,7 @@ function setActiveZuordnung(z) {
   activeZuordnung = z;
   updateBetriebButton();
   updateBetriebCurrentBox();
-  // Aktualisiert das 🏢-Zeichen an den Kalenderkarten und das Zuordnen-Icon im
+  // Aktualisiert das Betrieb-Icon an den Kalenderkarten und das Zuordnen-Icon im
   // Detail-Panel — läuft für JEDEN Auswahlweg (Kopfzeilen-Dropdown UND der
   // "Als Betrieb zuordnen"-Button im Terminkalender selbst), da beide über
   // diese Funktion gehen.
@@ -7639,7 +7897,7 @@ function renderBetriebList() {
       <div class="betrieb-row" data-action="select-betrieb" data-name="${escapeHtml(name)}">
         <span class="betrieb-row-main">${escapeHtml(name)}</span>
         ${showAssign ? `<button type="button" class="betrieb-row-assign" data-action="assign-betrieb" data-name="${escapeHtml(name)}" title="Inhalte ohne Betrieb diesem Betrieb zuordnen">Zuordnen</button>` : ''}
-        ${manualSet.has(name) ? `<button type="button" class="betrieb-row-remove" data-action="remove-manual" data-name="${escapeHtml(name)}" title="Manuell hinzugefügten Betrieb entfernen">✕</button>` : ''}
+        ${manualSet.has(name) ? `<button type="button" class="betrieb-row-remove" data-action="remove-manual" data-name="${escapeHtml(name)}" title="Manuell hinzugefügten Betrieb entfernen"><span class="material-symbols-rounded icon">close</span></button>` : ''}
       </div>`).join('');
   } else {
     html += '<div class="betrieb-list-empty">Keine Betriebe gefunden.</div>';

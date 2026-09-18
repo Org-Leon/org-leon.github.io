@@ -43,14 +43,18 @@ test.describe('Hofplan', () => {
     await expect(page.locator('[data-action="reset-color"]')).toHaveCount(0);
   });
 
-  test('Rückgängig macht das Zeichnen wieder rückgängig', async ({ page }) => {
+  test('Rückgängig macht das Zeichnen wieder rückgängig, Wiederherstellen bringt es zurück', async ({ page }) => {
     await drawHofplanRect(page, TEST_RECT_A);
     await expect(page.locator('#hofplan-tool-undo')).toBeEnabled();
+    await expect(page.locator('#hofplan-tool-redo')).toBeDisabled();
     await page.locator('#hofplan-tool-undo').click();
     await expect(page.locator('#hofplan-list .parcel-item')).toHaveCount(0);
+    await expect(page.locator('#hofplan-tool-redo')).toBeEnabled();
+    await page.locator('#hofplan-tool-redo').click();
+    await expect(page.locator('#hofplan-list .parcel-item')).toHaveCount(1);
   });
 
-  test('Löschen und Rückgängig-Machen des Löschens stellt das Gebäude wieder her', async ({ page }) => {
+  test('Löschen und Rückgängig-Machen des Löschens stellt das Gebäude wieder her, Wiederherstellen löscht erneut', async ({ page }) => {
     await drawHofplanRect(page, TEST_RECT_A);
     await page.locator('#hofplan-tool-delete').click();
     await page.evaluate(() => {
@@ -62,5 +66,20 @@ test.describe('Hofplan', () => {
     await expect(page.locator('#hofplan-list .parcel-item')).toHaveCount(0);
     await page.locator('#hofplan-tool-undo').click();
     await expect(page.locator('#hofplan-list .parcel-item')).toHaveCount(1);
+    await page.locator('#hofplan-tool-redo').click();
+    await expect(page.locator('#hofplan-list .parcel-item')).toHaveCount(0);
+  });
+
+  test('Lageplan-Export mit benanntem Gebäude liefert eine gültige PDF-Datei', async ({ page }) => {
+    await drawHofplanRect(page, TEST_RECT_A);
+    await page.locator('#hofplan-list .parcel-name').fill('Halle Nord');
+    await page.locator('#hofplan-list .parcel-kultur').selectOption('Maschinenhalle');
+    const [download] = await Promise.all([
+      page.waitForEvent('download', { timeout: 30000 }),
+      page.locator('#btn-export-hofplan-uebersicht').click()
+    ]);
+    expect(download.suggestedFilename()).toMatch(/\.pdf$/);
+    const path = await download.path();
+    expect(path).toBeTruthy();
   });
 });

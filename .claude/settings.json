@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e \"console.log\\(JSON.stringify\\(require\\('./node_modules/material-symbols/package.json'\\), null, 2\\)\\)\")",
+      "Bash(node -e ' *)",
+      "Bash(node scripts/subset-icons.mjs)"
+    ]
+  }
+}

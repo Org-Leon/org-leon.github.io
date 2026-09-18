@@ -14,12 +14,40 @@ test.describe('Flächenzeichner', () => {
     expect(size).toMatch(/\d/);
   });
 
-  test('Rückgängig entfernt zuletzt gezeichnete Fläche wieder', async ({ page }) => {
+  test('Rückgängig entfernt zuletzt gezeichnete Fläche wieder, Wiederherstellen bringt sie zurück', async ({ page }) => {
     await drawZeichnerPolygon(page, TEST_POLY_A);
     await expect(page.locator('#zeichner-list .parcel-item')).toHaveCount(1);
     await expect(page.locator('#shape-tool-undo')).toBeEnabled();
+    await expect(page.locator('#shape-tool-redo')).toBeDisabled();
     await page.locator('#shape-tool-undo').click();
     await expect(page.locator('#zeichner-list .parcel-item')).toHaveCount(0);
+    await expect(page.locator('#shape-tool-redo')).toBeEnabled();
+    await page.locator('#shape-tool-redo').click();
+    await expect(page.locator('#zeichner-list .parcel-item')).toHaveCount(1);
+  });
+
+  test('Wiederherstellen nach Löschen bringt die Fläche zurück', async ({ page }) => {
+    await drawZeichnerPolygon(page, TEST_POLY_A);
+    await page.locator('#shape-tool-delete').click();
+    await page.evaluate(() => {
+      const map = window.__ffTestMap;
+      let target = null;
+      map.eachLayer((l) => { if (l instanceof window.L.Polygon && !target) target = l; });
+      target.fire('click');
+    });
+    await expect(page.locator('#zeichner-list .parcel-item')).toHaveCount(0);
+    await page.locator('#shape-tool-undo').click();
+    await expect(page.locator('#zeichner-list .parcel-item')).toHaveCount(1);
+    await page.locator('#shape-tool-redo').click();
+    await expect(page.locator('#zeichner-list .parcel-item')).toHaveCount(0);
+  });
+
+  test('Eine neue Aktion nach Rückgängig verwirft die Redo-Historie', async ({ page }) => {
+    await drawZeichnerPolygon(page, TEST_POLY_A);
+    await page.locator('#shape-tool-undo').click();
+    await expect(page.locator('#shape-tool-redo')).toBeEnabled();
+    await drawZeichnerPolygon(page, TEST_POLY_A);
+    await expect(page.locator('#shape-tool-redo')).toBeDisabled();
   });
 
   test('Löschen-Werkzeug entfernt eine angeklickte Fläche', async ({ page }) => {

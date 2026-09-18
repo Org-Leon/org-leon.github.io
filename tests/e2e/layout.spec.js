@@ -40,22 +40,58 @@ test.describe('Sidebar-Layout', () => {
   });
 });
 
-test.describe('Werkzeugleisten-Sichtbarkeit', () => {
-  test('Flächenzeichner-Werkzeugleiste nur im Flächenzeichner-Tab sichtbar', async ({ page }) => {
+test.describe('Terminkalender-Umschalter', () => {
+  test('ist ohne Anmeldung in der normalen Ansicht ausgeblendet', async ({ page }) => {
     await page.goto('/');
-    await expect(page.locator('#shape-toolbar')).toBeHidden();
+    await expect(page.locator('#terminkalender-switcher')).toBeHidden();
+  });
+});
+
+test.describe('Werkzeugleisten-Sichtbarkeit', () => {
+  test('#edit-toolbar nur im Flächenzeichner-/Hofplan-Tab sichtbar, mit passender Gruppe', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('#edit-toolbar')).toBeHidden();
+
     await gotoTab(page, 'Flächenzeichner');
-    await expect(page.locator('#shape-toolbar')).toBeVisible();
+    await expect(page.locator('#edit-toolbar')).toBeVisible();
+    await expect(page.locator('.edit-toolbar-group[data-view="zeichner"]')).toBeVisible();
+    await expect(page.locator('.edit-toolbar-group[data-view="hofplan"]')).toBeHidden();
+
     await gotoTab(page, 'Hofplan');
-    await expect(page.locator('#shape-toolbar')).toBeHidden();
+    await expect(page.locator('#edit-toolbar')).toBeVisible();
+    await expect(page.locator('.edit-toolbar-group[data-view="hofplan"]')).toBeVisible();
+    await expect(page.locator('.edit-toolbar-group[data-view="zeichner"]')).toBeHidden();
+
+    await gotoTab(page, 'Obstbaumkataster');
+    await expect(page.locator('#edit-toolbar')).toBeHidden();
   });
 
-  test('Hofplan-Werkzeugleiste nur im Hofplan-Tab sichtbar', async ({ page }) => {
+  test('Werkzeugleiste lässt sich per Drag am Griff verschieben', async ({ page }) => {
     await page.goto('/');
-    await expect(page.locator('#hofplan-toolbar')).toBeHidden();
-    await gotoTab(page, 'Hofplan');
-    await expect(page.locator('#hofplan-toolbar')).toBeVisible();
-    await gotoTab(page, 'Obstbaumkataster');
-    await expect(page.locator('#hofplan-toolbar')).toBeHidden();
+    await gotoTab(page, 'Flächenzeichner');
+    const toolbar = page.locator('#edit-toolbar');
+    const before = await toolbar.boundingBox();
+    const handle = page.locator('#edit-toolbar-handle');
+    const handleBox = await handle.boundingBox();
+    await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(handleBox.x + 220, handleBox.y + 180, { steps: 10 });
+    await page.mouse.up();
+    const after = await toolbar.boundingBox();
+    expect(after.x).not.toBeCloseTo(before.x, 0);
+  });
+
+  test('An den oberen Kartenrand gezogen wird die Leiste horizontal', async ({ page }) => {
+    await page.goto('/');
+    await gotoTab(page, 'Flächenzeichner');
+    const toolbar = page.locator('#edit-toolbar');
+    const handle = page.locator('#edit-toolbar-handle');
+    const handleBox = await handle.boundingBox();
+    const mapBox = await page.locator('#map-wrap').boundingBox();
+    await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(handleBox.x + 40, mapBox.y + 5, { steps: 10 });
+    await page.mouse.up();
+    await expect(toolbar).toHaveClass(/horizontal/);
   });
 });
