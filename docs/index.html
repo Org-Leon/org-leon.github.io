@@ -32,8 +32,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-  <script type="module" crossorigin src="/assets/index-CA4swHYn.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-BtnljMk3.css">
+  <script type="module" crossorigin src="/assets/index-DNTLLnVo.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-Bi9Hlost.css">
 </head>
 <body>
 
@@ -52,7 +52,7 @@
         <path fill="#EB5D4F" d="M388.15,260.8c0.01,0,79.1-11.71,85.77-105.59c0,0.01,0,0.02,0,0.03c0,0,0,0,0,0c-2.18-6.03-5.25-11.65-9.35-16.62c-12.75-15.44-34.34-22.23-52.76-12.92c-2.64,1.33-5.03,3.53-7.63,4.98c-3,1.67-5.48,3.07-8.4,4.05c-2.22,0.74-4.67,1.86-7.16,1.87c-7.55,0.01-13.48-5.68-19.61-9.03c-13.68-7.47-27.23-7.59-40.93,0.31c-30.25,17.44-32.76,63.65-18.21,96.34c10.88,24.44,30.88,47.23,60.08,43.42C376.47,266.8,382.81,264.84,388.15,260.8L388.15,260.8z"/>
         <path fill="#C0453A" d="M388.14,260.8c0.01,0,79.1-11.71,85.77-105.59c1.82,4.64,2.92,13.08,3.32,15.75c0.66,4.46,0.11,13.67,0,18.19c-0.2,7.56-1.37,15.06-3.67,22.26c-5.62,17.65-15.33,37.03-31.01,47.75c-7.38,5.05-15.98,8.39-24.94,9c-4.82,0.33-9.63-0.11-14.34-1.22c-2.66-0.63-5.24-1.43-7.77-2.46C393.87,263.83,389.55,261.58,388.14,260.8z"/>
       </svg>
-    </span><span class="ff-txt">lio</span>
+    </span><span class="ff-txt">lio</span><span class="ff-plus" aria-hidden="true">+</span>
   </span>
   <button id="btn-betrieb" title="Betrieb/Termin für Dateibenennung zuordnen">
     <span id="btn-betrieb-label">Betrieb wählen</span>
@@ -61,7 +61,7 @@
     <span class="sync-toggle-label">Sync</span>
     <span class="sync-toggle-switch"><span class="sync-toggle-thumb"></span></span>
   </button>
-  <button id="btn-account" title="Cloud-Konto">Anmelden</button>
+  <button id="btn-account" title="FeldFolio+ Konto">Anmelden</button>
   <button id="theme-toggle" title="Hell-/Dunkelmodus umschalten" aria-label="Hell-/Dunkelmodus umschalten">
     <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2" fill="currentColor"/><g stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="12" y1="1.5" x2="12" y2="4.5"/><line x1="12" y1="19.5" x2="12" y2="22.5"/><line x1="1.5" y1="12" x2="4.5" y2="12"/><line x1="19.5" y1="12" x2="22.5" y2="12"/><line x1="4.4" y1="4.4" x2="6.5" y2="6.5"/><line x1="17.5" y1="17.5" x2="19.6" y2="19.6"/><line x1="4.4" y1="19.6" x2="6.5" y2="17.5"/><line x1="17.5" y1="6.5" x2="19.6" y2="4.4"/></g></svg>
     <span class="theme-thumb"></span>
@@ -81,6 +81,7 @@
     <button class="segment-btn" data-view="zeichner">Flächenzeichner</button>
     <button class="segment-btn" data-view="obstbaum">Obstbaumkataster</button>
     <button class="segment-btn" data-view="bienenflug">Bienenflugkarte</button>
+    <button class="segment-btn" data-view="hofplan">Hofplan</button>
   </div>
 
   <div id="brand">
@@ -100,7 +101,11 @@
   </div>
 
   <div class="sidebar-section active" data-view="viewer">
-    <button id="btn-export-flaechenkarten">Flächenkarten exportieren</button>
+    <button id="btn-export-flaechenkarten" class="export-flaechenkarten-btn">Flächenkarten exportieren</button>
+    <div id="gesamtexport-buttons">
+      <button id="btn-export-gesamt-pdf" class="export-flaechenkarten-btn">Gesamtübersicht als PDF exportieren</button>
+      <button id="btn-export-gesamt-geojson" class="export-flaechenkarten-btn">Alles als GeoJSON exportieren</button>
+    </div>
     <div id="status" class="status-line">Bereit.</div>
   </div>
 
@@ -202,6 +207,19 @@
     <div id="bienenflug-status" class="status-line">Bereit.</div>
   </div>
 
+  <div class="sidebar-section" data-view="hofplan">
+    <div class="empty-hint" id="hofplan-empty-hint">Noch kein Gebäude gezeichnet. „Rechteck" oder „Freiform" in der Werkzeugleiste über der Karte anklicken, dann auf der Karte zeichnen (Freiform: Eckpunkte per Klick setzen, mit Doppelklick abschließen). Gebäudetyp und Name lassen sich danach in der Liste unten zuweisen.</div>
+    <div id="hofplan-section">
+      <h2>Gebäude</h2>
+      <div id="hofplan-list"></div>
+    </div>
+    <div class="export-buttons" id="hofplan-export-buttons">
+      <button id="btn-export-hofplan-geojson" class="export-btn">GeoJSON speichern</button>
+    </div>
+    <button id="btn-export-hofplan-uebersicht">Lageplan exportieren</button>
+    <div id="hofplan-status" class="status-line">Bereit.</div>
+  </div>
+
   <div class="sidebar-section" data-view="terminkalender">
     <div id="terminkalender-not-logged-in" hidden>
       <p class="modal-hint">Der Terminkalender ist eine Cloud-Konto-Funktion. Bitte zuerst
@@ -236,6 +254,7 @@
   <div id="zeichner-error-toast"></div>
   <div id="obstbaum-error-toast"></div>
   <div id="bienenflug-error-toast"></div>
+  <div id="hofplan-error-toast"></div>
   <div id="topbar">
     <div class="topbar-extra" id="shape-toolbar" data-view="zeichner">
       <button type="button" id="shape-tool-draw" class="shape-tool-btn" title="Neue Fläche zeichnen">
@@ -254,6 +273,23 @@
         <span class="shape-tool-icon">↩️</span> Rückgängig
       </button>
       <span id="shape-toolbar-status"></span>
+    </div>
+    <div class="topbar-extra" id="hofplan-toolbar" data-view="hofplan">
+      <button type="button" id="hofplan-tool-rect" class="shape-tool-btn" title="Rechteckiges Gebäude zeichnen">
+        <span class="shape-tool-icon">▭</span> Rechteck
+      </button>
+      <button type="button" id="hofplan-tool-poly" class="shape-tool-btn" title="Frei geformtes Gebäude zeichnen">
+        <span class="shape-tool-icon">✏️</span> Freiform
+      </button>
+      <button type="button" id="hofplan-tool-edit" class="shape-tool-btn" title="Gebäude auf der Karte anklicken, um seine Eckpunkte per Ziehen zu bearbeiten">
+        <span class="shape-tool-icon">🖊️</span> Bearbeiten
+      </button>
+      <button type="button" id="hofplan-tool-delete" class="shape-tool-btn" title="Gebäude auf der Karte anklicken, um es zu löschen">
+        <span class="shape-tool-icon">🗑️</span> Löschen
+      </button>
+      <button type="button" id="hofplan-tool-undo" class="shape-tool-btn" title="Letzte Änderung rückgängig machen" disabled>
+        <span class="shape-tool-icon">↩️</span> Rückgängig
+      </button>
     </div>
     <button id="btn-basemap">Basiskarte: Standard</button>
     <button id="btn-fit">Auf Inhalt zoomen</button>
@@ -411,7 +447,7 @@
 <!-- ---------- FeldFolio Plus: Cloud-Konto ---------- -->
 <div id="account-modal-overlay" class="modal-overlay" hidden>
   <div class="modal-card">
-    <h3>Cloud-Konto</h3>
+    <h3>FeldFolio+ Konto</h3>
 
     <div id="account-not-configured" hidden>
       <p class="modal-hint">Cloud-Speicherung ist auf dieser Instanz nicht eingerichtet
@@ -463,10 +499,6 @@
     <div id="account-logged-in" hidden>
       <p class="modal-hint">Angemeldet als <strong id="account-email-display"></strong>.</p>
       <p class="modal-hint" id="account-sync-status"></p>
-      <div class="modal-actions" style="justify-content:flex-start; flex-wrap:wrap;">
-        <button type="button" id="account-btn-save">Cloud speichern</button>
-        <button type="button" id="account-btn-load">Cloud laden</button>
-      </div>
       <div class="modal-actions">
         <button type="button" id="account-btn-signout">Abmelden</button>
         <button type="button" id="account-modal-close-3" class="primary">Fertig</button>
@@ -603,6 +635,11 @@
       <div id="betrieb-current" hidden>
         <p class="modal-hint">Aktuell zugeordnet: <strong id="betrieb-current-label"></strong></p>
         <button type="button" id="betrieb-btn-clear">Zuordnung entfernen</button>
+      </div>
+
+      <div id="betrieb-noassign-hint" hidden>
+        <p class="modal-hint">Es gibt Inhalte ohne Betrieb-Zuordnung — bei einer Auswahl unten auf
+          „Zuordnen" statt auf den Namen klicken, um sie zu übernehmen.</p>
       </div>
 
       <p class="modal-hint" id="betrieb-switch-status"></p>
