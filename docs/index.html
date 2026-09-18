@@ -32,14 +32,14 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-  <script type="module" crossorigin src="/assets/index-DNTLLnVo.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-Bi9Hlost.css">
+  <script type="module" crossorigin src="/assets/index-DBDS0PzH.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-C9fg14kg.css">
 </head>
 <body>
 
 <div id="tabbar">
   <button id="btn-sidebar-toggle" title="Menü öffnen" aria-label="Menü öffnen">
-    <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    <span class="material-symbols-rounded icon">menu</span>
   </button>
   <span id="brand-logo" aria-label="FeldFolio">
     <span class="ff-txt">Feld</span><span class="ff-txt">F</span><span class="ff-apple">
@@ -63,9 +63,9 @@
   </button>
   <button id="btn-account" title="FeldFolio+ Konto">Anmelden</button>
   <button id="theme-toggle" title="Hell-/Dunkelmodus umschalten" aria-label="Hell-/Dunkelmodus umschalten">
-    <svg class="theme-icon theme-icon-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2" fill="currentColor"/><g stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="12" y1="1.5" x2="12" y2="4.5"/><line x1="12" y1="19.5" x2="12" y2="22.5"/><line x1="1.5" y1="12" x2="4.5" y2="12"/><line x1="19.5" y1="12" x2="22.5" y2="12"/><line x1="4.4" y1="4.4" x2="6.5" y2="6.5"/><line x1="17.5" y1="17.5" x2="19.6" y2="19.6"/><line x1="4.4" y1="19.6" x2="6.5" y2="17.5"/><line x1="17.5" y1="6.5" x2="19.6" y2="4.4"/></g></svg>
+    <span class="material-symbols-rounded icon theme-icon theme-icon-sun">light_mode</span>
     <span class="theme-thumb"></span>
-    <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a7 7 0 0 0 10.5 10.5z" fill="currentColor"/></svg>
+    <span class="material-symbols-rounded icon theme-icon theme-icon-moon">dark_mode</span>
   </button>
 </div>
 
@@ -255,50 +255,62 @@
   <div id="obstbaum-error-toast"></div>
   <div id="bienenflug-error-toast"></div>
   <div id="hofplan-error-toast"></div>
-  <div id="topbar">
-    <div class="topbar-extra" id="shape-toolbar" data-view="zeichner">
+  <!-- An Illustrator angelehnte, frei verschiebbare Werkzeugleiste (siehe
+       wireEditToolbarDrag() in main.js) — schwebt über der Karte, nicht Teil
+       von #topbar, damit sie sich unabhängig von den festen Kartensteuerungen
+       (Basiskarte/Auf Inhalt zoomen/GPS) ziehen lässt. Zeigt je nach Tab nur
+       eine ihrer beiden Werkzeug-Gruppen (dasselbe .topbar-extra-Aktiv-Muster
+       wie #topbar-Elemente). -->
+  <div id="edit-toolbar">
+    <div id="edit-toolbar-handle" title="Werkzeugleiste verschieben">
+      <span class="material-symbols-rounded icon">drag_indicator</span>
+    </div>
+    <div class="topbar-extra edit-toolbar-group" data-view="zeichner">
       <button type="button" id="shape-tool-draw" class="shape-tool-btn" title="Neue Fläche zeichnen">
-        <span class="shape-tool-icon">✏️</span> Zeichnen
+        <span class="material-symbols-rounded icon">draw</span>
       </button>
       <button type="button" id="shape-tool-edit" class="shape-tool-btn" title="Fläche auf der Karte anklicken, um ihre Eckpunkte per Ziehen zu bearbeiten">
-        <span class="shape-tool-icon">🖊️</span> Bearbeiten
+        <span class="material-symbols-rounded icon">edit</span>
       </button>
       <button type="button" id="shape-tool-split" class="shape-tool-btn" title="Fläche anklicken, dann Schnittlinie ziehen, um sie in zwei Teile zu zerlegen">
-        <span class="shape-tool-icon">✂️</span> Teilen
+        <span class="material-symbols-rounded icon">content_cut</span>
       </button>
       <button type="button" id="shape-tool-delete" class="shape-tool-btn" title="Fläche auf der Karte anklicken, um sie zu löschen">
-        <span class="shape-tool-icon">🗑️</span> Löschen
+        <span class="material-symbols-rounded icon">delete</span>
       </button>
       <button type="button" id="shape-tool-undo" class="shape-tool-btn" title="Letzte Änderung rückgängig machen" disabled>
-        <span class="shape-tool-icon">↩️</span> Rückgängig
+        <span class="material-symbols-rounded icon">undo</span>
       </button>
-      <span id="shape-toolbar-status"></span>
+      <button type="button" id="shape-tool-redo" class="shape-tool-btn" title="Letzte rückgängig gemachte Änderung wiederherstellen" disabled>
+        <span class="material-symbols-rounded icon">redo</span>
+      </button>
     </div>
-    <div class="topbar-extra" id="hofplan-toolbar" data-view="hofplan">
+    <div class="topbar-extra edit-toolbar-group" data-view="hofplan">
       <button type="button" id="hofplan-tool-rect" class="shape-tool-btn" title="Rechteckiges Gebäude zeichnen">
-        <span class="shape-tool-icon">▭</span> Rechteck
+        <span class="material-symbols-rounded icon">rectangle</span>
       </button>
       <button type="button" id="hofplan-tool-poly" class="shape-tool-btn" title="Frei geformtes Gebäude zeichnen">
-        <span class="shape-tool-icon">✏️</span> Freiform
+        <span class="material-symbols-rounded icon">polyline</span>
       </button>
       <button type="button" id="hofplan-tool-edit" class="shape-tool-btn" title="Gebäude auf der Karte anklicken, um seine Eckpunkte per Ziehen zu bearbeiten">
-        <span class="shape-tool-icon">🖊️</span> Bearbeiten
+        <span class="material-symbols-rounded icon">edit</span>
       </button>
       <button type="button" id="hofplan-tool-delete" class="shape-tool-btn" title="Gebäude auf der Karte anklicken, um es zu löschen">
-        <span class="shape-tool-icon">🗑️</span> Löschen
+        <span class="material-symbols-rounded icon">delete</span>
       </button>
       <button type="button" id="hofplan-tool-undo" class="shape-tool-btn" title="Letzte Änderung rückgängig machen" disabled>
-        <span class="shape-tool-icon">↩️</span> Rückgängig
+        <span class="material-symbols-rounded icon">undo</span>
+      </button>
+      <button type="button" id="hofplan-tool-redo" class="shape-tool-btn" title="Letzte rückgängig gemachte Änderung wiederherstellen" disabled>
+        <span class="material-symbols-rounded icon">redo</span>
       </button>
     </div>
+  </div>
+  <div id="topbar">
     <button id="btn-basemap">Basiskarte: Standard</button>
     <button id="btn-fit">Auf Inhalt zoomen</button>
     <button id="btn-locate" title="Mein Standort" aria-label="Mein Standort">
-      <svg class="gps-icon" viewBox="0 0 24 32" width="22" height="29">
-        <path d="M12 1C6.48 1 2 5.48 2 11c0 7.5 10 20 10 20s10-12.5 10-20c0-5.52-4.48-10-10-10z" fill="#2E86FF"/>
-        <circle cx="12" cy="11" r="6.4" fill="#ffffff"/>
-        <text x="12" y="13.6" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="5.6" font-weight="700" fill="#2E86FF">GPS</text>
-      </svg>
+      <span class="material-symbols-rounded icon gps-icon">my_location</span>
     </button>
     <div class="topbar-extra" data-view="compare">
       <div id="compare-view-toggle">
@@ -322,8 +334,8 @@
         <button class="export-btn" data-export="xlsx" data-target="viewer">Excel</button>
         <button class="export-btn" data-export="pdf" data-target="viewer">PDF</button>
       </div>
-      <button id="table-minimize" title="Minimieren">▁</button>
-      <button id="table-close" title="Schließen">✕</button>
+      <button id="table-minimize" title="Minimieren"><span class="material-symbols-rounded icon">expand_more</span></button>
+      <button id="table-close" title="Schließen"><span class="material-symbols-rounded icon">close</span></button>
     </div>
     <div id="table-besichtigt-summary" class="besichtigt-summary-row"></div>
     <div id="table-body-wrap">
@@ -356,8 +368,8 @@
         <button class="export-btn" data-export="xlsx" data-target="compare">Excel</button>
         <button class="export-btn" data-export="pdf" data-target="compare">PDF</button>
       </div>
-      <button id="compare-table-minimize" title="Minimieren">▁</button>
-      <button id="compare-table-close" title="Schließen">✕</button>
+      <button id="compare-table-minimize" title="Minimieren"><span class="material-symbols-rounded icon">expand_more</span></button>
+      <button id="compare-table-close" title="Schließen"><span class="material-symbols-rounded icon">close</span></button>
     </div>
     <div id="compare-table-body-wrap">
       <table id="compare-table">
@@ -381,8 +393,8 @@
     <div id="obstbaum-table-resize-handle"></div>
     <div id="obstbaum-table-head">
       <span class="title">Bäume (<span id="obstbaum-table-count">0</span>)</span>
-      <button id="obstbaum-table-minimize" title="Minimieren">▁</button>
-      <button id="obstbaum-table-close" title="Schließen">✕</button>
+      <button id="obstbaum-table-minimize" title="Minimieren"><span class="material-symbols-rounded icon">expand_more</span></button>
+      <button id="obstbaum-table-close" title="Schließen"><span class="material-symbols-rounded icon">close</span></button>
     </div>
     <div id="obstbaum-summary-row"></div>
     <div id="obstbaum-table-body-wrap">
@@ -507,7 +519,7 @@
       <div id="account-admin-requests" hidden>
         <div class="admin-requests-head">
           <span>Offene Zugangsanfragen</span>
-          <button type="button" id="account-admin-refresh" title="Aktualisieren">↻</button>
+          <button type="button" id="account-admin-refresh" title="Aktualisieren"><span class="material-symbols-rounded icon">refresh</span></button>
         </div>
         <p class="modal-hint modal-error" id="account-admin-error" hidden></p>
         <div id="account-admin-requests-list"></div>
@@ -537,7 +549,7 @@
 
       <label id="notes-photo-label" class="modal-hint" style="cursor:pointer; display:inline-block; margin-top:10px;">
         <input type="file" id="notes-photo-input" accept="image/*" capture="environment" hidden>
-        📷 Foto aufnehmen
+        <span class="material-symbols-rounded icon">photo_camera</span> Foto aufnehmen
       </label>
 
       <p class="modal-hint modal-error" id="notes-error" hidden></p>
