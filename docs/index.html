@@ -7,6 +7,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>FeldFolio</title>
 <link rel="icon" type="image/svg+xml" href="/favicon-feldfolio.svg">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="theme-color" content="#12151A">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,900&display=swap">
 <script>
@@ -32,9 +34,10 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-  <script type="module" crossorigin src="/assets/index-DBDS0PzH.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-C9fg14kg.css">
-</head>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+  <script type="module" crossorigin src="/assets/index-DwDHW9zE.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-BhTK1vGk.css">
+<link rel="manifest" href="/manifest.webmanifest"></head>
 <body>
 
 <div id="tabbar">
@@ -58,6 +61,7 @@
     <span id="btn-betrieb-label">Betrieb wählen</span>
   </button>
   <button id="btn-sync" class="sync-toggle" type="button" role="switch" aria-checked="true" title="Automatische Cloud-Synchronisation">
+    <span class="material-symbols-rounded icon sync-toggle-status" aria-hidden="true"></span>
     <span class="sync-toggle-label">Sync</span>
     <span class="sync-toggle-switch"><span class="sync-toggle-thumb"></span></span>
   </button>
@@ -82,6 +86,7 @@
     <button class="segment-btn" data-view="obstbaum">Obstbaumkataster</button>
     <button class="segment-btn" data-view="bienenflug">Bienenflugkarte</button>
     <button class="segment-btn" data-view="hofplan">Hofplan</button>
+    <button class="segment-btn" data-view="stallplaner">Stallplaner</button>
   </div>
 
   <div id="brand">
@@ -218,6 +223,56 @@
     </div>
     <button id="btn-export-hofplan-uebersicht">Lageplan exportieren</button>
     <div id="hofplan-status" class="status-line">Bereit.</div>
+  </div>
+
+  <!-- ---------- FeldFolio Plus: Stallplaner ----------
+       Eigenständiges Grundriss-Werkzeug ohne Kartenbezug (anders als
+       Hofplan) — siehe #stallplaner-view weiter unten für die eigentliche
+       Zeichenfläche (SVG statt Karte), analog zum Terminkalender-Muster
+       (eigener Vollbereich statt Kartenwerkzeug). Diese Sidebar-Sektion
+       trägt nur Plan-Auswahl, Abteile-Liste und Export. -->
+  <div class="sidebar-section" data-view="stallplaner">
+    <div id="stallplaner-plan-picker">
+      <label class="compare-label" for="stallplaner-plan-select">Stallplan</label>
+      <select id="stallplaner-plan-select"></select>
+      <button type="button" id="stallplaner-new-plan">+ Neuer Stallplan</button>
+    </div>
+    <div id="stallplaner-empty-hint" class="empty-hint">Noch kein Stallplan angelegt. „+ Neuer Stallplan" antippen — danach führen die Schritte über dem Plan durch Umriss, Abteile, Ausstattung und Tiere.</div>
+    <div id="stallplaner-settings" hidden>
+      <label class="compare-label" for="stallplaner-name-input">Name</label>
+      <input type="text" id="stallplaner-name-input" placeholder="z.B. Milchviehstall Nord">
+      <label class="compare-label" for="stallplaner-tierart-select">Tierart</label>
+      <select id="stallplaner-tierart-select">
+        <option value="">– wählen –</option>
+        <option value="rinder">Rinder</option>
+        <option value="schweine">Schweine</option>
+        <option value="gefluegel">Geflügel</option>
+        <option value="schafe_ziegen">Schafe/Ziegen</option>
+        <option value="pferde">Pferde/Equiden</option>
+        <option value="kaninchen">Kaninchen</option>
+      </select>
+      <p class="modal-hint">Flächenwerte laut Anhang I VO (EU) 2018/848 i.d.F. DVO (EU) 2020/464 — keine Rechtsberatung, im Zweifel Originaltext prüfen.</p>
+
+      <div id="stallplaner-section">
+        <h2>Abteile <span id="stallplaner-total-area"></span></h2>
+        <div id="stallplaner-abteile-list"></div>
+        <div class="empty-hint" id="stallplaner-abteile-empty-hint">Noch kein Abteil gezeichnet.</div>
+      </div>
+
+      <div class="export-buttons" id="stallplaner-export-buttons">
+        <button id="btn-export-stallplaner-pdf" class="export-btn">Als PDF exportieren</button>
+        <button id="btn-stallplaner-export-json" class="export-btn">Als Datei speichern (.json)</button>
+      </div>
+      <div class="compare-upload">
+        <label class="compare-label">Stallplan laden (.json)</label>
+        <div class="dropzone-mini" id="stallplaner-import-drop">
+          <span id="stallplaner-import-file-name">.json auswählen…</span>
+          <input type="file" id="stallplaner-import-input" accept=".json">
+        </div>
+      </div>
+      <button id="btn-stallplaner-delete-plan" class="danger-btn">Stallplan löschen</button>
+      <div id="stallplaner-status" class="status-line">Bereit.</div>
+    </div>
   </div>
 
   <div class="sidebar-section" data-view="terminkalender">
@@ -454,6 +509,322 @@
     </div>
   </div>
 </div>
+
+<!-- ---------- FeldFolio Plus: Stallplaner-Zeichenfläche ----------
+     Eigenes SVG statt der geteilten Leaflet-Karte — schließt sich mit
+     #map-wrap/#terminkalender-view gegenseitig aus (siehe setActiveSegment()
+     in main.js). Koordinaten in Rastereinheiten (nicht Pixel), Maßstab per
+     gridScale je Plan — siehe layoutStallplanSvg()/renderStallplan() in
+     main.js. -->
+<div id="stallplaner-view" hidden>
+  <div id="stallplaner-plan-wrap">
+    <!-- Schrittleiste: führt vor Ort in fester Reihenfolge durch den Plan
+         (siehe stallplanerStep/renderStallplanerChrome() in main.js) — bestimmt,
+         welche Aktionen die untere Leiste anbietet. -->
+    <nav id="stallplaner-stepbar" aria-label="Arbeitsschritte">
+      <button type="button" class="stallplaner-step" data-step="umriss"><span class="stallplaner-step-num">1</span><span class="stallplaner-step-label">Umriss</span></button>
+      <button type="button" class="stallplaner-step" data-step="abteile"><span class="stallplaner-step-num">2</span><span class="stallplaner-step-label">Abteile</span></button>
+      <button type="button" class="stallplaner-step" data-step="ausstattung"><span class="stallplaner-step-num">3</span><span class="stallplaner-step-label">Ausstattung</span></button>
+      <button type="button" class="stallplaner-step" data-step="tiere"><span class="stallplaner-step-num">4</span><span class="stallplaner-step-label">Tiere</span></button>
+    </nav>
+
+    <!-- Nur dieser Bereich landet im PDF-Screenshot (exportStallplanPDF()),
+         Schrittleiste/Aktionsleiste/Sheet nicht. -->
+    <div id="stallplaner-canvas">
+      <svg id="stallplan-svg" viewBox="0 0 40 30" preserveAspectRatio="xMidYMid meet">
+        <g id="stallplan-grid"></g>
+        <g id="stallplan-outline-layer"></g>
+        <g id="stallplan-compartments-layer"></g>
+        <g id="stallplan-equipment-layer"></g>
+        <g id="stallplan-draw-preview-layer"></g>
+      </svg>
+      <div id="stallplaner-draw-hint" hidden></div>
+      <div id="stallplaner-view-controls">
+        <button type="button" class="stallplaner-round-btn" id="stallplaner-fit-view" title="Ganzen Plan anzeigen" aria-label="Ganzen Plan anzeigen">
+          <span class="material-symbols-rounded icon">fit_screen</span>
+        </button>
+        <button type="button" class="stallplaner-round-btn" id="stallplaner-undo" title="Rückgängig" aria-label="Rückgängig" disabled>
+          <span class="material-symbols-rounded icon">undo</span>
+        </button>
+        <button type="button" class="stallplaner-round-btn" id="stallplaner-redo" title="Wiederherstellen" aria-label="Wiederherstellen" disabled>
+          <span class="material-symbols-rounded icon">redo</span>
+        </button>
+      </div>
+      <!-- Startkarte auf leerem Plan (bzw. ganz ohne Plan) — der erste Schritt
+           soll ohne Suchen in Menüs erkennbar sein. -->
+      <div id="stallplaner-start-card" hidden>
+        <div id="stallplaner-start-noplan">
+          <h3>Noch kein Stallplan</h3>
+          <p>Lege einen Plan an und erfasse den Stall direkt vor Ort.</p>
+          <button type="button" class="stallplaner-big-btn primary" id="stallplaner-start-new-plan">
+            <span class="material-symbols-rounded icon">add</span> Neuen Stallplan anlegen
+          </button>
+        </div>
+        <div id="stallplaner-start-outline">
+          <h3>Wie ist der Stall geformt?</h3>
+          <button type="button" class="stallplaner-big-btn primary" data-act="rect-outline">
+            <span class="material-symbols-rounded icon">rectangle</span>
+            <span><strong>Rechteckig</strong><small>Nur Länge und Breite messen</small></span>
+          </button>
+          <button type="button" class="stallplaner-big-btn" data-act="walls-outline">
+            <span class="material-symbols-rounded icon">polyline</span>
+            <span><strong>Wand für Wand</strong><small>Jede Wand messen und eintippen</small></span>
+          </button>
+          <button type="button" class="stallplaner-big-btn" data-act="sketch-outline">
+            <span class="material-symbols-rounded icon">draw</span>
+            <span><strong>Frei skizzieren</strong><small>Ecken antippen, Maße später</small></span>
+          </button>
+        </div>
+      </div>
+      <!-- Zentimetergenaue Kantenlängen-Eingabe (siehe openEdgeLengthEditor()
+           in main.js) — wird bei Klick auf eine Kantenbeschriftung im
+           Bearbeiten-Modus über der jeweiligen Kantenmitte positioniert. -->
+      <input type="text" inputmode="decimal" autocomplete="off" id="stallplan-edge-length-input" hidden>
+    </div>
+
+    <!-- Ein gemeinsames Bottom Sheet für alle Eingaben (Rechteck, Wand für
+         Wand, Buchten teilen, Vermessen, Ausstattung, Auswahl, Tiere) — immer
+         genau ein .stallplaner-panel sichtbar (openStallplanerSheet()). Liegt im
+         Spaltenfluss unter der Zeichenfläche statt darüber, damit der Plan
+         beim Eintippen sichtbar bleibt. -->
+    <section id="stallplaner-sheet" hidden aria-live="polite">
+      <header id="stallplaner-sheet-head">
+        <h3 id="stallplaner-sheet-title"></h3>
+        <button type="button" id="stallplaner-sheet-close" title="Schließen" aria-label="Schließen">
+          <span class="material-symbols-rounded icon">close</span>
+        </button>
+      </header>
+
+      <div class="stallplaner-panel" id="stallplaner-panel-rect" hidden>
+        <div class="stallplaner-field-row">
+          <label class="stallplaner-field">
+            <span id="stallplaner-rect-length-label">Länge (m)</span>
+            <input type="text" inputmode="decimal" autocomplete="off" id="stallplaner-rect-length" placeholder="z.B. 24,50">
+          </label>
+          <span class="stallplaner-times">×</span>
+          <label class="stallplaner-field">
+            <span id="stallplaner-rect-width-label">Breite (m)</span>
+            <input type="text" inputmode="decimal" autocomplete="off" id="stallplaner-rect-width" placeholder="z.B. 12">
+          </label>
+        </div>
+        <p class="stallplaner-panel-hint" id="stallplaner-rect-hint"></p>
+        <p class="stallplaner-panel-error" id="stallplaner-rect-error" hidden></p>
+        <div class="stallplaner-panel-actions">
+          <button type="button" class="stallplaner-panel-btn" data-sheet-cancel>Abbrechen</button>
+          <button type="button" class="stallplaner-panel-btn primary" id="stallplaner-rect-apply">Übernehmen</button>
+        </div>
+      </div>
+
+      <div class="stallplaner-panel" id="stallplaner-panel-walls" hidden>
+        <p class="stallplaner-panel-hint" id="stallplaner-walls-hint"></p>
+        <label class="stallplaner-field stallplaner-field-wide">
+          <span>Länge der nächsten Wand (m)</span>
+          <input type="text" inputmode="decimal" autocomplete="off" id="stallplaner-walls-length" placeholder="z.B. 12,40">
+        </label>
+        <div id="stallplaner-walls-pad" role="group" aria-label="Richtung der Wand">
+          <button type="button" class="stallplaner-dir-btn" data-dir="up" aria-label="Wand nach oben"><span class="material-symbols-rounded icon">arrow_upward</span></button>
+          <button type="button" class="stallplaner-dir-btn" data-dir="left" aria-label="Wand nach links"><span class="material-symbols-rounded icon">arrow_back</span></button>
+          <button type="button" class="stallplaner-dir-btn" data-dir="right" aria-label="Wand nach rechts"><span class="material-symbols-rounded icon">arrow_forward</span></button>
+          <button type="button" class="stallplaner-dir-btn" data-dir="down" aria-label="Wand nach unten"><span class="material-symbols-rounded icon">arrow_downward</span></button>
+        </div>
+        <p class="stallplaner-panel-hint" id="stallplaner-walls-summary"></p>
+        <p class="stallplaner-panel-error" id="stallplaner-walls-error" hidden></p>
+        <div class="stallplaner-panel-actions">
+          <button type="button" class="stallplaner-panel-btn" data-sheet-cancel>Abbrechen</button>
+          <button type="button" class="stallplaner-panel-btn" id="stallplaner-walls-undo">
+            <span class="material-symbols-rounded icon">backspace</span> Letzte Wand
+          </button>
+          <button type="button" class="stallplaner-panel-btn primary" id="stallplaner-walls-close">Schließen</button>
+        </div>
+      </div>
+
+      <div class="stallplaner-panel" id="stallplaner-panel-split" hidden>
+        <p class="stallplaner-panel-hint" id="stallplaner-split-target"></p>
+        <div class="stallplaner-segmented" role="group" aria-label="Teilungsrichtung">
+          <button type="button" data-split-dir="x" class="active">Buchten nebeneinander ↔</button>
+          <button type="button" data-split-dir="y">Buchten übereinander ↕</button>
+        </div>
+        <label class="stallplaner-field stallplaner-field-wide">
+          <span>Breiten der Buchten (m)</span>
+          <input type="text" inputmode="decimal" autocomplete="off" id="stallplaner-split-widths" placeholder="z.B. 4; 4; 3,5  oder  3 × 4">
+        </label>
+        <label class="stallplaner-field stallplaner-field-wide">
+          <span>… oder Anzahl gleich breiter Buchten</span>
+          <input type="text" inputmode="numeric" autocomplete="off" id="stallplaner-split-count" placeholder="z.B. 5">
+        </label>
+        <p class="stallplaner-panel-hint">Was nach den eingetragenen Breiten übrig bleibt, wird die letzte Bucht.</p>
+        <p class="stallplaner-panel-error" id="stallplaner-split-error" hidden></p>
+        <div class="stallplaner-panel-actions">
+          <button type="button" class="stallplaner-panel-btn" data-sheet-cancel>Abbrechen</button>
+          <button type="button" class="stallplaner-panel-btn primary" id="stallplaner-split-apply">Teilen</button>
+        </div>
+      </div>
+
+      <div class="stallplaner-panel" id="stallplaner-panel-add-compartment" hidden>
+        <button type="button" class="stallplaner-big-btn primary" data-act="rect-compartment">
+          <span class="material-symbols-rounded icon">rectangle</span>
+          <span><strong>Rechteckiges Abteil</strong><small>Startecke antippen, Länge × Breite eingeben</small></span>
+        </button>
+        <button type="button" class="stallplaner-big-btn" data-act="walls-compartment">
+          <span class="material-symbols-rounded icon">polyline</span>
+          <span><strong>Wand für Wand</strong><small>Für Abteile mit Knick oder Nische</small></span>
+        </button>
+        <button type="button" class="stallplaner-big-btn" id="stallplaner-tool-compartment" data-tool="draw-compartment">
+          <span class="material-symbols-rounded icon">draw</span>
+          <span><strong>Frei skizzieren</strong><small>Ecken antippen, Maße später</small></span>
+        </button>
+      </div>
+
+      <!-- Geführter Vermessen-Modus (siehe startStallplanMeasureWalk() in
+           main.js): führt Kante für Kante durch den ausgewählten Umriss/das
+           Abteil, baut das Polygon am Ende rechtwinklig aus den echten
+           Längen neu auf (reconstructRectilinearPolygon()). -->
+      <div class="stallplaner-panel" id="stallplaner-measure-panel" hidden>
+        <div id="stallplaner-measure-progress"></div>
+        <input type="text" inputmode="decimal" autocomplete="off" id="stallplaner-measure-input" placeholder="Länge in m">
+        <div id="stallplaner-measure-actions" class="stallplaner-panel-actions">
+          <button type="button" class="stallplaner-panel-btn" id="stallplaner-measure-back" title="Vorherige Kante" aria-label="Vorherige Kante">
+            <span class="material-symbols-rounded icon">undo</span>
+          </button>
+          <button type="button" class="stallplaner-panel-btn" id="stallplaner-measure-skip">Überspringen</button>
+          <button type="button" class="stallplaner-panel-btn primary" id="stallplaner-measure-next">Weiter</button>
+        </div>
+        <button type="button" class="stallplaner-panel-btn stallplaner-panel-btn-quiet" id="stallplaner-measure-cancel">Abbrechen</button>
+      </div>
+
+      <!-- Manche Einrichtungen sind eher eine Linie (Sitzstange, Tür/Fenster
+           in der Wand) oder eine Fläche (Futterraufe, Futtergang) als ein
+           einzelner Punkt — die Form wird unabhängig von der Art gewählt,
+           der ausgewählte Typ schlägt beim Anklicken nur eine sinnvolle
+           Standardform vor (siehe STALLPLANER_EQUIP_DEFAULT_GEOMETRY in
+           main.js), lässt sich aber jederzeit umschalten. -->
+      <div class="stallplaner-panel" id="stallplaner-panel-equipment" hidden>
+        <div id="stallplaner-equip-grid">
+          <button type="button" data-equip="traenke"><span class="material-symbols-rounded icon">water_drop</span>Tränke</button>
+          <button type="button" data-equip="raufe"><span class="material-symbols-rounded icon">grass</span>Raufe</button>
+          <button type="button" data-equip="futterautomat"><span class="material-symbols-rounded icon">restaurant</span>Futterautomat</button>
+          <button type="button" data-equip="nest"><span class="material-symbols-rounded icon">egg</span>Nest</button>
+          <button type="button" data-equip="sitzstange"><span class="material-symbols-rounded icon">drag_handle</span>Sitzstange</button>
+          <button type="button" data-equip="tuer"><span class="material-symbols-rounded icon">door_front</span>Tür</button>
+          <button type="button" data-equip="fenster"><span class="material-symbols-rounded icon">window</span>Fenster</button>
+          <button type="button" data-equip="futtergang"><span class="material-symbols-rounded icon">route</span>Futtergang</button>
+        </div>
+        <div id="stallplaner-equip-geometry-toggle" class="stallplaner-segmented" role="group" aria-label="Form">
+          <button type="button" data-geometry="point"><span class="material-symbols-rounded icon">radio_button_checked</span>Punkt</button>
+          <button type="button" data-geometry="line"><span class="material-symbols-rounded icon">polyline</span>Linie</button>
+          <button type="button" data-geometry="area"><span class="material-symbols-rounded icon">rectangle</span>Fläche</button>
+        </div>
+      </div>
+
+      <div class="stallplaner-panel" id="stallplaner-panel-selection" hidden></div>
+
+      <div class="stallplaner-panel" id="stallplaner-panel-animals" hidden>
+        <label class="stallplaner-field stallplaner-field-wide">
+          <span>Tierart</span>
+          <select id="stallplaner-sheet-tierart">
+            <option value="">– wählen –</option>
+            <option value="rinder">Rinder</option>
+            <option value="schweine">Schweine</option>
+            <option value="gefluegel">Geflügel</option>
+            <option value="schafe_ziegen">Schafe/Ziegen</option>
+            <option value="pferde">Pferde/Equiden</option>
+            <option value="kaninchen">Kaninchen</option>
+          </select>
+        </label>
+        <div id="stallplaner-animals-list"></div>
+      </div>
+    </section>
+
+    <!-- Untere Aktionsleiste — Inhalt je Schritt/Modus (siehe
+         renderStallplanerChrome()), große beschriftete Buttons statt der
+         früheren schwebenden Icon-Leiste. -->
+    <div id="stallplaner-actionbar" role="toolbar" aria-label="Stallplan-Werkzeuge">
+      <div id="stallplaner-actions">
+        <button type="button" class="stallplaner-act" data-act="rect-outline" data-show="create-outline"><span class="material-symbols-rounded icon">rectangle</span><span>Rechteck</span></button>
+        <button type="button" class="stallplaner-act" data-act="walls-outline" data-show="create-outline"><span class="material-symbols-rounded icon">polyline</span><span>Wand für Wand</span></button>
+        <button type="button" class="stallplaner-act" id="stallplaner-tool-outline" data-tool="draw-outline" data-show="create-outline"><span class="material-symbols-rounded icon">draw</span><span>Skizzieren</span></button>
+        <button type="button" class="stallplaner-act" data-act="add-compartment" data-show="abteile"><span class="material-symbols-rounded icon">add</span><span>Abteil</span></button>
+        <button type="button" class="stallplaner-act" data-act="split" data-show="abteile"><span class="material-symbols-rounded icon">view_week</span><span>Teilen</span></button>
+        <button type="button" class="stallplaner-act" id="stallplaner-tool-equipment" data-tool="place-equipment" data-show="ausstattung"><span class="material-symbols-rounded icon">handyman</span><span>Platzieren</span></button>
+        <button type="button" class="stallplaner-act" data-act="animals" data-show="tiere"><span class="material-symbols-rounded icon">pets</span><span>Tiere</span></button>
+        <button type="button" class="stallplaner-act" id="stallplaner-act-pdf" data-show="tiere"><span class="material-symbols-rounded icon">picture_as_pdf</span><span>PDF</span></button>
+        <button type="button" class="stallplaner-act" id="stallplaner-tool-edit" data-tool="edit-vertex" data-show="geometry"><span class="material-symbols-rounded icon">edit</span><span>Bearbeiten</span></button>
+        <button type="button" class="stallplaner-act" id="stallplaner-tool-measure" data-tool="measure" data-show="measure"><span class="material-symbols-rounded icon">straighten</span><span>Vermessen</span></button>
+        <button type="button" class="stallplaner-act" id="stallplaner-tool-delete" data-tool="delete" data-show="geometry"><span class="material-symbols-rounded icon">delete</span><span>Löschen</span></button>
+        <!-- Während eines Skizzier-Vorgangs ersetzen diese drei die übrigen
+             Aktionen — Touch hat weder Doppelklick noch Rechtsklick. -->
+        <button type="button" class="stallplaner-act" id="stallplaner-draw-undo-point" data-show="drawing"><span class="material-symbols-rounded icon">backspace</span><span>Letzter Punkt</span></button>
+        <button type="button" class="stallplaner-act" id="stallplaner-draw-cancel" data-show="drawing"><span class="material-symbols-rounded icon">close</span><span>Abbrechen</span></button>
+        <button type="button" class="stallplaner-act primary" id="stallplaner-draw-finish" data-show="drawing"><span class="material-symbols-rounded icon">check</span><span>Fertig</span></button>
+      </div>
+      <div id="stallplaner-more-wrap">
+        <button type="button" class="stallplaner-act" id="stallplaner-more-btn" aria-haspopup="true" aria-expanded="false"><span class="material-symbols-rounded icon">more_horiz</span><span>Mehr</span></button>
+        <div id="stallplaner-more-menu" hidden>
+          <label class="stallplaner-more-row">
+            <span>Raster</span>
+            <select id="stallplaner-grid-scale" title="Rastermaßstab (Meter je Rasterzelle)">
+              <option value="0.25">0,25 m</option>
+              <option value="0.5">0,5 m</option>
+              <option value="1" selected>1 m</option>
+              <option value="2">2 m</option>
+            </select>
+          </label>
+          <label class="stallplaner-more-row">
+            <span>Beim Skizzieren am Raster einrasten</span>
+            <input type="checkbox" id="stallplaner-grid-snap" checked>
+          </label>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ---------- FeldFolio Plus: Probenahmeprotokoll ----------
+     Termin-gebundenes Modal, geöffnet aus dem Terminkalender-Detailpanel
+     heraus (siehe probenprotokollSectionHtml()/renderTerminkalenderDetail()
+     in main.js) — füllt das amtliche Probenahmeprotokoll-Formular aus und
+     exportiert es als exakte PDF-Originaldatei (siehe
+     exportProbenprotokollPdf(), füllt public/probenahmeprotokoll-
+     vorlage.pdf über pdf-lib) direkt in die "Fotos & Dateien" des Termins,
+     kein separater Download. -->
+<div id="probenprotokoll-modal-overlay" class="modal-overlay" hidden>
+  <div class="modal-card modal-card-xl">
+    <div id="probenprotokoll-modal-header">
+      <h3>Probenahmeprotokoll</h3>
+      <button type="button" id="probenprotokoll-modal-close" title="Schließen">
+        <span class="material-symbols-rounded icon">close</span>
+      </button>
+    </div>
+    <form id="probenprotokoll-modal-form"></form>
+    <p class="modal-hint modal-error" id="probenprotokoll-modal-error" hidden></p>
+    <div class="modal-actions">
+      <button type="button" id="probenprotokoll-modal-delete">
+        <span class="material-symbols-rounded icon">delete</span> Protokoll löschen
+      </button>
+      <button type="button" id="probenprotokoll-modal-export" class="primary">
+        <span class="material-symbols-rounded icon">open_in_new</span> Als PDF exportieren
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ---------- FeldFolio Plus: Offline-Konflikt ----------
+     Erscheint beim Nachsynchronisieren, wenn derselbe Betrieb (bzw. die
+     Termine) seit dem letzten Abgleich auf diesem Gerät UND anderswo geändert
+     wurde (siehe runCloudSync() in main.js). Die verworfene Fassung wird
+     lokal als Sicherung aufbewahrt. -->
+<div id="sync-conflict-overlay" class="modal-overlay" hidden>
+  <div class="modal-card" role="alertdialog" aria-labelledby="sync-conflict-title">
+    <h3 id="sync-conflict-title">Zwei verschiedene Stände</h3>
+    <p class="modal-hint">Während hier (z.B. offline im Stall) gearbeitet wurde, wurde Folgendes auch auf einem anderen Gerät geändert:</p>
+    <ul id="sync-conflict-list"></ul>
+    <p class="modal-hint">Welcher Stand soll gelten? Der andere wird auf diesem Gerät als Sicherung aufbewahrt.</p>
+    <div class="modal-actions sync-conflict-actions">
+      <button type="button" id="sync-conflict-take-theirs">Anderen Stand übernehmen</button>
+      <button type="button" id="sync-conflict-keep-mine" class="primary">Meine Änderungen behalten</button>
+    </div>
+  </div>
 </div>
 
 <!-- ---------- FeldFolio Plus: Cloud-Konto ---------- -->
@@ -673,6 +1044,62 @@
       <div class="modal-actions">
         <button type="button" id="betrieb-modal-close-2" class="primary">Fertig</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ---------- FeldFolio Plus: Dokumentenscanner (Terminkalender-Anhänge) ----------
+     Eigenständiges Vollbild-Overlay statt der zentrierten .modal-card-Optik
+     der übrigen Modals — Kamera-UI braucht den ganzen Bildschirm,
+     insbesondere mobil. Siehe wireScanCropDrag()/openScanModal() in
+     main.js. -->
+<div id="scan-modal-overlay" class="scan-overlay" hidden>
+  <div id="scan-camera-view">
+    <video id="scan-video" playsinline muted></video>
+    <canvas id="scan-raw-canvas" hidden></canvas>
+    <canvas id="scan-preview-canvas"></canvas>
+    <div id="scan-topbar">
+      <button type="button" id="scan-btn-close" title="Abbrechen">
+        <span class="material-symbols-rounded icon">close</span>
+      </button>
+      <span id="scan-status">Scan-Werkzeug wird geladen …</span>
+    </div>
+    <div id="scan-thumbnails"></div>
+    <div id="scan-controls">
+      <button type="button" id="scan-btn-capture" title="Seite aufnehmen" disabled>
+        <span class="material-symbols-rounded icon">radio_button_checked</span>
+      </button>
+      <button type="button" id="scan-btn-finish" title="Fertig — PDF erstellen" disabled>
+        <span class="material-symbols-rounded icon">check</span> Fertig
+      </button>
+    </div>
+  </div>
+  <div id="scan-crop-view" hidden>
+    <div id="scan-crop-stage">
+      <!-- #scan-crop-frame bekommt seine Pixel-Maße per JS exakt im
+           Seitenverhältnis des Fotos gesetzt (siehe layoutScanCropFrame()
+           in main.js) — nötig, weil das <img> per max-width/max-height
+           "letterboxed" dargestellt wird und Ecken-Griffe/Overlay sonst,
+           bei abweichendem Seitenverhältnis von Foto zu Bildschirm, an der
+           falschen Stelle relativ zum sichtbaren Bildinhalt lägen. -->
+      <div id="scan-crop-frame">
+        <img id="scan-crop-image" alt="">
+        <svg id="scan-crop-overlay" preserveAspectRatio="none" viewBox="0 0 100 100">
+          <polygon id="scan-crop-polygon"></polygon>
+        </svg>
+        <div class="scan-crop-handle" data-corner="topLeftCorner"></div>
+        <div class="scan-crop-handle" data-corner="topRightCorner"></div>
+        <div class="scan-crop-handle" data-corner="bottomLeftCorner"></div>
+        <div class="scan-crop-handle" data-corner="bottomRightCorner"></div>
+      </div>
+    </div>
+    <div id="scan-crop-actions">
+      <button type="button" id="scan-crop-retake">
+        <span class="material-symbols-rounded icon">refresh</span> Erneut aufnehmen
+      </button>
+      <button type="button" id="scan-crop-confirm" class="primary">
+        <span class="material-symbols-rounded icon">check</span> Übernehmen
+      </button>
     </div>
   </div>
 </div>
