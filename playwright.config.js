@@ -16,7 +16,19 @@ export default defineConfig({
     navigationTimeout: 20000
   },
   projects: [
-    { name: 'chromium', use: { ...devices['Desktop Chrome'] } }
+    {
+      name: 'chromium',
+      use: {
+        ...devices['Desktop Chrome'],
+        // Virtuelle Testkamera für den Dokumentenscanner (getUserMedia) —
+        // liefert ein deterministisches Testbild statt eine echte Kamera
+        // zu verlangen, und erteilt die Berechtigung automatisch ohne
+        // Prompt (der sonst headless nie beantwortet würde).
+        launchOptions: {
+          args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream']
+        }
+      }
+    }
   ],
   webServer: {
     command: 'npm run dev',

@@ -82,4 +82,58 @@ test.describe('Hofplan', () => {
     const path = await download.path();
     expect(path).toBeTruthy();
   });
+
+  test('"Stall"-Gebäude verknüpft sich mit einem Stallplan und wechselt in den Stallplaner', async ({ page }) => {
+    await drawHofplanRect(page, TEST_RECT_A);
+    await page.locator('#hofplan-list .parcel-name').fill('Milchviehstall Nord');
+    await page.locator('#hofplan-list .parcel-kultur').selectOption('Stall');
+    const btn = page.locator('button[data-action="open-stallplan"]');
+    await expect(btn).toHaveText('Stallplan anlegen');
+
+    await btn.click();
+    // setActiveSegment('stallplaner') wechselt den Tab direkt — kein Klick
+    // auf den Tab-Button nötig, siehe openOrCreateStallplanFor() in main.js.
+    await expect(page.locator('#stallplaner-view')).toBeVisible();
+    await expect(page.locator('#stallplaner-name-input')).toHaveValue('Milchviehstall Nord');
+
+    // Zurück im Hofplan zeigt der Button jetzt "öffnen" statt "anlegen".
+    await gotoTab(page, 'Hofplan');
+    await expect(page.locator('button[data-action="open-stallplan"]')).toHaveText('Stallplan öffnen');
+
+    // Erneutes Anklicken öffnet denselben Plan, statt einen zweiten anzulegen.
+    await page.locator('button[data-action="open-stallplan"]').click();
+    await expect(page.locator('#stallplaner-name-input')).toHaveValue('Milchviehstall Nord');
+    const shapes = await page.evaluate(() => window.__ffTestHofplan.serializeShapes());
+    expect(shapes).toHaveLength(1);
+    expect(shapes[0].stallplanId).toBeTruthy();
+    // Kein zweiter Stallplan durch den erneuten Klick angelegt.
+    const allPlans = await page.evaluate(() => window.__ffTestStallplaner.serializeStallplaene());
+    expect(allPlans).toHaveLength(1);
+
+    const activePlanId = await page.evaluate(() => window.__ffTestStallplaner.getActivePlan().id);
+    expect(activePlanId).toBe(shapes[0].stallplanId);
+  });
+
+  test('Andere Gebäudetypen zeigen keinen Stallplan-Button', async ({ page }) => {
+    await drawHofplanRect(page, TEST_RECT_A);
+    await page.locator('#hofplan-list .parcel-kultur').selectOption('Maschinenhalle');
+    await expect(page.locator('button[data-action="open-stallplan"]')).toHaveCount(0);
+  });
+
+  test('Klick auf ein Hofplan-Gebäude von einem anderen Tab aus wechselt direkt in den Hofplaner', async ({ page }) => {
+    await drawHofplanRect(page, TEST_RECT_A);
+    // Hofplan-Gebäude bleiben nach dem ersten Zeichnen tab-übergreifend auf
+    // der Karte sichtbar — hier auf den Viewer wechseln und von dort aus
+    // dasselbe Kartenobjekt anklicken.
+    await gotoTab(page, 'Flächenzeichner');
+    await page.locator('.segment-btn.active').click(); // zurück zum Viewer (siehe gesamtexport.spec.js-Muster)
+    await page.evaluate(() => {
+      const map = window.__ffTestMap;
+      let target = null;
+      map.eachLayer((l) => { if (l instanceof window.L.Rectangle && !target) target = l; });
+      target.fire('click');
+    });
+    await expect(page.locator('.segment-btn[data-view="hofplan"]')).toHaveClass(/active/);
+    await expect(page.locator('#hofplan-list .parcel-item')).toHaveCount(1);
+  });
 });

@@ -16,11 +16,16 @@ import path from 'node:path';
 import subsetFont from 'subset-font';
 
 const ICON_NAMES = [
-  'attach_file', 'business', 'check', 'close', 'content_cut', 'dark_mode',
-  'delete', 'description', 'drag_indicator', 'draw', 'eco', 'edit',
-  'expand_less', 'expand_more', 'light_mode', 'location_on', 'menu',
-  'my_location', 'open_in_new', 'photo_camera', 'polyline', 'rectangle',
-  'redo', 'refresh', 'sticky_note_2', 'undo', 'warning'
+  'add', 'arrow_back', 'arrow_downward', 'arrow_forward', 'arrow_upward',
+  'attach_file', 'backspace', 'business', 'category', 'check', 'close',
+  'cloud_off', 'cloud_upload', 'content_cut', 'dark_mode', 'delete',
+  'description', 'document_scanner', 'door_front', 'drag_handle',
+  'drag_indicator', 'draw', 'eco', 'edit', 'egg', 'expand_less',
+  'expand_more', 'fit_screen', 'grass', 'grid_on', 'handyman', 'light_mode',
+  'location_on', 'menu', 'more_horiz', 'my_location', 'open_in_new', 'pets',
+  'photo_camera', 'picture_as_pdf', 'polyline', 'radio_button_checked',
+  'rectangle', 'redo', 'refresh', 'restaurant', 'route', 'sticky_note_2',
+  'straighten', 'undo', 'view_week', 'warning', 'water_drop', 'window'
 ];
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

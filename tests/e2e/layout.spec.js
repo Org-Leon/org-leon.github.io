@@ -4,7 +4,7 @@ import { gotoTab } from './helpers.js';
 // Regressionstest für den "width:100% + horizontale margin"-Bug (Sidebar
 // wurde dadurch horizontal scrollbar, siehe git-Historie) — prüft auf allen
 // Tabs, da jeder eigene Sidebar-Inhalte einblendet.
-const TABS = ['Jahresvergleich', 'Flächenzeichner', 'Obstbaumkataster', 'Bienenflugkarte', 'Hofplan'];
+const TABS = ['Jahresvergleich', 'Flächenzeichner', 'Obstbaumkataster', 'Bienenflugkarte', 'Hofplan', 'Stallplaner'];
 
 test.describe('Sidebar-Layout', () => {
   test('Sidebar ist auf keinem Tab horizontal scrollbar', async ({ page }) => {

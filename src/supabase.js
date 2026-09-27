@@ -45,20 +45,33 @@ export async function getSession() {
   return data.session;
 }
 
+// Ohne Netz schlagen Uploads/Signed URLs ohnehin fehl — mit einer klaren
+// Meldung statt eines kryptischen "Failed to fetch".
+function assertOnline() {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    throw new Error('Keine Internetverbindung — Fotos und Dateien lassen sich nur online hochladen bzw. öffnen.');
+  }
+}
+
 // Behält denselben Datensatz je Nutzer (Primärschlüssel user_id) — "Cloud
 // speichern" ersetzt also immer den vorherigen Stand, kein Verlauf/mehrere
-// Projekte in diesem ersten Ausbauschritt.
+// Projekte in diesem ersten Ausbauschritt. Liefert den neuen updated_at-
+// Zeitstempel zurück (Grundlage des Offline-Abgleichs in main.js).
 export async function saveState(data) {
+  if (import.meta.env.DEV && window.__ffTestCloud) return window.__ffTestCloud.save(data);
   if (!supabase) throw new Error('Cloud-Konto ist nicht konfiguriert.');
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Nicht angemeldet.');
+  const updatedAt = new Date().toISOString();
   const { error } = await supabase
     .from(STATE_TABLE)
-    .upsert({ user_id: user.id, data, updated_at: new Date().toISOString() });
+    .upsert({ user_id: user.id, data, updated_at: updatedAt });
   if (error) throw error;
+  return updatedAt;
 }
 
 export async function loadState() {
+  if (import.meta.env.DEV && window.__ffTestCloud) return window.__ffTestCloud.load();
   if (!supabase) throw new Error('Cloud-Konto ist nicht konfiguriert.');
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Nicht angemeldet.');
@@ -98,6 +111,14 @@ function randomUuid() {
 // allein daraus, dass der zurückgegebene Pfad im photos-Array dieser Fläche
 // steht (siehe main.js). Die Storage-RLS-Policy prüft nur den user_id-Ordner.
 export async function uploadPhoto(file) {
+  // Dev-only Testhaken (z.B. für den Dokumentenscanner-Regressionstest):
+  // erlaubt, den Cloud-Upload ohne echten Login zu stubben, analog zu
+  // window.__ffTestMap/__ffTestTk in main.js — im Produktions-Build per
+  // Dead-Code-Elimination entfernt.
+  if (import.meta.env.DEV && window.__ffTestUploadPhotoOverride) {
+    return window.__ffTestUploadPhotoOverride(file);
+  }
+  assertOnline();
   if (!supabase) throw new Error('Cloud-Konto ist nicht konfiguriert.');
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error('Nicht angemeldet.');
@@ -117,6 +138,7 @@ export async function uploadPhoto(file) {
 // wenn der Storage-Pfad selbst weiterhin eine UUID ist.
 export async function getPhotoUrl(path, downloadName) {
   if (!supabase) return null;
+  assertOnline();
   const { data, error } = await supabase.storage.from(PHOTO_BUCKET)
     .createSignedUrl(path, 3600, downloadName ? { download: downloadName } : undefined);
   if (error) throw error;
@@ -125,6 +147,7 @@ export async function getPhotoUrl(path, downloadName) {
 
 export async function deletePhoto(path) {
   if (!supabase) return;
+  assertOnline();
   const { error } = await supabase.storage.from(PHOTO_BUCKET).remove([path]);
   if (error) throw error;
 }

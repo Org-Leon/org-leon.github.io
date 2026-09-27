@@ -296,6 +296,47 @@
   #btn-sync.sync-toggle.active .sync-toggle-thumb { background: var(--accent); transform: translateX(11px); }
   /* Kurzer Puls beim tatsächlichen Synchronisieren (siehe main.js), damit ein
      automatischer Sync im Hintergrund nicht völlig unsichtbar passiert. */
+  /* Offline-/Upload-Status (siehe updateSyncIndicator() in main.js) — als
+     Icon, weil die Beschriftung auf schmalen Bildschirmen ausgeblendet ist. */
+  .sync-toggle-status { display: none; font-size: 16px; }
+  #btn-sync.is-offline .sync-toggle-status, #btn-sync.has-pending .sync-toggle-status { display: inline-block; }
+  #btn-sync.has-pending .sync-toggle-status::before { content: 'cloud_upload'; }
+  #btn-sync.is-offline .sync-toggle-status::before { content: 'cloud_off'; }
+  #btn-sync.is-offline, #btn-sync.is-offline.active { border-color: var(--warn); color: var(--warn); }
+  #btn-sync.has-pending:not(.is-offline) .sync-toggle-status { color: var(--warn); }
+  #btn-sync.sync-error { border-color: #e0684a; color: #e0684a; }
+  #app-update-toast {
+    position: fixed;
+    left: 50%;
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    transform: translateX(-50%);
+    z-index: 7000;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: max-content;
+    max-width: calc(100vw - 24px);
+    padding: 10px 12px;
+    background: var(--panel);
+    border: 1px solid var(--accent);
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+    font-size: 13px;
+    color: var(--text);
+  }
+  #app-update-toast button {
+    min-height: 40px;
+    padding: 0 12px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font: 600 13px var(--sans);
+    cursor: pointer;
+  }
+  #app-update-toast button.primary { background: var(--accent-dim); border-color: var(--accent); color: var(--on-accent); }
+  #sync-conflict-list { margin: 0 0 10px; padding-left: 18px; font-size: 13px; color: var(--text); }
+  .sync-conflict-actions { flex-wrap: wrap; }
   #btn-sync.sync-toggle.syncing .sync-toggle-thumb { animation: sync-pulse 0.9s ease-in-out infinite; }
   @keyframes sync-pulse {
     0%, 100% { opacity: 1; }
@@ -2097,6 +2138,7 @@
     justify-content: center;
   }
   .tk-attachment-remove:hover { background: var(--warn); }
+  .tk-attachments-grid > .empty-hint { grid-column: 1 / -1; }
   .tk-attachments-actions { display: flex; flex-wrap: wrap; gap: 8px; }
   .tk-attachment-btn {
     display: inline-flex;
@@ -2213,4 +2255,1073 @@
   @media (max-width: 400px) {
     #brand-logo { font-size: 18px; margin-right: 6px; }
     #theme-toggle { margin-right: 8px; }
+  }
+
+  /* ---------- Dokumentenscanner (Terminkalender-Anhänge) ----------
+     Eigene, randlose Vollbild-Variante statt der zentrierten .modal-card
+     — die Kamera-Vorschau braucht den ganzen Bildschirm, besonders
+     mobil. Dunkles UI wie Adobe Scan, unabhängig vom App-Theme. */
+  .scan-overlay {
+    position: fixed;
+    inset: 0;
+    background: #000;
+    z-index: 6000;
+    display: flex;
+  }
+  .scan-overlay[hidden] { display: none; }
+  #scan-camera-view, #scan-crop-view {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+  #scan-camera-view[hidden], #scan-crop-view[hidden] { display: none; }
+
+  /* Das <video>-Element liefert nur den Rohstrom fürs Canvas-Sampling —
+     sichtbar ist ausschließlich #scan-preview-canvas (mit eingezeichneter
+     Kantenerkennung), daher video per Klasse ausgeblendet statt hidden
+     (Attribut würde play()/videoWidth stören). */
+  #scan-video { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+  #scan-raw-canvas { display: none; }
+  #scan-preview-canvas {
+    flex: 1;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: #000;
+  }
+
+  #scan-topbar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    background: linear-gradient(rgba(0,0,0,0.65), rgba(0,0,0,0));
+    z-index: 1;
+  }
+  #scan-topbar button {
+    background: rgba(255,255,255,0.12);
+    border: none;
+    color: #fff;
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  #scan-topbar button:hover { background: rgba(255,255,255,0.22); }
+  #scan-status { color: #fff; font-size: 13px; line-height: 1.4; }
+
+  #scan-thumbnails {
+    position: absolute;
+    bottom: 92px;
+    left: 0;
+    right: 0;
+    display: flex;
+    gap: 8px;
+    padding: 8px 12px;
+    overflow-x: auto;
+    z-index: 1;
+  }
+  .scan-thumb { position: relative; flex-shrink: 0; }
+  .scan-thumb img {
+    width: 46px;
+    height: 60px;
+    object-fit: cover;
+    border-radius: 4px;
+    border: 1.5px solid rgba(255,255,255,0.6);
+    display: block;
+  }
+  .scan-thumb-remove {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #d64545;
+    border: none;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    padding: 0;
+  }
+  .scan-thumb-remove .icon { font-size: 12px; }
+
+  #scan-controls {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    padding: 16px 12px calc(16px + env(safe-area-inset-bottom, 0px));
+    background: linear-gradient(rgba(0,0,0,0), rgba(0,0,0,0.65));
+  }
+  #scan-btn-capture {
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    background: #fff;
+    border: 4px solid rgba(255,255,255,0.4);
+    color: #111;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  #scan-btn-capture .icon { font-size: 34px; }
+  #scan-btn-capture:disabled { opacity: 0.4; cursor: not-allowed; }
+  #scan-btn-finish {
+    background: var(--accent);
+    color: var(--on-accent);
+    border: none;
+    border-radius: 20px;
+    padding: 0 18px;
+    height: 42px;
+    font-size: 13.5px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    position: absolute;
+    right: 12px;
+  }
+  #scan-btn-finish:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* ---- Ecken-Korrektur ----
+     #scan-crop-frame bekommt seine Breite/Höhe per JS exakt im
+     Seitenverhältnis des Fotos gesetzt (layoutScanCropFrame() in main.js)
+     — Bild, Overlay-SVG und Griffe liegen alle exakt auf dieser Box
+     (inset:0), es gibt also keinen CSS-Letterboxing-Versatz mehr, wie es
+     bei einem reinen max-width/max-height:100% auf #scan-crop-image ohne
+     eigens vermessenen Rahmen der Fall wäre. */
+  #scan-crop-stage {
+    position: relative;
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    touch-action: none;
+  }
+  #scan-crop-frame { position: relative; }
+  #scan-crop-image { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #scan-crop-overlay {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+  }
+  #scan-crop-polygon {
+    fill: rgba(90, 170, 255, 0.25);
+    stroke: #5aaaff;
+    stroke-width: 0.6;
+  }
+  .scan-crop-handle {
+    position: absolute;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: #5aaaff;
+    border: 2px solid #fff;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+    transform: translate(-50%, -50%);
+    touch-action: none;
+    cursor: grab;
+  }
+  #scan-crop-actions {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+    padding: 14px 12px calc(14px + env(safe-area-inset-bottom, 0px));
+    background: #111;
+  }
+  #scan-crop-actions button {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 16px;
+    height: 42px;
+    border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.25);
+    background: transparent;
+    color: #fff;
+    font-size: 13.5px;
+    cursor: pointer;
+  }
+  #scan-crop-actions button.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--on-accent);
+    font-weight: 600;
+  }
+
+  @media (max-width: 640px) {
+    #scan-status { font-size: 12px; }
+    .scan-thumb img { width: 40px; height: 52px; }
+  }
+
+  /* ---------- Stallplaner ----------
+     Eigenständiges Grundriss-Werkzeug ohne Kartenbezug — #stallplaner-view
+     ersetzt #map-wrap komplett (siehe setActiveSegment() in main.js),
+     gleiches flex:1/height:100%-Muster wie #terminkalender-view. */
+  #stallplaner-view {
+    flex: 1;
+    height: 100%;
+    min-width: 0;
+    display: flex;
+    overflow: hidden;
+    background: var(--bg);
+  }
+  #stallplaner-view[hidden] { display: none; }
+  #stallplaner-plan-wrap {
+    position: relative;
+    flex: 1;
+    height: 100%;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: #10140f;
+  }
+  /* Cursor wird sonst laufend per JS gesetzt (updateStallplanerToolbar()) —
+     "grab" ist nur der Basiswert vor der ersten Werkzeugauswahl (kein
+     Werkzeug aktiv = per Drag verschiebbar, siehe pointerdown-Handler). */
+  #stallplan-svg { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+  .stallplan-grid-line { stroke: rgba(255,255,255,0.06); stroke-width: 0.02; }
+  .stallplan-grid-line.major { stroke: rgba(255,255,255,0.14); }
+
+  .stallplan-outline {
+    fill: rgba(122, 184, 96, 0.12);
+    stroke: #7ab860;
+    stroke-width: 2;
+    vector-effect: non-scaling-stroke;
+  }
+  .stallplan-outline.self-intersect { stroke: #e0684a; stroke-dasharray: 6 4; }
+
+  .stallplan-compartment polygon {
+    fill: rgba(79, 184, 175, 0.22);
+    stroke: #4fb8af;
+    stroke-width: 1.5;
+    vector-effect: non-scaling-stroke;
+    cursor: pointer;
+  }
+  .stallplan-compartment.non-compliant polygon { fill: rgba(224, 104, 74, 0.28); stroke: #e0684a; }
+  .stallplan-compartment.self-intersect polygon { stroke-dasharray: 0.3 0.2; }
+  /* font-size/r werden bei allen folgenden Elementen bewusst NICHT hier
+     gesetzt, sondern als Attribut direkt am Element (siehe
+     stallplanScreenSize()/rescaleStallplanDynamicElements() in main.js) —
+     eine feste Größe in Rastereinheiten würde beim Hineinzoomen (Mausrad)
+     riesig und unleserlich werden statt eine gleichbleibende
+     Bildschirmgröße zu behalten. Eine CSS-Regel hier würde das per SVG-
+     Kaskade-Vorrang (CSS schlägt Attribute) sonst überschreiben. */
+  .stallplan-compartment-label {
+    fill: #eef1e8;
+    font-family: var(--sans);
+    text-anchor: middle;
+    dominant-baseline: central;
+    pointer-events: none;
+  }
+
+  .stallplan-equipment-bg { fill: var(--panel); stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+  .stallplan-equipment-icon { fill: var(--accent); }
+  .stallplan-equipment { cursor: grab; }
+  .stallplan-equipment:active { cursor: grabbing; }
+  /* Linien-/Flächen-Ausstattung (Sitzstange, Tür/Fenster in der Wand,
+     Futterraufe/Futtergang als Fläche) — eigene, von Umriss/Abteil klar
+     unterscheidbare Farbe (Bernstein statt Grün/Türkis). */
+  .stallplan-equipment-shape {
+    stroke: #d9a441;
+    stroke-width: 2.5;
+    vector-effect: non-scaling-stroke;
+  }
+  .stallplan-equipment-line .stallplan-equipment-shape { fill: none; }
+  .stallplan-equipment-area .stallplan-equipment-shape { fill: rgba(217, 164, 65, 0.22); }
+
+  .stallplan-draw-preview { fill: none; stroke: #eef1e8; stroke-width: 1.5; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
+  .stallplan-draw-point { fill: #eef1e8; }
+  /* Hervorgehoben, sobald der Cursor nah genug ist, um durch Anklicken den
+     Umriss/das Abteil zu schließen (siehe isNearStallplanDrawStart() in
+     main.js) — derselbe visuelle Hinweis wie in Illustrator/Figma. */
+  .stallplan-draw-point.closable { fill: var(--accent); stroke: #fff; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+  .stallplan-vertex-handle {
+    fill: var(--accent);
+    stroke: #fff;
+    stroke-width: 1.5;
+    vector-effect: non-scaling-stroke;
+    cursor: grab;
+    touch-action: none;
+  }
+  .stallplan-vertex-handle:active { cursor: grabbing; }
+
+  /* Zentimetergenaue Kantenlängen-Beschriftung (nur an der ausgewählten
+     Form im Bearbeiten-Modus, siehe appendEdgeLengthLabels() in main.js) —
+     Klick öffnet #stallplan-edge-length-input darüber. Das eigentliche
+     Klickziel ist .stallplan-edge-label-hit (großzügiger bemessenes,
+     unsichtbares Rechteck), nicht der Text selbst — enge Glyphen-
+     Bounding-Boxen sind schwer zuverlässig zu treffen. */
+  .stallplan-edge-label-wrap { cursor: pointer; }
+  /* pointer-events: all statt des SVG-Default (visiblePainted) — ein
+     transparentes Fill zählt in manchen Browsern nicht als "painted" und
+     Klicks würden sonst zur darunterliegenden Umriss-/Abteil-Kontur
+     durchfallen. */
+  .stallplan-edge-label-hit { fill: transparent; pointer-events: all; }
+  .stallplan-edge-label {
+    font-family: var(--mono);
+    fill: #eef1e8;
+    text-anchor: middle;
+    dominant-baseline: central;
+    pointer-events: none;
+    paint-order: stroke;
+    stroke: #10140f;
+    stroke-width: 3;
+    vector-effect: non-scaling-stroke;
+  }
+  .stallplan-edge-label-wrap:hover .stallplan-edge-label { fill: var(--accent); }
+  #stallplan-edge-length-input {
+    position: absolute;
+    z-index: 1100;
+    width: 84px;
+    transform: translate(-50%, -50%);
+    background: var(--panel);
+    border: 1px solid var(--accent);
+    color: var(--text);
+    border-radius: 5px;
+    padding: 6px 4px;
+    font-size: 16px;
+    font-family: var(--mono);
+    text-align: center;
+  }
+  #stallplan-edge-length-input[hidden] { display: none; }
+
+  /* Vor dem PDF-Screenshot gesetzt (siehe exportStallplanPDF()), blendet
+     Bearbeitungs-Hilfsmittel aus, die im Ausdruck nichts verloren haben. */
+  .stallplaner-exporting .stallplan-vertex-handle,
+  .stallplaner-exporting .stallplan-draw-preview,
+  .stallplaner-exporting .stallplan-draw-point,
+  .stallplaner-exporting .stallplan-measure-highlight,
+  .stallplaner-exporting .stallplan-edge-label-wrap,
+  .stallplaner-exporting #stallplan-edge-length-input,
+  .stallplaner-exporting #stallplaner-view-controls,
+  .stallplaner-exporting #stallplaner-start-card,
+  .stallplaner-exporting #stallplaner-draw-hint,
+  .stallplaner-exporting #stallplan-draw-preview-layer { display: none; }
+  .stallplaner-exporting .stallplan-outline.selected { stroke: #7ab860; stroke-width: 2; }
+  .stallplaner-exporting .stallplan-compartment.selected polygon { stroke: #4fb8af; stroke-width: 1.5; }
+
+  /* ---- Vor-Ort-Oberfläche (Touch-first) ----
+     Spaltenaufbau: Schrittleiste · Zeichenfläche · Bottom Sheet ·
+     Aktionsleiste. Das Sheet liegt im Fluss statt über dem Plan, damit der
+     Plan beim Eintippen von Maßen sichtbar bleibt — die Zeichenfläche wird
+     dafür kleiner (ResizeObserver in main.js passt die viewBox an).
+     Alle Eingabefelder mindestens 16px Schrift: darunter zoomt iOS Safari
+     beim Fokussieren die ganze Seite. Tippziele mindestens 44px. */
+  #stallplaner-stepbar {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 4px;
+    padding: 6px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  .stallplaner-step {
+    flex: 1;
+    min-width: 0;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 6px 4px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    color: var(--muted);
+    font: 600 13px var(--sans);
+    cursor: pointer;
+  }
+  .stallplaner-step:hover { background: var(--panel-2); color: var(--text); }
+  .stallplaner-step-num {
+    flex: 0 0 auto;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1.5px solid currentColor;
+    font-size: 12px;
+  }
+  .stallplaner-step-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stallplaner-step.done .stallplaner-step-num { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  .stallplaner-step.active { background: var(--accent-dim); border-color: var(--accent); color: var(--on-accent); }
+
+  #stallplaner-canvas {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 140px;
+    overflow: hidden;
+  }
+
+  #stallplaner-draw-hint {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    right: 66px;
+    max-width: 520px;
+    z-index: 5;
+    background: rgba(25, 29, 36, 0.94);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 9px 12px;
+    font-size: 13.5px;
+    line-height: 1.4;
+    color: #eef1e8;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+    pointer-events: none;
+  }
+  #stallplaner-draw-hint[hidden] { display: none; }
+  #stallplaner-draw-hint.flash { border-color: var(--accent); }
+
+  #stallplaner-view-controls {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    z-index: 6;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .stallplaner-round-btn {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+  }
+  .stallplaner-round-btn .icon { font-size: 22px; }
+  .stallplaner-round-btn:not(:disabled):hover { border-color: var(--accent); color: var(--accent); }
+  .stallplaner-round-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+  #stallplaner-start-card {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 4;
+    width: min(380px, calc(100% - 32px));
+    max-height: calc(100% - 24px);
+    overflow-y: auto;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 18px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.45);
+  }
+  #stallplaner-start-card[hidden], #stallplaner-start-noplan[hidden], #stallplaner-start-outline[hidden] { display: none; }
+  #stallplaner-start-noplan, #stallplaner-start-outline { display: flex; flex-direction: column; gap: 10px; }
+  #stallplaner-start-card h3 { margin: 0; font-size: 16px; color: var(--text); }
+  #stallplaner-start-card p { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.4; }
+
+  .stallplaner-big-btn {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    min-height: 56px;
+    padding: 10px 14px;
+    text-align: left;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--text);
+    font: 14px var(--sans);
+    cursor: pointer;
+  }
+  .stallplaner-big-btn .icon { flex: 0 0 auto; font-size: 26px; color: var(--accent); }
+  .stallplaner-big-btn > span:last-child:not(.icon) { display: flex; flex-direction: column; gap: 2px; }
+  .stallplaner-big-btn small { font-size: 12px; color: var(--muted); }
+  .stallplaner-big-btn:hover { border-color: var(--accent); }
+  .stallplaner-big-btn.primary { border-color: var(--accent); background: var(--accent-dim); color: var(--on-accent); }
+  .stallplaner-big-btn.primary .icon, .stallplaner-big-btn.primary small { color: var(--on-accent); }
+
+  #stallplaner-sheet {
+    flex: 0 1 auto;
+    max-height: 58%;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    box-shadow: 0 -6px 18px rgba(0,0,0,0.35);
+    padding: 0 14px 14px;
+    z-index: 7;
+  }
+  #stallplaner-sheet[hidden] { display: none; }
+  #stallplaner-sheet > * { max-width: 720px; margin-left: auto; margin-right: auto; }
+  #stallplaner-sheet-head {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 10px 0 8px;
+    background: var(--panel);
+  }
+  #stallplaner-sheet-title { margin: 0; font-size: 15px; color: var(--text); }
+  #stallplaner-sheet-close {
+    flex: 0 0 auto;
+    width: 44px;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .stallplaner-panel { display: flex; flex-direction: column; gap: 10px; }
+  .stallplaner-panel[hidden] { display: none; }
+  .stallplaner-panel-hint { margin: 0; font-size: 13px; line-height: 1.4; color: var(--muted); }
+  .stallplaner-panel-hint:empty { display: none; }
+  .stallplaner-panel-error { margin: 0; font-size: 13px; color: var(--warn); }
+  .stallplaner-panel-error[hidden] { display: none; }
+
+  .stallplaner-field-row { display: flex; align-items: flex-end; gap: 8px; }
+  .stallplaner-times { padding-bottom: 12px; font-size: 20px; color: var(--muted); }
+  .stallplaner-field { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--muted); }
+  .stallplaner-field input, .stallplaner-field select, #stallplaner-measure-input {
+    width: 100%;
+    min-height: 48px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 10px 12px;
+    font-size: 18px;
+    font-family: var(--mono);
+  }
+  .stallplaner-field select { font-size: 16px; font-family: var(--sans); }
+  .stallplaner-field input:focus, .stallplaner-field select:focus, #stallplaner-measure-input:focus { outline: none; border-color: var(--accent); }
+  #stallplaner-measure-input { text-align: center; }
+  #stallplaner-measure-progress { font-size: 13px; font-weight: 600; color: var(--accent); }
+
+  .stallplaner-panel-actions { display: flex; gap: 8px; }
+  .stallplaner-panel-btn {
+    flex: 1;
+    min-height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 0 10px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--text);
+    font: 600 14px var(--sans);
+    cursor: pointer;
+  }
+  .stallplaner-panel-btn .icon { font-size: 20px; }
+  .stallplaner-panel-btn:hover { border-color: var(--accent); }
+  .stallplaner-panel-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .stallplaner-panel-btn.primary { background: var(--accent-dim); border-color: var(--accent); color: var(--on-accent); }
+  .stallplaner-panel-btn-quiet { flex: 0 0 auto; min-height: 40px; background: transparent; color: var(--muted); font-weight: 400; }
+  #stallplaner-measure-back { flex: 0 0 56px; }
+
+  /* Richtungskreuz für "Wand für Wand" — Länge eintippen, dann Richtung
+     antippen fügt die Wand hinzu (ein Tipp je Wand). */
+  #stallplaner-walls-pad {
+    display: grid;
+    grid-template-columns: repeat(3, 64px);
+    grid-template-rows: repeat(3, 54px);
+    gap: 6px;
+    justify-content: center;
+  }
+  .stallplaner-dir-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--accent-dim);
+    border: 1px solid var(--accent);
+    border-radius: 12px;
+    color: var(--on-accent);
+    cursor: pointer;
+  }
+  .stallplaner-dir-btn .icon { font-size: 30px; }
+  .stallplaner-dir-btn[data-dir="up"] { grid-area: 1 / 2; }
+  .stallplaner-dir-btn[data-dir="left"] { grid-area: 2 / 1; }
+  .stallplaner-dir-btn[data-dir="right"] { grid-area: 2 / 3; }
+  .stallplaner-dir-btn[data-dir="down"] { grid-area: 3 / 2; }
+
+  .stallplaner-segmented { display: flex; gap: 6px; }
+  .stallplaner-segmented button {
+    flex: 1;
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 4px 8px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--muted);
+    font: 13px var(--sans);
+    cursor: pointer;
+  }
+  .stallplaner-segmented button .icon { font-size: 18px; }
+  .stallplaner-segmented button.active { background: var(--accent-dim); border-color: var(--accent); color: var(--on-accent); }
+
+  #stallplaner-equip-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+  #stallplaner-equip-grid button {
+    min-height: 64px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 6px 2px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    color: var(--text);
+    font: 12px var(--sans);
+    cursor: pointer;
+    overflow-wrap: anywhere;
+  }
+  #stallplaner-equip-grid button .icon { font-size: 24px; color: var(--accent); }
+  #stallplaner-equip-grid button.active { background: var(--accent-dim); border-color: var(--accent); color: var(--on-accent); }
+  #stallplaner-equip-grid button.active .icon { color: var(--on-accent); }
+
+  #stallplaner-actionbar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: stretch;
+    gap: 4px;
+    padding: 6px 6px calc(6px + env(safe-area-inset-bottom, 0px));
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+  }
+  #stallplaner-actionbar[hidden] { display: none; }
+  #stallplaner-actions {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    gap: 4px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  #stallplaner-actions::-webkit-scrollbar { display: none; }
+  .stallplaner-act {
+    flex: 1 0 auto;
+    min-width: 62px;
+    min-height: 54px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    padding: 4px 6px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 10px;
+    color: var(--text);
+    font: 600 11.5px var(--sans);
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .stallplaner-act[hidden] { display: none; }
+  .stallplaner-act .icon { font-size: 24px; }
+  .stallplaner-act:hover { background: var(--panel-2); }
+  .stallplaner-act.active, .stallplaner-act.primary { background: var(--accent-dim); border-color: var(--accent); color: var(--on-accent); }
+  .stallplaner-act:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  #stallplaner-more-wrap { position: relative; flex: 0 0 auto; display: flex; }
+  #stallplaner-more-menu {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 8px);
+    z-index: 20;
+    width: min(300px, 86vw);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+  }
+  #stallplaner-more-menu[hidden] { display: none; }
+  .stallplaner-more-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-height: 48px;
+    padding: 0 8px;
+    font-size: 13.5px;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .stallplaner-more-row select {
+    min-height: 40px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 4px 8px;
+    font-size: 16px;
+    font-family: var(--sans);
+  }
+  .stallplaner-more-row input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(--accent); }
+
+  /* Plan-Hervorhebungen für Auswahl, "Wand für Wand" und die Startecke. */
+  .stallplan-outline.selected { stroke: #ffffff; stroke-width: 3; }
+  .stallplan-compartment.selected polygon { stroke: #ffffff; stroke-width: 3; }
+  .stallplan-equipment.selected .stallplan-equipment-bg { stroke: #ffffff; stroke-width: 2.5; }
+  /* Vermessen: aktuelle Kante (siehe renderStallplanMeasureHighlight()). */
+  .stallplan-measure-halo { stroke: #10140f; stroke-width: 11; stroke-linecap: round; opacity: 0.85; vector-effect: non-scaling-stroke; }
+  .stallplan-measure-highlight {
+    stroke: #ffb648;
+    stroke-width: 6;
+    stroke-linecap: round;
+    vector-effect: non-scaling-stroke;
+    animation: stallplan-measure-pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes stallplan-measure-pulse { 50% { opacity: 0.55; } }
+  @media (prefers-reduced-motion: reduce) { .stallplan-measure-highlight { animation: none; } }
+  .stallplan-measure-end { fill: #ffb648; stroke: #10140f; stroke-width: 2; vector-effect: non-scaling-stroke; }
+  .stallplan-measure-done { stroke: #9ed67f; stroke-width: 3.5; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+  .stallplan-edge-label.stallplan-measure-current-label { fill: #ffb648; font-weight: 700; }
+  .stallplan-edge-label.stallplan-measure-done-label { fill: #9ed67f; }
+  .stallplan-walls-line { fill: none; stroke: #ffb648; stroke-width: 3; vector-effect: non-scaling-stroke; }
+  .stallplan-walls-closing { fill: none; stroke: #ffb648; stroke-width: 1.5; stroke-dasharray: 5 5; opacity: 0.7; vector-effect: non-scaling-stroke; }
+  .stallplan-walls-start { fill: #ffb648; stroke: #10140f; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+  .stallplan-walls-end { fill: #10140f; stroke: #ffb648; stroke-width: 2.5; vector-effect: non-scaling-stroke; }
+
+  @media (max-width: 420px) {
+    .stallplaner-step { flex-direction: column; gap: 2px; padding: 4px 2px; font-size: 11px; }
+    .stallplaner-act { min-width: 56px; padding: 4px 3px; }
+  }
+
+  /* Unsichtbarer, großzügiger Trefferkreis um jeden Eckgriff (siehe
+     makeVertexHandle()) — der sichtbare Griff bleibt klein, der Finger trifft trotzdem. */
+  .stallplan-vertex-hit { fill: transparent; pointer-events: all; cursor: grab; touch-action: none; }
+
+  /* ---- Sidebar-Sektion ---- */
+  #stallplaner-plan-picker { display: flex; flex-direction: column; gap: 6px; margin: 10px 14px; }
+  #stallplaner-plan-picker select {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 7px 8px;
+    font-size: 12.5px;
+    font-family: var(--sans);
+  }
+  #stallplaner-plan-picker button, #stallplaner-settings > input, #stallplaner-settings > select {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 7px 8px;
+    font-size: 12.5px;
+    font-family: var(--sans);
+    cursor: pointer;
+  }
+  #stallplaner-settings { margin: 0 14px 10px; display: flex; flex-direction: column; gap: 6px; }
+  #stallplaner-settings input[type="text"] { cursor: text; }
+  #stallplaner-section { padding: 4px 0 6px; }
+  #stallplaner-section h2 {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--muted);
+    font-weight: 600;
+    margin: 8px 0 6px;
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+  }
+  #stallplaner-total-area { text-transform: none; letter-spacing: normal; font-weight: 400; font-size: 11px; }
+
+  .stallplan-abteil-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 4px 6px;
+    align-items: center;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px;
+    margin-bottom: 6px;
+  }
+  .stallplan-abteil-row input, .stallplan-abteil-row select {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 5px;
+    padding: 5px 6px;
+    font-size: 12px;
+    font-family: var(--sans);
+    grid-column: 1 / -1;
+  }
+  .stallplan-abteil-name { font-weight: 600; }
+  .stallplan-abteil-row.selected { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .stallplan-abteil-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; }
+  .stallplan-abteil-act {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-height: 36px;
+    padding: 4px 10px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font: 12.5px var(--sans);
+    cursor: pointer;
+  }
+  .stallplan-abteil-act .icon { font-size: 17px; }
+  .stallplan-abteil-act:hover { border-color: var(--accent); }
+  .stallplan-abteil-act.stallplan-abteil-remove { color: var(--muted); }
+  .stallplan-abteil-act.stallplan-abteil-remove:hover { color: #e0684a; border-color: #e0684a; }
+  .stallplan-abteil-area { font-size: 11px; color: var(--muted); font-family: var(--mono); }
+
+  /* Mehrere Tier-Kategorien je Abteil möglich (z.B. Kälber + Milchkühe im
+     selben Abteil) — eigene, verschachtelte Zeilenliste statt nur eines
+     einzelnen Kategorie-Felds. */
+  .stallplan-tierbestand-list {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .stallplan-tb-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 4px;
+    align-items: center;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 6px;
+  }
+  #stallplaner-sheet .stallplan-abteil-row input, #stallplaner-sheet .stallplan-abteil-row select { font-size: 16px; min-height: 42px; }
+  .stallplan-tb-row select, .stallplan-tb-row input {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 5px;
+    padding: 4px 5px;
+    font-size: 11.5px;
+    font-family: var(--sans);
+    grid-column: 1 / -1;
+  }
+  .stallplan-tb-remove {
+    justify-self: end;
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 2px;
+    display: flex;
+  }
+  .stallplan-tb-remove:hover { color: #e0684a; }
+  .stallplan-tb-remove .icon { font-size: 15px; }
+  .stallplan-tb-add {
+    grid-column: 1 / -1;
+    justify-self: start;
+    background: transparent;
+    border: 1px dashed var(--border);
+    color: var(--muted);
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 11.5px;
+    cursor: pointer;
+    font-family: var(--sans);
+  }
+  .stallplan-tb-add:hover { border-color: var(--accent); color: var(--accent); }
+
+  .stallplan-badge {
+    grid-column: 1 / -1;
+    font-size: 11px;
+    padding: 3px 6px;
+    border-radius: 4px;
+    width: fit-content;
+  }
+  .stallplan-badge.ok { background: rgba(122, 184, 96, 0.2); color: #9ed67f; }
+  .stallplan-badge.fail { background: rgba(224, 104, 74, 0.2); color: #f0917a; }
+
+  .danger-btn {
+    background: transparent;
+    border: 1px solid #e0684a;
+    color: #e0684a;
+    border-radius: 6px;
+    padding: 8px 0;
+    font-size: 12.5px;
+    cursor: pointer;
+    font-family: var(--sans);
+  }
+  .danger-btn:hover { background: rgba(224, 104, 74, 0.12); }
+
+  /* ---------- Probenahmeprotokoll ----------
+     Termin-gebundenes Modal (siehe #probenprotokoll-modal-overlay,
+     index.html) — geöffnet aus der neuen Liste im Terminkalender-
+     Detailpanel heraus (.probenprotokoll-row*, direkt unter .tk-attachments
+     gerendert, siehe renderTerminkalenderDetail() in main.js). */
+  .modal-card-xl {
+    width: 900px;
+    max-height: 88vh;
+    overflow-y: auto;
+  }
+  #probenprotokoll-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+  #probenprotokoll-modal-header h3 { margin: 0; font-size: 16px; color: var(--text); }
+  #probenprotokoll-modal-close {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    border-radius: 6px;
+    padding: 5px;
+    cursor: pointer;
+    display: inline-flex;
+  }
+  #probenprotokoll-modal-close:hover { border-color: var(--accent); color: var(--text); }
+  #probenprotokoll-modal-delete:hover { border-color: #e0684a; color: #e0684a; }
+
+  .probenprotokoll-row {
+    display: flex;
+    align-items: stretch;
+    gap: 4px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 6px;
+  }
+  .probenprotokoll-row-main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    background: transparent;
+    border: none;
+    color: var(--text);
+    padding: 8px 12px;
+    cursor: pointer;
+    font-family: var(--sans);
+    text-align: left;
+  }
+  .probenprotokoll-row-main:hover { background: var(--panel); }
+  .probenprotokoll-row-title { font-size: 12.5px; font-weight: 600; }
+  .probenprotokoll-row-sub { font-size: 11px; color: var(--muted); }
+  .probenprotokoll-row-delete {
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    padding: 0 12px;
+    cursor: pointer;
+  }
+  .probenprotokoll-row-delete:hover { color: #e0684a; }
+
+  #probenprotokoll-modal-form { display: flex; flex-direction: column; gap: 16px; }
+  #probenprotokoll-modal-error { margin: 14px 0 0; }
+  .pp-required { color: var(--warn); font-weight: 600; }
+  .pp-invalid .account-input, .pp-invalid .pp-signature-pad { border-color: var(--warn); }
+  .pp-invalid.pp-checkbox-row > label, .pp-invalid > .compare-label { color: var(--warn); }
+  .pp-section {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px 16px;
+    margin: 0;
+  }
+  .pp-section legend { padding: 0 6px; font-size: 12.5px; font-weight: 600; color: var(--text); }
+  .pp-section-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 10px 14px;
+  }
+  .pp-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .pp-field-wide { grid-column: 1 / -1; }
+  .pp-checkbox-row { flex-direction: row; align-items: center; flex-wrap: wrap; grid-column: 1 / -1; }
+  .pp-checkbox-row > label { flex: 0 0 auto; }
+  .pp-checkbox-row > .account-input { flex: 1; min-width: 120px; }
+
+  .pp-radio-group { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+  .pp-radio-option {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12.5px;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .pp-radio-option input { accent-color: var(--accent); cursor: pointer; }
+
+  .pp-signature-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 18px;
+  }
+  .pp-signature-block { display: flex; flex-direction: column; gap: 6px; }
+  .pp-signature-pad {
+    width: 100%;
+    aspect-ratio: 480 / 140;
+    background: #ffffff;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    touch-action: none;
+    cursor: crosshair;
+  }
+  .pp-signature-clear {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    align-self: flex-start;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 5px 10px;
+    border-radius: 6px;
+    font-size: 11.5px;
+    cursor: pointer;
+    font-family: var(--sans);
+  }
+  .pp-signature-clear:hover { border-color: var(--accent); color: var(--text); }
+
+  @media (max-width: 640px) {
+    .modal-card-xl { width: calc(100vw - 24px); max-height: 92vh; }
   }

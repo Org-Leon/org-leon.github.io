@@ -1,4 +1,6 @@
 import { isSupabaseConfigured, signUp, signIn, signOut, getSession, saveState, loadState, uploadPhoto, getPhotoUrl, deletePhoto, requestAccess, listPendingAccessRequests, approveAccessRequest, declineAccessRequest } from './supabase.js';
+import { readLocalState, writeLocalState, deleteLocalState, readLastUser, writeLastUser, addBackup, listBackups } from './offline-store.js';
+import { registerSW } from 'virtual:pwa-register';
 // Icon-Font selbst NICHT über das npm-Paket eingebunden (5+ MB Variable-Font
 // mit allen ~3000 Icons) — stattdessen ein auf die tatsächlich genutzten
 // Icon-Namen zugeschnittenes, auf eine feste Achsen-Instanz reduziertes
@@ -1950,6 +1952,18 @@ function buildFeatureEntry(feature, lyr, layerId, layerName, isTeilflaechen, col
     if (mapToolMode === 'edit') { toggleShapeEdit(entry); return; }
     if (mapToolMode === 'delete') { deleteShapeViaTool(entry); return; }
     if (mapToolMode === 'split') { mapToolMode = null; updateShapeToolbar(); startParcelSplit(entry); return; }
+    // Selbst gezeichnete Flächen (Flächenzeichner) landen technisch als ganz
+    // normaler Eintrag in derselben layers-Ebenenliste wie hochgeladene
+    // Shapefiles (siehe addFeatureToLayer) — ein Klick darauf soll aber
+    // direkt in den Flächenzeichner wechseln statt nur die Viewer-Tabelle zu
+    // öffnen, damit man sie dort sofort bearbeiten kann.
+    if (zeichnerParcels.some(p => p.id === entry.id)) {
+      highlightFeature(entry);
+      setActiveSegment('zeichner');
+      const row = document.querySelector(`#zeichner-list [data-id="${entry.id}"]`)?.closest('.parcel-item');
+      if (row) row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      return;
+    }
     highlightFeature(entry);
     selectFeatureInTable(entry);
   });
@@ -2486,7 +2500,8 @@ const SEGMENT_CAPTIONS = {
   obstbaum: 'Obstbäume als farbige Punkte auf der Karte erfassen',
   bienenflug: 'Bienenstöcke markieren — theoretischer Flugradius 3 km',
   hofplan: 'Hof- und Gebäudepläne direkt auf dem Satellitenbild einzeichnen',
-  terminkalender: 'Termine aus Excel importieren und in der Kalenderwoche navigieren'
+  terminkalender: 'Termine aus Excel importieren und in der Kalenderwoche navigieren',
+  stallplaner: 'Stallgrundrisse zeichnen, in Abteile einteilen und gegen die EU-Öko-VO abgleichen'
 };
 
 function setActiveSegment(target) {
@@ -2502,6 +2517,7 @@ function setActiveSegment(target) {
   if (armedTool === 'draw-hofplan-rect' && hofplanDrawRect) hofplanDrawRect.disable();
   if (armedTool === 'draw-hofplan-poly' && hofplanDrawPoly) hofplanDrawPoly.disable();
   disableHofplanEditing();
+  disableStallplanerDrawing();
   armedTool = null;
   // Die schwebende Werkzeugleiste (#edit-toolbar) zeigt je nach Tab nur eine
   // ihrer beiden Gruppen (Zeichner/Hofplan) — ein weiterhin "scharfes"
@@ -2536,19 +2552,23 @@ function setActiveSegment(target) {
   else if (target === 'bienenflug') { initBienenflugMap(); armedTool = 'place-hive'; }
   else if (target === 'compare') refreshCompareJahrBOptions();
   else if (target === 'hofplan') initHofplanMap();
+  else if (target === 'stallplaner') initStallplaner();
+  if (target === 'stallplaner') requestStallplanerWakeLock(); else releaseStallplanerWakeLock();
 
   // Terminkalender hat eine eigene, zweite Leaflet-Karteninstanz statt der
-  // geteilten Parzellen-Karte — #map-wrap und #terminkalender-view schließen
-  // sich deshalb gegenseitig aus statt wie die anderen Funktionen nur
-  // Layer auf derselben Karte umzuschalten.
-  document.getElementById('map-wrap').hidden = target === 'terminkalender';
+  // geteilten Parzellen-Karte, Stallplaner hat gar keine Karte (eigenes
+  // SVG) — #map-wrap schließt sich mit beiden aus statt wie die anderen
+  // Funktionen nur Layer auf derselben Karte umzuschalten.
+  document.getElementById('map-wrap').hidden = target === 'terminkalender' || target === 'stallplaner';
   const tkView = document.getElementById('terminkalender-view');
   tkView.hidden = target !== 'terminkalender';
-  // Shapefile-/GeoJSON-Upload und die geteilte Ebenenliste ergeben im
-  // Terminkalender keinen Sinn (andere Datenwelt, eigene Karte) — dort
-  // ausgeblendet statt immer sichtbar wie in den anderen Funktionen.
-  document.getElementById('dropzone').hidden = target === 'terminkalender';
-  document.getElementById('layer-section').hidden = target === 'terminkalender';
+  document.getElementById('stallplaner-view').hidden = target !== 'stallplaner';
+  // Shapefile-/GeoJSON-Upload und die geteilte Ebenenliste ergeben in
+  // Terminkalender/Stallplaner keinen Sinn (andere Datenwelt, keine geteilte
+  // Karte) — dort ausgeblendet statt immer sichtbar wie in den anderen
+  // Funktionen.
+  document.getElementById('dropzone').hidden = target === 'terminkalender' || target === 'stallplaner';
+  document.getElementById('layer-section').hidden = target === 'terminkalender' || target === 'stallplaner';
   if (target === 'terminkalender') openTerminkalender();
 }
 
@@ -5414,12 +5434,16 @@ function computeHofplanArea(shape) {
 // (Bearbeiten/Löschen je nach hofplanToolMode) und das dauerhafte Label,
 // löst aber selbst KEINEN Rückgängig-Eintrag aus (das macht der jeweilige
 // Aufrufer gezielt, siehe CREATED-Handler weiter unten).
-function addHofplanShapeFromLayer(layer, kategorie, name, idOverride, colorOverride) {
+function addHofplanShapeFromLayer(layer, kategorie, name, idOverride, colorOverride, stallplanIdOverride) {
   const shape = {
     id: idOverride || 'gebaeude-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7),
     kategorie: kategorie || '',
     name: name || '',
     color: colorOverride || null,
+    // Verknüpfung mit einem Stallplan (siehe Stallplan-Aktionen weiter
+    // unten in renderHofplanList()) — nur bei kategorie==='Stall' über die
+    // UI gesetzt/genutzt, bleibt bei anderen Gebäudetypen ungenutzt null.
+    stallplanId: stallplanIdOverride || null,
     leafletLayer: layer,
     labelAnchor: null,
     areaQm: 0
@@ -5430,6 +5454,12 @@ function addHofplanShapeFromLayer(layer, kategorie, name, idOverride, colorOverr
   layer.on('click', () => {
     if (hofplanToolMode === 'edit') { toggleHofplanEdit(shape); return; }
     if (hofplanToolMode === 'delete') { deleteHofplanShape(shape); return; }
+    // Kein Hofplan-Werkzeug scharf (z.B. Klick von einem ganz anderen Tab
+    // aus, Hofplan-Gebäude bleiben nach dem ersten Öffnen überall auf der
+    // Karte sichtbar) — direkt in den Hofplaner wechseln und dorthin zoomen,
+    // statt dass der Klick ins Leere geht.
+    setActiveSegment('hofplan');
+    zoomToHofplanShape(shape.id);
   });
   layer.on('edit', () => syncHofplanGeometryLive(shape));
   shape.areaQm = computeHofplanArea(shape);
@@ -5449,9 +5479,9 @@ function removeHofplanShapeEverywhere(shape) {
   renderHofplanList();
 }
 
-function restoreHofplanShapeFromFeature(feature, kategorie, name, idOverride, color) {
+function restoreHofplanShapeFromFeature(feature, kategorie, name, idOverride, color, stallplanId) {
   const layer = L.geoJSON(feature).getLayers()[0];
-  const shape = addHofplanShapeFromLayer(layer, kategorie, name, idOverride, color);
+  const shape = addHofplanShapeFromLayer(layer, kategorie, name, idOverride, color, stallplanId);
   renderHofplanList();
   return shape;
 }
@@ -5490,13 +5520,14 @@ function undoLastHofplanAction() {
         kategorie: shape.kategorie,
         name: shape.name,
         color: shape.color,
+        stallplanId: shape.stallplanId,
         feature: cloneFeature(shape.leafletLayer.toGeoJSON())
       };
       removeHofplanShapeEverywhere(shape);
     }
     setHofplanStatus('Zeichnen rückgängig gemacht.');
   } else if (action.type === 'delete') {
-    const shape = restoreHofplanShapeFromFeature(action.feature, action.kategorie, action.name, undefined, action.color);
+    const shape = restoreHofplanShapeFromFeature(action.feature, action.kategorie, action.name, undefined, action.color, action.stallplanId);
     redoAction = { type: 'delete', shapeId: shape.id };
     setHofplanStatus('Löschen rückgängig gemacht.');
   } else if (action.type === 'edit') {
@@ -5518,7 +5549,7 @@ function redoLastHofplanAction() {
   if (!action) return;
   if (action.type === 'add') {
     const layer = L.geoJSON(action.feature).getLayers()[0];
-    const shape = addHofplanShapeFromLayer(layer, action.kategorie, action.name, undefined, action.color);
+    const shape = addHofplanShapeFromLayer(layer, action.kategorie, action.name, undefined, action.color, action.stallplanId);
     renderHofplanList();
     pushHofplanUndoKeepRedo({ type: 'add', shapeId: shape.id });
     setHofplanStatus('Zeichnen wiederhergestellt.');
@@ -5530,6 +5561,7 @@ function redoLastHofplanAction() {
         kategorie: shape.kategorie,
         name: shape.name,
         color: shape.color,
+        stallplanId: shape.stallplanId,
         feature: cloneFeature(shape.leafletLayer.toGeoJSON())
       });
       removeHofplanShapeEverywhere(shape);
@@ -5555,6 +5587,7 @@ function deleteHofplanShape(shape) {
     kategorie: shape.kategorie,
     name: shape.name,
     color: shape.color,
+    stallplanId: shape.stallplanId,
     feature: cloneFeature(shape.leafletLayer.toGeoJSON())
   });
   removeHofplanShapeEverywhere(shape);
@@ -5649,6 +5682,7 @@ function renderHofplanList() {
       </select>
       <div class="layer-actions">
         ${s.color ? `<button data-id="${s.id}" data-action="reset-color">Farbe zurücksetzen</button>` : ''}
+        ${s.kategorie === 'Stall' ? `<button data-id="${s.id}" data-action="open-stallplan">${hofplanLinkedStallplanExists(s) ? 'Stallplan öffnen' : 'Stallplan anlegen'}</button>` : ''}
         <button data-id="${s.id}" data-action="zoom">Zoom</button>
         <button data-id="${s.id}" data-action="remove" class="danger">Entfernen</button>
       </div>
@@ -5683,8 +5717,37 @@ function renderHofplanList() {
       if (action === 'zoom') zoomToHofplanShape(id);
       if (action === 'remove' && s) deleteHofplanShape(s);
       if (action === 'reset-color' && s) { s.color = null; updateHofplanShapeStyle(s); renderHofplanList(); }
+      if (action === 'open-stallplan' && s) openOrCreateStallplanFor(s);
     });
   });
+}
+// Verknüpfung Hofplan-Gebäude (kategorie==='Stall') <-> Stallplaner-Plan:
+// existiert schon einer, direkt dorthin wechseln; sonst neu anlegen und
+// verknüpfen. Bewusst nur in diese Richtung (Hofplan -> Stallplaner) —
+// löscht der Nutzer später das Gebäude, bleibt der Stallplan als
+// eigenständiger Datensatz erhalten (kein Datenverlust durch eine
+// Kartenänderung), nur die Verknüpfung verschwindet mit dem Gebäude.
+function hofplanLinkedStallplanExists(s) {
+  return !!(s.stallplanId && stallplaene.some(p => p.id === s.stallplanId));
+}
+function openOrCreateStallplanFor(shape) {
+  let plan = shape.stallplanId ? stallplaene.find(p => p.id === shape.stallplanId) : null;
+  if (!plan) {
+    plan = createEmptyStallplan(shape.name || shape.kategorie || 'Stall');
+    stallplaene.push(plan);
+    shape.stallplanId = plan.id;
+    renderHofplanList(); // Button-Beschriftung "anlegen" -> "öffnen"
+  }
+  setActiveSegment('stallplaner');
+  setActiveStallplan(plan.id);
+}
+// Dev-only Testhaken (analog window.__ffTestMap/__ffTestStallplaner) — für
+// die Hofplan<->Stallplaner-Verknüpfung.
+if (import.meta.env.DEV) {
+  window.__ffTestHofplan = {
+    getShapes() { return hofplanShapes; },
+    serializeShapes() { return serializeWorkspace().hofplanShapes; }
+  };
 }
 
 function initHofplanMap() {
@@ -6145,6 +6208,15 @@ const accountAdminList = document.getElementById('account-admin-requests-list');
 const accountAdminError = document.getElementById('account-admin-error');
 let accountSession = null;
 let authMode = 'signin';
+// ---- Zustand des Offline-Abgleichs (siehe "Offline-Betrieb" weiter unten) ----
+const LOCAL_SAVE_INTERVAL_MS = 10000;
+let offlineRec = null; // Spiegel des lokalen Datensatzes des angemeldeten Nutzers
+let persistCache = { key: null, ws: null, shared: null };
+let syncPromise = null;
+let syncQueued = false;
+let syncState = 'idle'; // 'idle' | 'syncing' | 'offline' | 'error'
+let syncErrorMessage = '';
+let lastSyncedAt = null;
 
 // Registrierung ist grundsätzlich nur für @oekop.de-Adressen offen, alle
 // anderen müssen erst eine Zugangsanfrage stellen (siehe access_requests/
@@ -6320,12 +6392,24 @@ accountBtn.addEventListener('click', openAccountModal);
 accountModal.addEventListener('click', (e) => { if (e.target === accountModal) closeAccountModal(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !accountModal.hidden) closeAccountModal(); });
 
-if (isSupabaseConfigured) {
-  getSession().then(session => {
-    accountSession = session;
-    updateAccountButton();
-    if (session) autoLoadCloudState();
-    refreshAutoSyncTimer();
+initAccountAndState();
+
+// ---------- Offline-App (Service Worker, siehe vite.config.js) ----------
+// Nur im Produktions-Build. Eine neue Version wird erst nach Bestätigung
+// aktiviert — sonst würde die Seite mitten in der Arbeit neu geladen.
+if (!import.meta.env.DEV && 'serviceWorker' in navigator) {
+  const updateApp = registerSW({
+    onNeedRefresh() {
+      if (document.getElementById('app-update-toast')) return;
+      const toast = document.createElement('div');
+      toast.id = 'app-update-toast';
+      toast.setAttribute('role', 'status');
+      toast.innerHTML = '<span>Neue Version von FeldFolio verfügbar.</span><button type="button" class="primary">Neu laden</button><button type="button" aria-label="Später">Später</button>';
+      const [reloadBtn, laterBtn] = toast.querySelectorAll('button');
+      reloadBtn.addEventListener('click', async () => { await persistLocalState(); updateApp(true); });
+      laterBtn.addEventListener('click', () => toast.remove());
+      document.body.appendChild(toast);
+    }
   });
 }
 
@@ -6341,7 +6425,7 @@ accountAuthForm.addEventListener('submit', async (e) => {
         accountSession = data.session;
         updateAccountButton();
         renderAccountModal();
-        autoLoadCloudState();
+        startUserState(accountSession.user);
         refreshAutoSyncTimer();
       } else {
         showAccountError('Registrierung erfolgreich — bitte E-Mail bestätigen und dann anmelden.');
@@ -6351,7 +6435,7 @@ accountAuthForm.addEventListener('submit', async (e) => {
       accountSession = data.session;
       updateAccountButton();
       renderAccountModal();
-      autoLoadCloudState();
+      startUserState(accountSession.user);
       refreshAutoSyncTimer();
     }
   } catch (err) {
@@ -6403,7 +6487,19 @@ accountRequestSubmitBtn.addEventListener('click', async () => {
 });
 
 document.getElementById('account-btn-signout').addEventListener('click', async () => {
-  await signOut();
+  const userId = currentUserId();
+  // Beim Abmelden wird der lokale Stand dieses Nutzers gelöscht (fremde
+  // Geräte!) — noch nicht hochgeladene Änderungen vorher möglichst retten.
+  if (hasPendingLocalChanges() && navigator.onLine) await syncWithCloud();
+  if (hasPendingLocalChanges() &&
+      !confirm('Es gibt Änderungen, die noch nicht in der Cloud gespeichert sind (z.B. offline erfasst). Beim Abmelden gehen sie auf diesem Gerät verloren. Trotzdem abmelden?')) return;
+  try { await signOut(); } catch {}
+  if (userId) {
+    try { await deleteLocalState(userId); await writeLastUser(null); } catch {}
+  }
+  offlineRec = null;
+  persistCache = { key: null, ws: null, shared: null };
+  syncState = 'idle';
   accountSession = null;
   updateAccountButton();
   closeAccountModal();
@@ -6426,34 +6522,19 @@ try {
   if (savedAutoSync !== null) autoSyncEnabled = savedAutoSync === 'true';
 } catch {}
 let autoSyncTimer = null;
-let autoSyncInFlight = false;
 const btnSync = document.getElementById('btn-sync');
 
 function updateSyncButton() {
   btnSync.classList.toggle('active', autoSyncEnabled);
   btnSync.setAttribute('aria-checked', String(autoSyncEnabled));
-  if (!autoSyncEnabled) {
-    btnSync.title = 'Automatische Cloud-Synchronisation: aus';
-  } else if (!isSupabaseConfigured || !accountSession) {
-    btnSync.title = 'Automatische Cloud-Synchronisation: an (wird erst nach der Anmeldung aktiv)';
-  } else {
-    btnSync.title = `Automatische Cloud-Synchronisation: an — speichert alle ${AUTO_SYNC_INTERVAL_MS / 1000}s im Hintergrund`;
-  }
+  updateSyncIndicator();
 }
 
+// Gespeichert wird immer lokal (siehe persistLocalState()), der Schalter
+// steuert nur den automatischen Abgleich mit der Cloud.
 async function runAutoSync() {
-  if (autoSyncInFlight || !autoSyncEnabled || !isSupabaseConfigured || !accountSession) return;
-  autoSyncInFlight = true;
-  btnSync.classList.add('syncing');
-  try {
-    await saveFullState();
-    btnSync.title = `Automatische Cloud-Synchronisation: an — zuletzt synchronisiert um ${new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}`;
-  } catch (err) {
-    btnSync.title = 'Automatische Cloud-Synchronisation: Fehler — ' + (err.message || 'Synchronisation fehlgeschlagen.');
-  } finally {
-    autoSyncInFlight = false;
-    btnSync.classList.remove('syncing');
-  }
+  if (!autoSyncEnabled || !isSupabaseConfigured || !accountSession) return;
+  await syncWithCloud();
 }
 
 function refreshAutoSyncTimer() {
@@ -6475,7 +6556,9 @@ btnSync.addEventListener('click', () => {
 // warten — das ist der Moment, in dem ungespeicherte Änderungen am ehesten
 // verloren gehen könnten, z.B. weil der Tab danach ganz geschlossen wird.
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) runAutoSync();
+  if (!document.hidden) return;
+  persistLocalState();
+  runAutoSync();
 });
 
 updateSyncButton();
@@ -6511,15 +6594,6 @@ function migrateFullStateShape(full) {
   return full;
 }
 
-// Holt den kompletten Cloud-Stand frisch (nicht aus einem lokalen Zwischen-
-// stand) — wichtig beim Betrieb-Wechsel, damit die Arbeitsstände anderer
-// Betriebe/Geräte nicht durch einen veralteten lokalen Blob überschrieben
-// werden (siehe switchWorkspace).
-async function getFreshFullState() {
-  const row = await loadState();
-  return migrateFullStateShape((row && row.data) || {});
-}
-
 // Nur der Teil des Arbeitsstands, der zu einem einzelnen Betrieb gehört —
 // geteilte Ebenen als GeoJSON (identisch zur Upload-Form), Bäume/Bienenstöcke
 // als einfache Punktlisten. Notiz/Fotos an Flächen stecken bereits in
@@ -6530,7 +6604,8 @@ function serializeWorkspace() {
     layers: Object.values(layers).map(l => ({ name: l.name, geojson: l.geojson })),
     obstbaumTrees: obstbaumTrees.map(t => ({ art: t.art, lat: t.latlng.lat, lng: t.latlng.lng, notes: t.notes, photos: t.photos })),
     bienenflugPoints: bienenflugPoints.map(p => ({ name: p.name, lat: p.latlng.lat, lng: p.latlng.lng })),
-    hofplanShapes: hofplanShapes.map(s => ({ kategorie: s.kategorie, name: s.name, color: s.color, geometry: s.leafletLayer.toGeoJSON().geometry }))
+    hofplanShapes: hofplanShapes.map(s => ({ kategorie: s.kategorie, name: s.name, color: s.color, stallplanId: s.stallplanId || null, geometry: s.leafletLayer.toGeoJSON().geometry })),
+    stallplaene: stallplaene.map(p => structuredClone(p))
   };
 }
 
@@ -6565,9 +6640,26 @@ function restoreWorkspace(data) {
     initHofplanMap();
     data.hofplanShapes.forEach(s => {
       const layer = L.geoJSON({ type: 'Feature', geometry: s.geometry, properties: {} }).getLayers()[0];
-      addHofplanShapeFromLayer(layer, s.kategorie || '', s.name || '', undefined, s.color || null);
+      addHofplanShapeFromLayer(layer, s.kategorie || '', s.name || '', undefined, s.color || null, s.stallplanId || null);
     });
     renderHofplanList();
+  }
+  if ((data.stallplaene || []).length) {
+    stallplaene = data.stallplaene.map(p => {
+      const plan = structuredClone(p);
+      plan.compartments = (plan.compartments || []).map(normalizeCompartment);
+      plan.equipment = (plan.equipment || []).map(normalizeEquipment);
+      return plan;
+    });
+    resetStallplanerInteraction();
+    activeStallplanId = stallplaene[0].id;
+    stallplanerStep = stallplaene[0].outline ? 'abteile' : 'umriss';
+    stallplanerUndoStack = [];
+    stallplanerRedoStack = [];
+    resetStallplanerViewBox();
+    renderStallplanerPlanPicker();
+    renderStallplanerSidebar();
+    renderStallplan();
   }
 }
 
@@ -6594,11 +6686,24 @@ function clearAllBeehives() {
 function clearAllHofplanShapes() {
   while (hofplanShapes.length) removeHofplanShapeEverywhere(hofplanShapes[0]);
 }
+function clearAllStallplaene() {
+  resetStallplanerInteraction();
+  stallplaene = [];
+  activeStallplanId = null;
+  stallplanerStep = 'umriss';
+  stallplanerUndoStack = [];
+  stallplanerRedoStack = [];
+  resetStallplanerViewBox();
+  renderStallplanerPlanPicker();
+  renderStallplanerSidebar();
+  renderStallplan();
+}
 function clearWorkspace() {
   clearAllLayers();
   clearAllTrees();
   clearAllBeehives();
   clearAllHofplanShapes();
+  clearAllStallplaene();
 }
 
 // terminkalenderEvents/manualBetriebe gelten immer betriebsübergreifend,
@@ -6607,7 +6712,8 @@ function restoreSharedState(full) {
   if ((full.terminkalenderEvents || []).length) {
     terminkalenderEvents = full.terminkalenderEvents.map(e => ({
       ...e, date: new Date(e.date), dateEnd: e.dateEnd ? new Date(e.dateEnd) : null,
-      attachments: Array.isArray(e.attachments) ? e.attachments : []
+      attachments: Array.isArray(e.attachments) ? e.attachments : [],
+      probenprotokolle: Array.isArray(e.probenprotokolle) ? e.probenprotokolle : []
     }));
     renderTerminkalenderSummary();
     renderTerminkalenderGrid();
@@ -6615,42 +6721,34 @@ function restoreSharedState(full) {
   manualBetriebe = Array.isArray(full.manualBetriebe) ? full.manualBetriebe : [];
 }
 
-// Ersetzt im frisch geladenen Cloud-Stand nur den Slot des aktuell aktiven
-// Workspace durch den In-Memory-Stand (übrige Betriebe bleiben unverändert,
-// da full vom Server kommt) und schreibt shared-Felder immer mit — Ersatz für
-// das frühere direkte saveState(serializeCurrentState()) an jeder Speicherstelle.
+// Explizites Speichern (Notizen, Termine, Betriebsliste, …): immer zuerst
+// lokal, dann Abgleich mit der Cloud. Ohne Netz ist das kein Fehler — die
+// Änderung ist lokal sicher und wird später hochgeladen; nur echte
+// Server-Fehler werden an den Aufrufer weitergereicht.
 async function saveFullState() {
-  const full = await getFreshFullState();
-  full.workspaces[currentWorkspaceKey] = serializeWorkspace();
-  full.terminkalenderEvents = terminkalenderEvents.map(e => ({
-    ...e, date: e.date.toISOString(), dateEnd: e.dateEnd ? e.dateEnd.toISOString() : null
-  }));
-  full.manualBetriebe = manualBetriebe;
-  await saveState(full);
+  await persistLocalState();
+  const result = await syncWithCloud();
+  if (result === 'error') throw new Error(syncErrorMessage || 'Synchronisation fehlgeschlagen.');
 }
 
-// Wechselt den aktiven Workspace: sichert zuerst den bisherigen Stand (aus dem
-// frisch geholten Cloud-Blob heraus, damit andere Betriebe/Geräte nicht
-// überschrieben werden), leert dann die Karte und baut den Ziel-Workspace aus
-// demselben, gerade gelesenen Blob wieder auf — ein Read + ein Write pro
-// Wechsel, kein Extra-Request für den Ziel-Workspace nötig.
+// Wechselt den aktiven Workspace — funktioniert auch offline: der bisherige
+// Stand wird lokal gesichert, der Ziel-Betrieb aus dem lokalen Stand geladen.
+// Mit Netz wird vorher abgeglichen, damit der Ziel-Betrieb aktuell ist.
 async function switchWorkspace(oldKey, newKey) {
-  const full = await getFreshFullState();
-  full.workspaces[oldKey] = serializeWorkspace();
-  full.terminkalenderEvents = terminkalenderEvents.map(e => ({
-    ...e, date: e.date.toISOString(), dateEnd: e.dateEnd ? e.dateEnd.toISOString() : null
-  }));
-  full.manualBetriebe = manualBetriebe;
-  await saveState(full);
+  if (!offlineRec) throw new Error('Nicht angemeldet.');
+  await persistLocalState();
+  if (navigator.onLine) await syncWithCloud();
   clearWorkspace();
-  restoreWorkspace(full.workspaces[newKey]);
+  currentWorkspaceKey = newKey;
+  restoreWorkspace(offlineRec.full.workspaces[newKey]);
+  rebaselineLocalState();
 }
 
 // Prüft den aktuell GELADENEN (In-Memory-)Workspace auf Inhalt — anders als
 // ein leeres serialisiertes Workspace-Objekt zu prüfen, da hier der gerade
 // sichtbare Stand gemeint ist, bevor er überhaupt gespeichert wurde.
 function currentWorkspaceHasContent() {
-  return !!(Object.keys(layers).length || obstbaumTrees.length || bienenflugPoints.length || hofplanShapes.length);
+  return !!(Object.keys(layers).length || obstbaumTrees.length || bienenflugPoints.length || hofplanShapes.length || stallplaene.length);
 }
 
 // Hängt die vier Bestandslisten zweier serialisierter Workspaces aneinander
@@ -6662,7 +6760,8 @@ function mergeWorkspaces(target, moved) {
     layers: [...(target.layers || []), ...(moved.layers || [])],
     obstbaumTrees: [...(target.obstbaumTrees || []), ...(moved.obstbaumTrees || [])],
     bienenflugPoints: [...(target.bienenflugPoints || []), ...(moved.bienenflugPoints || [])],
-    hofplanShapes: [...(target.hofplanShapes || []), ...(moved.hofplanShapes || [])]
+    hofplanShapes: [...(target.hofplanShapes || []), ...(moved.hofplanShapes || [])],
+    stallplaene: [...(target.stallplaene || []), ...(moved.stallplaene || [])]
   };
 }
 
@@ -6674,43 +6773,469 @@ function mergeWorkspaces(target, moved) {
 // EINGEMISCHT statt nur zurückgeschrieben wird, und der NO_BETRIEB-Slot
 // danach leer ist.
 async function assignNoBetriebContentTo(z) {
+  if (!offlineRec) throw new Error('Nicht angemeldet.');
+  await persistLocalState();
+  if (navigator.onLine) await syncWithCloud();
+  const rec = offlineRec;
   const movedContent = serializeWorkspace();
-  const full = await getFreshFullState();
-  full.workspaces[z.betrieb] = mergeWorkspaces(full.workspaces[z.betrieb] || {}, movedContent);
-  full.workspaces[NO_BETRIEB_KEY] = {};
-  full.terminkalenderEvents = terminkalenderEvents.map(e => ({
-    ...e, date: e.date.toISOString(), dateEnd: e.dateEnd ? e.dateEnd.toISOString() : null
-  }));
-  full.manualBetriebe = manualBetriebe;
-  await saveState(full);
+  rec.full.workspaces[z.betrieb] = mergeWorkspaces(rec.full.workspaces[z.betrieb] || {}, movedContent);
+  rec.full.workspaces[NO_BETRIEB_KEY] = {};
+  rec.gen++;
+  rec.dirtyGen[z.betrieb] = rec.gen;
+  rec.dirtyGen[NO_BETRIEB_KEY] = rec.gen;
   clearWorkspace();
-  restoreWorkspace(full.workspaces[z.betrieb]);
   currentWorkspaceKey = z.betrieb;
+  restoreWorkspace(rec.full.workspaces[z.betrieb]);
   setActiveZuordnung(z);
+  rebaselineLocalState();
+  await writeLocalState(currentUserId(), rec).catch(() => {});
+  syncWithCloud();
 }
 
-function restoreState(full) {
-  if (!full) return;
-  restoreSharedState(full);
-  clearWorkspace();
-  restoreWorkspace((full.workspaces || {})[currentWorkspaceKey]);
+// ---------- FeldFolio Plus: Offline-Betrieb (lokal speichern + nachsynchronisieren) ----------
+// Im Stall gibt es oft keinen Empfang. Deshalb gilt: jede Änderung landet
+// zuerst lokal (IndexedDB, siehe offline-store.js), die Cloud wird danach
+// abgeglichen, sobald Netz da ist. Hochgeladen werden nur die seit dem
+// letzten Abgleich lokal geänderten Betriebe (dirtyGen) bzw. Termine/
+// Betriebsliste (sharedDirtyGen). Ein Konflikt liegt nur vor, wenn genau
+// dieser Betrieb seit dem letzten Abgleich AUCH in der Cloud geändert wurde
+// (Vergleich mit "base") — zwei gleichzeitig offene Geräte, die an
+// verschiedenen Betrieben arbeiten, stören sich damit nicht.
+// (Zustand des Offline-Abgleichs steht weiter oben bei accountSession —
+// updateSyncButton() läuft schon beim Laden des Moduls.)
+
+function currentUserId() {
+  return accountSession && accountSession.user ? accountSession.user.id : null;
+}
+function emptyFullState() {
+  return { workspaces: {}, terminkalenderEvents: [], manualBetriebe: [] };
+}
+function newOfflineRecord(user) {
+  return { full: emptyFullState(), base: null, baseUpdatedAt: null, gen: 0, dirtyGen: {}, sharedDirtyGen: 0, zuordnung: null, user };
+}
+function serializeSharedState() {
+  return {
+    terminkalenderEvents: terminkalenderEvents.map(e => ({
+      ...e, date: e.date.toISOString(), dateEnd: e.dateEnd ? e.dateEnd.toISOString() : null
+    })),
+    manualBetriebe: manualBetriebe.slice()
+  };
+}
+// Ein leerer Workspace (alle Listen leer) zählt wie ein fehlender — sonst
+// würde schon das bloße Öffnen eines Betriebs als Änderung gelten.
+function workspaceKeyJson(ws) {
+  if (!ws || Object.values(ws).every(v => Array.isArray(v) && v.length === 0)) return 'EMPTY';
+  return JSON.stringify(ws);
+}
+function sharedKeyJson(full) {
+  return JSON.stringify({ t: (full && full.terminkalenderEvents) || [], m: (full && full.manualBetriebe) || [] });
+}
+// Vergleich Cloud <-> lokale Basis unabhängig von der Schlüssel-Reihenfolge:
+// Supabase speichert den Stand als Postgres-jsonb, und jsonb sortiert die
+// Objekt-Schlüssel beim Speichern um. Derselbe Inhalt kommt also in anderer
+// Reihenfolge zurück — ein reiner JSON.stringify-Vergleich hielt das für
+// eine Änderung auf einem anderen Gerät und fragte bei jedem Abgleich nach.
+function canonicalJson(value) {
+  return JSON.stringify(value, (key, v) => {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return v;
+    const sorted = {};
+    Object.keys(v).sort().forEach(k => { sorted[k] = v[k]; });
+    return sorted;
+  });
+}
+function sameWorkspace(a, b) {
+  const empty = (ws) => !ws || Object.values(ws).every(v => Array.isArray(v) && v.length === 0);
+  if (empty(a) || empty(b)) return empty(a) && empty(b);
+  return canonicalJson(a) === canonicalJson(b);
+}
+function sameShared(a, b) {
+  return canonicalJson({ t: (a && a.terminkalenderEvents) || [], m: (a && a.manualBetriebe) || [] }) ===
+    canonicalJson({ t: (b && b.terminkalenderEvents) || [], m: (b && b.manualBetriebe) || [] });
+}
+function hasPendingLocalChanges() {
+  return !!offlineRec && (Object.keys(offlineRec.dirtyGen).length > 0 || offlineRec.sharedDirtyGen > 0);
+}
+function isNetworkError(err) {
+  if (!navigator.onLine) return true;
+  const msg = String((err && (err.message || err)) || '');
+  return /Failed to fetch|NetworkError|Load failed|network|fetch/i.test(msg);
 }
 
-// Lädt den Cloud-Stand automatisch, sobald eine Anmeldung feststeht — beim
-// Start (bestehende Session) UND direkt nach einem Anmelden/Registrieren
-// (siehe die zwei Aufrufstellen unten) — damit "Cloud laden" nicht mehr von
-// Hand angestoßen werden muss. Der Button im Konto-Bereich bleibt trotzdem
-// bestehen, für ein manuelles Nachladen (z.B. nach einer Änderung auf einem
-// anderen Gerät).
-async function autoLoadCloudState() {
-  try {
-    const row = await loadState();
-    if (!row) return;
-    restoreState(migrateFullStateShape(row.data));
-    accountSyncStatus.textContent = 'Geladen.';
-  } catch (err) {
-    accountSyncStatus.textContent = 'Fehler: ' + (err.message || 'Laden fehlgeschlagen.');
+// Nach jedem Wiederherstellen in den Speicher (Start, Betrieb-Wechsel,
+// Konfliktlösung): den gerade sichtbaren Stand als Vergleichsbasis merken,
+// OHNE ihn als lokale Änderung zu markieren — die serialisierte Form weicht
+// nach einem Laden oft minimal vom gespeicherten Blob ab (Feldreihenfolge,
+// normalisierte Felder), das darf keinen Scheinkonflikt auslösen.
+function rebaselineLocalState() {
+  if (!offlineRec) return;
+  const ws = serializeWorkspace();
+  const shared = serializeSharedState();
+  persistCache = { key: currentWorkspaceKey, ws: workspaceKeyJson(ws), shared: sharedKeyJson(shared) };
+  if (persistCache.ws !== 'EMPTY' || offlineRec.full.workspaces[currentWorkspaceKey]) offlineRec.full.workspaces[currentWorkspaceKey] = ws;
+  offlineRec.full.terminkalenderEvents = shared.terminkalenderEvents;
+  offlineRec.full.manualBetriebe = shared.manualBetriebe;
+}
+
+// Schreibt den aktuellen Stand lokal weg, falls sich etwas geändert hat —
+// läuft alle 10 s, beim Verlassen/Verstecken der Seite und vor jedem
+// Cloud-Abgleich, unabhängig davon, ob gerade Netz da ist.
+async function persistLocalState() {
+  const userId = currentUserId();
+  if (!userId || !offlineRec) return false;
+  const rec = offlineRec;
+  let changed = false;
+  const ws = serializeWorkspace();
+  const wsJson = workspaceKeyJson(ws);
+  if (persistCache.key !== currentWorkspaceKey) {
+    persistCache = { key: currentWorkspaceKey, ws: workspaceKeyJson(rec.full.workspaces[currentWorkspaceKey]), shared: persistCache.shared };
   }
+  if (wsJson !== persistCache.ws) {
+    rec.gen++;
+    rec.full.workspaces[currentWorkspaceKey] = ws;
+    rec.dirtyGen[currentWorkspaceKey] = rec.gen;
+    persistCache.ws = wsJson;
+    changed = true;
+  }
+  const shared = serializeSharedState();
+  const sharedJson = sharedKeyJson(shared);
+  if (persistCache.shared === null) persistCache.shared = sharedKeyJson(rec.full);
+  if (sharedJson !== persistCache.shared) {
+    rec.gen++;
+    rec.full.terminkalenderEvents = shared.terminkalenderEvents;
+    rec.full.manualBetriebe = shared.manualBetriebe;
+    rec.sharedDirtyGen = rec.gen;
+    persistCache.shared = sharedJson;
+    changed = true;
+  }
+  const z = activeZuordnung ? { ...activeZuordnung } : null;
+  if (JSON.stringify(rec.zuordnung || null) !== JSON.stringify(z)) {
+    rec.zuordnung = z;
+    changed = true;
+  }
+  if (changed) {
+    try {
+      await writeLocalState(userId, rec);
+    } catch (err) {
+      syncErrorMessage = 'Lokales Speichern fehlgeschlagen: ' + (err.message || err);
+      syncState = 'error';
+    }
+  }
+  updateSyncIndicator();
+  return changed;
+}
+
+// Gleicht mit der Cloud ab (nur eine Runde gleichzeitig, weitere Aufrufe
+// während einer laufenden Runde werden zu genau einer Folgerunde gebündelt).
+function syncWithCloud() {
+  if (syncPromise) { syncQueued = true; return syncPromise; }
+  syncPromise = (async () => {
+    try {
+      return await runCloudSync();
+    } finally {
+      syncPromise = null;
+      if (syncQueued) { syncQueued = false; syncWithCloud(); }
+    }
+  })();
+  return syncPromise;
+}
+
+async function runCloudSync() {
+  const userId = currentUserId();
+  if (!userId || !offlineRec) return 'no-user';
+  await persistLocalState();
+  const cloudAvailable = isSupabaseConfigured || (import.meta.env.DEV && !!window.__ffTestCloud);
+  if (!cloudAvailable || !navigator.onLine || accountSession.offline) {
+    syncState = 'offline';
+    updateSyncIndicator();
+    return 'offline';
+  }
+  syncState = 'syncing';
+  updateSyncIndicator();
+  const rec = offlineRec;
+  const genAtStart = rec.gen;
+  let row;
+  try {
+    row = await loadState();
+  } catch (err) {
+    return failSync(err);
+  }
+  const cloud = migrateFullStateShape(row && row.data ? row.data : {});
+  cloud.terminkalenderEvents = cloud.terminkalenderEvents || [];
+  cloud.manualBetriebe = cloud.manualBetriebe || [];
+  const base = rec.base;
+  const dirtyKeys = Object.keys(rec.dirtyGen);
+  const sharedDirty = rec.sharedDirtyGen > 0;
+  const conflictKeys = base ? dirtyKeys.filter(k => !sameWorkspace(cloud.workspaces[k], base.workspaces[k])) : [];
+  const sharedConflict = !!base && sharedDirty && !sameShared(cloud, base);
+
+  let keepMine = true;
+  if (conflictKeys.length || sharedConflict) {
+    keepMine = await askSyncConflict(conflictKeys, sharedConflict);
+    try {
+      await addBackup(userId, keepMine ? 'Cloud-Stand vor dem Überschreiben' : 'Lokaler Stand vor dem Verwerfen', keepMine ? cloud : rec.full);
+    } catch {}
+  }
+
+  const merged = structuredClone(cloud);
+  const pushedKeys = [];
+  dirtyKeys.forEach(k => {
+    if (!keepMine && conflictKeys.includes(k)) return;
+    merged.workspaces[k] = rec.full.workspaces[k] || {};
+    pushedKeys.push(k);
+  });
+  const pushShared = sharedDirty && (keepMine || !sharedConflict);
+  if (pushShared) {
+    merged.terminkalenderEvents = rec.full.terminkalenderEvents;
+    merged.manualBetriebe = rec.full.manualBetriebe;
+  }
+
+  let updatedAt = row ? row.updated_at : null;
+  if (pushedKeys.length || pushShared) {
+    try {
+      updatedAt = await saveState(merged);
+    } catch (err) {
+      return failSync(err);
+    }
+  }
+
+  // Lokalen Datensatz nachziehen. Änderungen, die WÄHREND des Abgleichs
+  // passiert sind (gen > genAtStart), bleiben als "noch offen" markiert.
+  const theirsKeys = keepMine ? [] : conflictKeys;
+  const newBase = structuredClone(merged);
+  Object.keys(merged.workspaces).forEach(k => {
+    const stillDirty = rec.dirtyGen[k] > genAtStart;
+    if (k === currentWorkspaceKey && !(k in rec.dirtyGen) && !theirsKeys.includes(k) &&
+        !sameWorkspace(merged.workspaces[k], base ? base.workspaces[k] : rec.full.workspaces[k])) {
+      // Der gerade geöffnete Betrieb wurde anderswo geändert, hier aber nicht:
+      // nicht mitten in der Arbeit austauschen. Basis bleibt die alte — eine
+      // spätere lokale Änderung führt dadurch zur Konfliktfrage statt das
+      // andere Gerät still zu überschreiben.
+      if (base) newBase.workspaces[k] = base.workspaces[k];
+      else delete newBase.workspaces[k];
+      return;
+    }
+    if (!stillDirty) rec.full.workspaces[k] = merged.workspaces[k];
+  });
+  pushedKeys.concat(theirsKeys).forEach(k => { if (!(rec.dirtyGen[k] > genAtStart)) delete rec.dirtyGen[k]; });
+  if (!(rec.sharedDirtyGen > genAtStart)) {
+    if (pushShared || (sharedConflict && !keepMine)) rec.sharedDirtyGen = 0;
+    if (!rec.sharedDirtyGen && (sharedConflict && !keepMine)) {
+      rec.full.terminkalenderEvents = merged.terminkalenderEvents;
+      rec.full.manualBetriebe = merged.manualBetriebe;
+    }
+  }
+  if (!sharedDirty && !sameShared(merged, base || rec.full)) {
+    // Termine/Betriebe anderswo geändert, hier nicht — wie beim offenen
+    // Betrieb: Basis nicht vorziehen (siehe oben).
+    newBase.terminkalenderEvents = base ? base.terminkalenderEvents : rec.full.terminkalenderEvents;
+    newBase.manualBetriebe = base ? base.manualBetriebe : rec.full.manualBetriebe;
+  }
+  rec.base = newBase;
+  rec.baseUpdatedAt = updatedAt;
+  await writeLocalState(userId, rec).catch(() => {});
+
+  // "Andere Version übernehmen" für den offenen Betrieb bzw. die Termine:
+  // jetzt auch sichtbar machen.
+  if (theirsKeys.includes(currentWorkspaceKey)) {
+    clearWorkspace();
+    restoreWorkspace(merged.workspaces[currentWorkspaceKey]);
+  }
+  if (sharedConflict && !keepMine) restoreSharedState(merged);
+  if (theirsKeys.includes(currentWorkspaceKey) || (sharedConflict && !keepMine)) rebaselineLocalState();
+
+  syncState = 'idle';
+  syncErrorMessage = '';
+  lastSyncedAt = new Date();
+  updateSyncIndicator();
+  return 'synced';
+}
+
+function failSync(err) {
+  syncState = isNetworkError(err) ? 'offline' : 'error';
+  syncErrorMessage = err && err.message ? err.message : String(err || 'Synchronisation fehlgeschlagen.');
+  updateSyncIndicator();
+  return syncState;
+}
+
+// Dialog statt confirm(), weil die beiden Möglichkeiten klar benannte
+// Buttons brauchen ("OK/Abbrechen" wäre hier missverständlich).
+function askSyncConflict(keys, sharedConflict) {
+  const overlay = document.getElementById('sync-conflict-overlay');
+  const names = keys.map(k => (k === NO_BETRIEB_KEY ? 'Inhalte ohne Betrieb' : k));
+  if (sharedConflict) names.push('Termine / Betriebsliste');
+  document.getElementById('sync-conflict-list').innerHTML = names.map(n => `<li>${escapeHtml(n)}</li>`).join('');
+  overlay.hidden = false;
+  return new Promise(resolve => {
+    const done = (keepMine) => {
+      overlay.hidden = true;
+      mineBtn.removeEventListener('click', onMine);
+      theirsBtn.removeEventListener('click', onTheirs);
+      resolve(keepMine);
+    };
+    const mineBtn = document.getElementById('sync-conflict-keep-mine');
+    const theirsBtn = document.getElementById('sync-conflict-take-theirs');
+    const onMine = () => done(true);
+    const onTheirs = () => done(false);
+    mineBtn.addEventListener('click', onMine);
+    theirsBtn.addEventListener('click', onTheirs);
+  });
+}
+
+function updateSyncIndicator() {
+  const pending = hasPendingLocalChanges();
+  const offline = !navigator.onLine || syncState === 'offline' || !!(accountSession && accountSession.offline);
+  btnSync.classList.toggle('is-offline', !!accountSession && offline);
+  btnSync.classList.toggle('has-pending', !!accountSession && pending);
+  btnSync.classList.toggle('sync-error', !!accountSession && syncState === 'error');
+  btnSync.classList.toggle('syncing', syncState === 'syncing');
+  const label = btnSync.querySelector('.sync-toggle-label');
+  if (label) label.textContent = accountSession && offline ? 'Offline' : 'Sync';
+  let title;
+  if (!accountSession) {
+    title = autoSyncEnabled ? 'Automatische Cloud-Synchronisation: an (wird erst nach der Anmeldung aktiv)' : 'Automatische Cloud-Synchronisation: aus';
+  } else if (offline) {
+    title = pending
+      ? 'Offline — Änderungen sind auf diesem Gerät gespeichert und werden hochgeladen, sobald wieder Internet da ist.'
+      : 'Offline — alles ist auf diesem Gerät gespeichert.';
+  } else if (syncState === 'error') {
+    title = 'Synchronisation fehlgeschlagen: ' + syncErrorMessage + (pending ? ' — Änderungen sind lokal gesichert.' : '');
+  } else if (!autoSyncEnabled) {
+    title = 'Automatische Cloud-Synchronisation: aus' + (pending ? ' — Änderungen nur auf diesem Gerät gespeichert.' : '');
+  } else if (pending) {
+    title = 'Änderungen noch nicht in der Cloud — werden gleich hochgeladen.';
+  } else {
+    title = 'Automatische Cloud-Synchronisation: an' + (lastSyncedAt ? ` — zuletzt synchronisiert um ${lastSyncedAt.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}` : '');
+  }
+  btnSync.title = title;
+  btnSync.setAttribute('aria-label', title);
+  document.body.classList.toggle('is-offline', !navigator.onLine);
+}
+
+// Lädt den lokalen Stand in die Oberfläche — funktioniert ohne Netz.
+function restoreFromOfflineRecord() {
+  const rec = offlineRec;
+  restoreSharedState(rec.full);
+  currentWorkspaceKey = rec.zuordnung ? rec.zuordnung.betrieb : NO_BETRIEB_KEY;
+  clearWorkspace();
+  restoreWorkspace(rec.full.workspaces[currentWorkspaceKey]);
+  setActiveZuordnung(rec.zuordnung ? { ...rec.zuordnung } : null);
+  rebaselineLocalState();
+}
+
+// Start mit einem (ggf. nur lokal bekannten) Nutzer: erst den lokalen Stand
+// zeigen (sofort, auch ohne Netz), dann — falls online — mit der Cloud
+// abgleichen.
+async function startUserState(user) {
+  try { await writeLastUser({ id: user.id, email: user.email }); } catch {}
+  let rec = null;
+  try { rec = await readLocalState(user.id); } catch {}
+  if (rec) {
+    offlineRec = { ...newOfflineRecord(user), ...rec, user: { id: user.id, email: user.email } };
+    restoreFromOfflineRecord();
+  } else {
+    offlineRec = newOfflineRecord({ id: user.id, email: user.email });
+    rebaselineLocalState();
+  }
+  updateSyncIndicator();
+  if (accountSession && !accountSession.offline && navigator.onLine) await initialCloudLoad(!rec);
+}
+
+async function initialCloudLoad(firstOnThisDevice) {
+  if (!firstOnThisDevice && hasPendingLocalChanges()) {
+    // Offline-Änderungen vom letzten Mal: hochladen bzw. Konflikt klären.
+    await syncWithCloud();
+    return;
+  }
+  let row;
+  try {
+    row = await loadState();
+  } catch (err) {
+    failSync(err);
+    accountSyncStatus.textContent = 'Fehler: ' + (err.message || 'Laden fehlgeschlagen.');
+    return;
+  }
+  const userId = currentUserId();
+  if (!row) {
+    // Noch nie in der Cloud gespeichert: der lokale Stand ist der Anfang.
+    offlineRec.base = null;
+    return;
+  }
+  const cloud = migrateFullStateShape(row.data);
+  cloud.terminkalenderEvents = cloud.terminkalenderEvents || [];
+  cloud.manualBetriebe = cloud.manualBetriebe || [];
+  offlineRec.full = structuredClone(cloud);
+  offlineRec.base = cloud;
+  offlineRec.baseUpdatedAt = row.updated_at;
+  offlineRec.dirtyGen = {};
+  offlineRec.sharedDirtyGen = 0;
+  restoreSharedState(offlineRec.full);
+  clearWorkspace();
+  restoreWorkspace(offlineRec.full.workspaces[currentWorkspaceKey]);
+  rebaselineLocalState();
+  await writeLocalState(userId, offlineRec).catch(() => {});
+  syncState = 'idle';
+  lastSyncedAt = new Date();
+  accountSyncStatus.textContent = 'Geladen.';
+  updateSyncIndicator();
+}
+
+async function initAccountAndState() {
+  if (!isSupabaseConfigured) return;
+  let session = null;
+  try { session = await getSession(); } catch {}
+  if (!session) {
+    // Ohne Netz lässt sich eine abgelaufene Session nicht erneuern — dann mit
+    // dem zuletzt angemeldeten Nutzer und seinem lokalen Stand weiterarbeiten,
+    // der Abgleich folgt, sobald wieder Internet da ist.
+    const last = await readLastUser();
+    if (last && !navigator.onLine) {
+      let rec = null;
+      try { rec = await readLocalState(last.id); } catch {}
+      if (rec) session = { user: last, offline: true };
+    }
+  }
+  accountSession = session;
+  updateAccountButton();
+  if (session) await startUserState(session.user);
+  refreshAutoSyncTimer();
+}
+
+window.addEventListener('online', async () => {
+  updateSyncIndicator();
+  if (accountSession && accountSession.offline) {
+    // Offline gestartet: jetzt die echte Session holen.
+    let session = null;
+    try { session = await getSession(); } catch {}
+    if (!session || session.user.id !== accountSession.user.id) { updateSyncIndicator(); return; }
+    accountSession = session;
+    updateAccountButton();
+    refreshAutoSyncTimer();
+  }
+  if (accountSession) syncWithCloud();
+});
+window.addEventListener('offline', updateSyncIndicator);
+window.addEventListener('pagehide', () => { persistLocalState(); });
+setInterval(() => { if (!document.hidden) persistLocalState(); }, LOCAL_SAVE_INTERVAL_MS);
+
+if (import.meta.env.DEV) {
+  // Testhaken für die Offline-Logik (Cloud per window.__ffTestCloud in
+  // supabase.js gestubbt, analog window.__ffTestUploadPhotoOverride).
+  window.__ffTestOffline = {
+    start: (user) => startUserState(user),
+    persist: () => persistLocalState(),
+    sync: () => syncWithCloud(),
+    record: () => (offlineRec ? structuredClone(offlineRec) : null),
+    readStored: (userId) => readLocalState(userId),
+    pending: () => hasPendingLocalChanges(),
+    currentWorkspaceKey: () => currentWorkspaceKey,
+    // Neustart der App nachstellen (gleicher Ablauf wie beim Seitenaufruf).
+    boot: () => initAccountAndState(),
+    // In-Memory-Stand verwerfen (wie beim Schließen der App).
+    clear: () => { clearWorkspace(); setActiveZuordnung(null); currentWorkspaceKey = NO_BETRIEB_KEY; },
+    // Betrieb wechseln wie über den Betrieb-Dialog.
+    switchTo: (betrieb) => applyZuordnungSelection(betrieb ? { betrieb, year: new Date().getFullYear(), terminId: null, terminLabel: null } : null),
+    backups: (userId) => listBackups(userId)
+  };
 }
 
 // ---------- FeldFolio Plus: Notiz & Fotos an Fläche/Baum ----------
@@ -7147,6 +7672,38 @@ let terminkalenderMarkersLayer = null;
 let terminkalenderWeekStart = getMondayOfWeek(new Date());
 let terminkalenderSelectedId = null;
 
+// Termine entstehen sonst ausschließlich über den Excel-Import — für
+// Regressionstests (z.B. des Dokumentenscanners) braucht es einen
+// direkten, dev-only Weg, einen Testtermin anzulegen und auszuwählen,
+// analog zu window.__ffTestMap oben.
+if (import.meta.env.DEV) {
+  window.__ffTestTk = {
+    addEvent(overrides = {}) {
+      const ev = {
+        id: 'test-' + Date.now() + Math.random().toString(36).slice(2),
+        kunde: 'Testbetrieb', auditart: 'Test', dienstleistungen: '', format: '',
+        date: new Date(), bestaetigt: false, prioritaet: '', unangemeldet: false,
+        telefon: '', mobil: '', email: '', strasse: '', plz: '', ort: '', address: null,
+        hinweis: '', kundennummer: '', lat: null, lng: null, geocodeStatus: 'none',
+        hasTime: false, dateEnd: null, attachments: [], probenprotokolle: [],
+        ...overrides
+      };
+      terminkalenderEvents.push(ev);
+      renderTerminkalenderGrid();
+      return ev.id;
+    },
+    getEvent(id) { return terminkalenderEvents.find(e => e.id === id); },
+    // Der Terminkalender-Umschalter ist ohne Anmeldung ausgeblendet (siehe
+    // updateAccountButton()) — für Tests eine echte Anmeldung ohne echtes
+    // Supabase-Konto vortäuschen, statt den kompletten Login-Flow zu
+    // durchlaufen.
+    loginFake(email = 'test@example.com') {
+      accountSession = { user: { id: 'test-user', email } };
+      updateAccountButton();
+    }
+  };
+}
+
 const tkSleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 function getMondayOfWeek(date) {
@@ -7210,10 +7767,11 @@ function parseXlsxFile(arrayBuffer) {
       // Excel liefert nur ein Datum — Uhrzeit kommt optional über eine
       // zusätzlich hochgeladene .ics-Datei dazu (siehe applyIcsTimes unten).
       hasTime: false, dateEnd: null,
-      // Fotos/Dateien, die man einem Termin manuell hinzufügt (siehe
-      // renderTerminkalenderAttachments unten) — bleiben bei einem erneuten
+      // Fotos/Dateien bzw. Probenahmeprotokolle, die man einem Termin manuell
+      // hinzufügt (siehe renderTerminkalenderAttachments/
+      // probenprotokollSectionHtml unten) — bleiben bei einem erneuten
       // Excel-Upload immer erhalten (siehe mergeTerminkalenderEvents).
-      attachments: []
+      attachments: [], probenprotokolle: []
     };
   }).filter(Boolean);
 }
@@ -7233,10 +7791,12 @@ function mergeTerminkalenderEvents(parsed) {
       const sameDay = existing.date && existing.date.toDateString() === p.date.toDateString();
       const prevDate = existing.date, prevHasTime = existing.hasTime, prevDateEnd = existing.dateEnd;
       const prevAttachments = existing.attachments;
+      const prevProbenprotokolle = existing.probenprotokolle;
       Object.assign(existing, p);
       if (!addressChanged) { existing.lat = prevLat; existing.lng = prevLng; existing.geocodeStatus = prevStatus; }
       if (sameDay && prevHasTime) { existing.date = prevDate; existing.hasTime = true; existing.dateEnd = prevDateEnd; }
       existing.attachments = prevAttachments || [];
+      existing.probenprotokolle = prevProbenprotokolle || [];
       updated++;
     } else {
       terminkalenderEvents.push(p);
@@ -7506,14 +8066,20 @@ function renderTerminkalenderDetail(ev) {
           <input type="file" id="tk-file-add-input" hidden>
           <span class="material-symbols-rounded icon">attach_file</span> Datei hinzufügen
         </label>
+        <button type="button" class="tk-attachment-btn" id="tk-scan-btn">
+          <span class="material-symbols-rounded icon">document_scanner</span> Dokument scannen
+        </button>
       </div>
       <p class="modal-hint" id="tk-attachment-status"></p>
     </div>
+    ${probenprotokollSectionHtml(ev)}
   `;
   renderTerminkalenderAttachments(ev);
   document.getElementById('tk-photo-capture-input').addEventListener('change', (e) => handleTerminkalenderFileAdd(ev, e));
   document.getElementById('tk-file-add-input').addEventListener('change', (e) => handleTerminkalenderFileAdd(ev, e));
   document.getElementById('tk-betrieb-assign-btn').addEventListener('click', () => toggleTerminkalenderZuordnung(ev));
+  document.getElementById('tk-scan-btn').addEventListener('click', () => openScanModal(ev));
+  wireProbenprotokollSection(ev);
 }
 
 // Ordnet den Termin direkt aus der Kalenderansicht heraus als aktiven Betrieb
@@ -7570,19 +8136,24 @@ async function renderTerminkalenderAttachments(ev) {
   });
 }
 
-async function handleTerminkalenderFileAdd(ev, e) {
-  const input = e.target;
-  const file = input.files[0];
-  input.value = '';
+// Gemeinsame Upload-/Benennungs-/ev.attachments-Logik — genutzt sowohl von
+// den beiden Datei-Input-Feldern (via handleTerminkalenderFileAdd) als auch
+// direkt vom Dokumentenscanner (siehe weiter unten), der sein fertiges PDF
+// als File-Objekt übergibt, ohne den Umweg über ein <input>-Change-Event.
+async function uploadTerminkalenderAttachment(ev, file, artOverride) {
   if (!file) return;
   try {
     const path = await uploadPhoto(file);
     // Termine kennen ihren Betrieb (Kunde) und ihr Datum bereits selbst — die
     // Jahr_Betrieb_Art-Benennung braucht hier also keine globale Zuordnung
     // (siehe zuordnungFileName), sondern wird direkt aus dem Termin abgeleitet.
+    // artOverride erlaubt Aufrufern mit eigener Namenskonvention (siehe
+    // exportProbenprotokollPdf) einen aussagekräftigeren Wert als die drei
+    // generischen Standardfälle.
     const isImage = (file.type || '').startsWith('image/');
-    const ext = (file.name.split('.').pop() || (isImage ? 'jpg' : 'dat')).toLowerCase();
-    const art = isImage ? 'Foto Termin' : 'Datei Termin';
+    const isPdf = file.type === 'application/pdf';
+    const ext = (file.name.split('.').pop() || (isImage ? 'jpg' : isPdf ? 'pdf' : 'dat')).toLowerCase();
+    const art = artOverride || (isImage ? 'Foto Termin' : isPdf ? 'Scan Termin' : 'Datei Termin');
     const name = `${ev.date.getFullYear()}_${sanitizeFileNamePart(ev.kunde)}_${art}.${ext}`;
     ev.attachments = ev.attachments || [];
     ev.attachments.push({ path, name, size: file.size, type: file.type || '' });
@@ -7596,6 +8167,13 @@ async function handleTerminkalenderFileAdd(ev, e) {
     const statusEl = document.getElementById('tk-attachment-status');
     if (statusEl) statusEl.textContent = 'Fehler: ' + (err.message || 'Datei konnte nicht hochgeladen werden.');
   }
+}
+
+function handleTerminkalenderFileAdd(ev, e) {
+  const input = e.target;
+  const file = input.files[0];
+  input.value = '';
+  uploadTerminkalenderAttachment(ev, file);
 }
 
 async function removeTerminkalenderAttachment(id, path) {
@@ -7614,6 +8192,334 @@ async function removeTerminkalenderAttachment(id, path) {
     const currentStatus = document.getElementById('tk-attachment-status');
     if (currentStatus) currentStatus.textContent = 'Fehler: ' + (err.message || 'Löschen fehlgeschlagen.');
   }
+}
+
+// ---------- Dokumentenscanner (Terminkalender-Anhänge) ----------
+// Kamera-basierter Mehrseiten-Scanner (wie Adobe Scan) auf Basis von
+// jscanify (https://github.com/puffinsoft/jscanify) für Kantenerkennung +
+// Entzerrung. jscanify selbst ist winzig (~2,6 KB), setzt aber OpenCV.js
+// voraus (~9 MB WASM) — anders als die übrigen, durchweg kleinen
+// CDN-Libraries dieser App wird das NICHT statisch in index.html geladen
+// (würde jeden App-Start verlängern, für alle, auch die, die nie
+// scannen), sondern beim ersten Öffnen des Scanners per <script>-Tag
+// nachgeladen (ensureScanLibs()). Beide Libraries werden bewusst NICHT
+// über npm eingebunden: jscanifys npm-Paket hat canvas/jsdom als
+// Node-only-Abhängigkeiten (30 MB, im Browser-Bundle nicht nutzbar) — der
+// vom Projekt selbst bereitgestellte Browser-Build (jscanify.min.js,
+// definiert global `jscanify`) ist hier die richtige Wahl, genau wie
+// Leaflet/jsPDF/html2canvas/turf auch per <script>-Tag statt npm laufen.
+const SCAN_OPENCV_URL = 'https://docs.opencv.org/4.7.0/opencv.js';
+const SCAN_JSCANIFY_URL = 'https://cdn.jsdelivr.net/npm/jscanify@1.4.3/src/jscanify.min.js';
+const SCAN_DETECT_INTERVAL_MS = 200; // bewusst nicht die 10ms aus dem jscanify-Beispiel — unnötiger Akku-/CPU-Verbrauch für eine Live-Vorschau
+
+let scanLibsPromise = null;
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error(`Skript konnte nicht geladen werden: ${src}`));
+    document.head.appendChild(s);
+  });
+}
+function ensureScanLibs() {
+  if (!scanLibsPromise) {
+    scanLibsPromise = (async () => {
+      await loadScript(SCAN_OPENCV_URL);
+      // OpenCV.js definiert `cv` synchron beim Laden, initialisiert die
+      // WASM-Runtime aber asynchron danach — erst ab onRuntimeInitialized
+      // sind cv.imread() & Co. nutzbar.
+      await new Promise((resolve) => {
+        if (window.cv && window.cv.Mat) resolve();
+        else window.cv['onRuntimeInitialized'] = resolve;
+      });
+      await loadScript(SCAN_JSCANIFY_URL);
+    })();
+  }
+  return scanLibsPromise;
+}
+
+let scanJscanify = null;
+let scanStream = null;
+let scanDetectTimer = null;
+let scanPages = []; // { dataUrl, width, height } je bestätigter Seite
+let scanCurrentEvent = null;
+let scanCropRawCanvas = null; // eingefrorenes Rohbild während der Ecken-Korrektur
+let scanCropCorners = null; // { topLeftCorner:{x,y}, ... } in % der Bildfläche (0-100), auflösungsunabhängig
+
+const scanModal = document.getElementById('scan-modal-overlay');
+const scanCameraView = document.getElementById('scan-camera-view');
+const scanCropView = document.getElementById('scan-crop-view');
+const scanVideo = document.getElementById('scan-video');
+const scanRawCanvas = document.getElementById('scan-raw-canvas');
+const scanPreviewCanvas = document.getElementById('scan-preview-canvas');
+const scanStatusEl = document.getElementById('scan-status');
+const scanThumbnailsEl = document.getElementById('scan-thumbnails');
+const scanBtnCapture = document.getElementById('scan-btn-capture');
+const scanBtnFinish = document.getElementById('scan-btn-finish');
+const scanCropStage = document.getElementById('scan-crop-stage');
+const scanCropFrame = document.getElementById('scan-crop-frame');
+
+// #scan-crop-frame bekommt seine Pixel-Maße exakt im Seitenverhältnis des
+// aufgenommenen Fotos gesetzt (statt das <img> per CSS max-width/
+// max-height selbst "letterboxen" zu lassen) — Bild, SVG-Overlay und
+// Eckpunkt-Griffe liegen dadurch alle auf derselben Box und bleiben exakt
+// pixelgenau zum sichtbaren Bildinhalt ausgerichtet, unabhängig vom
+// Seitenverhältnis von Foto zu Bildschirm (Kamerafotos sind fast nie im
+// selben Seitenverhältnis wie der Bildschirm). Gleiches
+// Skalierungsmuster wie an anderer Stelle bereits verwendet (z.B.
+// buildPdfFromScanPages/addFlaechenkartePage: Math.min(maxW/w, maxH/h)).
+function layoutScanCropFrame(imgWidth, imgHeight) {
+  const maxW = scanCropStage.clientWidth;
+  const maxH = scanCropStage.clientHeight;
+  const scale = Math.min(maxW / imgWidth, maxH / imgHeight);
+  scanCropFrame.style.width = (imgWidth * scale) + 'px';
+  scanCropFrame.style.height = (imgHeight * scale) + 'px';
+}
+// Bei Drehung/Größenänderung des Bildschirms während offener Ecken-
+// Korrektur (z.B. Orientierungswechsel) neu vermessen, sonst bliebe der
+// Rahmen auf der alten Bildschirmgröße stehen.
+window.addEventListener('resize', () => {
+  if (!scanCropView.hidden && scanCropRawCanvas) {
+    layoutScanCropFrame(scanCropRawCanvas.width, scanCropRawCanvas.height);
+  }
+});
+
+function setScanStatus(msg) { scanStatusEl.textContent = msg; }
+
+function startScanDetectLoop() {
+  clearInterval(scanDetectTimer);
+  scanDetectTimer = setInterval(runScanDetectFrame, SCAN_DETECT_INTERVAL_MS);
+}
+
+async function openScanModal(ev) {
+  scanCurrentEvent = ev;
+  scanPages = [];
+  renderScanThumbnails();
+  scanModal.hidden = false;
+  scanCameraView.hidden = false;
+  scanCropView.hidden = true;
+  scanBtnCapture.disabled = true;
+  scanBtnFinish.disabled = true;
+  setScanStatus('Scan-Werkzeug wird geladen …');
+  try {
+    await ensureScanLibs();
+  } catch (err) {
+    console.error('Scan-Bibliotheken konnten nicht geladen werden', err);
+    setScanStatus('Scan-Werkzeug konnte nicht geladen werden — bitte stattdessen „Foto aufnehmen" nutzen.');
+    return;
+  }
+  scanJscanify = scanJscanify || new window.jscanify();
+  setScanStatus('Kamera wird gestartet …');
+  try {
+    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+  } catch (err) {
+    console.error('Kamerazugriff fehlgeschlagen', err);
+    setScanStatus('Kein Kamerazugriff — bitte stattdessen „Foto aufnehmen" nutzen.');
+    return;
+  }
+  scanVideo.srcObject = scanStream;
+  await scanVideo.play();
+  setScanStatus('Dokument in den Rahmen halten.');
+  scanBtnCapture.disabled = false;
+  startScanDetectLoop();
+}
+
+function runScanDetectFrame() {
+  if (!scanVideo.videoWidth) return;
+  scanRawCanvas.width = scanVideo.videoWidth;
+  scanRawCanvas.height = scanVideo.videoHeight;
+  scanRawCanvas.getContext('2d').drawImage(scanVideo, 0, 0);
+  let highlighted;
+  try {
+    highlighted = scanJscanify.highlightPaper(scanRawCanvas);
+  } catch (err) {
+    return; // vereinzelte Frame-Fehler ignorieren, nächster Versuch folgt automatisch
+  }
+  scanPreviewCanvas.width = highlighted.width;
+  scanPreviewCanvas.height = highlighted.height;
+  scanPreviewCanvas.getContext('2d').drawImage(highlighted, 0, 0);
+}
+
+function stopScanCamera() {
+  clearInterval(scanDetectTimer);
+  scanDetectTimer = null;
+  if (scanStream) { scanStream.getTracks().forEach(t => t.stop()); scanStream = null; }
+}
+
+function closeScanModal() {
+  if (scanPages.length && !confirm('Noch nicht als PDF gespeicherte Seiten verwerfen?')) return;
+  stopScanCamera();
+  scanModal.hidden = true;
+  scanCurrentEvent = null;
+}
+document.getElementById('scan-btn-close').addEventListener('click', closeScanModal);
+
+// ---- Aufnahme + Ecken-Korrektur ----
+document.getElementById('scan-btn-capture').addEventListener('click', () => {
+  if (!scanRawCanvas.width) return;
+  clearInterval(scanDetectTimer);
+
+  scanCropRawCanvas = document.createElement('canvas');
+  scanCropRawCanvas.width = scanRawCanvas.width;
+  scanCropRawCanvas.height = scanRawCanvas.height;
+  scanCropRawCanvas.getContext('2d').drawImage(scanRawCanvas, 0, 0);
+
+  const img = cv.imread(scanCropRawCanvas);
+  const contour = scanJscanify.findPaperContour(img);
+  const corners = contour ? scanJscanify.getCornerPoints(contour) : null;
+  img.delete();
+  if (contour) contour.delete();
+
+  const w = scanCropRawCanvas.width, h = scanCropRawCanvas.height;
+  const toPct = (p) => ({ x: (p.x / w) * 100, y: (p.y / h) * 100 });
+  scanCropCorners = corners && corners.topLeftCorner && corners.topRightCorner && corners.bottomLeftCorner && corners.bottomRightCorner
+    ? {
+        topLeftCorner: toPct(corners.topLeftCorner),
+        topRightCorner: toPct(corners.topRightCorner),
+        bottomLeftCorner: toPct(corners.bottomLeftCorner),
+        bottomRightCorner: toPct(corners.bottomRightCorner)
+      }
+    // Kein Papier erkannt: grobe Startposition nahe der Bildränder, statt
+    // die Ecken-Korrektur ganz zu verweigern — Nutzer kann sie manuell
+    // aufs Dokument ziehen.
+    : {
+        topLeftCorner: { x: 10, y: 10 },
+        topRightCorner: { x: 90, y: 10 },
+        bottomLeftCorner: { x: 10, y: 90 },
+        bottomRightCorner: { x: 90, y: 90 }
+      };
+
+  document.getElementById('scan-crop-image').src = scanCropRawCanvas.toDataURL('image/jpeg', 0.9);
+  scanCameraView.hidden = true;
+  scanCropView.hidden = false;
+  // Erst nachdem der Rahmen sichtbar ist (clientWidth/-Height sonst 0)
+  // vermessen, dann die Griffe auf Basis der fertigen Rahmengröße setzen.
+  layoutScanCropFrame(w, h);
+  renderScanCropHandles();
+});
+
+function renderScanCropHandles() {
+  ['topLeftCorner', 'topRightCorner', 'bottomLeftCorner', 'bottomRightCorner'].forEach((key) => {
+    const handle = scanCropFrame.querySelector(`.scan-crop-handle[data-corner="${key}"]`);
+    const p = scanCropCorners[key];
+    handle.style.left = p.x + '%';
+    handle.style.top = p.y + '%';
+  });
+  updateScanCropPolygon();
+}
+
+function updateScanCropPolygon() {
+  const order = ['topLeftCorner', 'topRightCorner', 'bottomRightCorner', 'bottomLeftCorner'];
+  const points = order.map(k => `${scanCropCorners[k].x},${scanCropCorners[k].y}`).join(' ');
+  document.getElementById('scan-crop-polygon').setAttribute('points', points);
+}
+
+// Eckpunkt-Griffe per Drag verschieben — gleiches Pointer-Events-Muster wie
+// wireEditToolbarDrag()/wireKulturplanBarDrag() (pointerdown auf dem
+// Griff, pointermove/pointerup am document, Listener nach pointerup
+// wieder entfernen). Positionen werden in % der Bildfläche gehalten, damit
+// die Griffe unabhängig von der tatsächlichen Anzeigegröße korrekt sitzen.
+scanCropFrame.querySelectorAll('.scan-crop-handle').forEach((handle) => {
+  handle.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    const corner = handle.getAttribute('data-corner');
+    function onMove(ev) {
+      const rect = scanCropFrame.getBoundingClientRect();
+      const x = Math.min(Math.max(((ev.clientX - rect.left) / rect.width) * 100, 0), 100);
+      const y = Math.min(Math.max(((ev.clientY - rect.top) / rect.height) * 100, 0), 100);
+      scanCropCorners[corner] = { x, y };
+      handle.style.left = x + '%';
+      handle.style.top = y + '%';
+      updateScanCropPolygon();
+    }
+    function onUp() {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+    }
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+  });
+});
+
+document.getElementById('scan-crop-retake').addEventListener('click', () => {
+  scanCropView.hidden = true;
+  scanCameraView.hidden = false;
+  startScanDetectLoop();
+});
+
+document.getElementById('scan-crop-confirm').addEventListener('click', () => {
+  const w = scanCropRawCanvas.width, h = scanCropRawCanvas.height;
+  const toPx = (p) => ({ x: (p.x / 100) * w, y: (p.y / 100) * h });
+  const cornerPoints = {
+    topLeftCorner: toPx(scanCropCorners.topLeftCorner),
+    topRightCorner: toPx(scanCropCorners.topRightCorner),
+    bottomLeftCorner: toPx(scanCropCorners.bottomLeftCorner),
+    bottomRightCorner: toPx(scanCropCorners.bottomRightCorner)
+  };
+  const extracted = scanJscanify.extractPaper(scanCropRawCanvas, w, h, cornerPoints);
+  const finalCanvas = extracted || scanCropRawCanvas;
+  scanPages.push({ dataUrl: finalCanvas.toDataURL('image/jpeg', 0.9), width: finalCanvas.width, height: finalCanvas.height });
+  renderScanThumbnails();
+  scanBtnFinish.disabled = false;
+
+  scanCropView.hidden = true;
+  scanCameraView.hidden = false;
+  startScanDetectLoop();
+});
+
+function renderScanThumbnails() {
+  scanThumbnailsEl.innerHTML = scanPages.map((p, i) => `
+    <div class="scan-thumb">
+      <img src="${p.dataUrl}" alt="Seite ${i + 1}">
+      <button type="button" class="scan-thumb-remove" data-idx="${i}" title="Seite entfernen">
+        <span class="material-symbols-rounded icon">close</span>
+      </button>
+    </div>
+  `).join('');
+  scanThumbnailsEl.querySelectorAll('.scan-thumb-remove').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      scanPages.splice(parseInt(btn.getAttribute('data-idx'), 10), 1);
+      renderScanThumbnails();
+      scanBtnFinish.disabled = scanPages.length === 0;
+    });
+  });
+}
+
+document.getElementById('scan-btn-finish').addEventListener('click', async () => {
+  if (!scanPages.length || !scanCurrentEvent) return;
+  const ev = scanCurrentEvent;
+  const pages = scanPages;
+  stopScanCamera();
+  scanModal.hidden = true;
+  scanCurrentEvent = null;
+  const blob = buildPdfFromScanPages(pages);
+  const ts = new Date().toISOString().slice(0, 10);
+  const file = new File([blob], `Scan_${ts}.pdf`, { type: 'application/pdf' });
+  await uploadTerminkalenderAttachment(ev, file);
+});
+
+// Eigenständiger "jede Seite füllt eine eigene PDF-Seite"-Helfer, ohne
+// Bezug zu den bestehenden, an Karten-Screenshots gekoppelten
+// jsPDF-Exporten (addFlaechenkartePage & Co.) — hier gibt es weder Titel
+// noch Legende noch eine Karte, nur die gescannten Seiten selbst.
+function buildPdfFromScanPages(pages) {
+  const doc = new window.jspdf.jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const margin = 8;
+  pages.forEach((p, i) => {
+    if (i > 0) doc.addPage('a4', 'portrait');
+    const maxW = pageW - margin * 2;
+    const maxH = pageH - margin * 2;
+    const scale = Math.min(maxW / p.width, maxH / p.height);
+    const imgW = p.width * scale;
+    const imgH = p.height * scale;
+    const imgX = (pageW - imgW) / 2;
+    const imgY = (pageH - imgH) / 2;
+    doc.addImage(p.dataUrl, 'JPEG', imgX, imgY, imgW, imgH);
+  });
+  return doc.output('blob');
 }
 
 function selectTerminkalenderEvent(id) {
@@ -8047,6 +8953,3382 @@ btnBetrieb.addEventListener('click', openBetriebModal);
 });
 betriebModal.addEventListener('click', (e) => { if (e.target === betriebModal) closeBetriebModal(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !betriebModal.hidden) closeBetriebModal(); });
+
+// ======================================================================
+// ---------- Stallplaner ----------
+// Eigenständiges Grundriss-Zeichenwerkzeug, bewusst OHNE Kartenbezug
+// (anders als Hofplan) — rohes SVG statt Leaflet. Koordinaten liegen in
+// Rastereinheiten (nicht Pixel), sodass Zoom/Maßstabsänderung nie eine
+// Punktkoordinate anfassen muss: Fläche = shoelace(points) * gridScale².
+// ======================================================================
+
+// EU-Öko-VO-Flächenwerte: Anhang I VO (EU) 2018/848 i.d.F. DVO (EU)
+// 2020/464 (Mindestanforderungen Stallfläche je Tier/Kategorie). Geprüft
+// wird ausschließlich die Stallfläche (kein Auslauf — dieses Werkzeug
+// zeichnet nur Innenraum-Grundrisse). Zwei Einheiten:
+//  - 'qm_pro_tier': benötigteFläche = Tierzahl * indoorQm
+//  - 'kg_je_qm': für Geflügel — entweder mit Gewichtsvorgabe
+//    (indoorKgJeQm, braucht ein Ø-Gewicht je Tier) oder mit fester
+//    Stückzahlvorgabe (indoorTiereJeQm, kein Gewicht nötig).
+// Die >350kg-Zeile bei Rindern/Pferden hat laut VO zusätzlich eine
+// "mindestens 1 m²/100kg"-Nebenbedingung — hier bewusst vereinfacht
+// weggelassen (siehe Hinweistext in der UI), reine indoorQm-Prüfung
+// deckt die große Mehrheit der Fälle ab. Fest hinterlegt, nicht
+// nutzerseitig editierbar (siehe Rücksprache mit dem Auftraggeber) —
+// KEINE Rechtsberatung, im Zweifel gegen den Originaltext prüfen.
+const OEKO_VO_KATEGORIEN = [
+  // Rinder
+  { id: 'rind_kalb', tierart: 'rinder', label: 'Kälber (bis 100 kg)', unit: 'qm_pro_tier', indoorQm: 1.5 },
+  { id: 'rind_jungvieh', tierart: 'rinder', label: 'Jungvieh (bis 200 kg)', unit: 'qm_pro_tier', indoorQm: 2.5 },
+  { id: 'rind_wachsend', tierart: 'rinder', label: 'Wachsende Rinder (bis 350 kg)', unit: 'qm_pro_tier', indoorQm: 4.0 },
+  { id: 'rind_adult', tierart: 'rinder', label: 'Rinder (über 350 kg)', unit: 'qm_pro_tier', indoorQm: 5 },
+  { id: 'rind_milchkuh', tierart: 'rinder', label: 'Milchkühe', unit: 'qm_pro_tier', indoorQm: 6 },
+  { id: 'rind_zuchtbulle', tierart: 'rinder', label: 'Zuchtbullen', unit: 'qm_pro_tier', indoorQm: 10 },
+  // Schafe/Ziegen
+  { id: 'schaf_adult', tierart: 'schafe_ziegen', label: 'Schafe (adult)', unit: 'qm_pro_tier', indoorQm: 1.5 },
+  { id: 'schaf_lamm', tierart: 'schafe_ziegen', label: 'Lämmer', unit: 'qm_pro_tier', indoorQm: 0.35 },
+  { id: 'ziege_adult', tierart: 'schafe_ziegen', label: 'Ziegen (adult)', unit: 'qm_pro_tier', indoorQm: 1.5 },
+  { id: 'ziege_kitz', tierart: 'schafe_ziegen', label: 'Kitze', unit: 'qm_pro_tier', indoorQm: 0.35 },
+  // Pferde/Equiden (gleiche Gewichtsstaffelung wie Rinder)
+  { id: 'pferd_100', tierart: 'pferde', label: 'Pferde (bis 100 kg)', unit: 'qm_pro_tier', indoorQm: 1.5 },
+  { id: 'pferd_200', tierart: 'pferde', label: 'Pferde (bis 200 kg)', unit: 'qm_pro_tier', indoorQm: 2.5 },
+  { id: 'pferd_350', tierart: 'pferde', label: 'Pferde (bis 350 kg)', unit: 'qm_pro_tier', indoorQm: 4.0 },
+  { id: 'pferd_adult', tierart: 'pferde', label: 'Pferde (über 350 kg)', unit: 'qm_pro_tier', indoorQm: 5 },
+  // Schweine
+  { id: 'schwein_saeugend', tierart: 'schweine', label: 'Säugende Sauen mit Ferkeln (je Sau)', unit: 'qm_pro_tier', indoorQm: 7.5 },
+  { id: 'schwein_ferkel', tierart: 'schweine', label: 'Abgesetzte Ferkel (bis 35 kg)', unit: 'qm_pro_tier', indoorQm: 0.6 },
+  { id: 'schwein_35_50', tierart: 'schweine', label: 'Mastschweine (35–50 kg)', unit: 'qm_pro_tier', indoorQm: 0.8 },
+  { id: 'schwein_50_85', tierart: 'schweine', label: 'Mastschweine (50–85 kg)', unit: 'qm_pro_tier', indoorQm: 1.1 },
+  { id: 'schwein_85_110', tierart: 'schweine', label: 'Mastschweine (85–110 kg)', unit: 'qm_pro_tier', indoorQm: 1.3 },
+  { id: 'schwein_mast', tierart: 'schweine', label: 'Mastschweine (über 110 kg)', unit: 'qm_pro_tier', indoorQm: 1.5 },
+  { id: 'schwein_trocken', tierart: 'schweine', label: 'Trockenstehende/tragende Sauen', unit: 'qm_pro_tier', indoorQm: 2.5 },
+  { id: 'schwein_eber', tierart: 'schweine', label: 'Zuchteber', unit: 'qm_pro_tier', indoorQm: 6 },
+  // Geflügel (Gewichts-/Stückzahl-basiert)
+  { id: 'gefl_zucht', tierart: 'gefluegel', label: 'Zuchttiere', unit: 'kg_je_qm', indoorTiereJeQm: 6 },
+  { id: 'gefl_junghennen', tierart: 'gefluegel', label: 'Junghennen/Junghähne (Aufzucht)', unit: 'kg_je_qm', indoorKgJeQm: 21 },
+  { id: 'gefl_legehenne', tierart: 'gefluegel', label: 'Legehennen', unit: 'kg_je_qm', indoorTiereJeQm: 6 },
+  { id: 'gefl_broiler_fest', tierart: 'gefluegel', label: 'Masthähnchen (fester Stall)', unit: 'kg_je_qm', indoorKgJeQm: 21 },
+  { id: 'gefl_broiler_mobil', tierart: 'gefluegel', label: 'Masthähnchen (mobiler Stall)', unit: 'kg_je_qm', indoorKgJeQm: 21 },
+  { id: 'gefl_kapaun', tierart: 'gefluegel', label: 'Kapaune/Poularden', unit: 'kg_je_qm', indoorKgJeQm: 21 },
+  { id: 'gefl_pute', tierart: 'gefluegel', label: 'Puten', unit: 'kg_je_qm', indoorKgJeQm: 21 },
+  { id: 'gefl_gans', tierart: 'gefluegel', label: 'Gänse', unit: 'kg_je_qm', indoorKgJeQm: 21 },
+  { id: 'gefl_ente', tierart: 'gefluegel', label: 'Enten', unit: 'kg_je_qm', indoorKgJeQm: 21 },
+  { id: 'gefl_perlhuhn', tierart: 'gefluegel', label: 'Perlhühner', unit: 'kg_je_qm', indoorKgJeQm: 21 },
+  // Kaninchen
+  { id: 'kanin_saeugend_leicht', tierart: 'kaninchen', label: 'Säugende Häsinnen (bis 6 kg)', unit: 'qm_pro_tier', indoorQm: 0.6 },
+  { id: 'kanin_saeugend_schwer', tierart: 'kaninchen', label: 'Säugende Häsinnen (über 6 kg)', unit: 'qm_pro_tier', indoorQm: 0.72 },
+  { id: 'kanin_zucht', tierart: 'kaninchen', label: 'Tragende/Zuchthäsinnen', unit: 'qm_pro_tier', indoorQm: 0.5 },
+  { id: 'kanin_mast', tierart: 'kaninchen', label: 'Masttiere', unit: 'qm_pro_tier', indoorQm: 0.2 },
+  { id: 'kanin_aufzucht', tierart: 'kaninchen', label: 'Tiere nach dem Absetzen (bis 6 Monate)', unit: 'qm_pro_tier', indoorQm: 0.2 },
+  { id: 'kanin_rammler', tierart: 'kaninchen', label: 'Zuchtrammler', unit: 'qm_pro_tier', indoorQm: 0.6 }
+];
+
+const STALLPLANER_EQUIPMENT_ICON_NAMES = {
+  traenke: 'water_drop', raufe: 'grass', futterautomat: 'restaurant', nest: 'egg',
+  sitzstange: 'drag_handle', tuer: 'door_front', fenster: 'window', futtergang: 'route'
+};
+// Ausstattung ist nicht immer nur ein Punkt: eine Sitzstange ist eine
+// Linie, eine Tür/ein Fenster sitzt als Linie in der Wand, ein Futtergang
+// ist eine Fläche zwischen Abteilen, eine Futterraufe kann ebenfalls
+// Stallfläche wegnehmen. Die Form ist unabhängig vom Typ frei wählbar
+// (siehe #stallplaner-equip-geometry-toggle) — das hier ist nur der
+// sinnvolle Vorschlag, der beim Anklicken eines Typs automatisch
+// vorausgewählt wird.
+const STALLPLANER_EQUIP_DEFAULT_GEOMETRY = {
+  sitzstange: 'line', tuer: 'line', fenster: 'line', futtergang: 'area'
+};
+
+function benoetigteFlaecheOekoVo(kategorie, tieranzahl, avgGewichtKg) {
+  if (!kategorie || !tieranzahl) return 0;
+  if (kategorie.unit === 'qm_pro_tier') return tieranzahl * kategorie.indoorQm;
+  if (kategorie.indoorTiereJeQm) return tieranzahl / kategorie.indoorTiereJeQm;
+  return (tieranzahl * (avgGewichtKg || 0)) / kategorie.indoorKgJeQm;
+}
+// Ein Abteil kann mehrere Tier-Kategorien gleichzeitig beherbergen (z.B.
+// Kälber + Milchkühe im selben Abteil) — die benötigte Fläche je Kategorie
+// wird aufsummiert und als Ganzes gegen die gezeichnete Abteilfläche geprüft.
+function compartmentBenoetigteFlaeche(c) {
+  return (c.tierbestand || []).reduce((sum, tb) => {
+    const kategorie = OEKO_VO_KATEGORIEN.find(k => k.id === tb.kategorieId);
+    return sum + (kategorie ? benoetigteFlaecheOekoVo(kategorie, tb.tieranzahl, tb.avgGewichtKg) : 0);
+  }, 0);
+}
+function newTierbestandEntry() {
+  return { id: 'tb-' + Date.now() + Math.random().toString(36).slice(2), kategorieId: null, tieranzahl: 0, avgGewichtKg: null };
+}
+// Rückwärtskompatibel für Stallpläne aus der ersten Version (eine einzelne
+// kategorieId/tieranzahl/avgGewichtKg-Kombination je Abteil statt einer
+// tierbestand-Liste) — greift beim Laden einer alten .json-Exportdatei oder
+// eines alten Cloud-Stands.
+function normalizeCompartment(c) {
+  if (!Array.isArray(c.tierbestand)) {
+    c.tierbestand = c.kategorieId
+      ? [{ id: newTierbestandEntry().id, kategorieId: c.kategorieId, tieranzahl: c.tieranzahl || 0, avgGewichtKg: c.avgGewichtKg || null }]
+      : [];
+  }
+  delete c.kategorieId; delete c.tieranzahl; delete c.avgGewichtKg;
+  return c;
+}
+// Rückwärtskompatibel für Ausstattung aus der ersten Version (einzelnes
+// x/y-Punktpaar statt einer points-Liste, immer Punktform) — greift beim
+// Laden einer alten .json-Exportdatei oder eines alten Cloud-Stands.
+function normalizeEquipment(e) {
+  if (!Array.isArray(e.points)) {
+    e.points = [{ x: e.x, y: e.y }];
+    delete e.x; delete e.y;
+  }
+  if (!e.geometryKind) e.geometryKind = 'point';
+  return e;
+}
+
+// ---- Zustand ----
+let stallplaene = [];
+let activeStallplanId = null;
+let stallplanerInitDone = false;
+// null|'draw-outline'|'draw-compartment'|'place-equipment'|'edit-vertex'|'measure'|'delete'
+let stallplanerMode = null;
+let stallplanerEquipType = 'traenke';
+let stallplanerEquipGeometryKind = 'point'; // 'point' | 'line' | 'area'
+let stallplanerDrawPoints = null; // Punkte des gerade laufenden Zeichenvorgangs
+let stallplanerEditTargetKind = null; // 'outline' | 'compartment' | 'equipment'
+let stallplanerEditTargetId = null; // Abteil-/Ausstattungs-Id, oder null für Umriss
+let stallplanerUndoStack = [];
+let stallplanerRedoStack = [];
+const STALLPLANER_UNDO_MAX = 20;
+// ---- Geführter Vermessen-Modus (siehe startStallplanMeasureWalk()) ----
+let stallplanerMeasureTargetKind = null; // 'outline' | 'compartment'
+let stallplanerMeasureTargetId = null;
+let stallplanerMeasureOriginalPoints = null; // Skizzen-Punkte bei Start (Drehrichtung wird daraus abgeleitet)
+let stallplanerMeasureLengths = null; // bereits eingetragene echte Längen (Meter), Index = Kante
+let stallplanerMeasureIndex = 0;
+// ---- Vor-Ort-Oberfläche (siehe renderStallplanerChrome()) ----
+let stallplanerStep = 'umriss'; // 'umriss' | 'abteile' | 'ausstattung' | 'tiere'
+let stallplanerSheetPanel = null; // id des sichtbaren .stallplaner-panel im Bottom Sheet
+let stallplanerSelection = null; // { kind: 'outline'|'compartment'|'equipment', id }
+// Laufende Maß-Eingabe: { type: 'rect'|'walls'|'split', target, start, segments, ... }
+let stallplanerTask = null;
+let stallplanerFlashMsg = null;
+let stallplanerFlashTimer = null;
+let stallplanerWakeLock = null;
+// Wächst automatisch mit dem Inhalt mit (nie schrumpfend), solange die
+// Ansicht nicht manuell verändert wurde — sobald der Nutzer zoomt, per Drag
+// verschiebt, oder eine Form zur Bearbeitung anklickt (siehe
+// focusStallplanShape()), übernimmt stallplanerViewLocked und das
+// automatische Mitwachsen pausiert, bis "Ansicht anpassen" das wieder
+// zurücksetzt. Ohne diese Unterscheidung würde jede Mutation (z.B. ein
+// Vertex-Drag) die manuell gesetzte Ansicht sofort wieder überschreiben.
+let stallplanerViewBox = { x: 0, y: 0, w: 20, h: 15 };
+let stallplanerViewLocked = false;
+const STALLPLANER_VIEW_MIN_W = 1.5;
+const STALLPLANER_VIEW_MAX_W = 400;
+
+function activeStallplan() {
+  return stallplaene.find(p => p.id === activeStallplanId) || null;
+}
+function newStallplanId() { return 'stallplan-' + Date.now() + Math.random().toString(36).slice(2); }
+function createEmptyStallplan(name) {
+  return {
+    id: newStallplanId(), name: name || 'Neuer Stallplan', tierart: null,
+    gridScale: 1, gridSnap: true, outline: null, compartments: [], equipment: [],
+    updatedAt: new Date().toISOString()
+  };
+}
+
+// ---- Geometrie-Hilfsfunktionen ----
+function shoelaceArea(points) {
+  if (!points || points.length < 3) return 0;
+  let sum = 0;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i], b = points[(i + 1) % points.length];
+    sum += a.x * b.y - b.x * a.y;
+  }
+  return Math.abs(sum) / 2;
+}
+function polygonCentroid(points) {
+  return { x: points.reduce((s, p) => s + p.x, 0) / points.length, y: points.reduce((s, p) => s + p.y, 0) / points.length };
+}
+// Grobe Selbstüberschneidungs-Erkennung (nur zur visuellen Warnung, blockiert
+// das Zeichnen nicht) — prüft alle nicht direkt benachbarten Kantenpaare.
+function polygonSelfIntersects(points) {
+  if (!points || points.length < 4) return false;
+  const segs = points.map((p, i) => [p, points[(i + 1) % points.length]]);
+  const ccw = (a, b, c) => (c.y - a.y) * (b.x - a.x) > (b.y - a.y) * (c.x - a.x);
+  const segIntersect = ([a, b], [c, d]) => ccw(a, c, d) !== ccw(b, c, d) && ccw(a, b, c) !== ccw(a, b, d);
+  for (let i = 0; i < segs.length; i++) {
+    for (let j = i + 1; j < segs.length; j++) {
+      if (Math.abs(i - j) <= 1 || (i === 0 && j === segs.length - 1)) continue; // benachbart, teilt sich einen Eckpunkt
+      if (segIntersect(segs[i], segs[j])) return true;
+    }
+  }
+  return false;
+}
+
+// Akzeptiert "12,40" genauso wie "12.4" — Handy-Tastaturen liefern je nach
+// Sprache Komma oder Punkt, type="number" verschluckt das Komma teils.
+function parseDecimalInput(value) {
+  const str = String(value == null ? '' : value).trim().replace(/\s+/g, '').replace(',', '.');
+  if (!/^(\d+(\.\d*)?|\.\d+)$/.test(str)) return NaN;
+  return parseFloat(str);
+}
+function pointInPolygon(p, points) {
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const a = points[i], b = points[j];
+    if ((a.y > p.y) !== (b.y > p.y) && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+// Grenzen eines achsenparallelen Rechtecks, sonst null — nur solche Flächen
+// lassen sich per "In Buchten teilen" aufteilen.
+function axisAlignedRectBounds(points) {
+  if (!points || points.length !== 4) return null;
+  const eps = 1e-6;
+  for (let i = 0; i < 4; i++) {
+    const a = points[i], b = points[(i + 1) % 4];
+    if (Math.abs(a.x - b.x) > eps && Math.abs(a.y - b.y) > eps) return null;
+  }
+  const xs = points.map(p => p.x), ys = points.map(p => p.y);
+  const bounds = { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
+  return bounds.maxX - bounds.minX > eps && bounds.maxY - bounds.minY > eps ? bounds : null;
+}
+// Zwei gleich gerichtete Wände hintereinander (z.B. zweimal "rechts") sind
+// eine Wand — sonst würde das spätere Vermessen dort eine Ecke erwarten.
+function simplifyCollinearPoints(points) {
+  const out = points.slice();
+  let changed = true;
+  while (changed && out.length > 3) {
+    changed = false;
+    for (let i = 0; i < out.length; i++) {
+      const a = out[(i - 1 + out.length) % out.length], p = out[i], b = out[(i + 1) % out.length];
+      const cross = (p.x - a.x) * (b.y - p.y) - (p.y - a.y) * (b.x - p.x);
+      const dot = (p.x - a.x) * (b.x - p.x) + (p.y - a.y) * (b.y - p.y);
+      if (Math.abs(cross) < 1e-9 && dot >= 0) { out.splice(i, 1); changed = true; break; }
+    }
+  }
+  return out;
+}
+
+// Baut ein Polygon aus einer groben Skizze und echten, vor Ort gemessenen
+// Kantenlängen neu auf — für den geführten Vermessen-Modus (siehe
+// startStallplanMeasureWalk()). Kantenlängen allein legen die Form eines
+// Vielecks mit mehr als drei Seiten NICHT fest (es bleibt wie ein
+// Scharniergelenk verformbar) — die fehlenden Winkel kommen aus der Skizze:
+//   * Ecken, die in der Skizze ungefähr rechtwinklig (bzw. gerade) sind
+//     (± STALLPLAN_RIGHT_ANGLE_TOLERANCE), werden auf exakt 90° (bzw. 0°)
+//     gesetzt — gebaut wird meist rechtwinklig, die Skizze mit dem Finger
+//     ist nie genau.
+//   * Alle anderen Ecken (schräge Wände) behalten zunächst ihren Winkel aus
+//     der Skizze; NUR diese Winkel werden so nachgestellt, dass sich die
+//     Form mit den gemessenen Längen schließt.
+// Früher wurde jede Ecke auf 90° gezwungen — eine Skizze mit schräger Wand
+// ließ sich dann mit ihren eigenen Längen nicht schließen und wurde zu
+// einem verzogenen Viereck.
+const STALLPLAN_RIGHT_ANGLE_TOLERANCE = (15 * Math.PI) / 180;
+function normalizeStallplanAngle(a) {
+  while (a <= -Math.PI) a += 2 * Math.PI;
+  while (a > Math.PI) a -= 2 * Math.PI;
+  return a;
+}
+function reconstructPolygonFromSketch(originalPoints, lengths) {
+  const n = originalPoints.length;
+  const dirs = originalPoints.map((a, i) => {
+    const b = originalPoints[(i + 1) % n];
+    return Math.atan2(b.y - a.y, b.x - a.x);
+  });
+
+  // Kanten, die über eingerastete Ecken verbunden sind, bilden eine starre
+  // "Kette" mit festen Richtungsunterschieden (Union-Find mit Winkel-Offset:
+  // Richtung(i) = Richtung(Wurzel) + offset[i]).
+  const parent = dirs.map((_, i) => i);
+  const offset = dirs.map(() => 0);
+  const find = (i) => {
+    if (parent[i] === i) return i;
+    const p = parent[i];
+    const root = find(p);
+    offset[i] += offset[p];
+    parent[i] = root;
+    return root;
+  };
+  let freeCorners = 0;
+  for (let j = 0; j < n; j++) {
+    const prev = (j - 1 + n) % n;
+    const turn = normalizeStallplanAngle(dirs[j] - dirs[prev]);
+    const snapped = [-Math.PI / 2, 0, Math.PI / 2].find(t => Math.abs(turn - t) <= STALLPLAN_RIGHT_ANGLE_TOLERANCE);
+    if (snapped === undefined) { freeCorners++; continue; }
+    const ra = find(prev), rb = find(j);
+    if (ra === rb) continue; // schließt den Kreis — bei einer Rechteck-Skizze ohnehin stimmig
+    parent[rb] = ra;
+    offset[rb] = offset[prev] + snapped - offset[j];
+  }
+  dirs.forEach((_, i) => find(i));
+
+  // Eine Richtung je Kette. Die Kette der ersten Kante bleibt exakt wie
+  // skizziert (Lage des Plans ändert sich nicht), die übrigen starten beim
+  // Mittel ihrer Skizzen-Richtungen und werden unten nachgestellt.
+  const roots = [...new Set(parent)];
+  const theta = {};
+  roots.forEach(r => {
+    let sx = 0, sy = 0;
+    dirs.forEach((d, i) => { if (parent[i] === r) { sx += Math.cos(d - offset[i]); sy += Math.sin(d - offset[i]); } });
+    theta[r] = Math.atan2(sy, sx);
+  });
+  theta[parent[0]] = dirs[0] - offset[0];
+  const freeRoots = roots.filter(r => r !== parent[0]);
+
+  const residual = (th) => {
+    let x = 0, y = 0;
+    for (let i = 0; i < n; i++) {
+      const a = th[parent[i]] + offset[i];
+      x += lengths[i] * Math.cos(a);
+      y += lengths[i] * Math.sin(a);
+    }
+    return { x, y };
+  };
+  // Levenberg-Marquardt auf den freien Kettenrichtungen: kleinste
+  // Schlusslücke bei gegebenen Längen. Meist nur 1–2 Unbekannte.
+  if (freeRoots.length) {
+    let lambda = 1e-3;
+    let r = residual(theta);
+    for (let iter = 0; iter < 60 && Math.hypot(r.x, r.y) > 1e-10; iter++) {
+      const J = freeRoots.map(root => {
+        let jx = 0, jy = 0;
+        for (let i = 0; i < n; i++) {
+          if (parent[i] !== root) continue;
+          const a = theta[root] + offset[i];
+          jx -= lengths[i] * Math.sin(a);
+          jy += lengths[i] * Math.cos(a);
+        }
+        return { x: jx, y: jy };
+      });
+      const A = J.map((ja, k) => J.map((jb, l) => ja.x * jb.x + ja.y * jb.y + (k === l ? lambda : 0)));
+      const g = J.map(jk => -(jk.x * r.x + jk.y * r.y));
+      const delta = solveSmallLinearSystem(A, g);
+      if (!delta) break;
+      const trial = { ...theta };
+      freeRoots.forEach((root, k) => { trial[root] += delta[k]; });
+      const rTrial = residual(trial);
+      if (Math.hypot(rTrial.x, rTrial.y) < Math.hypot(r.x, r.y)) {
+        Object.assign(theta, trial);
+        r = rTrial;
+        lambda = Math.max(lambda * 0.3, 1e-9);
+      } else {
+        lambda *= 10;
+        if (lambda > 1e6) break;
+      }
+    }
+  }
+
+  const walked = [{ ...originalPoints[0] }];
+  for (let i = 0; i < n; i++) {
+    const a = theta[parent[i]] + offset[i];
+    const prev = walked[i];
+    walked.push({ x: prev.x + Math.cos(a) * lengths[i], y: prev.y + Math.sin(a) * lengths[i] });
+  }
+  // Was sich auch so nicht schließen lässt (Messungenauigkeit), wird nach
+  // der Kompassregel (Bowditch-Ausgleich, Standardverfahren beim Schließen
+  // einer Vermessung) proportional zur zurückgelegten Strecke verteilt,
+  // statt es an einer einzelnen Kante "zu verstecken".
+  const closeError = { x: walked[n].x - walked[0].x, y: walked[n].y - walked[0].y };
+  const totalLen = lengths.reduce((s, l) => s + l, 0) || 1;
+  let cumulative = 0;
+  const adjusted = walked.slice(0, n).map((p, i) => {
+    const frac = cumulative / totalLen;
+    cumulative += lengths[i];
+    return { x: p.x - closeError.x * frac, y: p.y - closeError.y * frac };
+  });
+  return { points: adjusted, misclosure: Math.hypot(closeError.x, closeError.y), freeCorners };
+}
+// Gauß-Elimination mit Pivotsuche für die (winzigen) Normalgleichungen oben.
+function solveSmallLinearSystem(A, b) {
+  const m = b.length;
+  const M = A.map((row, i) => [...row, b[i]]);
+  for (let c = 0; c < m; c++) {
+    let pivot = c;
+    for (let r = c + 1; r < m; r++) if (Math.abs(M[r][c]) > Math.abs(M[pivot][c])) pivot = r;
+    if (Math.abs(M[pivot][c]) < 1e-14) return null;
+    [M[c], M[pivot]] = [M[pivot], M[c]];
+    for (let r = 0; r < m; r++) {
+      if (r === c) continue;
+      const f = M[r][c] / M[c][c];
+      for (let k = c; k <= m; k++) M[r][k] -= f * M[c][k];
+    }
+  }
+  return M.map((row, i) => row[m] / row[i]);
+}
+
+// ---- SVG-Rendering ----
+const SVG_NS = 'http://www.w3.org/2000/svg';
+function svgEl(tag, attrs) {
+  const el = document.createElementNS(SVG_NS, tag);
+  Object.entries(attrs || {}).forEach(([k, v]) => el.setAttribute(k, v));
+  return el;
+}
+function pointsAttr(points) { return points.map(p => `${p.x},${p.y}`).join(' '); }
+
+function resetStallplanerViewBox() {
+  stallplanerViewBox = { x: 0, y: 0, w: 20, h: 15 };
+  stallplanerViewLocked = false;
+}
+function growStallplanerViewBoxTo(points) {
+  if (!points.length) return;
+  const pad = 2;
+  const xs = points.map(p => p.x), ys = points.map(p => p.y);
+  const minX = Math.min(stallplanerViewBox.x, Math.min(...xs) - pad);
+  const minY = Math.min(stallplanerViewBox.y, Math.min(...ys) - pad);
+  const maxX = Math.max(stallplanerViewBox.x + stallplanerViewBox.w, Math.max(...xs) + pad);
+  const maxY = Math.max(stallplanerViewBox.y + stallplanerViewBox.h, Math.max(...ys) + pad);
+  stallplanerViewBox = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+// stallplanerViewBox ist der gewünschte Ausschnitt; das SVG hat aber je nach
+// Gerät ein anderes Seitenverhältnis (Handy hochkant!). Angezeigt wird daher
+// immer der auf das Seitenverhältnis erweiterte Ausschnitt — und genau der
+// gilt auch für alle Bildschirm↔Plan-Umrechnungen. Vorher wurde der Inhalt
+// per preserveAspectRatio="meet" eingepasst, die Umrechnung ignorierte den
+// Rand aber — auf dem Handy landeten Tipps dadurch an der falschen Stelle.
+function stallplanDisplayBox() {
+  const vb = stallplanerViewBox;
+  const rect = document.getElementById('stallplan-svg').getBoundingClientRect();
+  if (!rect.width || !rect.height || !vb.w || !vb.h) return { ...vb };
+  const target = rect.width / rect.height;
+  if (vb.w / vb.h < target) {
+    const w = vb.h * target;
+    return { x: vb.x - (w - vb.w) / 2, y: vb.y, w, h: vb.h };
+  }
+  const h = vb.w / target;
+  return { x: vb.x, y: vb.y - (h - vb.h) / 2, w: vb.w, h };
+}
+function applyStallplanerViewBox() {
+  const svg = document.getElementById('stallplan-svg');
+  const d = stallplanDisplayBox();
+  svg.setAttribute('viewBox', `${d.x} ${d.y} ${d.w} ${d.h}`);
+}
+// Zentriert die Ansicht auf eine bestimmte Form (z.B. beim Anklicken eines
+// Abteils im Bearbeiten-Modus) — behebt "wieder zurück zum bearbeiteten
+// Abteil finden", wenn die Ansicht vorher weit weggezoomt/verschoben war.
+function focusStallplanShape(points) {
+  const xs = points.map(p => p.x), ys = points.map(p => p.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const pad = Math.max(maxX - minX, maxY - minY, 2) * 0.3;
+  const w = Math.max(maxX - minX + pad * 2, 3);
+  const h = Math.max(maxY - minY + pad * 2, 2.25);
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  stallplanerViewBox = { x: cx - w / 2, y: cy - h / 2, w, h };
+  stallplanerViewLocked = true;
+  applyStallplanerViewBox();
+  renderStallplanGrid();
+  rescaleStallplanDynamicElements();
+}
+// "Ansicht anpassen" — verlässt den manuell gesperrten Zustand wieder und
+// zoomt/zentriert einmalig neu auf den gesamten Planinhalt.
+function fitStallplanerView() {
+  const plan = activeStallplan();
+  resetStallplanerViewBox();
+  if (plan) {
+    const allPoints = [];
+    if (plan.outline) allPoints.push(...plan.outline.points);
+    plan.compartments.forEach(c => allPoints.push(...c.points));
+    plan.equipment.forEach(e => allPoints.push(...e.points));
+    growStallplanerViewBoxTo(allPoints);
+  }
+  applyStallplanerViewBox();
+  renderStallplanGrid();
+  rescaleStallplanDynamicElements();
+}
+function clampStallplanZoomWidth(w) {
+  return Math.min(Math.max(w, STALLPLANER_VIEW_MIN_W), STALLPLANER_VIEW_MAX_W);
+}
+
+function renderStallplanGrid() {
+  const g = document.getElementById('stallplan-grid');
+  g.innerHTML = '';
+  const d = stallplanDisplayBox();
+  const startX = Math.floor(d.x), endX = Math.ceil(d.x + d.w);
+  const startY = Math.floor(d.y), endY = Math.ceil(d.y + d.h);
+  for (let x = startX; x <= endX; x++) {
+    g.appendChild(svgEl('line', { x1: x, y1: startY, x2: x, y2: endY, class: 'stallplan-grid-line' + (x % 5 === 0 ? ' major' : '') }));
+  }
+  for (let y = startY; y <= endY; y++) {
+    g.appendChild(svgEl('line', { x1: startX, y1: y, x2: endX, y2: y, class: 'stallplan-grid-line' + (y % 5 === 0 ? ' major' : '') }));
+  }
+}
+
+// Bildschirm-Pixel je Rastereinheit bei der aktuellen viewBox — Text-/
+// Griffgrößen werden daraus rückgerechnet (Zielgröße_px / scale), damit sie
+// beim Hineinzoomen (siehe Mausrad-Handler) eine gleichbleibende
+// Bildschirmgröße behalten statt mit dem Inhalt mitzuwachsen und bei
+// starkem Zoom riesig/unleserlich zu werden — reine SVG-Attribute wie
+// font-size/r sind sonst in Rastereinheiten, nicht Bildschirm-Pixeln.
+function stallplanScreenScale() {
+  const rect = document.getElementById('stallplan-svg').getBoundingClientRect();
+  const d = stallplanDisplayBox();
+  if (!rect.width || !d.w) return 30;
+  return rect.width / d.w;
+}
+// Gerundet statt der rohen Division: ein sehr langer, sich bei jedem
+// Neu-Render minimal veränderter Dezimalwert (Rundungsrauschen durch
+// getBoundingClientRect()) lässt Text-Bounding-Boxen zwischen zwei Frames
+// hauchdünn "wackeln" — genug, damit z.B. Playwright seine
+// Stabilitätsprüfung vor einem Klick nie als erfüllt ansieht.
+function stallplanScreenSize(px) { return Math.round((px / stallplanScreenScale()) * 1000) / 1000; }
+// Nach reinen viewBox-Änderungen ohne vollen Re-Render (Mausrad-Zoom,
+// Fokussieren einer Form, "Ansicht anpassen") — Panning ändert den Maßstab
+// nicht und braucht daher keinen Aufruf.
+function rescaleStallplanDynamicElements() {
+  document.querySelectorAll('.stallplan-compartment-label').forEach(fitStallplanCompartmentLabel);
+  document.querySelectorAll('.stallplan-edge-label').forEach(el => el.setAttribute('font-size', stallplanScreenSize(11)));
+  document.querySelectorAll('.stallplan-equipment-icon').forEach(el => el.setAttribute('font-size', stallplanScreenSize(16)));
+  document.querySelectorAll('.stallplan-equipment-bg').forEach(el => el.setAttribute('r', stallplanScreenSize(11)));
+  document.querySelectorAll('.stallplan-vertex-handle').forEach(el => el.setAttribute('r', stallplanScreenSize(7)));
+  document.querySelectorAll('.stallplan-vertex-hit').forEach(el => el.setAttribute('r', stallplanScreenSize(22)));
+  document.querySelectorAll('.stallplan-draw-point').forEach(el => el.setAttribute('r', stallplanScreenSize(5)));
+  document.querySelectorAll('.stallplan-walls-start, .stallplan-walls-end').forEach(el => el.setAttribute('r', stallplanScreenSize(8)));
+  document.querySelectorAll('.stallplan-measure-end').forEach(el => el.setAttribute('r', stallplanScreenSize(6)));
+  document.querySelectorAll('#stallplan-draw-preview-layer .stallplan-edge-label').forEach(el => el.setAttribute('font-size', stallplanScreenSize(12)));
+  document.querySelectorAll('.stallplan-edge-label-hit').forEach(el => {
+    const cx = parseFloat(el.getAttribute('x')) + parseFloat(el.getAttribute('width')) / 2;
+    const cy = parseFloat(el.getAttribute('y')) + parseFloat(el.getAttribute('height')) / 2;
+    const w = stallplanScreenSize(56), h = stallplanScreenSize(32);
+    el.setAttribute('x', cx - w / 2); el.setAttribute('y', cy - h / 2);
+    el.setAttribute('width', w); el.setAttribute('height', h);
+  });
+}
+
+// Sichtbar bleibt der Griff klein, getroffen wird ein unsichtbarer Kreis
+// mit 22 px Radius — ein Finger trifft sonst die 12-px-Punkte kaum.
+function makeVertexHandle(p, kind, compartmentId, index) {
+  const g = svgEl('g', { class: 'stallplan-vertex' });
+  g.appendChild(svgEl('circle', { cx: p.x, cy: p.y, r: stallplanScreenSize(22), class: 'stallplan-vertex-hit' }));
+  g.appendChild(svgEl('circle', { cx: p.x, cy: p.y, r: stallplanScreenSize(7), class: 'stallplan-vertex-handle' }));
+  wireStallplanVertexDrag(g, kind, compartmentId, index);
+  return g;
+}
+// Drag-Bewegungen zeichnen höchstens einmal pro Bildschirm-Frame neu (vorher
+// ein voller renderStallplan() je pointermove — auf dem Handy spürbar zäh).
+let stallplanFrameCb = null;
+function scheduleStallplanFrame(cb) {
+  const pending = stallplanFrameCb;
+  stallplanFrameCb = cb;
+  if (!pending) requestAnimationFrame(flushStallplanFrame);
+}
+function flushStallplanFrame() {
+  const cb = stallplanFrameCb;
+  stallplanFrameCb = null;
+  if (cb) cb();
+}
+// Gemeinsamer Ablauf für alle Drags: nur der auslösende Finger zählt (ein
+// zweiter Finger zum Zoomen verschiebt nichts), pointercancel beendet
+// sauber, und der letzte Frame wird beim Loslassen noch angewendet.
+function trackStallplanDrag(downEvent, onMove, onEnd) {
+  const pointerId = downEvent.pointerId;
+  function move(ev) {
+    if (ev.pointerId !== pointerId) return;
+    scheduleStallplanFrame(() => onMove(ev));
+  }
+  function up(ev) {
+    if (ev.pointerId !== pointerId) return;
+    document.removeEventListener('pointermove', move);
+    document.removeEventListener('pointerup', up);
+    document.removeEventListener('pointercancel', up);
+    flushStallplanFrame();
+    if (onEnd) onEnd(ev);
+  }
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', up);
+  document.addEventListener('pointercancel', up);
+}
+// ownerId ist eine Abteil- oder Ausstattungs-Id, je nach kind — bei
+// kind==='outline' ungenutzt (es gibt nur einen Umriss je Plan).
+function stallplanPointsFor(plan, kind, ownerId) {
+  if (kind === 'outline') return plan.outline.points;
+  if (kind === 'compartment') return plan.compartments.find(c => c.id === ownerId).points;
+  return plan.equipment.find(x => x.id === ownerId).points;
+}
+function wireStallplanVertexDrag(handleEl, kind, ownerId, index) {
+  handleEl.addEventListener('pointerdown', (e) => {
+    if (e.button > 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    pushStallplanerUndo();
+    trackStallplanDrag(e, (ev) => {
+      const plan = activeStallplan();
+      if (!plan) return;
+      stallplanPointsFor(plan, kind, ownerId)[index] = snapStallplanPoint(stallplanSvgPoint(ev), plan);
+      renderStallplan();
+    }, () => renderStallplanerSidebar());
+  });
+}
+// Verschiebt eine ganze Ausstattung (alle Punkte um denselben Versatz) —
+// bei einem Punkt-Element ist das schlicht der eine Punkt, bei Linie/
+// Fläche das komplette Element. Einzelne Eckpunkte einer Linie/Fläche
+// lassen sich zusätzlich über wireStallplanVertexDrag() (im Bearbeiten-
+// Modus, nach Auswahl) einzeln verschieben.
+function wireStallplanEquipmentBodyDrag(gEl, equipId) {
+  gEl.addEventListener('pointerdown', (e) => {
+    if (stallplanerMode !== 'edit-vertex' || e.button > 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    pushStallplanerUndo();
+    const startGrid = stallplanSvgPoint(e);
+    let startPoints = null;
+    trackStallplanDrag(e, (ev) => {
+      const plan = activeStallplan();
+      const item = plan && plan.equipment.find(x => x.id === equipId);
+      if (!item) return;
+      if (!startPoints) startPoints = item.points.map(p => ({ ...p }));
+      const cur = stallplanSvgPoint(ev);
+      const dx = cur.x - startGrid.x, dy = cur.y - startGrid.y;
+      item.points = startPoints.map(p => snapStallplanPoint({ x: p.x + dx, y: p.y + dy }, plan));
+      renderStallplan();
+    });
+  });
+}
+
+// Kantenlängen-Beschriftungen (klickbar, öffnet ein Zahlenfeld zur
+// zentimetergenauen Eingabe) — nur an der aktuell zur Bearbeitung
+// ausgewählten Form sichtbar, sonst würde die Zeichenfläche bei vielen
+// Abteilen sofort unübersichtlich.
+// isOpen: true für eine Linie (letzter Punkt schließt NICHT zurück zum
+// ersten, anders als Umriss/Abteil/Flächen-Ausstattung).
+function appendEdgeLengthLabels(g, points, gridScale, kind, compartmentId, isOpen) {
+  const n = points.length;
+  const edgeCount = isOpen ? n - 1 : n;
+  for (let i = 0; i < edgeCount; i++) {
+    const a = points[i], b = points[(i + 1) % n];
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    const lenM = Math.hypot(b.x - a.x, b.y - a.y) * gridScale;
+    const wrap = svgEl('g', { class: 'stallplan-edge-label-wrap' });
+    // Eigenes, großzügig bemessenes Klickziel statt direkt auf den Text-
+    // Glyphen zu klicken — enge Text-Bounding-Boxen sind je nach Zoomstufe
+    // hauchdünn und schwer zuverlässig zu treffen (auch automatisiert).
+    const hit = svgEl('rect', {
+      x: mid.x - stallplanScreenSize(28), y: mid.y - stallplanScreenSize(16),
+      width: stallplanScreenSize(56), height: stallplanScreenSize(32),
+      class: 'stallplan-edge-label-hit'
+    });
+    const label = svgEl('text', { x: mid.x, y: mid.y, class: 'stallplan-edge-label', 'font-size': stallplanScreenSize(11) });
+    label.textContent = lenM.toFixed(2) + ' m';
+    wrap.appendChild(hit);
+    wrap.appendChild(label);
+    hit.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openEdgeLengthEditor(kind, compartmentId, i, mid, lenM);
+    });
+    g.appendChild(wrap);
+  }
+}
+
+function renderStallplanOutline(plan) {
+  const g = document.getElementById('stallplan-outline-layer');
+  g.innerHTML = '';
+  if (!plan.outline) return;
+  const selfX = polygonSelfIntersects(plan.outline.points);
+  const selected = stallplanerSelection && stallplanerSelection.kind === 'outline';
+  g.appendChild(svgEl('polygon', { points: pointsAttr(plan.outline.points), class: 'stallplan-outline' + (selfX ? ' self-intersect' : '') + (selected ? ' selected' : '') }));
+  if (stallplanerMode === 'edit-vertex' && stallplanerEditTargetKind === 'outline') {
+    plan.outline.points.forEach((p, i) => g.appendChild(makeVertexHandle(p, 'outline', null, i)));
+    appendEdgeLengthLabels(g, plan.outline.points, plan.gridScale, 'outline', null);
+  }
+}
+function fitStallplanCompartmentLabel(label) {
+  const scale = stallplanScreenScale();
+  const wPx = parseFloat(label.getAttribute('data-fit-w')) * scale;
+  const hPx = parseFloat(label.getAttribute('data-fit-h')) * scale;
+  const chars = parseFloat(label.getAttribute('data-fit-chars')) || 1;
+  const px = Math.min(13, (wPx - 8) / (chars * 0.6), (hPx - 4) / 2.4);
+  label.style.display = px < 7 ? 'none' : '';
+  label.setAttribute('font-size', stallplanScreenSize(Math.max(px, 7)));
+}
+function renderStallplanCompartments(plan) {
+  const g = document.getElementById('stallplan-compartments-layer');
+  g.innerHTML = '';
+  plan.compartments.forEach(c => {
+    const area = shoelaceArea(c.points) * plan.gridScale * plan.gridScale;
+    const benoetigt = c.tierbestand.length ? compartmentBenoetigteFlaeche(c) : null;
+    const compliant = benoetigt == null ? null : area >= benoetigt;
+    const selfX = polygonSelfIntersects(c.points);
+    const wrap = svgEl('g', {
+      class: 'stallplan-compartment' + (compliant === false ? ' non-compliant' : '') + (selfX ? ' self-intersect' : '') +
+        (stallplanerSelection && stallplanerSelection.kind === 'compartment' && stallplanerSelection.id === c.id ? ' selected' : ''),
+      'data-id': c.id
+    });
+    wrap.appendChild(svgEl('polygon', { points: pointsAttr(c.points) }));
+    const center = polygonCentroid(c.points);
+    const areaText = `${area.toFixed(1)} m²`;
+    const xs = c.points.map(p => p.x), ys = c.points.map(p => p.y);
+    // Zweizeilig (Name / Fläche) und an die Abteilgröße angepasst — in einer
+    // Buchtenreihe sind die Abteile oft schmaler als eine einzeilige
+    // Beschriftung, die Texte liefen sonst ineinander.
+    const label = svgEl('text', {
+      x: center.x, y: center.y, class: 'stallplan-compartment-label',
+      'data-fit-w': Math.max(...xs) - Math.min(...xs), 'data-fit-h': Math.max(...ys) - Math.min(...ys),
+      'data-fit-chars': Math.max(c.name.length, areaText.length)
+    });
+    const nameLine = svgEl('tspan', { x: center.x, dy: '-0.55em' });
+    nameLine.textContent = c.name;
+    const areaLine = svgEl('tspan', { x: center.x, dy: '1.15em' });
+    areaLine.textContent = areaText;
+    label.appendChild(nameLine);
+    label.appendChild(areaLine);
+    fitStallplanCompartmentLabel(label);
+    wrap.appendChild(label);
+    g.appendChild(wrap);
+    if (stallplanerMode === 'edit-vertex' && stallplanerEditTargetKind === 'compartment' && stallplanerEditTargetId === c.id) {
+      appendEdgeLengthLabels(wrap, c.points, plan.gridScale, 'compartment', c.id);
+      c.points.forEach((p, i) => g.appendChild(makeVertexHandle(p, 'compartment', c.id, i)));
+    }
+  });
+}
+// Mittelpunkt fürs Icon: bei Linie/Fläche der Flächen-/Streckenschwerpunkt
+// statt nur des ersten Punkts, damit das Symbol mittig sitzt statt an
+// einer Ecke zu kleben.
+function stallplanEquipmentIconAnchor(e) {
+  if (e.points.length === 1) return e.points[0];
+  if (e.geometryKind === 'area') return polygonCentroid(e.points);
+  // Linie: Mittelpunkt der Gesamtlänge (nicht nur Durchschnitt der
+  // Eckpunkte, sonst läge er bei ungleich langen Segmenten daneben).
+  let total = 0;
+  const segLens = [];
+  for (let i = 0; i < e.points.length - 1; i++) {
+    const l = Math.hypot(e.points[i + 1].x - e.points[i].x, e.points[i + 1].y - e.points[i].y);
+    segLens.push(l); total += l;
+  }
+  let target = total / 2, i = 0;
+  while (i < segLens.length && target > segLens[i]) { target -= segLens[i]; i++; }
+  const a = e.points[i], b = e.points[Math.min(i + 1, e.points.length - 1)];
+  const segLen = segLens[i] || 1;
+  const t = target / segLen;
+  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+}
+function renderStallplanEquipment(plan) {
+  const g = document.getElementById('stallplan-equipment-layer');
+  g.innerHTML = '';
+  plan.equipment.forEach(e => {
+    const selected = stallplanerMode === 'edit-vertex' && stallplanerEditTargetKind === 'equipment' && stallplanerEditTargetId === e.id;
+    const picked = stallplanerSelection && stallplanerSelection.kind === 'equipment' && stallplanerSelection.id === e.id;
+    const wrap = svgEl('g', { class: 'stallplan-equipment stallplan-equipment-' + e.geometryKind + (picked ? ' selected' : ''), 'data-id': e.id });
+    if (e.geometryKind === 'area') {
+      wrap.appendChild(svgEl('polygon', { points: pointsAttr(e.points), class: 'stallplan-equipment-shape' }));
+    } else if (e.geometryKind === 'line') {
+      wrap.appendChild(svgEl('polyline', { points: pointsAttr(e.points), class: 'stallplan-equipment-shape' }));
+    }
+    const anchor = stallplanEquipmentIconAnchor(e);
+    const iconGroup = svgEl('g', { transform: `translate(${anchor.x},${anchor.y}) rotate(${e.rotationDeg || 0})` });
+    iconGroup.appendChild(svgEl('circle', { r: stallplanScreenSize(11), class: 'stallplan-equipment-bg' }));
+    const icon = svgEl('text', { class: 'material-symbols-rounded stallplan-equipment-icon', 'text-anchor': 'middle', 'dominant-baseline': 'central', 'font-size': stallplanScreenSize(16) });
+    icon.textContent = STALLPLANER_EQUIPMENT_ICON_NAMES[e.type] || 'help';
+    iconGroup.appendChild(icon);
+    wrap.appendChild(iconGroup);
+    g.appendChild(wrap);
+    wireStallplanEquipmentBodyDrag(wrap, e.id);
+    if (selected) {
+      e.points.forEach((p, i) => g.appendChild(makeVertexHandle(p, 'equipment', e.id, i)));
+      if (e.points.length >= 2) appendEdgeLengthLabels(g, e.points, plan.gridScale, 'equipment', e.id, e.geometryKind === 'line');
+    }
+  });
+}
+// Mehrpunkt-Zeichnen läuft für Umriss/Abteil UND für Linien-/Flächen-
+// Ausstattung über denselben stallplanerDrawPoints-Mechanismus — nur
+// Punkt-Ausstattung wird weiterhin per einzelnem Klick sofort gesetzt.
+function stallplanDrawModeActive() {
+  return stallplanerMode === 'draw-outline' || stallplanerMode === 'draw-compartment' ||
+    (stallplanerMode === 'place-equipment' && stallplanerEquipGeometryKind !== 'point');
+}
+// Schließbar (Klick nah am Start beendet die Form) ist alles außer einer
+// Linie — eine Linie hat kein "Innen", ein Schließen zurück zum
+// Startpunkt ergäbe keinen Sinn.
+function stallplanDrawIsClosable() {
+  return stallplanerMode === 'draw-outline' || stallplanerMode === 'draw-compartment' ||
+    (stallplanerMode === 'place-equipment' && stallplanerEquipGeometryKind === 'area');
+}
+// Klickt/hovert man beim Zeichnen nah genug am ersten gesetzten Punkt,
+// schließt sich der Umriss/das Abteil/die Flächen-Ausstattung automatisch —
+// Toleranz in Bildschirm-Pixeln (zoomunabhängig, siehe
+// stallplanScreenSize()), nicht in Rastereinheiten, sonst wäre die
+// Trefferfläche beim Herauszoomen riesig und beim Hineinzoomen winzig.
+const STALLPLAN_CLOSE_TOLERANCE_PX = 24;
+function isNearStallplanDrawStart(p) {
+  if (!stallplanDrawIsClosable() || !stallplanerDrawPoints || stallplanerDrawPoints.length < 3) return false;
+  const start = stallplanerDrawPoints[0];
+  return Math.hypot(p.x - start.x, p.y - start.y) <= stallplanScreenSize(STALLPLAN_CLOSE_TOLERANCE_PX);
+}
+function renderStallplanDrawPreview(cursor) {
+  const g = document.getElementById('stallplan-draw-preview-layer');
+  g.innerHTML = '';
+  if (!stallplanerDrawPoints || !stallplanerDrawPoints.length) return;
+  const canClose = !!cursor && isNearStallplanDrawStart(cursor);
+  // Statt einer offenen Linie bis zum Cursor schon die schließende Kante
+  // zurück zum Startpunkt einzeichnen — dieselbe Rückmeldung, die auch
+  // Illustrator/Figma beim Pfadzeichnen geben ("hier klicken zum Schließen").
+  const pts = canClose ? [...stallplanerDrawPoints, stallplanerDrawPoints[0]] : (cursor ? [...stallplanerDrawPoints, cursor] : stallplanerDrawPoints);
+  g.appendChild(svgEl('polyline', { points: pointsAttr(pts), class: 'stallplan-draw-preview' }));
+  stallplanerDrawPoints.forEach((p, i) => {
+    const highlight = i === 0 && canClose;
+    g.appendChild(svgEl('circle', {
+      cx: p.x, cy: p.y,
+      r: stallplanScreenSize(highlight ? 9 : 5),
+      class: 'stallplan-draw-point' + (highlight ? ' closable' : '')
+    }));
+  });
+}
+
+function renderStallplan() {
+  const plan = activeStallplan();
+  if (!plan) {
+    ['stallplan-outline-layer', 'stallplan-compartments-layer', 'stallplan-equipment-layer', 'stallplan-draw-preview-layer'].forEach(id => {
+      document.getElementById(id).innerHTML = '';
+    });
+    renderStallplanGrid();
+    return;
+  }
+  // Solange die Ansicht nicht manuell gezoomt/verschoben/auf eine Form
+  // fokussiert wurde, wächst sie automatisch mit dem Inhalt mit — danach
+  // übersteuert das automatische Mitwachsen nicht mehr jede Mutation.
+  if (!stallplanerViewLocked) {
+    const allPoints = [];
+    if (plan.outline) allPoints.push(...plan.outline.points);
+    plan.compartments.forEach(c => allPoints.push(...c.points));
+    plan.equipment.forEach(e => allPoints.push(...e.points));
+    if (stallplanerDrawPoints) allPoints.push(...stallplanerDrawPoints);
+    allPoints.push(...stallplanTaskPoints(plan));
+    growStallplanerViewBoxTo(allPoints);
+  }
+  applyStallplanerViewBox();
+  renderStallplanGrid();
+  renderStallplanOutline(plan);
+  renderStallplanCompartments(plan);
+  renderStallplanEquipment(plan);
+  if (stallplanerTask) renderStallplanTaskPreview();
+}
+
+// ---- Maus/Touch → SVG-Koordinaten ----
+function stallplanSvgPoint(evt) {
+  const svg = document.getElementById('stallplan-svg');
+  const rect = svg.getBoundingClientRect();
+  const vb = stallplanDisplayBox();
+  return {
+    x: vb.x + ((evt.clientX - rect.left) / rect.width) * vb.w,
+    y: vb.y + ((evt.clientY - rect.top) / rect.height) * vb.h
+  };
+}
+function snapStallplanPoint(p, plan) {
+  return plan.gridSnap ? { x: Math.round(p.x), y: Math.round(p.y) } : p;
+}
+function stallplanScreenPoint(gridPoint) {
+  const svg = document.getElementById('stallplan-svg');
+  const rect = svg.getBoundingClientRect();
+  const wrapRect = document.getElementById('stallplaner-canvas').getBoundingClientRect();
+  const vb = stallplanDisplayBox();
+  return {
+    left: rect.left - wrapRect.left + ((gridPoint.x - vb.x) / vb.w) * rect.width,
+    top: rect.top - wrapRect.top + ((gridPoint.y - vb.y) / vb.h) * rect.height
+  };
+}
+
+// ---- Kantenlängen zentimetergenau eingeben (statt nur grobem Raster-Snap
+// beim Ziehen) — ändert die Position des ZWEITEN Eckpunkts der Kante entlang
+// derselben Richtung, der erste bleibt fest. Da sich benachbarte Kanten
+// eines Polygons immer einen Eckpunkt teilen, verändert das zwangsläufig
+// auch die Länge der Nachbarkante — exakt das aus jedem Vektor-Werkzeug
+// bekannte Verhalten, keine isolierte "nur diese eine Kante"-Bearbeitung
+// möglich. ----
+function setEdgeLength(points, edgeIndex, newLengthMeters, gridScale) {
+  const n = points.length;
+  const a = points[edgeIndex], bIdx = (edgeIndex + 1) % n, b = points[bIdx];
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const curLen = Math.hypot(dx, dy);
+  if (curLen < 1e-9) return;
+  const newLenGrid = newLengthMeters / gridScale;
+  points[bIdx] = { x: a.x + (dx / curLen) * newLenGrid, y: a.y + (dy / curLen) * newLenGrid };
+}
+function openEdgeLengthEditor(kind, compartmentId, edgeIndex, midPointGrid, currentLengthM) {
+  const input = document.getElementById('stallplan-edge-length-input');
+  const pos = stallplanScreenPoint(midPointGrid);
+  input.style.left = pos.left + 'px';
+  input.style.top = pos.top + 'px';
+  input.value = currentLengthM.toFixed(2);
+  input.dataset.kind = kind;
+  input.dataset.compartmentId = compartmentId || '';
+  input.dataset.edgeIndex = String(edgeIndex);
+  input.hidden = false;
+  input.focus();
+  input.select();
+}
+function closeEdgeLengthEditor() {
+  document.getElementById('stallplan-edge-length-input').hidden = true;
+}
+function commitEdgeLengthEditor() {
+  const input = document.getElementById('stallplan-edge-length-input');
+  if (input.hidden) return;
+  const plan = activeStallplan();
+  const kind = input.dataset.kind;
+  const compartmentId = input.dataset.compartmentId || null;
+  const edgeIndex = parseInt(input.dataset.edgeIndex, 10);
+  const newLenM = parseDecimalInput(input.value);
+  closeEdgeLengthEditor();
+  if (!plan || !Number.isFinite(newLenM) || newLenM <= 0) return;
+  const points = stallplanPointsFor(plan, kind, compartmentId);
+  pushStallplanerUndo();
+  setEdgeLength(points, edgeIndex, newLenM, plan.gridScale);
+  renderStallplan();
+  renderStallplanerSidebar();
+}
+const stallplanEdgeLengthInput = document.getElementById('stallplan-edge-length-input');
+stallplanEdgeLengthInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); commitEdgeLengthEditor(); }
+  else if (e.key === 'Escape') { e.preventDefault(); closeEdgeLengthEditor(); }
+});
+stallplanEdgeLengthInput.addEventListener('blur', () => commitEdgeLengthEditor());
+stallplanEdgeLengthInput.addEventListener('click', (e) => e.stopPropagation());
+
+// ---- Geführter Vermessen-Modus ----
+// Führt beim Vor-Ort-Termin Kante für Kante durch den ausgewählten Umriss/
+// das Abteil (Reihenfolge wie in der Skizze), sammelt die echten
+// Laser-Maße und baut die Form am Ende in einem Schritt rechtwinklig neu
+// auf (reconstructPolygonFromSketch()) — bewusst erst am Ende, nicht nach
+// jeder einzelnen Kante, da die Zwischenzustände sonst bei jedem Schritt
+// sichtbar "hin- und herspringen" würden, obwohl der Drehsinn ohnehin erst
+// mit allen Kanten zusammen feststeht.
+function startStallplanMeasureWalk(kind, compartmentId, points) {
+  if (points.length < 3) return;
+  stallplanerMeasureTargetKind = kind;
+  stallplanerMeasureTargetId = compartmentId;
+  stallplanerMeasureOriginalPoints = points.map(p => ({ ...p }));
+  stallplanerMeasureLengths = [];
+  stallplanerMeasureIndex = 0;
+  focusStallplanShape(points);
+  showStallplanMeasureStep();
+}
+function currentStallplanMeasureEdge() {
+  const n = stallplanerMeasureOriginalPoints.length;
+  return [stallplanerMeasureOriginalPoints[stallplanerMeasureIndex], stallplanerMeasureOriginalPoints[(stallplanerMeasureIndex + 1) % n]];
+}
+function showStallplanMeasureStep() {
+  const plan = activeStallplan();
+  const n = stallplanerMeasureOriginalPoints.length;
+  if (stallplanerSheetPanel !== 'stallplaner-measure-panel') openStallplanerSheet('stallplaner-measure-panel', 'Vermessen');
+  document.getElementById('stallplaner-measure-progress').textContent = `Kante ${stallplanerMeasureIndex + 1} von ${n}`;
+  const [a, b] = currentStallplanMeasureEdge();
+  const roughLenM = Math.hypot(b.x - a.x, b.y - a.y) * plan.gridScale;
+  const input = document.getElementById('stallplaner-measure-input');
+  input.value = '';
+  input.placeholder = `≈ ${roughLenM.toFixed(2)} m laut Skizze`;
+  document.getElementById('stallplaner-measure-back').disabled = stallplanerMeasureIndex === 0;
+  renderStallplanMeasureHighlight();
+  renderStallplanerChrome();
+  input.focus();
+}
+// Zeigt im Plan, wo man gerade steht: die zu messende Kante dick und orange
+// (mit dunklem Rand, damit sie auf jeder Füllung auffällt), bereits
+// gemessene Kanten grün mit ihrem eingetragenen Maß. Nutzt die (sonst nur
+// beim Skizzieren aktive) Vorschau-Ebene — kein zusätzlicher SVG-Layer.
+function renderStallplanMeasureHighlight() {
+  const g = document.getElementById('stallplan-draw-preview-layer');
+  g.innerHTML = '';
+  const pts = stallplanerMeasureOriginalPoints;
+  if (!pts) return;
+  const n = pts.length;
+  const edge = (i) => [pts[i], pts[(i + 1) % n]];
+  // Beschriftung neben (nicht auf) die Kante, nach außen weg vom
+  // Flächenmittelpunkt — sonst streicht die Linie den Text durch.
+  const center = polygonCentroid(pts);
+  const label = (a, b, text, cls, px) => {
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    let nx = -(b.y - a.y) / len, ny = (b.x - a.x) / len;
+    if (nx * (mid.x - center.x) + ny * (mid.y - center.y) < 0) { nx = -nx; ny = -ny; }
+    const off = stallplanScreenSize(px + 6);
+    const t = svgEl('text', { x: mid.x + nx * off, y: mid.y + ny * off, class: 'stallplan-edge-label ' + cls, 'font-size': stallplanScreenSize(px) });
+    t.textContent = text;
+    g.appendChild(t);
+  };
+  for (let i = 0; i < stallplanerMeasureIndex; i++) {
+    const [a, b] = edge(i);
+    g.appendChild(svgEl('line', { x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: 'stallplan-measure-done' }));
+    const len = stallplanerMeasureLengths[i];
+    if (len != null) label(a, b, formatStallplanMeters(len) + ' m', 'stallplan-measure-done-label', 12);
+  }
+  const [a, b] = edge(stallplanerMeasureIndex);
+  g.appendChild(svgEl('line', { x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: 'stallplan-measure-halo' }));
+  g.appendChild(svgEl('line', { x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: 'stallplan-measure-highlight' }));
+  [a, b].forEach(p => g.appendChild(svgEl('circle', { cx: p.x, cy: p.y, r: stallplanScreenSize(6), class: 'stallplan-measure-end' })));
+  label(a, b, '? m', 'stallplan-measure-current-label', 15);
+}
+function submitStallplanMeasureStep() {
+  const input = document.getElementById('stallplaner-measure-input');
+  const val = parseDecimalInput(input.value);
+  if (!Number.isFinite(val) || val <= 0) { input.focus(); return; }
+  stallplanerMeasureLengths[stallplanerMeasureIndex] = val;
+  advanceStallplanMeasureStep();
+}
+function skipStallplanMeasureStep() {
+  const plan = activeStallplan();
+  const [a, b] = currentStallplanMeasureEdge();
+  stallplanerMeasureLengths[stallplanerMeasureIndex] = Math.hypot(b.x - a.x, b.y - a.y) * plan.gridScale;
+  advanceStallplanMeasureStep();
+}
+function advanceStallplanMeasureStep() {
+  stallplanerMeasureIndex++;
+  if (stallplanerMeasureIndex < stallplanerMeasureOriginalPoints.length) showStallplanMeasureStep();
+  else finishStallplanMeasureWalk();
+}
+function backStallplanMeasureStep() {
+  if (stallplanerMeasureIndex === 0) return;
+  stallplanerMeasureIndex--;
+  showStallplanMeasureStep();
+  const prevVal = stallplanerMeasureLengths[stallplanerMeasureIndex];
+  if (prevVal != null) document.getElementById('stallplaner-measure-input').value = prevVal;
+}
+function finishStallplanMeasureWalk() {
+  const plan = activeStallplan();
+  const lengthsGrid = stallplanerMeasureLengths.map(l => l / plan.gridScale);
+  const { points: newPoints, misclosure, freeCorners } = reconstructPolygonFromSketch(stallplanerMeasureOriginalPoints, lengthsGrid);
+  pushStallplanerUndo(); // ein einziger Undo-Schritt für die ganze Vermessung
+  if (stallplanerMeasureTargetKind === 'outline') {
+    plan.outline.points = newPoints;
+  } else {
+    const c = plan.compartments.find(x => x.id === stallplanerMeasureTargetId);
+    if (c) c.points = newPoints;
+  }
+  const misclosureM = misclosure * plan.gridScale;
+  closeStallplanMeasurePanel();
+  stallplanerMode = null;
+  renderStallplan();
+  renderStallplanerSidebar();
+  // Schräge Ecken erwähnen — dort stammt der Winkel (angepasst) aus der
+  // Skizze, nicht aus einer Messung.
+  const schraegHinweis = freeCorners ? ` ${freeCorners} schräge ${freeCorners === 1 ? 'Ecke' : 'Ecken'}: Winkel aus der Skizze, an die Maße angepasst.` : '';
+  stallplanerFlash(misclosureM > 0.05
+    ? `Vermessen abgeschlossen — Schlussfehler ${misclosureM.toFixed(2)} m, bitte Maße stichprobenartig prüfen.${schraegHinweis}`
+    : `Vermessen abgeschlossen — Schlussfehler ${misclosureM.toFixed(2)} m.${schraegHinweis}`);
+}
+function cancelStallplanMeasureWalk() {
+  closeStallplanMeasurePanel();
+  stallplanerMode = null;
+  renderStallplanerChrome();
+}
+function closeStallplanMeasurePanel() {
+  if (stallplanerSheetPanel === 'stallplaner-measure-panel') hideStallplanerSheet();
+  document.getElementById('stallplan-draw-preview-layer').innerHTML = '';
+  stallplanerMeasureTargetKind = null;
+  stallplanerMeasureTargetId = null;
+  stallplanerMeasureOriginalPoints = null;
+  stallplanerMeasureLengths = null;
+  stallplanerMeasureIndex = 0;
+}
+document.getElementById('stallplaner-measure-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); submitStallplanMeasureStep(); }
+  else if (e.key === 'Escape') { e.preventDefault(); cancelStallplanMeasureWalk(); }
+});
+document.getElementById('stallplaner-measure-next').addEventListener('click', submitStallplanMeasureStep);
+document.getElementById('stallplaner-measure-skip').addEventListener('click', skipStallplanMeasureStep);
+document.getElementById('stallplaner-measure-back').addEventListener('click', backStallplanMeasureStep);
+document.getElementById('stallplaner-measure-cancel').addEventListener('click', cancelStallplanMeasureWalk);
+
+// ---- Undo/Redo (Snapshot-basiert statt Action-Objekten — siehe Plan:
+// Stallplaner hat ~10 Mutationsarten über 3 Entitätstypen, ein kompletter
+// Plan-Snapshot ist wenige KB JSON und günstiger als 10 Inverse-Aktionen
+// einzeln zu pflegen). ----
+function pushStallplanerUndo() {
+  const plan = activeStallplan();
+  if (!plan) return;
+  stallplanerUndoStack.push(structuredClone(plan));
+  if (stallplanerUndoStack.length > STALLPLANER_UNDO_MAX) stallplanerUndoStack.shift();
+  stallplanerRedoStack.length = 0;
+  renderStallplanerChrome();
+}
+function replaceActiveStallplan(next) {
+  const idx = stallplaene.findIndex(p => p.id === activeStallplanId);
+  if (idx !== -1) stallplaene[idx] = next;
+}
+function undoStallplaner() {
+  const plan = activeStallplan();
+  if (!plan || !stallplanerUndoStack.length) return;
+  stallplanerRedoStack.push(structuredClone(plan));
+  replaceActiveStallplan(stallplanerUndoStack.pop());
+  stallplanerEditTargetKind = null;
+  stallplanerEditTargetId = null;
+  renderStallplan();
+  renderStallplanerSidebar();
+  renderStallplanerChrome();
+}
+function redoStallplaner() {
+  const plan = activeStallplan();
+  if (!plan || !stallplanerRedoStack.length) return;
+  stallplanerUndoStack.push(structuredClone(plan));
+  replaceActiveStallplan(stallplanerRedoStack.pop());
+  stallplanerEditTargetKind = null;
+  stallplanerEditTargetId = null;
+  renderStallplan();
+  renderStallplanerSidebar();
+  renderStallplanerChrome();
+}
+
+// ---- Zeichnen-Zustandsmaschine ----
+function finishStallplanDraw() {
+  const plan = activeStallplan();
+  const isEquip = stallplanerMode === 'place-equipment';
+  const minPoints = (isEquip && stallplanerEquipGeometryKind === 'line') ? 2 : 3;
+  if (!plan || !stallplanerDrawPoints || stallplanerDrawPoints.length < minPoints) { cancelStallplanDraw(); return; }
+  pushStallplanerUndo();
+  if (stallplanerMode === 'draw-outline') {
+    plan.outline = { points: stallplanerDrawPoints };
+  } else if (stallplanerMode === 'draw-compartment') {
+    plan.compartments.push({
+      id: 'abteil-' + Date.now() + Math.random().toString(36).slice(2),
+      name: `Abteil ${plan.compartments.length + 1}`,
+      points: stallplanerDrawPoints, tierbestand: []
+    });
+  } else if (isEquip) {
+    plan.equipment.push({
+      id: 'eq-' + Date.now() + Math.random().toString(36).slice(2),
+      type: stallplanerEquipType, geometryKind: stallplanerEquipGeometryKind,
+      points: stallplanerDrawPoints, rotationDeg: 0, label: ''
+    });
+  }
+  stallplanerDrawPoints = null;
+  const finishedOutline = stallplanerMode === 'draw-outline';
+  // Ausstattung bleibt scharf, damit sich gleich die nächste Linie/Fläche
+  // desselben Typs zeichnen lässt (wie beim Punkt-Setzen auch schon).
+  if (!isEquip) stallplanerMode = null;
+  if (finishedOutline) stallplanerStep = 'abteile';
+  renderStallplanerChrome();
+  renderStallplan();
+  // renderStallplan() lässt die Zeichenvorschau-Ebene unangetastet (sie
+  // gehört nicht zu den Plan-Daten) — ohne diesen Aufruf bliebe die
+  // gestrichelte Vorschaulinie/die Punkt-Marker des letzten Klicks über
+  // dem fertigen Umriss/Abteil liegen.
+  renderStallplanDrawPreview(null);
+  renderStallplanerSidebar();
+}
+function cancelStallplanDraw() {
+  stallplanerDrawPoints = null;
+  renderStallplanDrawPreview(null);
+  renderStallplanerChrome();
+}
+function disableStallplanerDrawing() {
+  resetStallplanerInteraction();
+  renderStallplanerChrome();
+}
+
+const stallplanSvgEl = document.getElementById('stallplan-svg');
+// Nach einem Verschieben/Pinch feuert der Browser noch einen click — der
+// darf weder einen Punkt setzen noch etwas auswählen (Capture-Phase, damit
+// auch die Klick-Handler der Ebenen darunter nichts davon mitbekommen).
+let stallplanSuppressClick = false;
+let stallplanSuppressTimer = null;
+function suppressNextStallplanClick() {
+  stallplanSuppressClick = true;
+  clearTimeout(stallplanSuppressTimer);
+  stallplanSuppressTimer = setTimeout(() => { stallplanSuppressClick = false; }, 400);
+}
+stallplanSvgEl.addEventListener('click', (e) => {
+  if (!stallplanSuppressClick) return;
+  stallplanSuppressClick = false;
+  e.stopPropagation();
+  e.preventDefault();
+}, true);
+
+stallplanSvgEl.addEventListener('click', (e) => {
+  const plan = activeStallplan();
+  if (!plan) return;
+  const task = stallplanerTask;
+  if (task && task.target === 'compartment' && (task.type === 'rect' || (task.type === 'walls' && !task.segments.length))) {
+    task.start = pickStallplanStartPoint(stallplanSvgPoint(e), plan);
+    renderStallplan();
+    return;
+  }
+  if (task) return;
+  if (stallplanerMode === 'place-equipment' && stallplanerEquipGeometryKind === 'point') {
+    const p = snapStallplanPoint(stallplanSvgPoint(e), plan);
+    pushStallplanerUndo();
+    plan.equipment.push({ id: 'eq-' + Date.now() + Math.random().toString(36).slice(2), type: stallplanerEquipType, geometryKind: 'point', points: [p], rotationDeg: 0, label: '' });
+    renderStallplan();
+    renderStallplanerChrome();
+    return;
+  }
+  if (stallplanDrawModeActive()) {
+    const raw = stallplanSvgPoint(e);
+    if (isNearStallplanDrawStart(raw)) { finishStallplanDraw(); return; }
+    const p = snapStallplanPoint(raw, plan);
+    stallplanerDrawPoints = stallplanerDrawPoints || [];
+    stallplanerDrawPoints.push(p);
+    renderStallplan();
+    renderStallplanDrawPreview(p);
+    return;
+  }
+  // Tipp ins Leere ohne Werkzeug hebt eine Auswahl auf (Formen selbst
+  // behandeln ihre Klicks in den Ebenen-Handlern weiter unten).
+  if (stallplanerMode === null && stallplanerSelection &&
+      !e.target.closest('#stallplan-outline-layer, #stallplan-compartments-layer, #stallplan-equipment-layer')) {
+    selectStallplanItem(null);
+  }
+});
+stallplanSvgEl.addEventListener('pointermove', (e) => {
+  if (e.pointerType !== 'mouse' || stallplanPointers.size > 1) return;
+  if (stallplanDrawModeActive() && stallplanerDrawPoints && stallplanerDrawPoints.length) {
+    const plan = activeStallplan();
+    if (plan) renderStallplanDrawPreview(snapStallplanPoint(stallplanSvgPoint(e), plan));
+  }
+});
+stallplanSvgEl.addEventListener('dblclick', (e) => {
+  if (stallplanDrawModeActive()) { e.preventDefault(); finishStallplanDraw(); }
+});
+// Rechtsklick entfernt beim Zeichnen den zuletzt gesetzten Punkt wieder
+// (Desktop — auf Touch übernimmt das der Button "Letzter Punkt").
+stallplanSvgEl.addEventListener('contextmenu', (e) => {
+  if (stallplanDrawModeActive() && stallplanerDrawPoints && stallplanerDrawPoints.length) {
+    e.preventDefault();
+    stallplanerDrawPoints.pop();
+    const plan = activeStallplan();
+    renderStallplanDrawPreview(plan ? snapStallplanPoint(stallplanSvgPoint(e), plan) : null);
+  }
+});
+
+// ---- Zoomen (Mausrad, Zwei-Finger-Pinch — jederzeit) + Verschieben (ein
+// Finger/Maus nur ohne aktives Werkzeug, sonst wäre der Tipp schon für
+// Zeichnen/Platzieren belegt; zwei Finger immer). ----
+function zoomStallplanAround(anchorGrid, anchorScreenFrac, newW, startBox) {
+  const w = clampStallplanZoomWidth(newW);
+  const h = startBox.h * (w / startBox.w);
+  stallplanerViewBox = { x: anchorGrid.x - anchorScreenFrac.x * w, y: anchorGrid.y - anchorScreenFrac.y * h, w, h };
+  stallplanerViewLocked = true;
+  applyStallplanerViewBox();
+  renderStallplanGrid();
+  rescaleStallplanDynamicElements();
+}
+stallplanSvgEl.addEventListener('wheel', (e) => {
+  const plan = activeStallplan();
+  if (!plan) return;
+  e.preventDefault();
+  const rect = stallplanSvgEl.getBoundingClientRect();
+  const vb = stallplanDisplayBox();
+  const frac = { x: (e.clientX - rect.left) / rect.width, y: (e.clientY - rect.top) / rect.height };
+  const anchor = { x: vb.x + frac.x * vb.w, y: vb.y + frac.y * vb.h };
+  zoomStallplanAround(anchor, frac, vb.w * (e.deltaY > 0 ? 1.15 : 1 / 1.15), vb);
+}, { passive: false });
+
+const stallplanPointers = new Map(); // pointerId -> { x, y } (Bildschirm)
+let stallplanGesture = null; // { type: 'pan'|'pinch', ... }
+function stallplanPinchState() {
+  const [a, b] = [...stallplanPointers.values()];
+  return { dist: Math.hypot(b.x - a.x, b.y - a.y) || 1, mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
+}
+stallplanSvgEl.addEventListener('pointerdown', (e) => {
+  if (e.pointerType === 'mouse' && e.button > 0) return;
+  stallplanPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  const rect = stallplanSvgEl.getBoundingClientRect();
+  if (stallplanPointers.size === 2) {
+    // Zweiter Finger: laufende Skizze/Verschieben pausieren, Pinch starten.
+    const { dist, mid } = stallplanPinchState();
+    const box = stallplanDisplayBox();
+    const frac = { x: (mid.x - rect.left) / rect.width, y: (mid.y - rect.top) / rect.height };
+    stallplanGesture = { type: 'pinch', rect, startDist: dist, startBox: box, anchor: { x: box.x + frac.x * box.w, y: box.y + frac.y * box.h } };
+    return;
+  }
+  if (stallplanPointers.size === 1 && stallplanerMode === null && !stallplanerTask) {
+    e.preventDefault();
+    stallplanGesture = { type: 'pan', rect, startX: e.clientX, startY: e.clientY, startBox: stallplanDisplayBox(), moved: false };
+    stallplanSvgEl.style.cursor = 'grabbing';
+  }
+});
+document.addEventListener('pointermove', (e) => {
+  if (!stallplanPointers.has(e.pointerId)) return;
+  stallplanPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  const g = stallplanGesture;
+  if (!g) return;
+  if (g.type === 'pinch' && stallplanPointers.size >= 2) {
+    const { dist, mid } = stallplanPinchState();
+    const frac = { x: (mid.x - g.rect.left) / g.rect.width, y: (mid.y - g.rect.top) / g.rect.height };
+    scheduleStallplanFrame(() => zoomStallplanAround(g.anchor, frac, g.startBox.w * (g.startDist / dist), g.startBox));
+  } else if (g.type === 'pan') {
+    const dxPx = e.clientX - g.startX, dyPx = e.clientY - g.startY;
+    if (!g.moved && Math.hypot(dxPx, dyPx) < 4) return; // Zittern beim Tippen ist kein Verschieben
+    g.moved = true;
+    scheduleStallplanFrame(() => {
+      stallplanerViewBox = {
+        x: g.startBox.x - (dxPx / g.rect.width) * g.startBox.w,
+        y: g.startBox.y - (dyPx / g.rect.height) * g.startBox.h,
+        w: g.startBox.w, h: g.startBox.h
+      };
+      applyStallplanerViewBox();
+      renderStallplanGrid();
+    });
+  }
+});
+function endStallplanPointer(e) {
+  if (!stallplanPointers.has(e.pointerId)) return;
+  stallplanPointers.delete(e.pointerId);
+  const g = stallplanGesture;
+  if (!g) return;
+  flushStallplanFrame();
+  if (g.type === 'pinch') {
+    if (stallplanPointers.size < 2) { stallplanGesture = null; suppressNextStallplanClick(); }
+  } else if (g.type === 'pan') {
+    stallplanGesture = null;
+    renderStallplanerChrome(); // setzt den Cursor zurück
+    if (g.moved) { stallplanerViewLocked = true; suppressNextStallplanClick(); }
+  }
+}
+document.addEventListener('pointerup', endStallplanPointer);
+document.addEventListener('pointercancel', endStallplanPointer);
+
+// Größe der Zeichenfläche ändert sich z.B., wenn das Sheet auf- oder
+// zugeht oder das Handy gedreht wird — viewBox-Seitenverhältnis und
+// Griffgrößen hängen daran.
+new ResizeObserver(() => {
+  if (document.getElementById('stallplaner-view').hidden) return;
+  applyStallplanerViewBox();
+  renderStallplanGrid();
+  rescaleStallplanDynamicElements();
+}).observe(stallplanSvgEl);
+
+document.addEventListener('keydown', (e) => {
+  if (document.getElementById('stallplaner-view').hidden) return;
+  if (e.key === 'Escape' && stallplanDrawModeActive()) cancelStallplanDraw();
+  else if (e.key === 'Enter' && stallplanDrawModeActive()) finishStallplanDraw();
+});
+
+document.getElementById('stallplan-outline-layer').addEventListener('click', (e) => {
+  if (e.target.tagName !== 'polygon' || stallplanerTask) return;
+  const plan = activeStallplan();
+  if (!plan) return;
+  if (stallplanerMode === null) {
+    e.stopPropagation();
+    selectStallplanItem('outline');
+  } else if (stallplanerMode === 'edit-vertex') {
+    // Nur beim tatsächlichen Wechsel der Auswahl neu fokussieren — sonst
+    // würde ein erneuter Klick auf die bereits ausgewählte Form eine evtl.
+    // zusätzlich manuell nachjustierte Zoomstufe wieder verwerfen.
+    const changed = stallplanerEditTargetKind !== 'outline';
+    stallplanerEditTargetKind = 'outline';
+    stallplanerEditTargetId = null;
+    if (changed) focusStallplanShape(plan.outline.points);
+    renderStallplan();
+  } else if (stallplanerMode === 'measure') {
+    startStallplanMeasureWalk('outline', null, plan.outline.points);
+  } else if (stallplanerMode === 'delete') {
+    if (!confirm('Umriss wirklich löschen?')) return;
+    pushStallplanerUndo();
+    plan.outline = null;
+    stallplanerStep = 'umriss';
+    renderStallplan();
+    renderStallplanerSidebar();
+  }
+});
+document.getElementById('stallplan-compartments-layer').addEventListener('click', (e) => {
+  const wrap = e.target.closest('.stallplan-compartment');
+  if (!wrap || stallplanerTask) return;
+  const plan = activeStallplan();
+  if (!plan) return;
+  const id = wrap.getAttribute('data-id');
+  if (stallplanerMode === null) {
+    e.stopPropagation();
+    selectStallplanItem('compartment', id);
+  } else if (stallplanerMode === 'edit-vertex') {
+    const changed = stallplanerEditTargetKind !== 'compartment' || stallplanerEditTargetId !== id;
+    stallplanerEditTargetKind = 'compartment';
+    stallplanerEditTargetId = id;
+    if (changed) {
+      const target = plan.compartments.find(c => c.id === id);
+      if (target) focusStallplanShape(target.points);
+    }
+    renderStallplan();
+  } else if (stallplanerMode === 'measure') {
+    const target = plan.compartments.find(c => c.id === id);
+    if (target) startStallplanMeasureWalk('compartment', id, target.points);
+  } else if (stallplanerMode === 'delete') {
+    pushStallplanerUndo();
+    plan.compartments = plan.compartments.filter(c => c.id !== id);
+    renderStallplan();
+    renderStallplanerSidebar();
+  }
+});
+document.getElementById('stallplan-equipment-layer').addEventListener('click', (e) => {
+  const wrap = e.target.closest('.stallplan-equipment');
+  if (!wrap || stallplanerTask) return;
+  const plan = activeStallplan();
+  if (!plan) return;
+  const id = wrap.getAttribute('data-id');
+  const item = plan.equipment.find(x => x.id === id);
+  if (!item) return;
+  if (stallplanerMode === null) {
+    e.stopPropagation();
+    selectStallplanItem('equipment', id);
+    return;
+  }
+  // Nur Linie/Fläche haben mehrere Eckpunkte, die sich einzeln auswählen/
+  // bearbeiten lassen — ein Punkt-Element lässt sich direkt per Ganz-
+  // Element-Drag verschieben (siehe wireStallplanEquipmentBodyDrag()).
+  if (stallplanerMode === 'edit-vertex' && item.geometryKind !== 'point') {
+    const changed = stallplanerEditTargetKind !== 'equipment' || stallplanerEditTargetId !== id;
+    stallplanerEditTargetKind = 'equipment';
+    stallplanerEditTargetId = id;
+    if (changed) focusStallplanShape(item.points);
+    renderStallplan();
+  } else if (stallplanerMode === 'delete') {
+    pushStallplanerUndo();
+    plan.equipment = plan.equipment.filter(x => x.id !== id);
+    renderStallplan();
+  }
+});
+
+// ---- Vor-Ort-Oberfläche: Schrittleiste, Aktionsleiste, Hinweis, Startkarte ----
+// Der Stallplan wird im Stall mit Handy/Tablet erfasst: statt einer Leiste
+// unbeschrifteter Icons führt eine feste Schrittfolge (Umriss → Abteile →
+// Ausstattung → Tiere) durch den Plan, die untere Leiste zeigt nur die im
+// aktuellen Schritt sinnvollen Aktionen, und der Hinweis oben sagt immer
+// genau, was als Nächstes zu tun ist.
+const STALLPLANER_STEPS = ['umriss', 'abteile', 'ausstattung', 'tiere'];
+const STALLPLANER_TASK_PANELS = ['stallplaner-panel-rect', 'stallplaner-panel-walls', 'stallplaner-panel-split', 'stallplaner-measure-panel'];
+const STALLPLANER_EQUIP_LABELS = {
+  traenke: 'Tränke', raufe: 'Raufe', futterautomat: 'Futterautomat', nest: 'Nest',
+  sitzstange: 'Sitzstange', tuer: 'Tür', fenster: 'Fenster', futtergang: 'Futtergang'
+};
+
+function isWideStallplanerLayout() {
+  return window.matchMedia('(min-width: 861px)').matches;
+}
+
+function stallplanerFlash(msg) {
+  document.getElementById('stallplaner-status').textContent = msg;
+  stallplanerFlashMsg = msg;
+  clearTimeout(stallplanerFlashTimer);
+  stallplanerFlashTimer = setTimeout(() => { stallplanerFlashMsg = null; renderStallplanerChrome(); }, 5000);
+  renderStallplanerChrome();
+}
+
+function stallplanerHintText(plan) {
+  if (stallplanerFlashMsg) return stallplanerFlashMsg;
+  if (!plan) return '';
+  const task = stallplanerTask;
+  if (task && task.type === 'walls') {
+    if (task.target === 'compartment' && !task.segments.length) return 'Tippe die Ecke an, an der das Abteil beginnt (orange) — oder gib gleich die erste Wand ein.';
+    return 'Länge der nächsten Wand eintippen, dann die Richtung antippen.';
+  }
+  if (task && task.type === 'rect' && task.target === 'compartment') return 'Startecke antippen (orange). Das Abteil wird von dort ins Stallinnere aufgespannt.';
+  if (task) return '';
+  if (stallplanerMeasureOriginalPoints) {
+    return `Kante ${stallplanerMeasureIndex + 1} von ${stallplanerMeasureOriginalPoints.length} messen (orange markiert) und unten eintragen.`;
+  }
+  if (stallplanDrawModeActive()) {
+    if (stallplanerMode === 'place-equipment' && stallplanerEquipGeometryKind === 'line') return 'Anfang und Ende antippen, dann „Fertig".';
+    return 'Ecken nacheinander antippen. Zum Schließen den ersten Punkt antippen oder „Fertig".';
+  }
+  switch (stallplanerMode) {
+    case 'place-equipment': return `${STALLPLANER_EQUIP_LABELS[stallplanerEquipType] || 'Ausstattung'}: Stelle im Plan antippen — auch mehrmals nacheinander.`;
+    case 'edit-vertex': return 'Form antippen, dann Ecken ziehen oder eine Maßzahl antippen, um sie zu ändern.';
+    case 'measure': return 'Umriss oder Abteil antippen, das du vermessen willst.';
+    case 'delete': return 'Antippen, was gelöscht werden soll.';
+  }
+  const m2 = (pts) => (shoelaceArea(pts) * plan.gridScale * plan.gridScale).toFixed(1).replace('.', ',');
+  if (stallplanerStep === 'umriss') return plan.outline ? `Stall: ${m2(plan.outline.points)} m². Weiter mit „2 Abteile" — oder „Vermessen", um Maße zu korrigieren.` : '';
+  if (stallplanerStep === 'abteile') return plan.compartments.length
+    ? 'Abteil antippen für Details. Weiter mit „3 Ausstattung" oder „4 Tiere".'
+    : '„Teilen" legt eine Buchtenreihe an, „Abteil" ein einzelnes Abteil.';
+  if (stallplanerStep === 'ausstattung') return '„Platzieren" antippen, Art wählen und im Plan antippen. Antippen einer Ausstattung zeigt sie an.';
+  if (stallplanerStep === 'tiere') {
+    if (!plan.compartments.length) return 'Erst Abteile anlegen (Schritt 2), dann hier Tierzahlen eintragen.';
+    return isWideStallplanerLayout() ? 'Tierart und Tierzahlen links in der Abteil-Liste eintragen.' : 'Tierart und Tierzahlen unten je Abteil eintragen.';
+  }
+  return '';
+}
+
+function renderStallplanerChrome() {
+  const plan = activeStallplan();
+  const done = {
+    umriss: !!(plan && plan.outline),
+    abteile: !!(plan && plan.compartments.length),
+    ausstattung: !!(plan && plan.equipment.length),
+    tiere: !!(plan && plan.compartments.some(c => c.tierbestand.some(tb => tb.kategorieId && tb.tieranzahl)))
+  };
+  document.querySelectorAll('.stallplaner-step').forEach(btn => {
+    const step = btn.getAttribute('data-step');
+    btn.classList.toggle('active', step === stallplanerStep);
+    btn.classList.toggle('done', done[step]);
+    btn.querySelector('.stallplaner-step-num').textContent = done[step] ? '✓' : String(STALLPLANER_STEPS.indexOf(step) + 1);
+    btn.disabled = !plan;
+  });
+
+  const drawing = stallplanDrawModeActive();
+  const hasGeometry = !!plan && !!(plan.outline || plan.compartments.length || plan.equipment.length);
+  const visibleByKey = {
+    'drawing': drawing,
+    'create-outline': stallplanerStep === 'umriss' && !!plan && !plan.outline,
+    'abteile': stallplanerStep === 'abteile',
+    'ausstattung': stallplanerStep === 'ausstattung',
+    'tiere': stallplanerStep === 'tiere',
+    'geometry': stallplanerStep !== 'tiere' && hasGeometry,
+    'measure': stallplanerStep !== 'tiere' && !!plan && !!(plan.outline || plan.compartments.length)
+  };
+  document.querySelectorAll('#stallplaner-actions .stallplaner-act').forEach(btn => {
+    const key = btn.getAttribute('data-show');
+    btn.hidden = drawing ? key !== 'drawing' : !visibleByKey[key];
+  });
+  document.querySelectorAll('#stallplaner-view [data-tool]').forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('data-tool') === stallplanerMode);
+  });
+  // Ein aktives Ausstattungs-Werkzeug beendet man mit demselben Button —
+  // "Fertig" sagt das deutlicher als ein nur hervorgehobenes "Platzieren".
+  document.querySelector('#stallplaner-tool-equipment span:last-child').textContent = stallplanerMode === 'place-equipment' ? 'Fertig' : 'Platzieren';
+  document.getElementById('stallplaner-actionbar').hidden = !plan || STALLPLANER_TASK_PANELS.includes(stallplanerSheetPanel);
+  document.getElementById('stallplaner-undo').disabled = !stallplanerUndoStack.length;
+  document.getElementById('stallplaner-redo').disabled = !stallplanerRedoStack.length;
+
+  const startCard = document.getElementById('stallplaner-start-card');
+  const showOutlineStart = !!plan && stallplanerStep === 'umriss' && !plan.outline && !plan.compartments.length &&
+    !plan.equipment.length && stallplanerMode === null && !stallplanerSheetPanel;
+  startCard.hidden = !!plan && !showOutlineStart;
+  document.getElementById('stallplaner-start-noplan').hidden = !!plan;
+  document.getElementById('stallplaner-start-outline').hidden = !showOutlineStart;
+
+  const hint = document.getElementById('stallplaner-draw-hint');
+  const text = startCard.hidden ? stallplanerHintText(plan) : '';
+  hint.textContent = text;
+  hint.hidden = !text;
+  hint.classList.toggle('flash', !!stallplanerFlashMsg);
+
+  const cursors = {
+    'draw-outline': 'crosshair', 'draw-compartment': 'crosshair',
+    'place-equipment': 'copy', 'measure': 'crosshair', 'delete': 'not-allowed'
+  };
+  // Kein Werkzeug aktiv -> Ziehen verschiebt die Ansicht, "grab" signalisiert das.
+  stallplanSvgEl.style.cursor = stallplanerTask ? 'crosshair' : (cursors[stallplanerMode] || (stallplanerMode === 'edit-vertex' ? 'default' : 'grab'));
+}
+
+// ---- Bottom Sheet (ein gemeinsamer Platz für alle Eingaben) ----
+function openStallplanerSheet(panelId, title) {
+  document.querySelectorAll('#stallplaner-sheet .stallplaner-panel').forEach(p => { p.hidden = p.id !== panelId; });
+  if (panelId !== 'stallplaner-panel-selection') document.getElementById('stallplaner-panel-selection').innerHTML = '';
+  if (panelId !== 'stallplaner-panel-animals') document.getElementById('stallplaner-animals-list').innerHTML = '';
+  document.getElementById('stallplaner-sheet-title').textContent = title;
+  document.getElementById('stallplaner-sheet').hidden = false;
+  stallplanerSheetPanel = panelId;
+  renderStallplanerChrome();
+}
+// Nur ausblenden, ohne Seiteneffekte — Aufräumen der jeweiligen Aufgabe
+// übernimmt cancelStallplanerSheet() bzw. die Aufgabe selbst.
+function hideStallplanerSheet() {
+  document.getElementById('stallplaner-sheet').hidden = true;
+  document.querySelectorAll('#stallplaner-sheet .stallplaner-panel').forEach(p => { p.hidden = true; });
+  // Dynamisch gerenderte Karten leeren — sonst lägen veraltete, versteckte
+  // Kopien derselben Abteil-Karte weiter im DOM.
+  document.getElementById('stallplaner-panel-selection').innerHTML = '';
+  document.getElementById('stallplaner-animals-list').innerHTML = '';
+  stallplanerSheetPanel = null;
+  renderStallplanerChrome();
+}
+function cancelStallplanerSheet() {
+  const panel = stallplanerSheetPanel;
+  if (panel === 'stallplaner-measure-panel') { cancelStallplanMeasureWalk(); return; }
+  if (panel === 'stallplaner-panel-equipment' && stallplanerMode === 'place-equipment') {
+    cancelStallplanDraw();
+    stallplanerMode = null;
+  }
+  if (panel === 'stallplaner-panel-selection') stallplanerSelection = null;
+  endStallplanTask();
+  hideStallplanerSheet();
+  renderStallplan();
+  renderStallplanerSidebar();
+}
+document.getElementById('stallplaner-sheet-close').addEventListener('click', cancelStallplanerSheet);
+document.querySelectorAll('#stallplaner-sheet [data-sheet-cancel]').forEach(btn => btn.addEventListener('click', cancelStallplanerSheet));
+
+// Beendet Werkzeug, laufende Skizze, Aufgabe (Rechteck/Wände/Teilen),
+// Vermessen und Auswahl — Ausgangspunkt für jede neue Aktion.
+function resetStallplanerInteraction() {
+  if (stallplanerDrawPoints) cancelStallplanDraw();
+  if (stallplanerMeasureOriginalPoints) closeStallplanMeasurePanel();
+  endStallplanTask();
+  stallplanerMode = null;
+  stallplanerEditTargetKind = null;
+  stallplanerEditTargetId = null;
+  stallplanerSelection = null;
+  closeEdgeLengthEditor();
+  document.getElementById('stallplaner-more-menu').hidden = true;
+  if (stallplanerSheetPanel) hideStallplanerSheet();
+}
+
+function setStallplanerStep(step) {
+  resetStallplanerInteraction();
+  stallplanerStep = step;
+  if (step === 'tiere' && !isWideStallplanerLayout() && activeStallplan()) openStallplanerAnimalsPanel();
+  renderStallplan();
+  renderStallplanerSidebar();
+}
+document.querySelectorAll('.stallplaner-step').forEach(btn => {
+  btn.addEventListener('click', () => setStallplanerStep(btn.getAttribute('data-step')));
+});
+
+function activateStallplanerTool(tool) {
+  const next = stallplanerMode === tool ? null : tool;
+  resetStallplanerInteraction();
+  stallplanerMode = next;
+  // Eine neu gestartete Zeichnung soll immer sichtbar mitwachsen, auch
+  // wenn die Ansicht vorher manuell weggezoomt/verschoben war.
+  if (next === 'draw-outline' || next === 'draw-compartment') stallplanerViewLocked = false;
+  if (next === 'place-equipment') openStallplanerSheet('stallplaner-panel-equipment', 'Ausstattung platzieren');
+  renderStallplanerChrome();
+  renderStallplan();
+}
+document.querySelectorAll('#stallplaner-view [data-tool]').forEach(btn => {
+  btn.addEventListener('click', () => activateStallplanerTool(btn.getAttribute('data-tool')));
+});
+
+function updateStallplanerEquipGeometryToggle() {
+  document.querySelectorAll('#stallplaner-equip-geometry-toggle [data-geometry]').forEach(b => {
+    b.classList.toggle('active', b.getAttribute('data-geometry') === stallplanerEquipGeometryKind);
+  });
+}
+document.querySelectorAll('#stallplaner-equip-grid [data-equip]').forEach(btn => {
+  if (btn.getAttribute('data-equip') === stallplanerEquipType) btn.classList.add('active');
+  btn.addEventListener('click', () => {
+    if (stallplanerDrawPoints) cancelStallplanDraw();
+    stallplanerEquipType = btn.getAttribute('data-equip');
+    // Schlägt eine zum Typ passende Form vor (z.B. Sitzstange -> Linie),
+    // bleibt aber jederzeit über den Formen-Umschalter überschreibbar.
+    stallplanerEquipGeometryKind = STALLPLANER_EQUIP_DEFAULT_GEOMETRY[stallplanerEquipType] || 'point';
+    document.querySelectorAll('#stallplaner-equip-grid [data-equip]').forEach(b => b.classList.toggle('active', b === btn));
+    updateStallplanerEquipGeometryToggle();
+    renderStallplanerChrome();
+  });
+});
+document.querySelectorAll('#stallplaner-equip-geometry-toggle [data-geometry]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (stallplanerDrawPoints) cancelStallplanDraw();
+    stallplanerEquipGeometryKind = btn.getAttribute('data-geometry');
+    updateStallplanerEquipGeometryToggle();
+    renderStallplanerChrome();
+  });
+});
+updateStallplanerEquipGeometryToggle();
+
+// Skizzieren ohne Doppelklick/Rechtsklick (Touch hat beides nicht).
+document.getElementById('stallplaner-draw-finish').addEventListener('click', () => finishStallplanDraw());
+document.getElementById('stallplaner-draw-cancel').addEventListener('click', () => {
+  cancelStallplanDraw();
+  stallplanerMode = null;
+  renderStallplanerChrome();
+  renderStallplan();
+});
+document.getElementById('stallplaner-draw-undo-point').addEventListener('click', () => {
+  if (!stallplanerDrawPoints || !stallplanerDrawPoints.length) return;
+  stallplanerDrawPoints.pop();
+  if (!stallplanerDrawPoints.length) stallplanerDrawPoints = null;
+  renderStallplanDrawPreview(null);
+});
+
+document.getElementById('stallplaner-undo').addEventListener('click', undoStallplaner);
+document.getElementById('stallplaner-redo').addEventListener('click', redoStallplaner);
+document.getElementById('stallplaner-fit-view').addEventListener('click', fitStallplanerView);
+document.getElementById('stallplaner-act-pdf').addEventListener('click', () => exportStallplanPDF());
+
+const stallplanerMoreMenu = document.getElementById('stallplaner-more-menu');
+document.getElementById('stallplaner-more-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  stallplanerMoreMenu.hidden = !stallplanerMoreMenu.hidden;
+  document.getElementById('stallplaner-more-btn').setAttribute('aria-expanded', String(!stallplanerMoreMenu.hidden));
+});
+stallplanerMoreMenu.addEventListener('click', (e) => e.stopPropagation());
+document.addEventListener('click', () => {
+  if (!stallplanerMoreMenu.hidden) {
+    stallplanerMoreMenu.hidden = true;
+    document.getElementById('stallplaner-more-btn').setAttribute('aria-expanded', 'false');
+  }
+});
+
+document.getElementById('stallplaner-start-new-plan').addEventListener('click', () => {
+  document.getElementById('stallplaner-new-plan').click();
+});
+
+document.querySelectorAll('#stallplaner-view [data-act]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const act = btn.getAttribute('data-act');
+    if (act === 'rect-outline') openStallplanRectPanel('outline');
+    else if (act === 'sketch-outline') activateStallplanerTool('draw-outline');
+    else if (act === 'rect-compartment') openStallplanRectPanel('compartment');
+    else if (act === 'walls-outline') openStallplanWallsPanel('outline');
+    else if (act === 'walls-compartment') openStallplanWallsPanel('compartment');
+    else if (act === 'add-compartment') {
+      resetStallplanerInteraction();
+      openStallplanerSheet('stallplaner-panel-add-compartment', 'Abteil hinzufügen');
+    } else if (act === 'split') {
+      const sel = stallplanerSelection;
+      openStallplanSplitPanel(sel && sel.kind === 'compartment' ? { kind: 'compartment', id: sel.id } : { kind: 'outline' });
+    } else if (act === 'animals') {
+      resetStallplanerInteraction();
+      openStallplanerAnimalsPanel();
+    }
+  });
+});
+
+// ---- Aufgaben mit Maß-Eingabe (Rechteck, Wand für Wand, Buchten teilen) ----
+function endStallplanTask() {
+  if (!stallplanerTask) return;
+  stallplanerTask = null;
+  document.getElementById('stallplan-draw-preview-layer').innerHTML = '';
+}
+
+function defaultStallplanCompartmentStart(plan) {
+  return plan.outline ? { ...plan.outline.points[0] } : { x: 0, y: 0 };
+}
+
+// Tippen während einer Aufgabe wählt die Startecke: rastet auf die nächste
+// vorhandene Ecke (Umriss/Abteile) im Fingerbereich ein, sonst aufs Raster.
+function pickStallplanStartPoint(raw, plan) {
+  const tol = stallplanScreenSize(STALLPLAN_CLOSE_TOLERANCE_PX);
+  let best = null, bestDist = Infinity;
+  const candidates = [];
+  if (plan.outline) candidates.push(...plan.outline.points);
+  plan.compartments.forEach(c => candidates.push(...c.points));
+  candidates.forEach(p => {
+    const d = Math.hypot(p.x - raw.x, p.y - raw.y);
+    if (d < bestDist) { bestDist = d; best = p; }
+  });
+  if (best && bestDist <= tol) return { ...best };
+  return snapStallplanPoint(raw, plan);
+}
+
+// Stellt ein im Plan-Koordinatensystem (Rastereinheiten) aus Metern
+// gemessenes Rechteck an der Startecke auf — bei Abteilen in den Quadranten,
+// der im Stallinneren liegt (Startecke kann jede Umriss-Ecke sein).
+function stallplanRectFromStart(plan, start, lengthM, widthM, target) {
+  const w = lengthM / plan.gridScale, h = widthM / plan.gridScale;
+  const make = (sx, sy) => [
+    { x: start.x, y: start.y }, { x: start.x + sx * w, y: start.y },
+    { x: start.x + sx * w, y: start.y + sy * h }, { x: start.x, y: start.y + sy * h }
+  ];
+  if (target === 'compartment' && plan.outline) {
+    for (const [sx, sy] of [[1, 1], [-1, 1], [1, -1], [-1, -1]]) {
+      const pts = make(sx, sy);
+      if (pointInPolygon(polygonCentroid(pts), plan.outline.points)) return pts;
+    }
+  }
+  return make(1, 1);
+}
+
+function openStallplanRectPanel(target) {
+  const plan = activeStallplan();
+  if (!plan) return;
+  resetStallplanerInteraction();
+  stallplanerTask = { type: 'rect', target, start: target === 'compartment' ? defaultStallplanCompartmentStart(plan) : { x: 0, y: 0 } };
+  document.getElementById('stallplaner-rect-length').value = '';
+  document.getElementById('stallplaner-rect-width').value = '';
+  document.getElementById('stallplaner-rect-error').hidden = true;
+  document.getElementById('stallplaner-rect-hint').textContent = target === 'outline'
+    ? 'Innenmaße des Stalls. Die Länge wird waagerecht gezeichnet.'
+    : 'Startecke im Plan antippen (orange), dann Maße eingeben.';
+  openStallplanerSheet('stallplaner-panel-rect', target === 'outline' ? 'Rechteckiger Stall' : 'Rechteckiges Abteil');
+  renderStallplan();
+  document.getElementById('stallplaner-rect-length').focus();
+}
+
+function readStallplanRectInputs() {
+  return {
+    lengthM: parseDecimalInput(document.getElementById('stallplaner-rect-length').value),
+    widthM: parseDecimalInput(document.getElementById('stallplaner-rect-width').value)
+  };
+}
+
+function applyStallplanRect() {
+  const plan = activeStallplan();
+  const task = stallplanerTask;
+  if (!plan || !task || task.type !== 'rect') return;
+  const { lengthM, widthM } = readStallplanRectInputs();
+  const errorEl = document.getElementById('stallplaner-rect-error');
+  if (!(lengthM > 0) || !(widthM > 0)) {
+    errorEl.textContent = 'Bitte Länge und Breite in Metern eingeben, z.B. 24,5.';
+    errorEl.hidden = false;
+    return;
+  }
+  const points = stallplanRectFromStart(plan, task.start, lengthM, widthM, task.target);
+  commitStallplanTaskShape(plan, task.target, points);
+}
+document.getElementById('stallplaner-rect-apply').addEventListener('click', applyStallplanRect);
+['stallplaner-rect-length', 'stallplaner-rect-width'].forEach(id => {
+  const input = document.getElementById(id);
+  input.addEventListener('input', () => {
+    document.getElementById('stallplaner-rect-error').hidden = true;
+    renderStallplan();
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    if (id === 'stallplaner-rect-length') document.getElementById('stallplaner-rect-width').focus();
+    else applyStallplanRect();
+  });
+});
+
+// Übernimmt eine per Maß-Eingabe entstandene Form als Umriss bzw. neues
+// Abteil — ein Undo-Schritt, danach automatisch weiter zum nächsten Schritt.
+function commitStallplanTaskShape(plan, target, points) {
+  pushStallplanerUndo();
+  if (target === 'outline') {
+    plan.outline = { points };
+  } else {
+    plan.compartments.push({
+      id: 'abteil-' + Date.now() + Math.random().toString(36).slice(2),
+      name: `Abteil ${plan.compartments.length + 1}`,
+      points, tierbestand: []
+    });
+  }
+  endStallplanTask();
+  hideStallplanerSheet();
+  stallplanerViewLocked = false;
+  const areaM2 = (shoelaceArea(points) * plan.gridScale * plan.gridScale).toFixed(1).replace('.', ',');
+  if (target === 'outline') {
+    stallplanerStep = 'abteile';
+    fitStallplanerView();
+    renderStallplan();
+    renderStallplanerSidebar();
+    stallplanerFlash(`Stall mit ${areaM2} m² angelegt. Jetzt Abteile anlegen oder den Stall in Buchten teilen.`);
+  } else {
+    renderStallplan();
+    renderStallplanerSidebar();
+    stallplanerFlash(`Abteil mit ${areaM2} m² angelegt.`);
+  }
+}
+
+const STALLPLAN_WALL_DIRS = { right: { x: 1, y: 0 }, left: { x: -1, y: 0 }, down: { x: 0, y: 1 }, up: { x: 0, y: -1 } };
+const STALLPLAN_WALL_DIR_OPPOSITE = { right: 'left', left: 'right', up: 'down', down: 'up' };
+
+function openStallplanWallsPanel(target) {
+  const plan = activeStallplan();
+  if (!plan) return;
+  resetStallplanerInteraction();
+  stallplanerTask = { type: 'walls', target, start: target === 'compartment' ? defaultStallplanCompartmentStart(plan) : { x: 0, y: 0 }, segments: [] };
+  document.getElementById('stallplaner-walls-length').value = '';
+  document.getElementById('stallplaner-walls-error').hidden = true;
+  document.getElementById('stallplaner-walls-hint').textContent = target === 'outline'
+    ? 'An einer Stallecke beginnen und einmal im Kreis messen — Länge eintippen, Richtung antippen, nächste Wand.'
+    : 'Ab der orangen Startecke Wand für Wand um das Abteil herum messen.';
+  updateStallplanWallsSummary();
+  openStallplanerSheet('stallplaner-panel-walls', target === 'outline' ? 'Stall Wand für Wand' : 'Abteil Wand für Wand');
+  renderStallplan();
+  document.getElementById('stallplaner-walls-length').focus();
+}
+
+function stallplanWallsPoints(task, plan) {
+  const pts = [{ ...task.start }];
+  task.segments.forEach(seg => {
+    const last = pts[pts.length - 1];
+    const d = STALLPLAN_WALL_DIRS[seg.dir];
+    pts.push({ x: last.x + d.x * seg.lengthM / plan.gridScale, y: last.y + d.y * seg.lengthM / plan.gridScale });
+  });
+  return pts;
+}
+
+function formatStallplanMeters(m) {
+  return (Math.round(m * 100) / 100).toFixed(2).replace('.', ',');
+}
+
+function updateStallplanWallsSummary() {
+  const task = stallplanerTask;
+  const plan = activeStallplan();
+  const el = document.getElementById('stallplaner-walls-summary');
+  if (!task || !plan) { el.textContent = ''; return; }
+  document.getElementById('stallplaner-walls-undo').disabled = !task.segments.length;
+  document.getElementById('stallplaner-walls-close').disabled = task.segments.length < 2;
+  if (!task.segments.length) { el.textContent = 'Noch keine Wand eingegeben.'; return; }
+  const pts = stallplanWallsPoints(task, plan);
+  const end = pts[pts.length - 1];
+  const gapM = Math.hypot(end.x - task.start.x, end.y - task.start.y) * plan.gridScale;
+  el.textContent = `${task.segments.length} ${task.segments.length === 1 ? 'Wand' : 'Wände'} · bis zum Startpunkt fehlen ${formatStallplanMeters(gapM)} m`;
+}
+
+// Hält die bisher eingegebenen Wände mittig im Bild — der Stall wächst beim
+// Eintippen sonst aus dem sichtbaren Bereich bzw. unter den Hinweis.
+function focusStallplanWalls() {
+  const plan = activeStallplan();
+  const task = stallplanerTask;
+  if (!plan || !task || task.type !== 'walls') return;
+  const pts = stallplanWallsPoints(task, plan);
+  if (pts.length > 1) focusStallplanShape(pts);
+}
+function addStallplanWall(dir) {
+  const task = stallplanerTask;
+  if (!task || task.type !== 'walls') return;
+  const input = document.getElementById('stallplaner-walls-length');
+  const errorEl = document.getElementById('stallplaner-walls-error');
+  const lengthM = parseDecimalInput(input.value);
+  if (!(lengthM > 0)) {
+    errorEl.textContent = 'Erst die Länge der Wand in Metern eintippen, dann die Richtung.';
+    errorEl.hidden = false;
+    input.focus();
+    return;
+  }
+  const last = task.segments[task.segments.length - 1];
+  if (last && STALLPLAN_WALL_DIR_OPPOSITE[last.dir] === dir) {
+    errorEl.textContent = 'Diese Richtung läuft auf der letzten Wand zurück — bitte eine andere Richtung wählen.';
+    errorEl.hidden = false;
+    return;
+  }
+  errorEl.hidden = true;
+  task.segments.push({ dir, lengthM });
+  input.value = '';
+  input.focus();
+  updateStallplanWallsSummary();
+  focusStallplanWalls();
+  renderStallplan();
+  renderStallplanerChrome();
+}
+document.querySelectorAll('#stallplaner-walls-pad [data-dir]').forEach(btn => {
+  btn.addEventListener('click', () => addStallplanWall(btn.getAttribute('data-dir')));
+});
+document.getElementById('stallplaner-walls-length').addEventListener('input', () => {
+  document.getElementById('stallplaner-walls-error').hidden = true;
+});
+document.getElementById('stallplaner-walls-undo').addEventListener('click', () => {
+  const task = stallplanerTask;
+  if (!task || task.type !== 'walls' || !task.segments.length) return;
+  const removed = task.segments.pop();
+  document.getElementById('stallplaner-walls-length').value = String(removed.lengthM).replace('.', ',');
+  updateStallplanWallsSummary();
+  focusStallplanWalls();
+  renderStallplan();
+});
+
+function closeStallplanWalls() {
+  const plan = activeStallplan();
+  const task = stallplanerTask;
+  if (!plan || !task || task.type !== 'walls') return;
+  const errorEl = document.getElementById('stallplaner-walls-error');
+  if (task.segments.length < 2) {
+    errorEl.textContent = 'Mindestens zwei Wände eingeben.';
+    errorEl.hidden = false;
+    return;
+  }
+  const pts = stallplanWallsPoints(task, plan);
+  const end = pts[pts.length - 1];
+  const dxM = (task.start.x - end.x) * plan.gridScale, dyM = (task.start.y - end.y) * plan.gridScale;
+  const eps = 0.005;
+  let points = pts;
+  let note = '';
+  if (Math.abs(dxM) < eps && Math.abs(dyM) < eps) {
+    points = pts.slice(0, -1); // letzte Wand endet genau am Start
+  } else if (Math.abs(dxM) < eps || Math.abs(dyM) < eps) {
+    note = ` Letzte Wand (${formatStallplanMeters(Math.hypot(dxM, dyM))} m) automatisch ergänzt.`;
+  } else if (!confirm(`Die Wände treffen den Startpunkt nicht (${formatStallplanMeters(Math.abs(dxM))} m waagerecht und ${formatStallplanMeters(Math.abs(dyM))} m senkrecht daneben). Mit einer schrägen Wand schließen?`)) {
+    return;
+  }
+  points = simplifyCollinearPoints(points);
+  if (points.length < 3) {
+    errorEl.textContent = 'Die Wände ergeben keine Fläche — bitte prüfen.';
+    errorEl.hidden = false;
+    return;
+  }
+  commitStallplanTaskShape(plan, task.target, points);
+  if (note) stallplanerFlash(document.getElementById('stallplaner-status').textContent + note);
+}
+document.getElementById('stallplaner-walls-close').addEventListener('click', closeStallplanWalls);
+
+// Buchten teilen: nur für achsenparallele Rechtecke (typische Buchtenreihe),
+// Breiten entlang der gewählten Richtung, Rest wird die letzte Bucht.
+function stallplanSplitTargetPoints(plan, target) {
+  if (!target) return null;
+  if (target.kind === 'outline') return plan.outline ? plan.outline.points : null;
+  const c = plan.compartments.find(x => x.id === target.id);
+  return c ? c.points : null;
+}
+
+function openStallplanSplitPanel(target) {
+  const plan = activeStallplan();
+  if (!plan) return;
+  let points = stallplanSplitTargetPoints(plan, target);
+  // Kein Umriss, aber genau ein Abteil -> das ist offensichtlich gemeint.
+  if (!points && target.kind === 'outline' && plan.compartments.length === 1) {
+    target = { kind: 'compartment', id: plan.compartments[0].id };
+    points = plan.compartments[0].points;
+  }
+  if (!points) { stallplanerFlash('Zum Teilen zuerst den Stall-Umriss anlegen.'); return; }
+  const bounds = axisAlignedRectBounds(points);
+  if (!bounds) { stallplanerFlash('Teilen geht nur bei rechteckigen Flächen — ein Abteil lässt sich sonst über „Abteil" einzeln anlegen.'); return; }
+  resetStallplanerInteraction();
+  const wM = (bounds.maxX - bounds.minX) * plan.gridScale, hM = (bounds.maxY - bounds.minY) * plan.gridScale;
+  stallplanerTask = { type: 'split', target, bounds, dir: wM >= hM ? 'x' : 'y' };
+  const name = target.kind === 'outline' ? 'Ganzer Stall' : (plan.compartments.find(c => c.id === target.id) || {}).name;
+  document.getElementById('stallplaner-split-target').textContent = `${name}: ${formatStallplanMeters(wM)} m × ${formatStallplanMeters(hM)} m`;
+  document.getElementById('stallplaner-split-widths').value = '';
+  document.getElementById('stallplaner-split-count').value = '';
+  document.getElementById('stallplaner-split-error').hidden = true;
+  updateStallplanSplitDirButtons();
+  openStallplanerSheet('stallplaner-panel-split', 'In Buchten teilen');
+  renderStallplan();
+}
+
+function updateStallplanSplitDirButtons() {
+  const task = stallplanerTask;
+  document.querySelectorAll('#stallplaner-panel-split [data-split-dir]').forEach(b => {
+    b.classList.toggle('active', !!task && b.getAttribute('data-split-dir') === task.dir);
+  });
+}
+document.querySelectorAll('#stallplaner-panel-split [data-split-dir]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (!stallplanerTask || stallplanerTask.type !== 'split') return;
+    stallplanerTask.dir = btn.getAttribute('data-split-dir');
+    updateStallplanSplitDirButtons();
+    renderStallplanTaskPreview();
+  });
+});
+
+// Liefert { widths } oder { error } — Breiten in Metern entlang der
+// Teilungsrichtung. Erlaubt "4; 4; 3,5", "4 4 3,5", "3 × 4" oder eine
+// Anzahl gleich breiter Buchten.
+function parseStallplanSplitWidths(totalM) {
+  const countRaw = document.getElementById('stallplaner-split-count').value.trim();
+  const widthsRaw = document.getElementById('stallplaner-split-widths').value.trim();
+  if (countRaw) {
+    const n = parseInt(countRaw, 10);
+    if (!(n >= 2) || String(n) !== countRaw) return { error: 'Anzahl bitte als ganze Zahl ab 2 eingeben.' };
+    return { widths: Array(n).fill(totalM / n) };
+  }
+  if (!widthsRaw) return { error: 'Breiten oder Anzahl der Buchten eingeben.' };
+  let widths;
+  const times = widthsRaw.match(/^(\d+)\s*[x×*]\s*([\d.,]+)\s*m?$/i);
+  if (times) {
+    const w = parseDecimalInput(times[2]);
+    widths = Array(parseInt(times[1], 10)).fill(w);
+  } else {
+    widths = widthsRaw.split(/[;+\s]+/).filter(Boolean).map(s => parseDecimalInput(s.replace(/m$/i, '')));
+  }
+  if (!widths.length || widths.some(w => !(w > 0))) return { error: 'Breiten bitte als Meter eingeben, z.B. „4; 4; 3,5".' };
+  const sum = widths.reduce((s, w) => s + w, 0);
+  if (sum > totalM + 0.01) return { error: `Die Breiten ergeben ${formatStallplanMeters(sum)} m — mehr als die ${formatStallplanMeters(totalM)} m, die zur Verfügung stehen.` };
+  if (totalM - sum > 0.05) widths.push(totalM - sum);
+  if (widths.length < 2) return { error: 'Das ergibt nur eine Bucht — bitte mindestens zwei.' };
+  return { widths };
+}
+
+function stallplanSplitRects(plan, task, widths) {
+  const b = task.bounds;
+  const rects = [];
+  let pos = task.dir === 'x' ? b.minX : b.minY;
+  widths.forEach(wM => {
+    const w = wM / plan.gridScale;
+    const next = pos + w;
+    rects.push(task.dir === 'x'
+      ? [{ x: pos, y: b.minY }, { x: next, y: b.minY }, { x: next, y: b.maxY }, { x: pos, y: b.maxY }]
+      : [{ x: b.minX, y: pos }, { x: b.maxX, y: pos }, { x: b.maxX, y: next }, { x: b.minX, y: next }]);
+    pos = next;
+  });
+  return rects;
+}
+
+function stallplanSplitTotalM(plan, task) {
+  const b = task.bounds;
+  return (task.dir === 'x' ? b.maxX - b.minX : b.maxY - b.minY) * plan.gridScale;
+}
+
+function applyStallplanSplit() {
+  const plan = activeStallplan();
+  const task = stallplanerTask;
+  if (!plan || !task || task.type !== 'split') return;
+  const errorEl = document.getElementById('stallplaner-split-error');
+  const result = parseStallplanSplitWidths(stallplanSplitTotalM(plan, task));
+  if (result.error) { errorEl.textContent = result.error; errorEl.hidden = false; return; }
+  const original = task.target.kind === 'compartment' ? plan.compartments.find(c => c.id === task.target.id) : null;
+  if (original && original.tierbestand.length &&
+      !confirm(`„${original.name}" hat eingetragene Tiere — beim Teilen gehen diese Angaben verloren. Trotzdem teilen?`)) return;
+  pushStallplanerUndo();
+  let insertAt = plan.compartments.length;
+  if (original) {
+    insertAt = plan.compartments.indexOf(original);
+    plan.compartments.splice(insertAt, 1);
+  }
+  const rects = stallplanSplitRects(plan, task, result.widths);
+  const firstNumber = plan.compartments.length + 1;
+  const newCompartments = rects.map((points, i) => ({
+    id: 'abteil-' + Date.now() + Math.random().toString(36).slice(2),
+    name: `Bucht ${firstNumber + i}`,
+    points, tierbestand: []
+  }));
+  plan.compartments.splice(insertAt, 0, ...newCompartments);
+  endStallplanTask();
+  hideStallplanerSheet();
+  stallplanerStep = 'abteile';
+  renderStallplan();
+  renderStallplanerSidebar();
+  stallplanerFlash(`${rects.length} Buchten angelegt. Antippen, um sie umzubenennen oder Tiere einzutragen.`);
+}
+document.getElementById('stallplaner-split-apply').addEventListener('click', applyStallplanSplit);
+['stallplaner-split-widths', 'stallplaner-split-count'].forEach(id => {
+  const input = document.getElementById(id);
+  input.addEventListener('input', () => {
+    document.getElementById('stallplaner-split-error').hidden = true;
+    renderStallplanTaskPreview();
+  });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); applyStallplanSplit(); } });
+});
+
+// Vorschau der laufenden Aufgabe in der (sonst beim Skizzieren genutzten)
+// Vorschau-Ebene — wird bei jedem renderStallplan() neu gezeichnet.
+function renderStallplanTaskPreview() {
+  const g = document.getElementById('stallplan-draw-preview-layer');
+  const plan = activeStallplan();
+  const task = stallplanerTask;
+  g.innerHTML = '';
+  if (!plan || !task) return;
+  const marker = (p, cls) => g.appendChild(svgEl('circle', { cx: p.x, cy: p.y, r: stallplanScreenSize(8), class: cls }));
+  const wallLabel = (a, b, lengthM) => {
+    const t = svgEl('text', { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, class: 'stallplan-edge-label', 'font-size': stallplanScreenSize(12) });
+    t.textContent = formatStallplanMeters(lengthM) + ' m';
+    g.appendChild(t);
+  };
+  if (task.type === 'rect') {
+    const { lengthM, widthM } = readStallplanRectInputs();
+    if (lengthM > 0 && widthM > 0) {
+      const pts = stallplanRectFromStart(plan, task.start, lengthM, widthM, task.target);
+      g.appendChild(svgEl('polygon', { points: pointsAttr(pts), class: 'stallplan-walls-closing' }));
+    }
+    if (task.target === 'compartment') marker(task.start, 'stallplan-walls-start');
+  } else if (task.type === 'walls') {
+    const pts = stallplanWallsPoints(task, plan);
+    if (pts.length > 1) {
+      g.appendChild(svgEl('polyline', { points: pointsAttr(pts), class: 'stallplan-walls-line' }));
+      g.appendChild(svgEl('line', { x1: pts[pts.length - 1].x, y1: pts[pts.length - 1].y, x2: task.start.x, y2: task.start.y, class: 'stallplan-walls-closing' }));
+      task.segments.forEach((seg, i) => wallLabel(pts[i], pts[i + 1], seg.lengthM));
+    }
+    marker(task.start, 'stallplan-walls-start');
+    if (pts.length > 1) marker(pts[pts.length - 1], 'stallplan-walls-end');
+  } else if (task.type === 'split') {
+    const b = task.bounds;
+    g.appendChild(svgEl('polygon', { points: pointsAttr([{ x: b.minX, y: b.minY }, { x: b.maxX, y: b.minY }, { x: b.maxX, y: b.maxY }, { x: b.minX, y: b.maxY }]), class: 'stallplan-walls-line' }));
+    const result = parseStallplanSplitWidths(stallplanSplitTotalM(plan, task));
+    if (result.widths) {
+      stallplanSplitRects(plan, task, result.widths).slice(0, -1).forEach(r => {
+        const [a, b2] = task.dir === 'x' ? [r[1], r[2]] : [r[3], r[2]];
+        g.appendChild(svgEl('line', { x1: a.x, y1: a.y, x2: b2.x, y2: b2.y, class: 'stallplan-walls-closing' }));
+      });
+    }
+  }
+}
+
+function stallplanTaskPoints(plan) {
+  const task = stallplanerTask;
+  if (!task) return [];
+  if (task.type === 'walls') return stallplanWallsPoints(task, plan);
+  if (task.type === 'rect') {
+    const { lengthM, widthM } = readStallplanRectInputs();
+    return lengthM > 0 && widthM > 0 ? stallplanRectFromStart(plan, task.start, lengthM, widthM, task.target) : [task.start];
+  }
+  return [];
+}
+
+// ---- Auswahl: Antippen ohne Werkzeug zeigt Details ----
+function selectStallplanItem(kind, id) {
+  stallplanerSelection = kind ? { kind, id: id || null } : null;
+  renderStallplan();
+  if (!kind || (kind === 'compartment' && isWideStallplanerLayout())) {
+    // Breite Ansicht: Abteile stehen ohnehin in der Seitenleiste — dort
+    // hervorheben statt dieselbe Karte ein zweites Mal im Sheet zu zeigen.
+    if (stallplanerSheetPanel === 'stallplaner-panel-selection') hideStallplanerSheet();
+    renderStallplanerSidebar();
+    const card = kind && document.querySelector(`#stallplaner-abteile-list .stallplan-abteil-row[data-id="${CSS.escape(id)}"]`);
+    if (card) card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    return;
+  }
+  renderStallplanSelectionPanel();
+}
+
+function renderStallplanSelectionPanel() {
+  const plan = activeStallplan();
+  const sel = stallplanerSelection;
+  const panel = document.getElementById('stallplaner-panel-selection');
+  if (!plan || !sel) return;
+  let title = '';
+  if (sel.kind === 'compartment') {
+    const c = plan.compartments.find(x => x.id === sel.id);
+    if (!c) { cancelStallplanerSheet(); return; }
+    title = c.name;
+    renderStallplanAbteilCards(panel, plan, [c]);
+  } else if (sel.kind === 'outline') {
+    if (!plan.outline) { cancelStallplanerSheet(); return; }
+    title = 'Stall-Umriss';
+    const pts = plan.outline.points;
+    const area = shoelaceArea(pts) * plan.gridScale * plan.gridScale;
+    const walls = pts.map((p, i) => formatStallplanMeters(Math.hypot(pts[(i + 1) % pts.length].x - p.x, pts[(i + 1) % pts.length].y - p.y) * plan.gridScale)).join(' · ');
+    panel.innerHTML = `
+      <p class="stallplaner-panel-hint"><strong>${area.toFixed(1).replace('.', ',')} m²</strong> — Wände: ${escapeHtml(walls)} m</p>
+      <div class="stallplaner-panel-actions">
+        <button type="button" class="stallplaner-panel-btn" data-sel-act="measure"><span class="material-symbols-rounded icon">straighten</span> Maße</button>
+        ${axisAlignedRectBounds(pts) ? '<button type="button" class="stallplaner-panel-btn" data-sel-act="split"><span class="material-symbols-rounded icon">view_week</span> Teilen</button>' : ''}
+        <button type="button" class="stallplaner-panel-btn" data-sel-act="delete"><span class="material-symbols-rounded icon">delete</span> Löschen</button>
+      </div>`;
+    panel.querySelectorAll('[data-sel-act]').forEach(btn => btn.addEventListener('click', () => {
+      const act = btn.getAttribute('data-sel-act');
+      if (act === 'measure') { resetStallplanerInteraction(); stallplanerMode = 'measure'; startStallplanMeasureWalk('outline', null, plan.outline.points); }
+      else if (act === 'split') openStallplanSplitPanel({ kind: 'outline' });
+      else if (act === 'delete' && confirm('Umriss wirklich löschen?')) {
+        pushStallplanerUndo();
+        plan.outline = null;
+        resetStallplanerInteraction();
+        stallplanerStep = 'umriss';
+        renderStallplan();
+        renderStallplanerSidebar();
+      }
+    }));
+  } else if (sel.kind === 'equipment') {
+    const item = plan.equipment.find(x => x.id === sel.id);
+    if (!item) { cancelStallplanerSheet(); return; }
+    title = STALLPLANER_EQUIP_LABELS[item.type] || 'Ausstattung';
+    const form = { point: 'Punkt', line: 'Linie', area: 'Fläche' }[item.geometryKind] || '';
+    panel.innerHTML = `
+      <p class="stallplaner-panel-hint">${escapeHtml(form)} — zum Verschieben „Bearbeiten" wählen und ziehen.</p>
+      <div class="stallplaner-panel-actions">
+        <button type="button" class="stallplaner-panel-btn" data-sel-act="delete"><span class="material-symbols-rounded icon">delete</span> Löschen</button>
+      </div>`;
+    panel.querySelector('[data-sel-act="delete"]').addEventListener('click', () => {
+      pushStallplanerUndo();
+      plan.equipment = plan.equipment.filter(x => x.id !== item.id);
+      resetStallplanerInteraction();
+      renderStallplan();
+      renderStallplanerSidebar();
+    });
+  }
+  if (stallplanerSheetPanel !== 'stallplaner-panel-selection') openStallplanerSheet('stallplaner-panel-selection', title);
+  else document.getElementById('stallplaner-sheet-title').textContent = title;
+}
+
+function openStallplanerAnimalsPanel() {
+  renderStallplanAnimalsPanel();
+  openStallplanerSheet('stallplaner-panel-animals', 'Tiere je Abteil');
+}
+function renderStallplanAnimalsPanel() {
+  const plan = activeStallplan();
+  if (!plan) return;
+  document.getElementById('stallplaner-sheet-tierart').value = plan.tierart || '';
+  const list = document.getElementById('stallplaner-animals-list');
+  if (!plan.compartments.length) {
+    list.innerHTML = '<p class="stallplaner-panel-hint">Noch keine Abteile — erst in Schritt 2 anlegen.</p>';
+    return;
+  }
+  renderStallplanAbteilCards(list, plan, plan.compartments);
+}
+document.getElementById('stallplaner-sheet-tierart').addEventListener('change', (e) => {
+  setStallplanTierart(e.target.value || null);
+});
+
+// ---- Bildschirm anlassen, solange der Stallplaner offen ist ----
+// Wake Lock API: sonst geht das Display beim Messen mit dem Zollstock aus.
+async function requestStallplanerWakeLock() {
+  try {
+    if (!('wakeLock' in navigator) || stallplanerWakeLock || document.visibilityState !== 'visible') return;
+    stallplanerWakeLock = await navigator.wakeLock.request('screen');
+    stallplanerWakeLock.addEventListener('release', () => { stallplanerWakeLock = null; });
+  } catch {
+    stallplanerWakeLock = null;
+  }
+}
+function releaseStallplanerWakeLock() {
+  if (!stallplanerWakeLock) return;
+  stallplanerWakeLock.release().catch(() => {});
+  stallplanerWakeLock = null;
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && !document.getElementById('stallplaner-view').hidden) requestStallplanerWakeLock();
+});
+
+// ---- Sidebar + Abteil-Karten ----
+function renderStallplanerPlanPicker() {
+  const select = document.getElementById('stallplaner-plan-select');
+  select.innerHTML = stallplaene.map(p => `<option value="${p.id}"${p.id === activeStallplanId ? ' selected' : ''}>${escapeHtml(p.name)}</option>`).join('');
+  document.getElementById('stallplaner-empty-hint').hidden = stallplaene.length > 0;
+  document.getElementById('stallplaner-settings').hidden = !activeStallplanId;
+}
+
+// Eine Abteil-Karte (Name, Fläche, Tierbestand, Öko-VO-Ampel, Aktionen) —
+// dieselbe Quelle für Seitenleiste, Auswahl-Sheet und Tiere-Sheet, damit
+// alle drei immer gleich aussehen und sich gleich verhalten. Ein Abteil
+// kann mehrere Tier-Kategorien gleichzeitig beherbergen (z.B. Kälber +
+// Milchkühe im selben Abteil) — daher eine verschachtelte Liste von
+// Kategorie-Zeilen je Abteil statt nur eines einzelnen Kategorie-Felds.
+function stallplanAbteilCardHtml(plan, c) {
+  const kategorien = OEKO_VO_KATEGORIEN.filter(k => k.tierart === plan.tierart);
+  const area = shoelaceArea(c.points) * plan.gridScale * plan.gridScale;
+  const benoetigt = c.tierbestand.length ? compartmentBenoetigteFlaeche(c) : null;
+  const badge = benoetigt == null ? ''
+    : area >= benoetigt
+      ? `<span class="stallplan-badge ok">✓ ${(area - benoetigt).toFixed(1)} m² Reserve</span>`
+      : `<span class="stallplan-badge fail">✗ ${(benoetigt - area).toFixed(1)} m² fehlend</span>`;
+  const tbRows = c.tierbestand.map(tb => {
+    const kategorie = OEKO_VO_KATEGORIEN.find(k => k.id === tb.kategorieId);
+    const showWeight = kategorie && kategorie.indoorKgJeQm != null;
+    return `
+      <div class="stallplan-tb-row">
+        <select class="stallplan-tb-kategorie" data-c="${c.id}" data-tb="${tb.id}"${plan.tierart ? '' : ' disabled'}>
+          <option value="">– Kategorie –</option>
+          ${kategorien.map(k => `<option value="${k.id}"${k.id === tb.kategorieId ? ' selected' : ''}>${escapeHtml(k.label)}</option>`).join('')}
+        </select>
+        <input type="number" inputmode="numeric" min="0" class="stallplan-tb-anzahl" data-c="${c.id}" data-tb="${tb.id}" value="${tb.tieranzahl || 0}" placeholder="Tierzahl" aria-label="Tierzahl">
+        ${showWeight ? `<input type="text" inputmode="decimal" class="stallplan-tb-gewicht" data-c="${c.id}" data-tb="${tb.id}" value="${tb.avgGewichtKg ? String(tb.avgGewichtKg).replace('.', ',') : ''}" placeholder="Ø-Gewicht kg" aria-label="Durchschnittsgewicht in kg">` : ''}
+        <button type="button" class="stallplan-tb-remove" data-c="${c.id}" data-tb="${tb.id}" title="Kategorie entfernen"><span class="material-symbols-rounded icon">close</span></button>
+      </div>`;
+  }).join('');
+  const selected = stallplanerSelection && stallplanerSelection.kind === 'compartment' && stallplanerSelection.id === c.id;
+  return `
+    <div class="stallplan-abteil-row${selected ? ' selected' : ''}" data-id="${c.id}">
+      <input type="text" class="stallplan-abteil-name" data-id="${c.id}" value="${escapeHtml(c.name)}" aria-label="Name des Abteils">
+      <span class="stallplan-abteil-area">${area.toFixed(1)} m²</span>
+      <div class="stallplan-tierbestand-list">${tbRows}</div>
+      <button type="button" class="stallplan-tb-add" data-c="${c.id}"${plan.tierart ? '' : ' disabled title="Erst die Tierart wählen"'}>+ Kategorie</button>
+      ${badge}
+      <div class="stallplan-abteil-actions">
+        <button type="button" class="stallplan-abteil-act" data-card-act="measure" data-id="${c.id}"><span class="material-symbols-rounded icon">straighten</span> Maße</button>
+        ${axisAlignedRectBounds(c.points) ? `<button type="button" class="stallplan-abteil-act" data-card-act="split" data-id="${c.id}"><span class="material-symbols-rounded icon">view_week</span> Teilen</button>` : ''}
+        <button type="button" class="stallplan-abteil-act stallplan-abteil-remove" data-id="${c.id}" title="Abteil löschen"><span class="material-symbols-rounded icon">delete</span> Löschen</button>
+      </div>
+    </div>`;
+}
+
+// Nach jeder Änderung an einer Karte alle Stellen neu zeichnen, an denen
+// Abteil-Daten sichtbar sind (Plan, Seitenleiste, offenes Sheet).
+function refreshStallplanAfterCardChange() {
+  renderStallplan();
+  renderStallplanerSidebar();
+}
+
+function renderStallplanAbteilCards(container, plan, compartments) {
+  container.innerHTML = compartments.map(c => stallplanAbteilCardHtml(plan, c)).join('');
+  const findC = (el) => plan.compartments.find(x => x.id === (el.getAttribute('data-c') || el.getAttribute('data-id')));
+  const findTb = (el) => { const c = findC(el); return c && c.tierbestand.find(x => x.id === el.getAttribute('data-tb')); };
+  container.querySelectorAll('.stallplan-abteil-name').forEach(input => input.addEventListener('change', () => {
+    const c = findC(input);
+    if (!c) return;
+    pushStallplanerUndo();
+    c.name = input.value.trim() || c.name;
+    refreshStallplanAfterCardChange();
+  }));
+  container.querySelectorAll('.stallplan-tb-add').forEach(btn => btn.addEventListener('click', () => {
+    const c = findC(btn);
+    if (!c) return;
+    pushStallplanerUndo();
+    c.tierbestand.push(newTierbestandEntry());
+    refreshStallplanAfterCardChange();
+  }));
+  container.querySelectorAll('.stallplan-tb-remove').forEach(btn => btn.addEventListener('click', () => {
+    const c = findC(btn);
+    if (!c) return;
+    pushStallplanerUndo();
+    c.tierbestand = c.tierbestand.filter(tb => tb.id !== btn.getAttribute('data-tb'));
+    refreshStallplanAfterCardChange();
+  }));
+  container.querySelectorAll('.stallplan-tb-kategorie').forEach(sel => sel.addEventListener('change', () => {
+    const tb = findTb(sel);
+    if (!tb) return;
+    pushStallplanerUndo();
+    tb.kategorieId = sel.value || null;
+    refreshStallplanAfterCardChange();
+  }));
+  container.querySelectorAll('.stallplan-tb-anzahl').forEach(input => input.addEventListener('change', () => {
+    const tb = findTb(input);
+    if (!tb) return;
+    pushStallplanerUndo();
+    tb.tieranzahl = Math.max(0, parseInt(input.value, 10) || 0);
+    refreshStallplanAfterCardChange();
+  }));
+  container.querySelectorAll('.stallplan-tb-gewicht').forEach(input => input.addEventListener('change', () => {
+    const tb = findTb(input);
+    if (!tb) return;
+    pushStallplanerUndo();
+    const kg = parseDecimalInput(input.value);
+    tb.avgGewichtKg = kg > 0 ? kg : null;
+    refreshStallplanAfterCardChange();
+  }));
+  container.querySelectorAll('.stallplan-abteil-remove').forEach(btn => btn.addEventListener('click', () => {
+    const c = findC(btn);
+    if (!c) return;
+    if (c.tierbestand.length && !confirm(`„${c.name}" mit eingetragenen Tieren löschen?`)) return;
+    pushStallplanerUndo();
+    plan.compartments = plan.compartments.filter(x => x.id !== c.id);
+    if (stallplanerSelection && stallplanerSelection.id === c.id) {
+      stallplanerSelection = null;
+      if (stallplanerSheetPanel === 'stallplaner-panel-selection') hideStallplanerSheet();
+    }
+    refreshStallplanAfterCardChange();
+  }));
+  container.querySelectorAll('[data-card-act]').forEach(btn => btn.addEventListener('click', () => {
+    const c = findC(btn);
+    if (!c) return;
+    if (btn.getAttribute('data-card-act') === 'measure') {
+      resetStallplanerInteraction();
+      stallplanerMode = 'measure';
+      startStallplanMeasureWalk('compartment', c.id, c.points);
+    } else {
+      openStallplanSplitPanel({ kind: 'compartment', id: c.id });
+    }
+  }));
+}
+
+function renderStallplanerSidebar() {
+  renderStallplanerPlanPicker();
+  const plan = activeStallplan();
+  if (!plan) { renderStallplanerChrome(); return; }
+  document.getElementById('stallplaner-name-input').value = plan.name;
+  document.getElementById('stallplaner-tierart-select').value = plan.tierart || '';
+  document.getElementById('stallplaner-grid-scale').value = String(plan.gridScale);
+  document.getElementById('stallplaner-grid-snap').checked = plan.gridSnap;
+
+  const abteileArea = plan.compartments.reduce((s, c) => s + shoelaceArea(c.points) * plan.gridScale * plan.gridScale, 0);
+  const outlineArea = plan.outline ? shoelaceArea(plan.outline.points) * plan.gridScale * plan.gridScale : 0;
+  document.getElementById('stallplaner-total-area').textContent = plan.outline
+    ? `— Umriss ${outlineArea.toFixed(1)} m², Abteile gesamt ${abteileArea.toFixed(1)} m²`
+    : '';
+
+  document.getElementById('stallplaner-abteile-empty-hint').hidden = plan.compartments.length > 0;
+  renderStallplanAbteilCards(document.getElementById('stallplaner-abteile-list'), plan, plan.compartments);
+
+  // Offene Sheets mit Abteil-Daten gleich mitaktualisieren.
+  if (stallplanerSheetPanel === 'stallplaner-panel-animals') renderStallplanAnimalsPanel();
+  else if (stallplanerSheetPanel === 'stallplaner-panel-selection') renderStallplanSelectionPanel();
+  renderStallplanerChrome();
+}
+
+function setStallplanTierart(tierart) {
+  const plan = activeStallplan();
+  if (!plan) return;
+  pushStallplanerUndo();
+  plan.tierart = tierart;
+  // Kategorie-Zuordnungen gehören zur alten Tierart — ungültig geworden,
+  // zurückgesetzt statt als unsichtbare Karteileiche zu behalten.
+  plan.compartments.forEach(c => { c.tierbestand.forEach(tb => { tb.kategorieId = null; }); });
+  refreshStallplanAfterCardChange();
+}
+
+// ---- Plan-Verwaltung ----
+function setActiveStallplan(id) {
+  resetStallplanerInteraction();
+  activeStallplanId = id;
+  stallplanerUndoStack = [];
+  stallplanerRedoStack = [];
+  const plan = activeStallplan();
+  stallplanerStep = plan && plan.outline ? 'abteile' : 'umriss';
+  resetStallplanerViewBox();
+  if (plan) fitStallplanerView();
+  renderStallplan();
+  renderStallplanerSidebar();
+}
+document.getElementById('stallplaner-new-plan').addEventListener('click', () => {
+  const plan = createEmptyStallplan(`Stallplan ${stallplaene.length + 1}`);
+  stallplaene.push(plan);
+  setActiveStallplan(plan.id);
+});
+document.getElementById('stallplaner-plan-select').addEventListener('change', (e) => setActiveStallplan(e.target.value));
+document.getElementById('stallplaner-name-input').addEventListener('change', (e) => {
+  const plan = activeStallplan();
+  if (!plan) return;
+  plan.name = e.target.value.trim() || plan.name;
+  renderStallplanerPlanPicker();
+});
+document.getElementById('stallplaner-tierart-select').addEventListener('change', (e) => {
+  setStallplanTierart(e.target.value || null);
+});
+document.getElementById('stallplaner-grid-scale').addEventListener('change', (e) => {
+  const plan = activeStallplan();
+  if (!plan) return;
+  plan.gridScale = parseFloat(e.target.value) || 1;
+  renderStallplan();
+  renderStallplanerSidebar();
+});
+document.getElementById('stallplaner-grid-snap').addEventListener('change', (e) => {
+  const plan = activeStallplan();
+  if (plan) plan.gridSnap = e.target.checked;
+});
+document.getElementById('btn-stallplaner-delete-plan').addEventListener('click', () => {
+  const plan = activeStallplan();
+  if (!plan) return;
+  if (!confirm(`Stallplan "${plan.name}" wirklich löschen?`)) return;
+  stallplaene = stallplaene.filter(p => p.id !== plan.id);
+  setActiveStallplan(stallplaene.length ? stallplaene[0].id : null);
+});
+
+// ---- Datei-Export/-Import (.json, editierbares Format zusätzlich zum
+// automatischen Cloud-Sync über serializeWorkspace/restoreWorkspace) ----
+document.getElementById('btn-stallplaner-export-json').addEventListener('click', () => {
+  const plan = activeStallplan();
+  if (!plan) return;
+  downloadBlob(JSON.stringify(plan, null, 2), zuordnungFileName(plan.name || 'Stallplan', 'json') || `stallplan_${plan.id}.json`, 'application/json');
+  document.getElementById('stallplaner-status').textContent = 'Als Datei gespeichert.';
+});
+document.getElementById('stallplaner-import-input').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  const statusEl = document.getElementById('stallplaner-status');
+  try {
+    const data = JSON.parse(await file.text());
+    if (!data || !Array.isArray(data.compartments) || !Array.isArray(data.equipment)) {
+      throw new Error('Datei enthält keinen gültigen Stallplan.');
+    }
+    data.id = newStallplanId(); // Kollision mit vorhandener Id vermeiden
+    data.compartments = data.compartments.map(normalizeCompartment);
+    data.equipment = data.equipment.map(normalizeEquipment);
+    stallplaene.push(data);
+    setActiveStallplan(data.id);
+    statusEl.textContent = 'Stallplan geladen.';
+  } catch (err) {
+    statusEl.textContent = 'Fehler: ' + (err.message || 'Datei konnte nicht geladen werden.');
+  }
+});
+
+// ---- PDF-Export (Seite 1: Plan, Seite 2: Abteilgrößen-Tabelle) ----
+async function exportStallplanPDF() {
+  const plan = activeStallplan();
+  const statusEl = document.getElementById('stallplaner-status');
+  if (!plan) return;
+  if (typeof html2canvas === 'undefined' || typeof window.jspdf === 'undefined') {
+    statusEl.textContent = 'PDF-Export nicht verfügbar (Bibliothek konnte nicht geladen werden).';
+    return;
+  }
+  if (!plan.outline) { stallplanerFlash('Noch kein Umriss angelegt — erst Schritt 1.'); return; }
+
+  const btn = document.getElementById('btn-export-stallplaner-pdf');
+  btn.disabled = true;
+  stallplanerFlash('PDF wird erstellt …');
+  try {
+    // Vertex-Griffe/Zeichenvorschau würden sonst mit ins Screenshot-Bild
+    // rutschen (gleiches Problem wie bei Hofplans Kartenscreenshot,
+    // captureHofplanScreenshot) — vor dem Capture ausgeblendet.
+    const wrap = document.getElementById('stallplaner-canvas');
+    wrap.classList.add('stallplaner-exporting');
+    let canvas;
+    try {
+      canvas = await html2canvas(wrap, { backgroundColor: '#ffffff', logging: false });
+    } finally {
+      wrap.classList.remove('stallplaner-exporting');
+    }
+
+    const doc = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+    const pageW = doc.internal.pageSize.getWidth(), pageH = doc.internal.pageSize.getHeight();
+    const margin = 12;
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(15);
+    doc.text(`Stallplan – ${plan.name}`, margin, margin + 4);
+    const imageTop = margin + 10;
+    const maxW = pageW - margin * 2, maxH = pageH - imageTop - margin;
+    const scale = Math.min(maxW / canvas.width, maxH / canvas.height);
+    const imgW = canvas.width * scale, imgH = canvas.height * scale;
+    doc.addImage(canvas.toDataURL('image/jpeg', 0.9), 'JPEG', (pageW - imgW) / 2, imageTop, imgW, imgH);
+
+    doc.addPage();
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(15);
+    doc.text(`${plan.name} – Abteilgrößen`, margin, margin + 4);
+    const rows = plan.compartments.map(c => {
+      const area = shoelaceArea(c.points) * plan.gridScale * plan.gridScale;
+      // Mehrere Kategorien je Abteil möglich — Kategorie-Spalte listet alle
+      // mit ihrer jeweiligen Tierzahl auf, Tierzahl-Spalte zeigt die Summe.
+      const kategorieText = c.tierbestand.length
+        ? c.tierbestand.map(tb => {
+            const k = OEKO_VO_KATEGORIEN.find(x => x.id === tb.kategorieId);
+            return k ? `${k.label} (${tb.tieranzahl || 0})` : null;
+          }).filter(Boolean).join(', ') || '–'
+        : '–';
+      const gesamtTierzahl = c.tierbestand.reduce((s, tb) => s + (tb.tieranzahl || 0), 0);
+      const benoetigt = c.tierbestand.length ? compartmentBenoetigteFlaeche(c) : null;
+      const status = benoetigt == null ? '–' : (area >= benoetigt ? 'OK' : 'zu klein');
+      return [c.name, kategorieText, String(gesamtTierzahl), area.toFixed(1), benoetigt == null ? '–' : benoetigt.toFixed(1), status];
+    });
+    doc.autoTable({
+      startY: margin + 10,
+      head: [['Abteil', 'Kategorie', 'Tierzahl', 'Fläche (m²)', 'Benötigt (m²)', 'Öko-VO']],
+      body: rows,
+      styles: { fontSize: 9 },
+      headStyles: { fillColor: [79, 184, 175] },
+      margin: { left: margin, right: margin }
+    });
+    doc.setFontSize(8);
+    doc.text(
+      'Flächenwerte laut Anhang I VO (EU) 2018/848 i.d.F. DVO (EU) 2020/464 — keine Rechtsberatung, im Zweifel Originaltext prüfen.',
+      margin, doc.internal.pageSize.getHeight() - 6
+    );
+
+    stampFeldFolioLogo(doc, await getFeldFolioLogoDataUrl());
+    doc.save(zuordnungFileName(plan.name || 'Stallplan', 'pdf') || `stallplan_${plan.id}.pdf`);
+    stallplanerFlash('Als PDF gespeichert.');
+  } catch (err) {
+    stallplanerFlash('Fehler beim PDF-Export: ' + (err.message || ''));
+  } finally {
+    btn.disabled = false;
+  }
+}
+document.getElementById('btn-export-stallplaner-pdf').addEventListener('click', exportStallplanPDF);
+
+function initStallplaner() {
+  if (stallplanerInitDone) return;
+  stallplanerInitDone = true;
+  applyStallplanerViewBox();
+  renderStallplanGrid();
+  renderStallplanerSidebar();
+}
+
+// Dev-only Testhaken (analog window.__ffTestMap/__ffTestTk) — rohes
+// SVG-Pointer-Drag ist laut AGENTS.md Punkt 2 genauso wenig zuverlässig per
+// synthetischem Maus-Event simulierbar wie Leaflet.draw.
+if (import.meta.env.DEV) {
+  window.__ffTestStallplaner = {
+    createPlan(overrides = {}) {
+      const plan = { ...createEmptyStallplan(overrides.name), ...overrides };
+      stallplaene.push(plan);
+      setActiveStallplan(plan.id);
+      return plan.id;
+    },
+    getActivePlan() { return activeStallplan(); },
+    // Direkter Zugriff auf die reine Rekonstruktions-Mathematik, ohne den
+    // UI-Ablauf des geführten Vermessen-Modus durchzuspielen — für einen
+    // gezielten Test der Geometrie (rechtwinklige Ecken, Schlussfehler-
+    // Ausgleich).
+    reconstructRectilinear(points, lengths) { return reconstructPolygonFromSketch(points, lengths); },
+    // Rundlauf-Test für die Workspace-Persistenz (serializeWorkspace/
+    // restoreWorkspace sind modul-intern, nicht auf window) — ruft exakt
+    // dieselben Funktionen auf, die auch beim echten Cloud-Speichern/Laden
+    // laufen.
+    serializeStallplaene() { return serializeWorkspace().stallplaene; },
+    restoreStallplaene(data) { restoreWorkspace({ stallplaene: data }); },
+    setOutline(points) {
+      const plan = activeStallplan();
+      if (!plan) return;
+      pushStallplanerUndo();
+      plan.outline = { points };
+      renderStallplan();
+      renderStallplanerSidebar();
+    },
+    addCompartment(points, overrides = {}) {
+      const plan = activeStallplan();
+      if (!plan) return null;
+      pushStallplanerUndo();
+      const c = {
+        id: 'abteil-' + Date.now() + Math.random().toString(36).slice(2),
+        name: `Abteil ${plan.compartments.length + 1}`,
+        points, tierbestand: [], ...overrides
+      };
+      plan.compartments.push(c);
+      renderStallplan();
+      renderStallplanerSidebar();
+      return c.id;
+    },
+    addEquipment(type, x, y) {
+      const plan = activeStallplan();
+      if (!plan) return null;
+      pushStallplanerUndo();
+      const item = { id: 'eq-' + Date.now() + Math.random().toString(36).slice(2), type, geometryKind: 'point', points: [{ x, y }], rotationDeg: 0, label: '' };
+      plan.equipment.push(item);
+      renderStallplan();
+      renderStallplanerSidebar();
+      return item.id;
+    },
+    // Für Linien-/Flächen-Ausstattung (Sitzstange, Tür/Fenster, Futtergang, …).
+    addEquipmentShape(type, geometryKind, points) {
+      const plan = activeStallplan();
+      if (!plan) return null;
+      pushStallplanerUndo();
+      const item = { id: 'eq-' + Date.now() + Math.random().toString(36).slice(2), type, geometryKind, points, rotationDeg: 0, label: '' };
+      plan.equipment.push(item);
+      renderStallplan();
+      renderStallplanerSidebar();
+      return item.id;
+    },
+    setVertex(kind, ownerId, index, x, y) {
+      const plan = activeStallplan();
+      if (!plan) return;
+      pushStallplanerUndo();
+      stallplanPointsFor(plan, kind, ownerId)[index] = { x, y };
+      renderStallplan();
+      renderStallplanerSidebar();
+    }
+  };
+}
+
+// ---------- FeldFolio Plus: Probenahmeprotokoll (Terminkalender-Anhänge) ----------
+// Füllt das amtliche Probenahmeprotokoll (FB.09.06.01 V7) je Termin aus und
+// exportiert es unverändert im Originallayout als PDF — public/
+// probenahmeprotokoll-vorlage.pdf wird zur Laufzeit über pdf-lib geladen und
+// ihre echten AcroForm-Felder befüllt (siehe exportProbenprotokollPdf), statt
+// wie die übrigen Exporte dieser App das Layout mit jsPDF nachzubauen.
+// Feldnamen/-typen/-koordinaten wurden per Node/pdf-lib aus der Originaldatei
+// ausgelesen — exakte Übernahme inkl. vorhandener Tippfehler/Doppel-
+// Leerzeichen im Original nötig, sonst schlägt form.getField(name) beim
+// Export fehl.
+//
+// Protokolle gehören zu einem konkreten Termin (ev.probenprotokolle, analog
+// ev.attachments) statt zu einem Betrieb-Workspace — ein Termin kennt Kunde/
+// Adresse/Kundennummer bereits selbst, eine globale Betrieb-Zuordnung ist
+// dafür nicht nötig. Bedienung läuft komplett aus dem Terminkalender-
+// Detailpanel heraus (renderTerminkalenderDetail, siehe dort): eine Liste
+// direkt unter "Fotos & Dateien", "Neues Protokoll" öffnet das große
+// Formular als Modal-Overlay. Der fertige Export wird NICHT heruntergeladen,
+// sondern über uploadTerminkalenderAttachment() direkt als Anhang bei
+// "Fotos & Dateien" desselben Termins gespeichert — exakt das bestehende
+// Verhalten des Dokumentenscanners (buildPdfFromScanPages weiter unten).
+const PROBENEHMER_NAME_STORAGE_KEY = 'feldfolio-probenehmer-name';
+let activeProbenprotokollEventId = null;
+let activeProbenprotokollId = null;
+
+// Treibt sowohl das Formular-Rendering als auch den PDF-Export — beide
+// verwenden dieselbe Quelle, damit Feldnamen nie auseinanderlaufen können.
+const PROBENPROTOKOLL_SECTIONS = [
+  {
+    title: 'Kopfdaten',
+    fields: [
+      { name: 'Nr Analysenproben', label: 'Nr. Analyseproben', type: 'text', required: true },
+      { name: 'Nr der Gegenproben', label: 'Nr. Gegenproben', type: 'text' },
+      { name: 'Name des Unternehmens', label: 'Name des Unternehmens', type: 'text', required: true },
+      { name: 'Straße Hausnummer', label: 'Straße, Hausnummer', type: 'text', required: true },
+      { name: 'PLZ  Ort', label: 'PLZ, Ort', type: 'text', required: true },
+      { name: 'Kundennummer', label: 'Kundennummer', type: 'text', required: true },
+      { name: 'Bundesland', label: 'Bundesland', type: 'text', required: true }
+    ]
+  },
+  {
+    title: 'Beprobtes Produkt',
+    fields: [
+      { name: 'Probe', label: 'Beprobtes Produkt', type: 'text' },
+      { name: 'Group10', label: 'Herkunft', type: 'radio', options: [
+        { value: 'Auswahl1', label: 'Eigene Produktion' },
+        { value: 'Auswahl 2', label: 'Zukaufs- und Handelsware' }
+      ] }
+    ]
+  },
+  {
+    title: 'Zukaufs- und Handelsware',
+    fields: [
+      { name: 'Lieferant', label: 'Lieferant', type: 'text' },
+      { name: 'Lieferdatum', label: 'Lieferdatum', type: 'text' },
+      { name: 'Liefermenge', label: 'Liefermenge', type: 'text' },
+      { name: 'Lagermenge Lieferung', label: 'Davon noch lagernd am Betrieb', type: 'text' }
+    ]
+  },
+  {
+    title: 'Eigene Produktion',
+    fields: [
+      { name: 'Produktionsmenge', label: 'Datum Produktion/Ernte/Abfüllung', type: 'text' },
+      { name: 'Charge', label: 'Chargennummer/MHD', type: 'text' },
+      { name: 'Menge', label: 'Menge der Charge/Ernte', type: 'text' },
+      { name: 'Lagermenge', label: 'Davon noch lagernd am Betrieb', type: 'text' }
+    ]
+  },
+  {
+    title: 'Probenahmeort',
+    fields: [
+      { name: 'Probeort1', label: 'Lagerbezeichnung', type: 'checkbox', textField: 'Ort Lager' },
+      { name: 'Probeort2', label: 'Produktionsstätte', type: 'checkbox', textField: 'Ort Produktion' },
+      { name: 'Probeort3', label: 'Feldstücksname', type: 'checkbox', textField: 'Feldstück' },
+      { name: 'Probeort4', label: 'Bienenstandorte', type: 'checkbox', textField: 'Ort Bienen' },
+      { name: 'Probeort5', label: 'Sonstiges', type: 'checkbox', textField: 'sonstiger Ort' }
+    ]
+  },
+  {
+    title: 'Probenahme',
+    fields: [
+      { name: 'DatumZeitpunkt und Ort der Probenahme', label: 'Datum', type: 'text', required: true },
+      { name: 'UhrzeitZeitpunkt und Ort der Probenahme', label: 'Uhrzeit', type: 'text', required: true },
+      { name: 'Probenmenge', label: 'Probenmenge', type: 'text' },
+      { name: 'Analyse (Wirkstoff)', label: 'Ggf. zu analysierender Wirkstoff', type: 'text' }
+    ]
+  },
+  {
+    title: 'Grund der Probenahme',
+    fields: [
+      { name: 'Group9', label: 'Grund', type: 'radio', options: [
+        { value: 'Auswahl1', label: 'Routine' },
+        { value: 'Auswahl2', label: 'Verdacht' },
+        { value: 'Auswahl3', label: 'Sonstiges' }
+      ] },
+      { name: 'Grund sonst', label: 'Sonstiges — Erläuterung', type: 'text' },
+      { name: 'Abdift', label: 'Bei Abdrift', type: 'checkbox' }
+    ]
+  },
+  {
+    title: 'Anlagen',
+    fields: [
+      { name: 'Anlage1', label: 'Rezeptur/Mischprotokoll', type: 'checkbox' },
+      { name: 'Anlage2', label: 'Etikett/Foto der Charge', type: 'checkbox' },
+      { name: 'Anlage3', label: 'Zukaufsbeleg', type: 'checkbox' },
+      { name: 'Anlage4', label: 'Flurkarte/Skizze', type: 'checkbox' },
+      { name: 'Anlage5', label: 'Sonstiges', type: 'checkbox', textField: 'Anlage sonst' }
+    ]
+  },
+  {
+    title: 'Anmerkungen',
+    fields: [
+      { name: 'Erläuterung zur Probenahme Flurstücksname u nummer bzw Gebäudebezeichnung LagerChargennummer', label: 'Anmerkungen zur Probenahme', type: 'textarea' }
+    ]
+  },
+  {
+    title: 'Bestätigungen',
+    hint: 'Die drei Erklärungen des Betriebsleiters sind Pflicht — außer „Die Annahme und Verwahrung wurde abgelehnt“ ist angekreuzt.',
+    fields: [
+      { name: 'Probenehmer Name', label: 'Name Probenehmer', type: 'text', required: true },
+      { name: 'Der Beauftragung eines akkreditierten Labors als Unterauftragnehmer der Kontrollstelle wird zugestimmt', label: 'Der Beauftragung eines akkreditierten Labors als Unterauftragnehmer der Kontrollstelle wird zugestimmt', type: 'checkbox', requiredUnless: 'Die Annahme und Verwahrung wurde abgelehnt', shortLabel: 'Zustimmung zur Laborbeauftragung' },
+      { name: 'Über die Bedeutung der Gegenprobe und Lagerung der Gegenproben wurde ich informiert', label: 'Über die Bedeutung der Gegenprobe und Lagerung der Gegenproben wurde ich informiert', type: 'checkbox', requiredUnless: 'Die Annahme und Verwahrung wurde abgelehnt', shortLabel: 'Information über die Gegenprobe' },
+      { name: 'Die Annahme und Verwahrung wurde abgelehnt', label: 'Die Annahme und Verwahrung wurde abgelehnt', type: 'checkbox' },
+      { name: 'Die genannten Angaben werden bestätigt', label: 'Die genannten Angaben werden bestätigt', type: 'checkbox', requiredUnless: 'Die Annahme und Verwahrung wurde abgelehnt', shortLabel: 'Bestätigung der Angaben' },
+      { name: 'Text1', label: 'Ort, Datum', type: 'text' }
+    ]
+  }
+];
+
+// Flache Sicht auf alle Feldnamen (inkl. der an eine Checkbox gekoppelten
+// Text-Felder wie "Ort Lager") — Grundlage für Vorbefüllung, Werte-Objekt-
+// Initialisierung und den PDF-Export-Durchlauf.
+const PROBENPROTOKOLL_ALL_FIELDS = (() => {
+  const out = [];
+  PROBENPROTOKOLL_SECTIONS.forEach(sec => sec.fields.forEach(f => {
+    out.push({ name: f.name, type: f.type, options: f.options });
+    if (f.textField) out.push({ name: f.textField, type: 'text' });
+  }));
+  return out;
+})();
+
+// Beide Unterschriften werden als PNG (Canvas-Signaturpad) direkt auf die
+// Seite gezeichnet — die Vorlage enthält bewusst KEIN Signaturfeld mehr (das
+// ursprüngliche "Signaturfeld 1" war eine kryptographische PDF-Signatur und
+// wurde beim Bereinigen der Vorlage entfernt). Koordinaten per pdf.js aus den
+// Beschriftungen der Vorlage gemessen: "Unterschrift des Probenehmers" endet
+// bei x≈373 (Zeile y≈148–178), "Unterschrift des Betriebsinhabers …" steht
+// bei y≈42 unter der Linie, die Unterschrift gehört darüber.
+const PROBENPROTOKOLL_SIGNATURE_BOXES = {
+  signatureProbenehmer: { x: 380, y: 148, width: 175, height: 30 },
+  signatureBetriebsinhaber: { x: 240, y: 54, width: 220, height: 34 }
+};
+
+function createProbenprotokoll(ev) {
+  let rememberedName = '';
+  try { rememberedName = localStorage.getItem(PROBENEHMER_NAME_STORAGE_KEY) || ''; } catch {}
+
+  const values = {};
+  PROBENPROTOKOLL_ALL_FIELDS.forEach(f => { values[f.name] = f.type === 'checkbox' ? false : ''; });
+  values['Name des Unternehmens'] = ev.kunde;
+  values['Straße Hausnummer'] = ev.strasse || '';
+  values['PLZ  Ort'] = [ev.plz, ev.ort].filter(Boolean).join(' ');
+  values['Kundennummer'] = ev.kundennummer || '';
+  values['DatumZeitpunkt und Ort der Probenahme'] = new Date().toLocaleDateString('de-DE');
+  values['Probenehmer Name'] = rememberedName;
+
+  const now = new Date().toISOString();
+  const p = {
+    id: 'protokoll-' + Date.now() + Math.random().toString(36).slice(2),
+    betrieb: ev.kunde,
+    terminId: ev.id,
+    createdAt: now, updatedAt: now,
+    values,
+    signatureProbenehmer: null,
+    signatureBetriebsinhaber: null,
+    anlagenDateien: []
+  };
+  ev.probenprotokolle = ev.probenprotokolle || [];
+  ev.probenprotokolle.push(p);
+  return p;
+}
+
+function deleteProbenprotokoll(ev, id) {
+  const p = (ev.probenprotokolle || []).find(x => x.id === id);
+  if (!p) return;
+  if (!confirm('Protokoll wirklich löschen?')) return;
+  ev.probenprotokolle = ev.probenprotokolle.filter(x => x.id !== id);
+  if (activeProbenprotokollEventId === ev.id && activeProbenprotokollId === id) closeProbenprotokollModal();
+  if (terminkalenderSelectedId === ev.id) renderTerminkalenderDetail(ev);
+}
+
+// Rendert den Listen-Ausschnitt "Probenahmeprotokolle" innerhalb des
+// Terminkalender-Detailpanels — Aufruf und Verdrahtung analog zu
+// renderTerminkalenderAttachments()/den dortigen Button-Listenern
+// (main.js, renderTerminkalenderDetail).
+function probenprotokollSectionHtml(ev) {
+  const list = ev.probenprotokolle || [];
+  const rows = list.slice().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(p => {
+    const complete = probenprotokollMissing(p).length === 0;
+    const datum = p.values['DatumZeitpunkt und Ort der Probenahme'] || '–';
+    const produkt = p.values['Probe'] || '(kein Produkt angegeben)';
+    return `<div class="probenprotokoll-row">
+      <button type="button" class="probenprotokoll-row-main" data-action="open-protokoll" data-id="${escapeHtml(p.id)}">
+        <span class="probenprotokoll-row-title">${escapeHtml(produkt)}</span>
+        <span class="probenprotokoll-row-sub">${escapeHtml(datum)} · ${complete ? 'vollständig' : 'unvollständig'}</span>
+      </button>
+      <button type="button" class="probenprotokoll-row-delete" data-action="delete-protokoll" data-id="${escapeHtml(p.id)}" title="Löschen">
+        <span class="material-symbols-rounded icon">delete</span>
+      </button>
+    </div>`;
+  }).join('');
+  return `
+    <div class="tk-attachments" id="tk-probenprotokolle">
+      <div class="tk-attachments-head">Probenahmeprotokolle</div>
+      <div id="tk-probenprotokoll-list">${rows || '<p class="empty-hint">Noch keine Protokolle.</p>'}</div>
+      <div class="tk-attachments-actions">
+        <button type="button" class="tk-attachment-btn tk-attachment-btn-primary" id="tk-probenprotokoll-new">
+          <span class="material-symbols-rounded icon">description</span> Neues Protokoll
+        </button>
+      </div>
+    </div>`;
+}
+
+function wireProbenprotokollSection(ev) {
+  document.getElementById('tk-probenprotokoll-new').addEventListener('click', () => {
+    const p = createProbenprotokoll(ev);
+    openProbenprotokoll(ev.id, p.id);
+  });
+  document.getElementById('tk-probenprotokoll-list').addEventListener('click', (e) => {
+    const delBtn = e.target.closest('[data-action="delete-protokoll"]');
+    if (delBtn) { deleteProbenprotokoll(ev, delBtn.getAttribute('data-id')); return; }
+    const openBtn = e.target.closest('[data-action="open-protokoll"]');
+    if (openBtn) openProbenprotokoll(ev.id, openBtn.getAttribute('data-id'));
+  });
+}
+
+function getActiveProbenprotokoll() {
+  const ev = terminkalenderEvents.find(e => e.id === activeProbenprotokollEventId);
+  if (!ev) return null;
+  const p = (ev.probenprotokolle || []).find(x => x.id === activeProbenprotokollId);
+  return p ? { ev, p } : null;
+}
+
+function openProbenprotokoll(evId, id) {
+  activeProbenprotokollEventId = evId;
+  activeProbenprotokollId = id;
+  document.getElementById('probenprotokoll-modal-overlay').hidden = false;
+  renderProbenprotokollForm();
+}
+
+function closeProbenprotokollModal() {
+  const evId = activeProbenprotokollEventId;
+  activeProbenprotokollEventId = null;
+  activeProbenprotokollId = null;
+  document.getElementById('probenprotokoll-modal-overlay').hidden = true;
+  document.getElementById('probenprotokoll-modal-form').innerHTML = '';
+  // Neu angelegte/bearbeitete Protokolle ändern Titel/Status der Zeile in
+  // der Liste (siehe probenprotokollSectionHtml) — die wurde beim Öffnen
+  // nicht neu gerendert, muss also spätestens beim Schließen aktualisiert
+  // werden, sonst zeigt sie einen veralteten Stand.
+  if (evId === terminkalenderSelectedId) {
+    const ev = terminkalenderEvents.find(e => e.id === evId);
+    if (ev) renderTerminkalenderDetail(ev);
+  }
+}
+
+const PROBENPROTOKOLL_REQUIRED_SIGNATURES = [
+  { key: 'signatureProbenehmer', label: 'Unterschrift des Probenehmers', canvasId: 'pp-sig-probenehmer' },
+  { key: 'signatureBetriebsinhaber', label: 'Unterschrift des Betriebsinhabers', canvasId: 'pp-sig-betriebsinhaber' }
+];
+
+// Fehlende Pflichtangaben eines Protokolls — { field } für Formularfelder,
+// { signature } für Unterschriften. Erklärungen mit requiredUnless entfallen,
+// sobald das genannte Feld (Annahme abgelehnt) angekreuzt ist.
+function probenprotokollMissing(p) {
+  const missing = [];
+  PROBENPROTOKOLL_SECTIONS.forEach(sec => sec.fields.forEach(f => {
+    const v = p.values[f.name];
+    const filled = typeof v === 'string' ? v.trim() !== '' : !!v;
+    const needed = f.required || (f.requiredUnless && !p.values[f.requiredUnless]);
+    if (needed && !filled) missing.push({ field: f.name, label: f.shortLabel || f.label });
+  }));
+  PROBENPROTOKOLL_REQUIRED_SIGNATURES.forEach(s => {
+    if (!p[s.key]) missing.push({ signature: s.key, canvasId: s.canvasId, label: s.label });
+  });
+  return missing;
+}
+
+// Markiert fehlende Felder im offenen Formular und zeigt die Liste über den
+// Aktions-Buttons. Läuft erst nach dem ersten Export-Versuch
+// (probenprotokollValidationShown), danach bei jeder Eingabe erneut, damit
+// die Markierung verschwindet, sobald ein Feld ausgefüllt ist.
+let probenprotokollValidationShown = false;
+function markProbenprotokollMissing(p) {
+  const form = document.getElementById('probenprotokoll-modal-form');
+  const errorEl = document.getElementById('probenprotokoll-modal-error');
+  form.querySelectorAll('.pp-invalid').forEach(el => el.classList.remove('pp-invalid'));
+  const missing = probenprotokollMissing(p);
+  missing.forEach(m => {
+    const el = m.field
+      ? form.querySelector(`[data-field="${CSS.escape(m.field)}"]`)?.closest('.pp-field')
+      : document.getElementById(m.canvasId)?.closest('.pp-signature-block');
+    if (el) el.classList.add('pp-invalid');
+  });
+  errorEl.hidden = missing.length === 0;
+  errorEl.textContent = missing.length ? 'Bitte noch ausfüllen: ' + missing.map(m => m.label).join(', ') + '.' : '';
+  return missing;
+}
+
+function refreshProbenprotokollValidation(p) {
+  if (probenprotokollValidationShown) markProbenprotokollMissing(p);
+}
+
+function probenprotokollFieldRowHtml(f, values) {
+  const id = 'pp-field-' + f.name.replace(/[^a-zA-Z0-9]/g, '_');
+  const req = (f.required || f.requiredUnless) ? ' <span class="pp-required" title="Pflichtfeld">*</span>' : '';
+  if (f.type === 'text') {
+    return `<div class="pp-field">
+      <label class="compare-label" for="${id}">${escapeHtml(f.label)}${req}</label>
+      <input type="text" id="${id}" class="account-input" data-field="${escapeHtml(f.name)}" value="${escapeHtml(values[f.name] || '')}">
+    </div>`;
+  }
+  if (f.type === 'textarea') {
+    return `<div class="pp-field pp-field-wide">
+      <label class="compare-label" for="${id}">${escapeHtml(f.label)}${req}</label>
+      <textarea id="${id}" class="account-input" rows="4" data-field="${escapeHtml(f.name)}">${escapeHtml(values[f.name] || '')}</textarea>
+    </div>`;
+  }
+  if (f.type === 'checkbox') {
+    const textHtml = f.textField
+      ? `<input type="text" class="account-input" placeholder="Bezeichnung" data-field="${escapeHtml(f.textField)}" value="${escapeHtml(values[f.textField] || '')}">`
+      : '';
+    return `<div class="pp-field pp-checkbox-row modal-checkbox-row">
+      <label><input type="checkbox" data-field="${escapeHtml(f.name)}" ${values[f.name] ? 'checked' : ''}> ${escapeHtml(f.label)}${req}</label>
+      ${textHtml}
+    </div>`;
+  }
+  if (f.type === 'radio') {
+    return `<div class="pp-field pp-field-wide">
+      <span class="compare-label">${escapeHtml(f.label)}</span>
+      <div class="pp-radio-group">
+        ${f.options.map(o => `<label class="pp-radio-option"><input type="radio" name="pp-radio-${id}" data-field="${escapeHtml(f.name)}" value="${escapeHtml(o.value)}" ${values[f.name] === o.value ? 'checked' : ''}> ${escapeHtml(o.label)}</label>`).join('')}
+      </div>
+    </div>`;
+  }
+  return '';
+}
+
+// Anlagen-Dateien (Foto/Dokument) hängen an das Protokoll, nicht an den
+// Termin — eigenes kleines Array statt ev.attachments, damit sie beim
+// PDF-Export gezielt als zusätzliche Seiten eingebettet werden können (siehe
+// exportProbenprotokollPdf), statt einfach nur als weiterer Termin-Anhang
+// danebenzuliegen. Rendering/Upload-Mechanik ist bewusst identisch zu
+// renderTerminkalenderAttachments()/uploadTerminkalenderAttachment()
+// (main.js) — gleiche .tk-attachment*-CSS-Klassen, gleiches Signed-URL-
+// Ladeschema.
+async function renderProbenprotokollAnlagenGrid(p) {
+  const grid = document.getElementById('pp-anlagen-grid');
+  if (!grid) return;
+  const files = p.anlagenDateien || [];
+  if (!files.length) { grid.innerHTML = '<p class="empty-hint">Keine Anlagen-Dateien.</p>'; return; }
+  grid.innerHTML = files.map(() => '<div class="tk-attachment tk-attachment-loading"></div>').join('');
+  const urls = await Promise.all(files.map(a => getPhotoUrl(a.path, a.name).catch(() => null)));
+  grid.innerHTML = files.map((a, i) => {
+    const url = urls[i];
+    if (!url) return `<div class="tk-attachment tk-attachment-error" title="${escapeHtml(a.name)} konnte nicht geladen werden"><span class="material-symbols-rounded icon">warning</span></div>`;
+    const isImage = (a.type || '').startsWith('image/');
+    const inner = isImage
+      ? `<img src="${url}" alt="${escapeHtml(a.name)}">`
+      : `<span class="tk-attachment-icon material-symbols-rounded icon">description</span><span class="tk-attachment-name">${escapeHtml(a.name)}</span>`;
+    return `<div class="tk-attachment">
+      <a href="${url}" target="_blank" rel="noopener" class="tk-attachment-link" title="${escapeHtml(a.name)}">${inner}</a>
+      <button type="button" class="tk-attachment-remove" data-path="${escapeHtml(a.path)}" title="Entfernen"><span class="material-symbols-rounded icon">close</span></button>
+    </div>`;
+  }).join('');
+  grid.querySelectorAll('.tk-attachment-remove').forEach(btn => {
+    btn.addEventListener('click', () => removeProbenprotokollAnlage(p, btn.getAttribute('data-path')));
+  });
+}
+
+async function addProbenprotokollAnlage(p, file) {
+  const statusEl = document.getElementById('pp-anlage-status');
+  if (!file) return;
+  try {
+    const path = await uploadPhoto(file);
+    p.anlagenDateien = p.anlagenDateien || [];
+    p.anlagenDateien.push({ path, name: file.name, size: file.size, type: file.type || '' });
+    p.updatedAt = new Date().toISOString();
+    renderProbenprotokollAnlagenGrid(p);
+  } catch (err) {
+    if (statusEl) statusEl.textContent = 'Fehler: ' + (err.message || 'Datei konnte nicht hochgeladen werden.');
+  }
+}
+
+async function removeProbenprotokollAnlage(p, path) {
+  const statusEl = document.getElementById('pp-anlage-status');
+  try {
+    await deletePhoto(path);
+    p.anlagenDateien = (p.anlagenDateien || []).filter(a => a.path !== path);
+    p.updatedAt = new Date().toISOString();
+    renderProbenprotokollAnlagenGrid(p);
+  } catch (err) {
+    if (statusEl) statusEl.textContent = 'Fehler: ' + (err.message || 'Löschen fehlgeschlagen.');
+  }
+}
+
+function probenprotokollAnlagenFilesHtml() {
+  return `
+    <div class="tk-attachments pp-anlagen-files">
+      <div class="tk-attachments-head">Anlagen-Dateien (werden beim Export als zusätzliche Seiten eingefügt)</div>
+      <div class="tk-attachments-grid" id="pp-anlagen-grid"></div>
+      <div class="tk-attachments-actions">
+        <label class="tk-attachment-btn">
+          <input type="file" id="pp-anlage-file-input" hidden>
+          <span class="material-symbols-rounded icon">attach_file</span> Foto/Dokument hinzufügen
+        </label>
+      </div>
+      <p class="modal-hint" id="pp-anlage-status"></p>
+    </div>`;
+}
+
+function renderProbenprotokollForm() {
+  const ref = getActiveProbenprotokoll();
+  if (!ref) return;
+  const { p } = ref;
+  probenprotokollValidationShown = false;
+  const errorEl = document.getElementById('probenprotokoll-modal-error');
+  errorEl.hidden = true;
+  errorEl.textContent = '';
+  const sectionsHtml = PROBENPROTOKOLL_SECTIONS.map(sec => `
+    <fieldset class="pp-section">
+      <legend>${escapeHtml(sec.title)}</legend>
+      ${sec.hint ? `<p class="modal-hint">${escapeHtml(sec.hint)}</p>` : ''}
+      <div class="pp-section-grid">${sec.fields.map(f => probenprotokollFieldRowHtml(f, p.values)).join('')}</div>
+      ${sec.title === 'Anlagen' ? probenprotokollAnlagenFilesHtml() : ''}
+    </fieldset>`).join('');
+  const signaturesHtml = `
+    <fieldset class="pp-section">
+      <legend>Unterschriften</legend>
+      <p class="modal-hint">Keine Rechtsberatung — bitte im Zweifel das amtliche Formular gegenprüfen.</p>
+      <div class="pp-signature-grid">
+        <div class="pp-signature-block">
+          <span class="compare-label">Unterschrift des Probenehmers <span class="pp-required" title="Pflichtfeld">*</span></span>
+          <canvas class="pp-signature-pad" id="pp-sig-probenehmer" width="480" height="140"></canvas>
+          <button type="button" class="pp-signature-clear" data-sig="signatureProbenehmer">
+            <span class="material-symbols-rounded icon">refresh</span> Löschen
+          </button>
+        </div>
+        <div class="pp-signature-block">
+          <span class="compare-label">Unterschrift des Betriebsinhabers oder seines Stellvertreters <span class="pp-required" title="Pflichtfeld">*</span></span>
+          <canvas class="pp-signature-pad" id="pp-sig-betriebsinhaber" width="480" height="140"></canvas>
+          <button type="button" class="pp-signature-clear" data-sig="signatureBetriebsinhaber">
+            <span class="material-symbols-rounded icon">refresh</span> Löschen
+          </button>
+        </div>
+      </div>
+    </fieldset>`;
+  document.getElementById('probenprotokoll-modal-form').innerHTML = sectionsHtml + signaturesHtml;
+  wireProbenprotokollFormInputs(p);
+  setupSignaturePad('pp-sig-probenehmer', p, 'signatureProbenehmer');
+  setupSignaturePad('pp-sig-betriebsinhaber', p, 'signatureBetriebsinhaber');
+  renderProbenprotokollAnlagenGrid(p);
+  document.getElementById('pp-anlage-file-input').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    addProbenprotokollAnlage(p, file);
+  });
+}
+
+function wireProbenprotokollFormInputs(p) {
+  const form = document.getElementById('probenprotokoll-modal-form');
+  form.querySelectorAll('[data-field]').forEach(el => {
+    const name = el.getAttribute('data-field');
+    const isCheckOrRadio = el.type === 'checkbox' || el.type === 'radio';
+    el.addEventListener(isCheckOrRadio ? 'change' : 'input', () => {
+      if (el.type === 'checkbox') p.values[name] = el.checked;
+      else if (el.type === 'radio') { if (el.checked) p.values[name] = el.value; }
+      else p.values[name] = el.value;
+      p.updatedAt = new Date().toISOString();
+      if (name === 'Probenehmer Name') {
+        try { localStorage.setItem(PROBENEHMER_NAME_STORAGE_KEY, el.value); } catch {}
+      }
+      refreshProbenprotokollValidation(p);
+    });
+  });
+}
+
+// Freihändiges Zeichnen per Pointer Events (kein Vorbild in dieser App — der
+// Dokumentenscanner nutzt Canvas nur zum Video-Frame-Halten/4-Eck-Zuschnitt,
+// keine Tinte). Pointer Capture direkt auf dem Canvas statt des sonst in
+// dieser App üblichen document-weiten Drag-Musters, da ein einzelner
+// durchgehender Strichzug gezeichnet wird, nicht ein einzelner Punkt verschoben.
+function setupSignaturePad(canvasId, protokoll, key) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  ctx.strokeStyle = '#1a1a1a';
+  ctx.lineWidth = 2;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  let drawing = false;
+  let lastX = 0, lastY = 0;
+
+  function pointerPos(e) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left) * (canvas.width / rect.width),
+      y: (e.clientY - rect.top) * (canvas.height / rect.height)
+    };
+  }
+  canvas.addEventListener('pointerdown', (e) => {
+    drawing = true;
+    const pos = pointerPos(e);
+    lastX = pos.x; lastY = pos.y;
+    canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (!drawing) return;
+    const pos = pointerPos(e);
+    ctx.beginPath();
+    ctx.moveTo(lastX, lastY);
+    ctx.lineTo(pos.x, pos.y);
+    ctx.stroke();
+    lastX = pos.x; lastY = pos.y;
+  });
+  const endStroke = () => {
+    if (!drawing) return;
+    drawing = false;
+    protokoll[key] = canvas.toDataURL('image/png');
+    refreshProbenprotokollValidation(protokoll);
+  };
+  canvas.addEventListener('pointerup', endStroke);
+  canvas.addEventListener('pointercancel', endStroke);
+
+  if (protokoll[key]) {
+    const img = new Image();
+    img.onload = () => ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    img.src = protokoll[key];
+  }
+
+  const clearBtn = document.querySelector(`.pp-signature-clear[data-sig="${key}"]`);
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      protokoll[key] = null;
+      refreshProbenprotokollValidation(protokoll);
+    });
+  }
+}
+
+document.getElementById('probenprotokoll-modal-close').addEventListener('click', closeProbenprotokollModal);
+document.getElementById('probenprotokoll-modal-overlay').addEventListener('click', (e) => {
+  if (e.target === document.getElementById('probenprotokoll-modal-overlay')) closeProbenprotokollModal();
+});
+document.getElementById('probenprotokoll-modal-delete').addEventListener('click', () => {
+  const ref = getActiveProbenprotokoll();
+  if (ref) deleteProbenprotokoll(ref.ev, ref.p.id);
+});
+
+// Zeichnet ein Unterschrift-PNG seitenverhältnistreu zentriert in eine feste
+// Box (statt zu verzerren) — dasselbe Scale-to-fit-Muster wie beim Logo-/
+// Hofplan-Übersicht-Einbetten in bestehenden PDF-Exporten dieser App.
+function drawSignatureFitted(page, img, box) {
+  const scale = Math.min(box.width / img.width, box.height / img.height);
+  const w = img.width * scale;
+  const h = img.height * scale;
+  const x = box.x + (box.width - w) / 2;
+  const y = box.y + (box.height - h) / 2;
+  page.drawImage(img, { x, y, width: w, height: h });
+}
+
+// Holt die rohen Bytes einer Anlagen-Datei (für die Einbettung als
+// zusätzliche PDF-Seite) — Produktionscode über die ohnehin für die Anzeige
+// genutzte Signed URL (getPhotoUrl), dev-only Override analog
+// window.__ffTestUploadPhotoOverride (supabase.js), damit Playwright-Tests
+// ohne echtes Supabase-Storage auskommen.
+async function getAttachmentBytes(path) {
+  if (import.meta.env.DEV && window.__ffTestFetchBytesOverride) {
+    return window.__ffTestFetchBytesOverride(path);
+  }
+  const url = await getPhotoUrl(path);
+  const resp = await fetch(url);
+  return new Uint8Array(await resp.arrayBuffer());
+}
+
+// A4 in pdf-lib-Punkten (595.28 x 841.89) — für angehängte Bild-Seiten, da
+// die Vorlage selbst ebenfalls A4 ist (595 x 842, siehe Node/pdf-lib-
+// Inspektion der Originaldatei).
+const PROBENPROTOKOLL_A4 = [595.28, 841.89];
+
+async function embedProbenprotokollAnlage(pdfDoc, anlage) {
+  const bytes = await getAttachmentBytes(anlage.path);
+  const type = anlage.type || '';
+  if (type === 'application/pdf') {
+    const srcDoc = await PDFLib.PDFDocument.load(bytes);
+    const copied = await pdfDoc.copyPages(srcDoc, srcDoc.getPageIndices());
+    copied.forEach(pg => pdfDoc.addPage(pg));
+    return;
+  }
+  if (!type.startsWith('image/')) return; // unbekannter Typ — bleibt reine Datei-Referenz, wird nicht eingebettet
+  const img = type === 'image/png' ? await pdfDoc.embedPng(bytes) : await pdfDoc.embedJpg(bytes);
+  const page = pdfDoc.addPage(PROBENPROTOKOLL_A4);
+  const margin = 20;
+  const maxW = page.getWidth() - margin * 2;
+  const maxH = page.getHeight() - margin * 2;
+  const scale = Math.min(maxW / img.width, maxH / img.height);
+  const w = img.width * scale, h = img.height * scale;
+  page.drawImage(img, { x: (page.getWidth() - w) / 2, y: (page.getHeight() - h) / 2, width: w, height: h });
+}
+
+async function exportProbenprotokollPdf(ev, p) {
+  if (typeof PDFLib === 'undefined') { showError('PDF-Export nicht verfügbar (Bibliothek konnte nicht geladen werden).'); return; }
+  try {
+    const templateBytes = await fetch('/probenahmeprotokoll-vorlage.pdf').then(r => r.arrayBuffer());
+    const pdfDoc = await PDFLib.PDFDocument.load(templateBytes);
+    const form = pdfDoc.getForm();
+
+    PROBENPROTOKOLL_ALL_FIELDS.forEach(f => {
+      const value = p.values[f.name];
+      if (f.type === 'checkbox') {
+        const box = form.getCheckBox(f.name);
+        if (value) box.check(); else box.uncheck();
+      } else if (f.type === 'radio') {
+        const group = form.getRadioGroup(f.name);
+        if (value) group.select(value); else group.clear();
+      } else {
+        form.getTextField(f.name).setText(value || '');
+      }
+    });
+
+    const page = pdfDoc.getPage(0);
+    for (const key of ['signatureProbenehmer', 'signatureBetriebsinhaber']) {
+      if (!p[key]) continue;
+      const img = await pdfDoc.embedPng(p[key]);
+      drawSignatureFitted(page, img, PROBENPROTOKOLL_SIGNATURE_BOXES[key]);
+    }
+
+    form.flatten();
+
+    for (const anlage of (p.anlagenDateien || [])) {
+      await embedProbenprotokollAnlage(pdfDoc, anlage);
+    }
+
+    const bytes = await pdfDoc.save();
+    const name = `${ev.date.getFullYear()}_${sanitizeFileNamePart(ev.kunde)}_Probenahmeprotokoll.pdf`;
+    const file = new File([bytes], name, { type: 'application/pdf' });
+    await uploadTerminkalenderAttachment(ev, file, 'Probenahmeprotokoll');
+    closeProbenprotokollModal();
+  } catch (err) {
+    showError('PDF-Export fehlgeschlagen: ' + (err.message || String(err)));
+  }
+}
+
+document.getElementById('probenprotokoll-modal-export').addEventListener('click', () => {
+  const ref = getActiveProbenprotokoll();
+  if (!ref) return;
+  probenprotokollValidationShown = true;
+  const missing = markProbenprotokollMissing(ref.p);
+  if (missing.length) {
+    document.querySelector('#probenprotokoll-modal-form .pp-invalid')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    return;
+  }
+  exportProbenprotokollPdf(ref.ev, ref.p);
+});
+
+// Dev-only Testhaken (analog window.__ffTestMap/__ffTestStallplaner) — echtes
+// Canvas-Pointer-Zeichnen ist laut AGENTS.md Punkt 2 genauso wenig
+// zuverlässig per synthetischem Maus-Event simulierbar wie SVG-Vertex-Drag.
+if (import.meta.env.DEV) {
+  window.__ffTestProbenprotokoll = {
+    create(eventId) {
+      const ev = terminkalenderEvents.find(e => e.id === eventId);
+      if (!ev) return null;
+      return createProbenprotokoll(ev).id;
+    },
+    getActive() { return getActiveProbenprotokoll()?.p || null; },
+    get(eventId, id) {
+      const ev = terminkalenderEvents.find(e => e.id === eventId);
+      return ev ? (ev.probenprotokolle || []).find(x => x.id === id) || null : null;
+    },
+    setValue(eventId, id, name, value) {
+      const p = window.__ffTestProbenprotokoll.get(eventId, id);
+      if (p) p.values[name] = value;
+    },
+    setSignature(eventId, id, key, dataUrl) {
+      const p = window.__ffTestProbenprotokoll.get(eventId, id);
+      if (p) p[key] = dataUrl;
+    }
+  };
+}
 
 // ---------- Dev-Tooling: Jahresvergleich-Inputs aus test-shapes/ vorbefüllen ----------
 // Vorerst deaktiviert: test-shapes/ enthält jetzt 16 einzelne Bundesland-
