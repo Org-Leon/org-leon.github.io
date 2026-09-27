@@ -81,4 +81,19 @@ test.describe('Flächenzeichner', () => {
     await nameInput.fill('Testschlag Nord');
     await expect(nameInput).toHaveValue('Testschlag Nord');
   });
+
+  test('Klick auf eine selbst gezeichnete Fläche von einem anderen Tab aus wechselt direkt in den Flächenzeichner', async ({ page }) => {
+    await drawZeichnerPolygon(page, TEST_POLY_A);
+    // Gezeichnete Flächen landen als ganz normale Ebene in der geteilten
+    // layers-Liste und sind daher auch im Viewer sichtbar/anklickbar.
+    await page.locator('.segment-btn.active').click(); // zurück zum Viewer
+    await page.evaluate(() => {
+      const map = window.__ffTestMap;
+      let target = null;
+      map.eachLayer((l) => { if (l instanceof window.L.Polygon && !target) target = l; });
+      target.fire('click');
+    });
+    await expect(page.locator('.segment-btn[data-view="zeichner"]')).toHaveClass(/active/);
+    await expect(page.locator('#zeichner-list .parcel-item')).toHaveCount(1);
+  });
 });
