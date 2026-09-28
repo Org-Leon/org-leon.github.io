@@ -11858,8 +11858,8 @@ const PROBENPROTOKOLL_SECTIONS = [
   {
     title: 'Kopfdaten',
     fields: [
-      { name: 'Nr Analysenproben', label: 'Nr. Analyseproben', type: 'text', required: true },
-      { name: 'Nr der Gegenproben', label: 'Nr. Gegenproben', type: 'text' },
+      { name: 'Nr Analysenproben', label: 'Nr. Analyseproben', type: 'text', required: true, scan: true },
+      { name: 'Nr der Gegenproben', label: 'Nr. Gegenproben', type: 'text', scan: true },
       { name: 'Name des Unternehmens', label: 'Name des Unternehmens', type: 'text', required: true },
       { name: 'Straße Hausnummer', label: 'Straße, Hausnummer', type: 'text', required: true },
       { name: 'PLZ  Ort', label: 'PLZ, Ort', type: 'text', required: true },
@@ -12369,9 +12369,14 @@ function probenprotokollFieldRowHtml(f, values) {
   const id = 'pp-field-' + f.name.replace(/[^a-zA-Z0-9]/g, '_');
   const req = (f.required || f.requiredUnless) ? ' <span class="pp-required" title="Pflichtfeld">*</span>' : '';
   if (f.type === 'text') {
+    const input = `<input type="text" id="${id}" class="account-input" data-field="${escapeHtml(f.name)}" value="${escapeHtml(values[f.name] || '')}">`;
+    // scan: Knopf für den Barcode-Scanner direkt neben dem Feld.
+    const control = f.scan
+      ? `<div class="pp-input-with-action">${input}<button type="button" class="pp-scan-btn" data-scan-field="${escapeHtml(f.name)}" title="Barcode scannen" aria-label="${escapeHtml(f.label)} per Barcode scannen"><span class="material-symbols-rounded icon">barcode_scanner</span></button></div>`
+      : input;
     return `<div class="pp-field">
       <label class="compare-label" for="${id}">${escapeHtml(f.label)}${req}</label>
-      <input type="text" id="${id}" class="account-input" data-field="${escapeHtml(f.name)}" value="${escapeHtml(values[f.name] || '')}">
+      ${control}
     </div>`;
   }
   if (f.type === 'textarea') {
@@ -12530,6 +12535,12 @@ function wireProbenprotokollFormInputs(p, def) {
       refreshProbenprotokollValidation(p);
     });
   });
+  form.querySelectorAll('[data-scan-field]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const input = form.querySelector(`input[data-field="${CSS.escape(btn.getAttribute('data-scan-field'))}"]`);
+      openBarcodeScanner(code => applyScannedCode(input, code));
+    });
+  });
 }
 
 // Freihändiges Zeichnen per Pointer Events (kein Vorbild in dieser App — der
@@ -12603,6 +12614,175 @@ document.getElementById('probenprotokoll-modal-delete').addEventListener('click'
   const ref = getActiveProbenprotokoll();
   if (ref) deleteFormular(ref.ev, ref.kind, ref.p.id);
 });
+
+// ---------- Barcode-Scanner (Nr. Analyseproben / Gegenproben) ----------
+// Probenbeutel tragen die Probenummer als Barcode. Wo der Browser einen
+// eigenen Erkenner hat (BarcodeDetector, Chrome auf Android), wird der
+// genutzt; sonst (iPhone, Desktop) @zxing/browser. ZXing ist per npm
+// gebündelt und wird erst beim ersten Scannen nachgeladen — als Teil des
+// Builds hält der Service Worker es vor, der Scanner geht also auch ohne
+// Empfang im Stall.
+const BARCODE_NATIVE_FORMATS = ['code_128', 'code_39', 'code_93', 'codabar', 'ean_13', 'ean_8', 'itf', 'upc_a', 'upc_e', 'qr_code', 'data_matrix'];
+const barcodeOverlay = document.getElementById('barcode-overlay');
+const barcodeVideo = document.getElementById('barcode-video');
+const barcodeStatusEl = document.getElementById('barcode-status');
+const barcodeTorchBtn = document.getElementById('barcode-torch');
+let barcodeStream = null;
+let barcodeStopDecode = null;
+// Zählt jedes Öffnen/Schließen hoch — ein währenddessen geschlossener oder
+// neu geöffneter Scanner macht nach einem await nicht mit altem Zustand weiter.
+let barcodeSession = 0;
+
+// Startet die Erkennung auf dem laufenden Video; ruft onCode genau einmal
+// auf. Rückgabe: Funktion zum Abbrechen.
+async function startBarcodeDecoding(video, onCode) {
+  if ('BarcodeDetector' in window) {
+    try {
+      const supported = await window.BarcodeDetector.getSupportedFormats();
+      const formats = BARCODE_NATIVE_FORMATS.filter(f => supported.includes(f));
+      if (formats.length) {
+        const detector = new window.BarcodeDetector({ formats });
+        let stopped = false;
+        const tick = async () => {
+          if (stopped) return;
+          try {
+            if (video.readyState >= 2) {
+              const codes = await detector.detect(video);
+              const code = codes.find(c => c.rawValue);
+              if (code && !stopped) { stopped = true; onCode(code.rawValue); return; }
+            }
+          } catch {}
+          setTimeout(tick, 120);
+        };
+        tick();
+        return () => { stopped = true; };
+      }
+    } catch {}
+  }
+  const { BrowserMultiFormatReader } = await import('@zxing/browser');
+  const reader = new BrowserMultiFormatReader(undefined, { delayBetweenScanAttempts: 120 });
+  let done = false;
+  let controls = null;
+  controls = await reader.decodeFromVideoElement(video, (result) => {
+    if (!result || done) return;
+    done = true;
+    if (controls) controls.stop();
+    onCode(result.getText());
+  });
+  if (done) controls.stop();
+  return () => { done = true; controls.stop(); };
+}
+
+async function openBarcodeScanner(onCode) {
+  const session = ++barcodeSession;
+  barcodeOverlay.hidden = false;
+  barcodeOverlay.classList.remove('found');
+  barcodeTorchBtn.hidden = true;
+  barcodeTorchBtn.setAttribute('aria-pressed', 'false');
+  barcodeStatusEl.textContent = 'Kamera wird gestartet …';
+  let stream;
+  try {
+    stream = import.meta.env.DEV && window.__ffTestBarcodeStream
+      ? window.__ffTestBarcodeStream()
+      : await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+      });
+  } catch (err) {
+    console.error('Kamerazugriff fehlgeschlagen', err);
+    if (session === barcodeSession) barcodeStatusEl.textContent = 'Kein Kamerazugriff — bitte die Nummer von Hand eintippen.';
+    return;
+  }
+  if (session !== barcodeSession) { stream.getTracks().forEach(t => t.stop()); return; }
+  barcodeStream = stream;
+  barcodeVideo.srcObject = stream;
+  try { await barcodeVideo.play(); } catch {}
+
+  // Taschenlampe (dunkle Ställe) — nur anbieten, wenn die Kamera sie kann.
+  const track = stream.getVideoTracks()[0];
+  const caps = track && track.getCapabilities ? track.getCapabilities() : {};
+  barcodeTorchBtn.hidden = !caps.torch;
+
+  barcodeStatusEl.textContent = 'Barcode in den Rahmen halten.';
+  let stop;
+  try {
+    stop = await startBarcodeDecoding(barcodeVideo, (code) => {
+      if (session !== barcodeSession) return;
+      if (navigator.vibrate) navigator.vibrate(60);
+      closeBarcodeScanner();
+      onCode(String(code).trim());
+    });
+  } catch (err) {
+    console.error('Barcode-Erkennung konnte nicht gestartet werden', err);
+    if (session === barcodeSession) barcodeStatusEl.textContent = 'Barcode-Erkennung nicht verfügbar — bitte die Nummer von Hand eintippen.';
+    return;
+  }
+  if (session !== barcodeSession) { stop(); return; }
+  barcodeStopDecode = stop;
+}
+
+function closeBarcodeScanner() {
+  barcodeSession++;
+  if (barcodeStopDecode) { barcodeStopDecode(); barcodeStopDecode = null; }
+  if (barcodeStream) { barcodeStream.getTracks().forEach(t => t.stop()); barcodeStream = null; }
+  barcodeVideo.srcObject = null;
+  barcodeOverlay.hidden = true;
+}
+
+document.getElementById('barcode-close').addEventListener('click', closeBarcodeScanner);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !barcodeOverlay.hidden) closeBarcodeScanner();
+});
+barcodeTorchBtn.addEventListener('click', async () => {
+  const track = barcodeStream && barcodeStream.getVideoTracks()[0];
+  if (!track) return;
+  const on = barcodeTorchBtn.getAttribute('aria-pressed') !== 'true';
+  try {
+    await track.applyConstraints({ advanced: [{ torch: on }] });
+    barcodeTorchBtn.setAttribute('aria-pressed', String(on));
+  } catch {}
+});
+
+// Gescannte Nummer ins Feld übernehmen. Mehrere Proben = mehrere Nummern:
+// ist schon etwas eingetragen, wird die neue Nummer mit Komma angehängt
+// (doppelt gescannte Nummern nicht zweimal).
+function applyScannedCode(input, code) {
+  if (!code || !input) return;
+  const parts = input.value.split(',').map(s => s.trim()).filter(Boolean);
+  if (!parts.includes(code)) parts.push(code);
+  input.value = parts.join(', ');
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  const field = input.closest('.pp-field');
+  if (field) {
+    field.classList.add('pp-scanned');
+    setTimeout(() => field.classList.remove('pp-scanned'), 1200);
+  }
+}
+
+// Dev-only: echter Decoder-Durchlauf im Test — ein Canvas mit QR-Code dient
+// als "Kamera" (window.__ffTestBarcodeStream), der Rest läuft unverändert.
+if (import.meta.env.DEV) {
+  window.__ffTestBarcode = {
+    async qrCanvas(text, size = 360) {
+      const { QRCodeWriter, BarcodeFormat } = await import('@zxing/library');
+      const matrix = new QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, size, size, new Map());
+      const canvas = document.createElement('canvas');
+      canvas.width = matrix.getWidth();
+      canvas.height = matrix.getHeight();
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#000';
+      for (let y = 0; y < matrix.getHeight(); y++) {
+        for (let x = 0; x < matrix.getWidth(); x++) {
+          if (matrix.get(x, y)) ctx.fillRect(x, y, 1, 1);
+        }
+      }
+      return canvas;
+    },
+    isOpen: () => !barcodeOverlay.hidden,
+    streamActive: () => !!barcodeStream && barcodeStream.getTracks().some(t => t.readyState === 'live')
+  };
+}
 
 // Zeichnet ein Unterschrift-PNG seitenverhältnistreu zentriert in eine feste
 // Box (statt zu verzerren) — dasselbe Scale-to-fit-Muster wie beim Logo-/

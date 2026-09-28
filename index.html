@@ -826,6 +826,23 @@
 </div>
 </div>
 
+<!-- ---------- Barcode-Scanner (Probenummern im Probenahmeprotokoll) ----------
+     Vollbild-Kamera über dem Protokoll-Modal, siehe openBarcodeScanner() in
+     main.js. Schließt sich beim ersten erkannten Code von selbst. -->
+<div id="barcode-overlay" class="scan-overlay" hidden>
+  <video id="barcode-video" playsinline muted></video>
+  <div id="barcode-frame" aria-hidden="true"></div>
+  <div id="barcode-topbar">
+    <button type="button" id="barcode-close" title="Abbrechen" aria-label="Abbrechen">
+      <span class="material-symbols-rounded icon">close</span>
+    </button>
+    <span id="barcode-status">Kamera wird gestartet …</span>
+    <button type="button" id="barcode-torch" title="Taschenlampe" aria-label="Taschenlampe" aria-pressed="false" hidden>
+      <span class="material-symbols-rounded icon">flashlight_on</span>
+    </button>
+  </div>
+</div>
+
 <!-- ---------- FeldFolio Plus: Probenahmeprotokoll / Cross Check ----------
      Ein Modal für alle Termin-Formulare (TK_FORMULARE in main.js); Titel
      und Löschen-Beschriftung setzt openFormular().
