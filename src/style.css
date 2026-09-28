@@ -2532,6 +2532,52 @@
   #scan-topbar button:hover { background: rgba(255,255,255,0.22); }
   #scan-status { color: #fff; font-size: 13px; line-height: 1.4; }
 
+  /* Barcode-Scanner: über dem Protokoll-Modal (5000) und dem Dokumenten-
+     scanner-Stil; Rahmen als Zielhilfe, Rest des Bildes abgedunkelt. */
+  #barcode-overlay { z-index: 6500; }
+  #barcode-video { width: 100%; height: 100%; object-fit: cover; }
+  #barcode-frame {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: min(82vw, 440px);
+    height: min(34vh, 220px);
+    transform: translate(-50%, -50%);
+    border: 3px solid var(--accent);
+    border-radius: 14px;
+    box-shadow: 0 0 0 100vmax rgba(0,0,0,0.45);
+    pointer-events: none;
+  }
+  #barcode-overlay.found #barcode-frame { border-color: #fff; }
+  #barcode-topbar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 10px;
+    background: linear-gradient(rgba(0,0,0,0.7), rgba(0,0,0,0));
+    z-index: 1;
+  }
+  #barcode-topbar button {
+    background: rgba(255,255,255,0.14);
+    border: none;
+    color: #fff;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  #barcode-topbar button[hidden] { display: none; }
+  #barcode-torch[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }
+  #barcode-status { flex: 1; color: #fff; font-size: 14px; line-height: 1.4; }
+
   #scan-thumbnails {
     position: absolute;
     bottom: 92px;
@@ -3492,6 +3538,23 @@
   .pp-checkbox-row > label { flex: 0 1 auto; min-width: 0; }
   .pp-checkbox-row > .account-input { flex: 1; min-width: 120px; }
   .pp-field-inactive { opacity: 0.45; }
+  .pp-input-with-action { display: flex; gap: 6px; }
+  .pp-input-with-action > .account-input { flex: 1; min-width: 0; }
+  .pp-scan-btn {
+    flex: 0 0 auto;
+    width: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    cursor: pointer;
+  }
+  .pp-scan-btn .icon { font-size: 22px; }
+  .pp-scan-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .pp-field.pp-scanned .account-input { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim); }
 
   .pp-radio-group { display: flex; flex-wrap: wrap; gap: 6px 16px; }
   .pp-radio-option {

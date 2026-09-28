@@ -166,7 +166,7 @@ test.describe('Probenahmeprotokoll (Terminkalender)', () => {
     expect(attachments).toHaveLength(0);
 
     // Markierung verschwindet, sobald das Feld ausgefüllt wird.
-    const nrField = page.locator('#pp-field-Nr_Analysenproben').locator('xpath=..');
+    const nrField = page.locator('.pp-field', { has: page.locator('#pp-field-Nr_Analysenproben') });
     await expect(nrField).toHaveClass(/pp-invalid/);
     await page.locator('#pp-field-Nr_Analysenproben').fill('A-123');
     await expect(nrField).not.toHaveClass(/pp-invalid/);
@@ -199,5 +199,67 @@ test.describe('Probenahmeprotokoll (Terminkalender)', () => {
     page.once('dialog', (d) => d.accept());
     await page.locator('.probenprotokoll-row-delete').click();
     await expect(page.locator('.probenprotokoll-row')).toHaveCount(0);
+  });
+
+  // Barcode-Scanner (openBarcodeScanner in main.js): ein Canvas mit echtem
+  // QR-Code dient als Kamera (window.__ffTestBarcodeStream) — die Erkennung
+  // selbst läuft unverändert (BarcodeDetector bzw. ZXing).
+  async function showBarcode(page, text) {
+    await page.evaluate(async (t) => {
+      const code = await window.__ffTestBarcode.qrCanvas(t);
+      const cam = document.createElement('canvas');
+      cam.width = 640; cam.height = 480;
+      const ctx = cam.getContext('2d');
+      const draw = () => { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 640, 480); ctx.drawImage(code, 140, 60); };
+      draw();
+      clearInterval(window.__barcodeDrawTimer);
+      window.__barcodeDrawTimer = setInterval(draw, 50);
+      window.__ffTestBarcodeStream = () => cam.captureStream(20);
+    }, text);
+  }
+
+  test('Barcode-Scanner trägt Probenummern ein, weitere Nummern werden angehängt', async ({ page }) => {
+    await openTerminWithEvent(page);
+    await page.locator('#tk-probenprotokoll-new').click();
+    const nr = page.locator('#pp-field-Nr_Analysenproben');
+
+    await showBarcode(page, 'PR-2026-0815');
+    await page.locator('[data-scan-field="Nr Analysenproben"]').click();
+    await expect(nr).toHaveValue('PR-2026-0815', { timeout: 10000 });
+    await expect(page.locator('#barcode-overlay')).toBeHidden();
+    expect(await page.evaluate(() => window.__ffTestBarcode.streamActive())).toBe(false);
+
+    // Zweite Probe: wird angehängt; dieselbe Nummer erneut nicht doppelt.
+    await showBarcode(page, 'PR-2026-0816');
+    await page.locator('[data-scan-field="Nr Analysenproben"]').click();
+    await expect(nr).toHaveValue('PR-2026-0815, PR-2026-0816', { timeout: 10000 });
+    await page.locator('[data-scan-field="Nr Analysenproben"]').click();
+    await expect(page.locator('#barcode-overlay')).toBeHidden({ timeout: 10000 });
+    await expect(nr).toHaveValue('PR-2026-0815, PR-2026-0816');
+
+    await showBarcode(page, 'GP-77');
+    await page.locator('[data-scan-field="Nr der Gegenproben"]').click();
+    await expect(page.locator('#pp-field-Nr_der_Gegenproben')).toHaveValue('GP-77', { timeout: 10000 });
+
+    const values = await page.evaluate(() => window.__ffTestProbenprotokoll.getActive().values);
+    expect(values['Nr Analysenproben']).toBe('PR-2026-0815, PR-2026-0816');
+    expect(values['Nr der Gegenproben']).toBe('GP-77');
+  });
+
+  test('Barcode-Scanner abbrechen schaltet die Kamera ab und lässt das Feld leer', async ({ page }) => {
+    await openTerminWithEvent(page);
+    await page.locator('#tk-probenprotokoll-new').click();
+    // Virtuelle Testkamera (playwright.config.js) — zeigt keinen Barcode.
+    await page.locator('[data-scan-field="Nr Analysenproben"]').click();
+    await expect(page.locator('#barcode-overlay')).toBeVisible();
+    await expect(page.locator('#barcode-status')).toHaveText('Barcode in den Rahmen halten.', { timeout: 10000 });
+    expect(await page.evaluate(() => window.__ffTestBarcode.streamActive())).toBe(true);
+
+    await page.locator('#barcode-close').click();
+    await expect(page.locator('#barcode-overlay')).toBeHidden();
+    expect(await page.evaluate(() => window.__ffTestBarcode.streamActive())).toBe(false);
+    await expect(page.locator('#pp-field-Nr_Analysenproben')).toHaveValue('');
+    // Protokoll-Modal bleibt offen.
+    await expect(page.locator('#probenprotokoll-modal-overlay')).toBeVisible();
   });
 });

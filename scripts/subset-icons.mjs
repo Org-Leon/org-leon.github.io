@@ -18,7 +18,7 @@ import subsetFont from 'subset-font';
 const ICON_NAMES = [
   'account_circle', 'add', 'add_box', 'arrow_back', 'arrow_downward',
   'arrow_forward', 'arrow_upward', 'attach_file', 'backspace', 'business',
-  'category', 'check', 'close', 'cloud_off', 'cloud_upload', 'content_cut',
+  'barcode_scanner', 'category', 'check', 'close', 'flashlight_on', 'cloud_off', 'cloud_upload', 'content_cut',
   'dark_mode', 'delete', 'description', 'document_scanner', 'door_front', 'fact_check',
   'drag_handle', 'drag_indicator', 'draw', 'eco', 'edit', 'egg',
   'expand_less', 'expand_more', 'fit_screen', 'grass', 'grid_on', 'handyman',
