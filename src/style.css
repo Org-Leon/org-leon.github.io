@@ -2498,28 +2498,43 @@
     display: flex;
   }
   .scan-overlay[hidden] { display: none; }
-  #scan-camera-view, #scan-crop-view {
+  #scan-camera-view, #scan-crop-view, #scan-review-view {
     position: relative;
     width: 100%;
     height: 100%;
     display: flex;
     flex-direction: column;
   }
-  #scan-camera-view[hidden], #scan-crop-view[hidden] { display: none; }
+  #scan-camera-view[hidden], #scan-crop-view[hidden], #scan-review-view[hidden] { display: none; }
 
-  /* Das <video>-Element liefert nur den Rohstrom fürs Canvas-Sampling —
-     sichtbar ist ausschließlich #scan-preview-canvas (mit eingezeichneter
-     Kantenerkennung), daher video per Klasse ausgeblendet statt hidden
-     (Attribut würde play()/videoWidth stören). */
-  #scan-video { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
-  #scan-raw-canvas { display: none; }
-  #scan-preview-canvas {
-    flex: 1;
+  /* Das Video ist die Vorschau (volle Bildrate), der erkannte Rahmen liegt
+     als SVG deckungsgleich darüber (contain ↔ preserveAspectRatio meet). */
+  #scan-video, #scan-live-overlay {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
-    object-fit: contain;
-    background: #000;
   }
+  #scan-video { object-fit: contain; background: #000; }
+  #scan-live-overlay { pointer-events: none; overflow: visible; }
+  #scan-live-polygon {
+    fill: rgba(90, 170, 255, 0.18);
+    stroke: #5aaaff;
+    stroke-width: 3;
+    stroke-linejoin: round;
+    vector-effect: non-scaling-stroke;
+    transition: fill .2s, stroke .2s;
+  }
+  #scan-live-overlay.stable #scan-live-polygon { fill: rgba(122, 196, 110, 0.28); stroke: #7ac46e; }
+  #scan-camera-view.scan-flash::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: #fff;
+    pointer-events: none;
+    animation: scan-flash .35s ease-out forwards;
+  }
+  @keyframes scan-flash { from { opacity: 0.85; } to { opacity: 0; } }
 
   #scan-topbar {
     position: absolute;
@@ -2528,17 +2543,17 @@
     right: 0;
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 10px 12px;
-    background: linear-gradient(rgba(0,0,0,0.65), rgba(0,0,0,0));
+    gap: 8px;
+    padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 10px;
+    background: linear-gradient(rgba(0,0,0,0.7), rgba(0,0,0,0));
     z-index: 1;
   }
   #scan-topbar button {
-    background: rgba(255,255,255,0.12);
+    background: rgba(255,255,255,0.14);
     border: none;
     color: #fff;
-    width: 38px;
-    height: 38px;
+    width: 44px;
+    height: 44px;
     border-radius: 50%;
     display: flex;
     align-items: center;
@@ -2546,8 +2561,16 @@
     cursor: pointer;
     flex-shrink: 0;
   }
-  #scan-topbar button:hover { background: rgba(255,255,255,0.22); }
-  #scan-status { color: #fff; font-size: 13px; line-height: 1.4; }
+  #scan-topbar button[hidden] { display: none; }
+  #scan-topbar button:hover { background: rgba(255,255,255,0.24); }
+  #scan-topbar button.scan-pill {
+    width: auto;
+    padding: 0 14px;
+    border-radius: 22px;
+    font: 600 13px var(--sans);
+  }
+  #scan-topbar button[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); }
+  #scan-status { flex: 1; min-width: 0; color: #fff; font-size: 13.5px; line-height: 1.35; text-shadow: 0 1px 2px rgba(0,0,0,0.6); }
 
   /* Barcode-Scanner: über dem Protokoll-Modal (5000) und dem Dokumenten-
      scanner-Stil; Rahmen als Zielhilfe, Rest des Bildes abgedunkelt. */
@@ -2597,7 +2620,7 @@
 
   #scan-thumbnails {
     position: absolute;
-    bottom: 92px;
+    bottom: calc(118px + env(safe-area-inset-bottom, 0px));
     left: 0;
     right: 0;
     display: flex;
@@ -2632,49 +2655,82 @@
     padding: 0;
   }
   .scan-thumb-remove .icon { font-size: 12px; }
+  .scan-thumb-num {
+    position: absolute;
+    left: 3px;
+    bottom: 3px;
+    min-width: 16px;
+    padding: 0 3px;
+    border-radius: 3px;
+    background: rgba(0,0,0,0.65);
+    color: #fff;
+    font: 600 10px/16px var(--sans);
+    text-align: center;
+  }
 
+  /* Bedienleiste: links Kamera-App/Galerie, Mitte Auslöser, rechts Fertig. */
   #scan-controls {
     position: absolute;
     bottom: 0;
     left: 0;
     right: 0;
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    grid-template-rows: auto auto;
+    grid-template-areas: "native capture finish" "gallery capture finish";
     align-items: center;
-    justify-content: center;
-    gap: 18px;
-    padding: 16px 12px calc(16px + env(safe-area-inset-bottom, 0px));
-    background: linear-gradient(rgba(0,0,0,0), rgba(0,0,0,0.65));
+    column-gap: 16px;
+    row-gap: 6px;
+    padding: 14px 14px calc(16px + env(safe-area-inset-bottom, 0px));
+    background: linear-gradient(rgba(0,0,0,0), rgba(0,0,0,0.75) 35%);
   }
+  #scan-controls > .scan-side-btn:first-child { grid-area: native; }
+  #scan-controls > .scan-side-btn:nth-of-type(2) { grid-area: gallery; }
+  .scan-side-btn {
+    justify-self: start;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 40px;
+    padding: 0 12px;
+    border-radius: 20px;
+    background: rgba(255,255,255,0.14);
+    color: #fff;
+    font: 500 12.5px var(--sans);
+    cursor: pointer;
+  }
+  .scan-side-btn .icon { font-size: 19px; }
   #scan-btn-capture {
-    width: 64px;
-    height: 64px;
+    grid-area: capture;
+    width: 76px;
+    height: 76px;
     border-radius: 50%;
-    background: #fff;
-    border: 4px solid rgba(255,255,255,0.4);
-    color: #111;
+    background: transparent;
+    border: 4px solid #fff;
+    padding: 5px;
     display: flex;
     align-items: center;
     justify-content: center;
     cursor: pointer;
-    flex-shrink: 0;
   }
-  #scan-btn-capture .icon { font-size: 34px; }
+  .scan-capture-ring { width: 100%; height: 100%; border-radius: 50%; background: #fff; transition: transform .1s; }
+  #scan-btn-capture:active .scan-capture-ring { transform: scale(0.88); }
   #scan-btn-capture:disabled { opacity: 0.4; cursor: not-allowed; }
   #scan-btn-finish {
+    grid-area: finish;
+    justify-self: end;
     background: var(--accent);
     color: var(--on-accent);
     border: none;
-    border-radius: 20px;
+    border-radius: 22px;
     padding: 0 18px;
-    height: 42px;
-    font-size: 13.5px;
+    height: 44px;
+    font-size: 14px;
     font-weight: 600;
     display: flex;
     align-items: center;
     gap: 4px;
     cursor: pointer;
-    position: absolute;
-    right: 12px;
   }
   #scan-btn-finish:disabled { opacity: 0.4; cursor: not-allowed; }
 
@@ -2708,26 +2764,121 @@
     stroke: #5aaaff;
     stroke-width: 0.6;
   }
+  /* Großer, unsichtbarer Greifbereich (48 px) um einen kleinen Punkt — mit
+     dem Finger treffbar, ohne die Ecke zu verdecken. */
   .scan-crop-handle {
     position: absolute;
-    width: 26px;
-    height: 26px;
-    border-radius: 50%;
-    background: #5aaaff;
-    border: 2px solid #fff;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+    width: 48px;
+    height: 48px;
     transform: translate(-50%, -50%);
     touch-action: none;
     cursor: grab;
   }
-  #scan-crop-actions {
+  .scan-crop-handle::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 22px;
+    height: 22px;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    background: rgba(90, 170, 255, 0.35);
+    border: 3px solid #5aaaff;
+    box-shadow: 0 0 0 2px #fff, 0 1px 6px rgba(0,0,0,0.5);
+  }
+  .scan-crop-handle.dragging::after { background: transparent; }
+  #scan-loupe {
+    position: absolute;
+    width: 120px;
+    height: 120px;
+    border-radius: 50%;
+    border: 3px solid #fff;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.6);
+    background-color: #000;
+    background-repeat: no-repeat;
+    pointer-events: none;
+    z-index: 2;
+  }
+  #scan-loupe[hidden] { display: none; }
+  /* Fadenkreuz in der Lupenmitte = Position der Ecke */
+  #scan-loupe span {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 18px;
+    height: 18px;
+    transform: translate(-50%, -50%);
+    background:
+      linear-gradient(#5aaaff, #5aaaff) center / 2px 100% no-repeat,
+      linear-gradient(#5aaaff, #5aaaff) center / 100% 2px no-repeat;
+  }
+  #scan-crop-hint {
+    margin: 0;
+    padding: 8px 12px 0;
+    background: #111;
+    color: rgba(255,255,255,0.8);
+    font-size: 13px;
+    text-align: center;
+  }
+  #scan-crop-actions, #scan-review-actions {
     display: flex;
     justify-content: center;
-    gap: 12px;
-    padding: 14px 12px calc(14px + env(safe-area-inset-bottom, 0px));
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 12px 12px calc(14px + env(safe-area-inset-bottom, 0px));
     background: #111;
   }
-  #scan-crop-actions button {
+  #scan-review-stage {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: calc(12px + env(safe-area-inset-top, 0px)) 12px 12px;
+    background: #1c1c1c;
+  }
+  #scan-review-canvas {
+    max-width: 100%;
+    max-height: 100%;
+    background: #fff;
+    box-shadow: 0 4px 18px rgba(0,0,0,0.6);
+  }
+  #scan-review-busy {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    padding: 10px 16px;
+    border-radius: 8px;
+    background: rgba(0,0,0,0.75);
+    color: #fff;
+    font-size: 14px;
+  }
+  #scan-review-busy[hidden] { display: none; }
+  #scan-filter-chips {
+    display: flex;
+    gap: 8px;
+    padding: 10px 12px 0;
+    overflow-x: auto;
+    background: #111;
+    justify-content: center;
+  }
+  .scan-filter-chip {
+    flex: 0 0 auto;
+    min-height: 38px;
+    padding: 0 16px;
+    border-radius: 19px;
+    border: 1px solid rgba(255,255,255,0.3);
+    background: transparent;
+    color: #fff;
+    font: 500 13px var(--sans);
+    cursor: pointer;
+  }
+  .scan-filter-chip[aria-checked="true"] { background: #fff; color: #111; border-color: #fff; font-weight: 600; }
+  .scan-filter-chip:disabled { opacity: 0.4; cursor: not-allowed; }
+  #scan-crop-actions button, #scan-review-actions button {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -2740,7 +2891,7 @@
     font-size: 13.5px;
     cursor: pointer;
   }
-  #scan-crop-actions button.primary {
+  #scan-crop-actions button.primary, #scan-review-actions button.primary {
     background: var(--accent);
     border-color: var(--accent);
     color: var(--on-accent);
