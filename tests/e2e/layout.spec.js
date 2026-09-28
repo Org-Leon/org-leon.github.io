@@ -110,3 +110,52 @@ test.describe('Kopfzeile', () => {
     await expect(page.locator('#btn-sync')).toBeHidden();
   });
 });
+
+// Einheitliches Schema der Seitenleiste (index.html/style.css "Seitenleiste:
+// einheitliches Werkzeug-Schema"): Werkzeug oben mit kurzem Hinweis,
+// Ebenen in der Mitte, Exporte unten — in jeder Funktion ohne Anmeldung.
+test.describe('Seitenleiste: einheitliches Schema', () => {
+  const MAP_TOOLS = ['zeichner', 'obstbaum', 'bienenflug', 'hofplan'];
+
+  test('Karten-Werkzeuge: Hinweis oben, Ebenen darunter, Exporte unten, kein "Bereit."', async ({ page }) => {
+    await page.goto('/');
+    for (const view of MAP_TOOLS) {
+      await page.locator(`.segment-btn[data-view="${view}"]`).click();
+      const section = page.locator(`.sidebar-section[data-view="${view}"]`);
+      const hint = section.locator('.tool-hint').first();
+      const footer = section.locator('.tool-footer').first();
+      await expect(hint).toBeVisible();
+      await expect(footer.locator('.tool-btn.primary')).toBeVisible();
+      const [hintY, layersY, footerY] = await Promise.all([
+        hint.evaluate(el => el.getBoundingClientRect().top),
+        page.locator('#layer-section').evaluate(el => el.getBoundingClientRect().top),
+        footer.evaluate(el => el.getBoundingClientRect().top)
+      ]);
+      expect(hintY, view).toBeLessThan(layersY);
+      expect(layersY, view).toBeLessThan(footerY);
+      // Kurzhinweis bleibt kurz (eine, höchstens zwei Zeilen).
+      expect((await hint.textContent()).trim().length, view).toBeLessThan(80);
+      await expect(page.locator('#sidebar')).not.toContainText('Bereit.');
+    }
+  });
+
+  test('"Karte" hat einen eigenen Button und ist die Startansicht', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('.segment-btn[data-view="viewer"]')).toHaveClass(/active/);
+    await page.locator('.segment-btn[data-view="hofplan"]').click();
+    await page.locator('.segment-btn[data-view="viewer"]').click();
+    await expect(page.locator('.segment-btn[data-view="viewer"]')).toHaveClass(/active/);
+    await expect(page.locator('#btn-export-flaechenkarten')).toBeVisible();
+  });
+
+  test('Stallplaner ohne Plan zeigt weder Einstellungen noch Export/Löschen', async ({ page }) => {
+    await page.goto('/');
+    await page.locator('.segment-btn[data-view="stallplaner"]').click();
+    await expect(page.locator('#stallplaner-new-plan')).toBeVisible();
+    await expect(page.locator('#stallplaner-settings')).toBeHidden();
+    await expect(page.locator('#btn-stallplaner-delete-plan')).toBeHidden();
+    await expect(page.locator('#btn-export-stallplaner-pdf')).toBeHidden();
+    // Laden eines gespeicherten Plans geht auch ohne vorhandenen Plan.
+    await expect(page.locator('#stallplaner-import-drop')).toBeVisible();
+  });
+});
