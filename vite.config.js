@@ -86,8 +86,9 @@ export default defineConfig({
             }
           },
           {
-            // Dokumentenscanner (OpenCV/jscanify) — wird erst beim ersten
-            // Öffnen des Scanners geladen und danach offline vorgehalten.
+            // Dokumentenscanner (OpenCV.js, ~9 MB) — wird beim ersten Öffnen
+            // des Terminkalenders im Hintergrund vorgeladen (main.js,
+            // prefetchScanLibsForOffline) und danach offline vorgehalten.
             urlPattern: ({ url }) => url.origin === 'https://docs.opencv.org' || url.origin === 'https://cdn.jsdelivr.net',
             handler: 'CacheFirst',
             options: {

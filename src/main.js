@@ -1,6 +1,7 @@
 import { isSupabaseConfigured, signUp, signIn, signOut, getSession, saveState, loadState, uploadPhoto, getPhotoUrl, deletePhoto, requestAccess, listPendingAccessRequests, approveAccessRequest, declineAccessRequest } from './supabase.js';
 import { readLocalState, writeLocalState, deleteLocalState, readLastUser, writeLastUser, addBackup, listBackups } from './offline-store.js';
 import { registerSW } from 'virtual:pwa-register';
+import { rankBackCameras, drawScaled, rotateCanvas, defaultQuad, detectDocumentQuad, QuadTracker, quadDistance, warpDocument, applyScanFilter, SCAN_FILTERS, targetSizeForQuad } from './scan-engine.js';
 // Icon-Font selbst NICHT über das npm-Paket eingebunden (5+ MB Variable-Font
 // mit allen ~3000 Icons) — stattdessen ein auf die tatsächlich genutzten
 // Icon-Namen zugeschnittenes, auf eine feste Achsen-Instanz reduziertes
@@ -2583,7 +2584,11 @@ function setActiveSegment(target) {
   // Funktionen.
   document.getElementById('dropzone').hidden = target === 'terminkalender' || target === 'stallplaner';
   document.getElementById('layer-section').hidden = target === 'terminkalender' || target === 'stallplaner';
-  if (target === 'terminkalender') openTerminkalender();
+  if (target === 'terminkalender') {
+    openTerminkalender();
+    // Dokumentenscanner sitzt im Terminkalender: OpenCV fürs Offline-Scannen vorhalten.
+    prefetchScanLibsForOffline();
+  }
 }
 
 // Es gibt keinen eigenen "Viewer"-Button mehr — Viewer ist die Standardansicht.
@@ -8375,22 +8380,29 @@ async function removeTerminkalenderAttachment(id, path) {
 }
 
 // ---------- Dokumentenscanner (Terminkalender-Anhänge) ----------
-// Kamera-basierter Mehrseiten-Scanner (wie Adobe Scan) auf Basis von
-// jscanify (https://github.com/puffinsoft/jscanify) für Kantenerkennung +
-// Entzerrung. jscanify selbst ist winzig (~2,6 KB), setzt aber OpenCV.js
-// voraus (~9 MB WASM) — anders als die übrigen, durchweg kleinen
-// CDN-Libraries dieser App wird das NICHT statisch in index.html geladen
-// (würde jeden App-Start verlängern, für alle, auch die, die nie
-// scannen), sondern beim ersten Öffnen des Scanners per <script>-Tag
-// nachgeladen (ensureScanLibs()). Beide Libraries werden bewusst NICHT
-// über npm eingebunden: jscanifys npm-Paket hat canvas/jsdom als
-// Node-only-Abhängigkeiten (30 MB, im Browser-Bundle nicht nutzbar) — der
-// vom Projekt selbst bereitgestellte Browser-Build (jscanify.min.js,
-// definiert global `jscanify`) ist hier die richtige Wahl, genau wie
-// Leaflet/jsPDF/html2canvas/turf auch per <script>-Tag statt npm laufen.
+// Mehrseiten-Scanner nach dem Vorbild von Adobe Scan:
+//   Kamera  → Hauptkamera statt Weitwinkel (rankBackCameras), Autofokus,
+//             flüssige Video-Vorschau mit ruhigem Live-Rahmen (QuadTracker),
+//             Auto-Auslöser, sobald das Blatt still liegt
+//   Foto    → volle Kameraauflösung (ImageCapture.takePhoto), nicht das
+//             640×480-Vorschaubild; alternativ Kamera-App/Galerie
+//   Ecken   → automatisch erkannt, per Ziehen mit Lupe korrigierbar
+//   Prüfen  → Entzerren auf Dokumentgröße, Filter (Dokument/Foto/Graustufen/
+//             S/W), Drehen
+//   PDF     → A4-Seiten randlos, ~210 dpi
+// Die Bildverarbeitung selbst steckt in src/scan-engine.js. OpenCV.js
+// (~9 MB WASM) wird erst beim ersten Öffnen nachgeladen und — damit der
+// Scanner auch ohne Empfang geht — einmal im Hintergrund vorgeladen, sobald
+// der Terminkalender geöffnet wird (prefetchScanLibsForOffline).
 const SCAN_OPENCV_URL = 'https://docs.opencv.org/4.7.0/opencv.js';
-const SCAN_JSCANIFY_URL = 'https://cdn.jsdelivr.net/npm/jscanify@1.4.3/src/jscanify.min.js';
-const SCAN_DETECT_INTERVAL_MS = 200; // bewusst nicht die 10ms aus dem jscanify-Beispiel — unnötiger Akku-/CPU-Verbrauch für eine Live-Vorschau
+const SCAN_DETECT_INTERVAL_MS = 110;
+const SCAN_DETECT_MAX_SIDE = 480;
+const SCAN_AUTO_STABLE_MS = 1100;
+const SCAN_MAX_SOURCE_SIDE = 4000;
+const SCAN_CAMERA_STORAGE_KEY = 'feldfolio-scan-camera';
+const SCAN_AUTO_STORAGE_KEY = 'feldfolio-scan-auto';
+const SCAN_FILTER_STORAGE_KEY = 'feldfolio-scan-filter';
+const SCAN_CORNER_KEYS = ['topLeftCorner', 'topRightCorner', 'bottomRightCorner', 'bottomLeftCorner'];
 
 let scanLibsPromise = null;
 function loadScript(src) {
@@ -8398,7 +8410,7 @@ function loadScript(src) {
     const s = document.createElement('script');
     s.src = src;
     s.onload = resolve;
-    s.onerror = () => reject(new Error(`Skript konnte nicht geladen werden: ${src}`));
+    s.onerror = () => { s.remove(); reject(new Error(`Skript konnte nicht geladen werden: ${src}`)); };
     document.head.appendChild(s);
   });
 }
@@ -8413,246 +8425,651 @@ function ensureScanLibs() {
         if (window.cv && window.cv.Mat) resolve();
         else window.cv['onRuntimeInitialized'] = resolve;
       });
-      await loadScript(SCAN_JSCANIFY_URL);
     })();
+    // Fehlgeschlagen (z. B. offline): beim nächsten Öffnen erneut versuchen.
+    scanLibsPromise.catch(() => { scanLibsPromise = null; });
   }
   return scanLibsPromise;
 }
+const scanCvReady = () => !!(window.cv && window.cv.Mat && window.cv.imread);
 
-let scanJscanify = null;
+let scanPrefetchStarted = false;
+function prefetchScanLibsForOffline() {
+  if (scanPrefetchStarted || import.meta.env.DEV || !navigator.onLine) return;
+  if (!navigator.serviceWorker || !navigator.serviceWorker.controller) return;
+  scanPrefetchStarted = true;
+  // Läuft durch den Service Worker (Laufzeit-Cache "scanner-bibliotheken",
+  // vite.config.js) — danach steht OpenCV auch offline bereit.
+  const run = () => fetch(SCAN_OPENCV_URL, { mode: 'no-cors' }).catch(() => { scanPrefetchStarted = false; });
+  if ('requestIdleCallback' in window) requestIdleCallback(run, { timeout: 8000 });
+  else setTimeout(run, 4000);
+}
+
 let scanStream = null;
-let scanDetectTimer = null;
-let scanPages = []; // { dataUrl, width, height } je bestätigter Seite
+let scanCameras = [];      // Rückkameras, beste zuerst
+let scanCameraId = null;
+let scanPages = [];        // { dataUrl, width, height, a4 } je übernommener Seite
 let scanCurrentEvent = null;
-let scanCropRawCanvas = null; // eingefrorenes Rohbild während der Ecken-Korrektur
-let scanCropCorners = null; // { topLeftCorner:{x,y}, ... } in % der Bildfläche (0-100), auflösungsunabhängig
+let scanSession = 0;       // jedes Öffnen/Schließen zählt hoch (veraltete awaits abbrechen)
+let scanLoopActive = false;
+let scanLastDetect = 0;
+const scanTracker = new QuadTracker();
+const scanDetectCanvas = document.createElement('canvas');
+let scanAutoEnabled = true;
+try { scanAutoEnabled = localStorage.getItem(SCAN_AUTO_STORAGE_KEY) !== 'false'; } catch {}
+let scanAutoArmed = true;
+let scanSeenAfterReturn = false;
+let scanLastCapturedQuad = null;
+let scanCapturing = false;
+let scanPausedForNativeCamera = false;
+let scanSource = null;     // hochaufgelöstes Foto der aktuellen Seite
+let scanCropQuad = null;   // 4 Ecken normiert 0..1 (tl, tr, br, bl)
+let scanCropDisplayUrl = '';
+let scanReview = null;     // { warped, rotation, cache: { filter: canvas } }
+let scanFilter = 'document';
+try { scanFilter = localStorage.getItem(SCAN_FILTER_STORAGE_KEY) || 'document'; } catch {}
+if (!SCAN_FILTERS.some(f => f.key === scanFilter)) scanFilter = 'document';
 
 const scanModal = document.getElementById('scan-modal-overlay');
 const scanCameraView = document.getElementById('scan-camera-view');
 const scanCropView = document.getElementById('scan-crop-view');
+const scanReviewView = document.getElementById('scan-review-view');
 const scanVideo = document.getElementById('scan-video');
-const scanRawCanvas = document.getElementById('scan-raw-canvas');
-const scanPreviewCanvas = document.getElementById('scan-preview-canvas');
+const scanLiveOverlay = document.getElementById('scan-live-overlay');
+const scanLivePolygon = document.getElementById('scan-live-polygon');
 const scanStatusEl = document.getElementById('scan-status');
 const scanThumbnailsEl = document.getElementById('scan-thumbnails');
 const scanBtnCapture = document.getElementById('scan-btn-capture');
 const scanBtnFinish = document.getElementById('scan-btn-finish');
+const scanBtnAuto = document.getElementById('scan-btn-auto');
+const scanBtnTorch = document.getElementById('scan-btn-torch');
+const scanBtnSwitch = document.getElementById('scan-btn-switch');
 const scanCropStage = document.getElementById('scan-crop-stage');
 const scanCropFrame = document.getElementById('scan-crop-frame');
+const scanLoupe = document.getElementById('scan-loupe');
+const scanReviewCanvas = document.getElementById('scan-review-canvas');
+const scanReviewBusy = document.getElementById('scan-review-busy');
+const scanFilterChips = document.getElementById('scan-filter-chips');
+
+function setScanStatus(msg) {
+  if (scanStatusEl.textContent !== msg) scanStatusEl.textContent = msg;
+}
+
+function showScanView(name) {
+  scanCameraView.hidden = name !== 'camera';
+  scanCropView.hidden = name !== 'crop';
+  scanReviewView.hidden = name !== 'review';
+}
+
+// Nach einem Frame weiterrechnen — damit "Wird verarbeitet …" sichtbar ist,
+// bevor die (synchrone) OpenCV-Rechnung den Hauptthread kurz belegt.
+const scanNextFrame = () => new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
 
 // #scan-crop-frame bekommt seine Pixel-Maße exakt im Seitenverhältnis des
-// aufgenommenen Fotos gesetzt (statt das <img> per CSS max-width/
-// max-height selbst "letterboxen" zu lassen) — Bild, SVG-Overlay und
-// Eckpunkt-Griffe liegen dadurch alle auf derselben Box und bleiben exakt
-// pixelgenau zum sichtbaren Bildinhalt ausgerichtet, unabhängig vom
-// Seitenverhältnis von Foto zu Bildschirm (Kamerafotos sind fast nie im
-// selben Seitenverhältnis wie der Bildschirm). Gleiches
-// Skalierungsmuster wie an anderer Stelle bereits verwendet (z.B.
-// buildPdfFromScanPages/addFlaechenkartePage: Math.min(maxW/w, maxH/h)).
+// Fotos — Bild, Rahmen-SVG und Eckgriffe liegen dadurch pixelgenau
+// übereinander, egal wie Foto und Bildschirm geformt sind.
 function layoutScanCropFrame(imgWidth, imgHeight) {
-  const maxW = scanCropStage.clientWidth;
-  const maxH = scanCropStage.clientHeight;
+  const maxW = scanCropStage.clientWidth - 24;
+  const maxH = scanCropStage.clientHeight - 24;
   const scale = Math.min(maxW / imgWidth, maxH / imgHeight);
   scanCropFrame.style.width = (imgWidth * scale) + 'px';
   scanCropFrame.style.height = (imgHeight * scale) + 'px';
 }
-// Bei Drehung/Größenänderung des Bildschirms während offener Ecken-
-// Korrektur (z.B. Orientierungswechsel) neu vermessen, sonst bliebe der
-// Rahmen auf der alten Bildschirmgröße stehen.
 window.addEventListener('resize', () => {
-  if (!scanCropView.hidden && scanCropRawCanvas) {
-    layoutScanCropFrame(scanCropRawCanvas.width, scanCropRawCanvas.height);
-  }
+  if (!scanCropView.hidden && scanSource) layoutScanCropFrame(scanSource.width, scanSource.height);
 });
 
-function setScanStatus(msg) { scanStatusEl.textContent = msg; }
-
-function startScanDetectLoop() {
-  clearInterval(scanDetectTimer);
-  scanDetectTimer = setInterval(runScanDetectFrame, SCAN_DETECT_INTERVAL_MS);
-}
-
-async function openScanModal(ev) {
-  scanCurrentEvent = ev;
-  scanPages = [];
-  renderScanThumbnails();
-  scanModal.hidden = false;
-  scanCameraView.hidden = false;
-  scanCropView.hidden = true;
-  scanBtnCapture.disabled = true;
-  scanBtnFinish.disabled = true;
-  setScanStatus('Scan-Werkzeug wird geladen …');
-  try {
-    await ensureScanLibs();
-  } catch (err) {
-    console.error('Scan-Bibliotheken konnten nicht geladen werden', err);
-    setScanStatus('Scan-Werkzeug konnte nicht geladen werden — bitte stattdessen „Foto aufnehmen" nutzen.');
-    return;
-  }
-  scanJscanify = scanJscanify || new window.jscanify();
-  setScanStatus('Kamera wird gestartet …');
-  try {
-    scanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-  } catch (err) {
-    console.error('Kamerazugriff fehlgeschlagen', err);
-    setScanStatus('Kein Kamerazugriff — bitte stattdessen „Foto aufnehmen" nutzen.');
-    return;
-  }
-  scanVideo.srcObject = scanStream;
-  await scanVideo.play();
-  setScanStatus('Dokument in den Rahmen halten.');
-  scanBtnCapture.disabled = false;
-  startScanDetectLoop();
-}
-
-function runScanDetectFrame() {
-  if (!scanVideo.videoWidth) return;
-  scanRawCanvas.width = scanVideo.videoWidth;
-  scanRawCanvas.height = scanVideo.videoHeight;
-  scanRawCanvas.getContext('2d').drawImage(scanVideo, 0, 0);
-  let highlighted;
-  try {
-    highlighted = scanJscanify.highlightPaper(scanRawCanvas);
-  } catch (err) {
-    return; // vereinzelte Frame-Fehler ignorieren, nächster Versuch folgt automatisch
-  }
-  scanPreviewCanvas.width = highlighted.width;
-  scanPreviewCanvas.height = highlighted.height;
-  scanPreviewCanvas.getContext('2d').drawImage(highlighted, 0, 0);
-}
-
-function stopScanCamera() {
-  clearInterval(scanDetectTimer);
-  scanDetectTimer = null;
+// ---- Kamera ----
+function stopScanStream() {
   if (scanStream) { scanStream.getTracks().forEach(t => t.stop()); scanStream = null; }
+  scanVideo.srcObject = null;
 }
 
-function closeScanModal() {
-  if (scanPages.length && !confirm('Noch nicht als PDF gespeicherte Seiten verwerfen?')) return;
-  stopScanCamera();
-  scanModal.hidden = true;
-  scanCurrentEvent = null;
+// 4:3 wie der Kamerasensor (mehr Bildhöhe fürs Hochformat-Blatt als 16:9);
+// die Vorschau braucht nicht mehr — das eigentliche Foto kommt in voller
+// Auflösung über takePhoto().
+function openScanStream(deviceId) {
+  stopScanStream();
+  const video = { width: { ideal: 1920 }, height: { ideal: 1440 } };
+  if (deviceId) video.deviceId = { exact: deviceId };
+  else video.facingMode = { ideal: 'environment' };
+  return navigator.mediaDevices.getUserMedia({ video, audio: false });
 }
-document.getElementById('scan-btn-close').addEventListener('click', closeScanModal);
 
-// ---- Aufnahme + Ecken-Korrektur ----
-document.getElementById('scan-btn-capture').addEventListener('click', () => {
-  if (!scanRawCanvas.width) return;
-  clearInterval(scanDetectTimer);
+async function startScanCamera(session) {
+  let stored = null;
+  try { stored = localStorage.getItem(SCAN_CAMERA_STORAGE_KEY); } catch {}
+  let stream;
+  try { stream = await openScanStream(stored); }
+  catch (err) {
+    if (!stored) throw err;
+    stream = await openScanStream(null); // gespeicherte Kamera gibt es nicht mehr
+    stored = null;
+  }
+  if (session !== scanSession) { stream.getTracks().forEach(t => t.stop()); return false; }
+  scanStream = stream;
+  // Erst mit erteilter Berechtigung liefern die Geräte ihre Beschriftungen.
+  try { scanCameras = rankBackCameras(await navigator.mediaDevices.enumerateDevices()); } catch { scanCameras = []; }
+  const currentId = scanStream.getVideoTracks()[0]?.getSettings().deviceId || null;
+  const best = scanCameras[0];
+  if (!stored && best && best.deviceId && currentId && best.deviceId !== currentId) {
+    // Der Browser hat nicht die Hauptkamera genommen (typisch: Weitwinkel).
+    try { stream = await openScanStream(best.deviceId); }
+    catch { stream = await openScanStream(null); }
+    if (session !== scanSession) { stream.getTracks().forEach(t => t.stop()); return false; }
+    scanStream = stream;
+  }
+  scanCameraId = scanStream.getVideoTracks()[0]?.getSettings().deviceId || null;
+  await attachScanStream();
+  return true;
+}
 
-  scanCropRawCanvas = document.createElement('canvas');
-  scanCropRawCanvas.width = scanRawCanvas.width;
-  scanCropRawCanvas.height = scanRawCanvas.height;
-  scanCropRawCanvas.getContext('2d').drawImage(scanRawCanvas, 0, 0);
+async function attachScanStream() {
+  scanVideo.srcObject = scanStream;
+  try { await scanVideo.play(); } catch {}
+  const track = scanStream.getVideoTracks()[0];
+  const caps = track && track.getCapabilities ? track.getCapabilities() : {};
+  // Dauer-Autofokus — manche Android-Kameras starten sonst mit festem Fokus.
+  if (caps.focusMode && caps.focusMode.includes('continuous')) {
+    track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
+  }
+  scanBtnTorch.hidden = !caps.torch;
+  scanBtnTorch.setAttribute('aria-pressed', 'false');
+  scanBtnSwitch.hidden = scanCameras.length < 2;
+  updateScanOverlayViewBox();
+}
 
-  const img = cv.imread(scanCropRawCanvas);
-  const contour = scanJscanify.findPaperContour(img);
-  const corners = contour ? scanJscanify.getCornerPoints(contour) : null;
-  img.delete();
-  if (contour) contour.delete();
+function updateScanOverlayViewBox() {
+  const vw = scanVideo.videoWidth, vh = scanVideo.videoHeight;
+  if (vw && vh) scanLiveOverlay.setAttribute('viewBox', `0 0 ${vw} ${vh}`);
+}
+scanVideo.addEventListener('loadedmetadata', updateScanOverlayViewBox);
+scanVideo.addEventListener('resize', updateScanOverlayViewBox);
 
-  const w = scanCropRawCanvas.width, h = scanCropRawCanvas.height;
-  const toPct = (p) => ({ x: (p.x / w) * 100, y: (p.y / h) * 100 });
-  scanCropCorners = corners && corners.topLeftCorner && corners.topRightCorner && corners.bottomLeftCorner && corners.bottomRightCorner
-    ? {
-        topLeftCorner: toPct(corners.topLeftCorner),
-        topRightCorner: toPct(corners.topRightCorner),
-        bottomLeftCorner: toPct(corners.bottomLeftCorner),
-        bottomRightCorner: toPct(corners.bottomRightCorner)
+// Kamera wieder anwerfen (nach Kamera-App, nach Zuschnitt/Prüfen).
+async function resumeScanCamera() {
+  const session = scanSession;
+  if (!scanStream) {
+    setScanStatus('Kamera wird gestartet …');
+    try {
+      if (!await startScanCamera(session)) return;
+    } catch {
+      if (session === scanSession) setScanStatus('Kein Kamerazugriff – „Kamera-App“ oder „Galerie“ verwenden.');
+      return;
+    }
+  }
+  scanBtnCapture.disabled = false;
+  startScanLoop();
+}
+
+// ---- Live-Erkennung ----
+function startScanLoop() {
+  if (scanLoopActive) return;
+  scanLoopActive = true;
+  scanTracker.reset();
+  scanLivePolygon.setAttribute('points', '');
+  requestAnimationFrame(scanLoopTick);
+}
+function stopScanLoop() {
+  scanLoopActive = false;
+}
+
+function scanLoopTick(now) {
+  if (!scanLoopActive) return;
+  if (now - scanLastDetect >= SCAN_DETECT_INTERVAL_MS && scanVideo.readyState >= 2 && scanVideo.videoWidth) {
+    scanLastDetect = now;
+    let detected = null;
+    if (scanCvReady()) {
+      try { detected = detectDocumentQuad(drawScaled(scanVideo, SCAN_DETECT_MAX_SIDE, scanDetectCanvas)); } catch {}
+    }
+    const quad = scanTracker.update(detected, now);
+    renderScanLiveQuad(quad, now);
+    maybeAutoCapture(quad, now);
+  }
+  requestAnimationFrame(scanLoopTick);
+}
+
+function renderScanLiveQuad(quad, now) {
+  const vw = scanVideo.videoWidth, vh = scanVideo.videoHeight;
+  const stable = !!quad && scanTracker.stableFor(now) > 450;
+  scanLiveOverlay.classList.toggle('stable', stable);
+  if (!quad) {
+    scanLivePolygon.setAttribute('points', '');
+    setScanStatus(scanCvReady() ? 'Dokument ins Bild halten' : 'Kantenerkennung wird geladen … Auslösen geht schon');
+    return;
+  }
+  scanLivePolygon.setAttribute('points', quad.map(p => `${(p.x * vw).toFixed(1)},${(p.y * vh).toFixed(1)}`).join(' '));
+  if (scanAutoEnabled && scanAutoArmed) setScanStatus(stable ? 'Ruhig halten – wird aufgenommen …' : 'Blatt erkannt – ruhig halten');
+  else setScanStatus('Blatt erkannt – Auslöser tippen');
+}
+
+// Auto-Auslöser: nach einer Aufnahme erst wieder scharf, wenn das Blatt
+// kurz aus dem Bild war (Seite gewechselt) oder deutlich verschoben wurde —
+// sonst würde dieselbe Seite sofort noch einmal aufgenommen.
+function maybeAutoCapture(quad, now) {
+  if (!quad) {
+    if (scanSeenAfterReturn) scanAutoArmed = true;
+    return;
+  }
+  scanSeenAfterReturn = true;
+  if (!scanAutoArmed) {
+    if (scanLastCapturedQuad && quadDistance(quad, scanLastCapturedQuad) > 0.12) scanAutoArmed = true;
+    return;
+  }
+  if (scanAutoEnabled && !scanCapturing && scanTracker.stableFor(now) >= SCAN_AUTO_STABLE_MS) captureScanPage();
+}
+
+// ---- Aufnahme ----
+// Volle Kameraauflösung per ImageCapture.takePhoto() (Chrome/Android: das
+// echte Foto, z. B. 12 MP). Weicht dessen Ausrichtung von der Vorschau ab
+// oder gibt es die API nicht (iOS), wird das Videobild genommen — dank
+// 1920er-Stream immer noch ein Vielfaches des früheren 640×480.
+async function grabScanFrame() {
+  const vw = scanVideo.videoWidth, vh = scanVideo.videoHeight;
+  const track = scanStream && scanStream.getVideoTracks()[0];
+  if (typeof ImageCapture !== 'undefined' && track) {
+    try {
+      const blob = await new ImageCapture(track).takePhoto();
+      const bmp = await createImageBitmap(blob, { imageOrientation: 'from-image' });
+      const sameOrientation = (bmp.height > bmp.width) === (vh > vw);
+      if (sameOrientation && bmp.width * bmp.height > vw * vh) {
+        const sameView = Math.abs(bmp.width / bmp.height - vw / vh) < 0.02;
+        const canvas = drawScaled(bmp, SCAN_MAX_SOURCE_SIDE);
+        bmp.close();
+        return { canvas, sameView };
       }
-    // Kein Papier erkannt: grobe Startposition nahe der Bildränder, statt
-    // die Ecken-Korrektur ganz zu verweigern — Nutzer kann sie manuell
-    // aufs Dokument ziehen.
-    : {
-        topLeftCorner: { x: 10, y: 10 },
-        topRightCorner: { x: 90, y: 10 },
-        bottomLeftCorner: { x: 10, y: 90 },
-        bottomRightCorner: { x: 90, y: 90 }
-      };
+      bmp.close();
+    } catch {}
+  }
+  return { canvas: drawScaled(scanVideo, SCAN_MAX_SOURCE_SIDE), sameView: true };
+}
 
-  document.getElementById('scan-crop-image').src = scanCropRawCanvas.toDataURL('image/jpeg', 0.9);
-  scanCameraView.hidden = true;
-  scanCropView.hidden = false;
-  // Erst nachdem der Rahmen sichtbar ist (clientWidth/-Height sonst 0)
-  // vermessen, dann die Griffe auf Basis der fertigen Rahmengröße setzen.
-  layoutScanCropFrame(w, h);
+async function captureScanPage() {
+  if (scanCapturing || !scanStream) return;
+  scanCapturing = true;
+  const liveQuad = scanTracker.quad;
+  scanLastCapturedQuad = liveQuad;
+  stopScanLoop();
+  scanBtnCapture.disabled = true;
+  setScanStatus('Wird aufgenommen …');
+  scanCameraView.classList.remove('scan-flash');
+  void scanCameraView.offsetWidth; // Animation neu starten
+  scanCameraView.classList.add('scan-flash');
+  try {
+    const frame = await grabScanFrame();
+    await openScanSource(frame.canvas, frame.sameView ? liveQuad : null);
+  } catch (err) {
+    console.error('Aufnahme fehlgeschlagen', err);
+    setScanStatus('Aufnahme fehlgeschlagen – bitte erneut versuchen.');
+    scanBtnCapture.disabled = false;
+    startScanLoop();
+  } finally {
+    scanCapturing = false;
+  }
+}
+
+// Foto (Kamera, Kamera-App oder Galerie) → Ecken erkennen → Zuschnitt.
+async function openScanSource(canvas, hintQuad) {
+  scanSource = canvas;
+  let quad = null;
+  if (!scanCvReady()) {
+    setScanStatus('Kantenerkennung wird geladen …');
+    try { await ensureScanLibs(); } catch {}
+  }
+  if (scanCvReady()) {
+    try { quad = detectDocumentQuad(drawScaled(canvas, 900)); } catch {}
+  }
+  scanCropQuad = (quad || hintQuad || defaultQuad()).map(p => ({ ...p }));
+  scanCropDisplayUrl = drawScaled(canvas, 1600).toDataURL('image/jpeg', 0.85);
+  document.getElementById('scan-crop-image').src = scanCropDisplayUrl;
+  scanLoupe.style.backgroundImage = `url("${scanCropDisplayUrl}")`;
+  document.getElementById('scan-crop-hint').textContent = quad || hintQuad
+    ? 'Ecken prüfen – bei Bedarf ziehen'
+    : 'Kein Blatt erkannt – Ecken aufs Blatt ziehen';
+  showScanView('crop');
+  // Erst sichtbar vermessen (clientWidth sonst 0), dann Griffe setzen.
+  layoutScanCropFrame(canvas.width, canvas.height);
   renderScanCropHandles();
-});
+}
 
+// ---- Zuschnitt ----
 function renderScanCropHandles() {
-  ['topLeftCorner', 'topRightCorner', 'bottomLeftCorner', 'bottomRightCorner'].forEach((key) => {
+  SCAN_CORNER_KEYS.forEach((key, i) => {
     const handle = scanCropFrame.querySelector(`.scan-crop-handle[data-corner="${key}"]`);
-    const p = scanCropCorners[key];
-    handle.style.left = p.x + '%';
-    handle.style.top = p.y + '%';
+    handle.style.left = (scanCropQuad[i].x * 100) + '%';
+    handle.style.top = (scanCropQuad[i].y * 100) + '%';
   });
   updateScanCropPolygon();
 }
 
 function updateScanCropPolygon() {
-  const order = ['topLeftCorner', 'topRightCorner', 'bottomRightCorner', 'bottomLeftCorner'];
-  const points = order.map(k => `${scanCropCorners[k].x},${scanCropCorners[k].y}`).join(' ');
+  const points = scanCropQuad.map(p => `${p.x * 100},${p.y * 100}`).join(' ');
   document.getElementById('scan-crop-polygon').setAttribute('points', points);
 }
 
-// Eckpunkt-Griffe per Drag verschieben — gleiches Pointer-Events-Muster wie
-// wireEditToolbarDrag()/wireKulturplanBarDrag() (pointerdown auf dem
-// Griff, pointermove/pointerup am document, Listener nach pointerup
-// wieder entfernen). Positionen werden in % der Bildfläche gehalten, damit
-// die Griffe unabhängig von der tatsächlichen Anzeigegröße korrekt sitzen.
+function showScanLoupe(x, y) {
+  const frame = scanCropFrame.getBoundingClientRect();
+  const stage = scanCropStage.getBoundingClientRect();
+  const size = 120, zoom = 2.5;
+  scanLoupe.hidden = false;
+  scanLoupe.style.backgroundSize = `${frame.width * zoom}px ${frame.height * zoom}px`;
+  scanLoupe.style.backgroundPosition = `${size / 2 - x * frame.width * zoom}px ${size / 2 - y * frame.height * zoom}px`;
+  const px = frame.left - stage.left + x * frame.width;
+  const py = frame.top - stage.top + y * frame.height;
+  let top = py - size - 44;
+  if (top < 8) top = py + 44;
+  scanLoupe.style.left = Math.min(Math.max(px - size / 2, 8), stage.width - size - 8) + 'px';
+  scanLoupe.style.top = top + 'px';
+}
+
+// Eckgriffe per Pointer Events ziehen; Positionen normiert (0..1) auf die
+// Bildfläche, unabhängig von der Anzeigegröße.
 scanCropFrame.querySelectorAll('.scan-crop-handle').forEach((handle) => {
   handle.addEventListener('pointerdown', (e) => {
     e.preventDefault();
-    const corner = handle.getAttribute('data-corner');
-    function onMove(ev) {
+    const idx = SCAN_CORNER_KEYS.indexOf(handle.getAttribute('data-corner'));
+    handle.setPointerCapture(e.pointerId);
+    handle.classList.add('dragging');
+    const move = (ev) => {
       const rect = scanCropFrame.getBoundingClientRect();
-      const x = Math.min(Math.max(((ev.clientX - rect.left) / rect.width) * 100, 0), 100);
-      const y = Math.min(Math.max(((ev.clientY - rect.top) / rect.height) * 100, 0), 100);
-      scanCropCorners[corner] = { x, y };
-      handle.style.left = x + '%';
-      handle.style.top = y + '%';
+      const x = Math.min(Math.max((ev.clientX - rect.left) / rect.width, 0), 1);
+      const y = Math.min(Math.max((ev.clientY - rect.top) / rect.height, 0), 1);
+      scanCropQuad[idx] = { x, y };
+      handle.style.left = (x * 100) + '%';
+      handle.style.top = (y * 100) + '%';
       updateScanCropPolygon();
-    }
-    function onUp() {
-      document.removeEventListener('pointermove', onMove);
-      document.removeEventListener('pointerup', onUp);
-    }
-    document.addEventListener('pointermove', onMove);
-    document.addEventListener('pointerup', onUp);
+      showScanLoupe(x, y);
+    };
+    const up = () => {
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', up);
+      handle.removeEventListener('pointercancel', up);
+      handle.classList.remove('dragging');
+      scanLoupe.hidden = true;
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', up);
+    handle.addEventListener('pointercancel', up);
+    showScanLoupe(scanCropQuad[idx].x, scanCropQuad[idx].y);
   });
 });
 
-document.getElementById('scan-crop-retake').addEventListener('click', () => {
-  scanCropView.hidden = true;
-  scanCameraView.hidden = false;
-  startScanDetectLoop();
+document.getElementById('scan-crop-reset').addEventListener('click', () => {
+  scanCropQuad = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }];
+  renderScanCropHandles();
 });
 
-document.getElementById('scan-crop-confirm').addEventListener('click', () => {
-  const w = scanCropRawCanvas.width, h = scanCropRawCanvas.height;
-  const toPx = (p) => ({ x: (p.x / 100) * w, y: (p.y / 100) * h });
-  const cornerPoints = {
-    topLeftCorner: toPx(scanCropCorners.topLeftCorner),
-    topRightCorner: toPx(scanCropCorners.topRightCorner),
-    bottomLeftCorner: toPx(scanCropCorners.bottomLeftCorner),
-    bottomRightCorner: toPx(scanCropCorners.bottomRightCorner)
-  };
-  const extracted = scanJscanify.extractPaper(scanCropRawCanvas, w, h, cornerPoints);
-  const finalCanvas = extracted || scanCropRawCanvas;
-  scanPages.push({ dataUrl: finalCanvas.toDataURL('image/jpeg', 0.9), width: finalCanvas.width, height: finalCanvas.height });
+document.getElementById('scan-crop-retake').addEventListener('click', () => {
+  scanSource = null;
+  showScanView('camera');
+  scanAutoArmed = false;
+  scanSeenAfterReturn = false;
+  resumeScanCamera();
+});
+
+// Ohne OpenCV (offline, nie geladen): wenigstens das umschließende Rechteck
+// ausschneiden statt gar nichts.
+function cropScanBoundingBox(canvas, quadPx, maxLongSide = 2480) {
+  const xs = quadPx.map(p => p.x), ys = quadPx.map(p => p.y);
+  const x0 = Math.max(0, Math.min(...xs)), y0 = Math.max(0, Math.min(...ys));
+  const w = Math.min(canvas.width, Math.max(...xs)) - x0;
+  const h = Math.min(canvas.height, Math.max(...ys)) - y0;
+  const scale = Math.min(1, maxLongSide / Math.max(w, h));
+  const out = document.createElement('canvas');
+  out.width = Math.max(1, Math.round(w * scale));
+  out.height = Math.max(1, Math.round(h * scale));
+  out.getContext('2d').drawImage(canvas, x0, y0, w, h, 0, 0, out.width, out.height);
+  return out;
+}
+
+document.getElementById('scan-crop-confirm').addEventListener('click', async () => {
+  if (!scanSource) return;
+  const W = scanSource.width, H = scanSource.height;
+  const quadPx = scanCropQuad.map(p => ({ x: p.x * W, y: p.y * H }));
+  showScanView('review');
+  scanReviewBusy.hidden = false;
+  await scanNextFrame();
+  let warped;
+  try {
+    warped = scanCvReady() ? warpDocument(scanSource, quadPx) : cropScanBoundingBox(scanSource, quadPx);
+  } catch (err) {
+    console.error('Entzerren fehlgeschlagen', err);
+    warped = cropScanBoundingBox(scanSource, quadPx);
+  }
+  scanReview = { warped, rotation: 0, cache: {} };
+  renderScanFilterChips();
+  await renderScanReview();
+});
+
+// ---- Prüfen: Filter + Drehen ----
+function renderScanFilterChips() {
+  const cvOk = scanCvReady();
+  scanFilterChips.innerHTML = SCAN_FILTERS.map(f => {
+    const disabled = !cvOk && f.key !== 'color';
+    const active = (cvOk ? scanFilter : 'color') === f.key;
+    return `<button type="button" class="scan-filter-chip" role="radio" data-filter="${f.key}" aria-checked="${active}" ${disabled ? 'disabled' : ''}>${escapeHtml(f.label)}</button>`;
+  }).join('');
+}
+
+function currentScanFilter() {
+  return scanCvReady() ? scanFilter : 'color';
+}
+
+async function renderScanReview() {
+  if (!scanReview) return;
+  const filter = currentScanFilter();
+  if (!scanReview.cache[filter]) {
+    scanReviewBusy.hidden = false;
+    await scanNextFrame();
+    try { scanReview.cache[filter] = applyScanFilter(scanReview.warped, filter); }
+    catch (err) { console.error('Filter fehlgeschlagen', err); scanReview.cache[filter] = scanReview.warped; }
+  }
+  const result = rotateCanvas(scanReview.cache[filter], scanReview.rotation);
+  scanReviewCanvas.width = result.width;
+  scanReviewCanvas.height = result.height;
+  scanReviewCanvas.getContext('2d').drawImage(result, 0, 0);
+  scanReviewBusy.hidden = true;
+}
+
+scanFilterChips.addEventListener('click', (e) => {
+  const chip = e.target.closest('.scan-filter-chip');
+  if (!chip || chip.disabled) return;
+  scanFilter = chip.getAttribute('data-filter');
+  try { localStorage.setItem(SCAN_FILTER_STORAGE_KEY, scanFilter); } catch {}
+  renderScanFilterChips();
+  renderScanReview();
+});
+
+document.getElementById('scan-review-rotate').addEventListener('click', () => {
+  if (!scanReview) return;
+  scanReview.rotation = (scanReview.rotation + 1) % 4;
+  renderScanReview();
+});
+
+document.getElementById('scan-review-back').addEventListener('click', () => {
+  scanReview = null;
+  showScanView('crop');
+  layoutScanCropFrame(scanSource.width, scanSource.height);
+  renderScanCropHandles();
+});
+
+document.getElementById('scan-review-confirm').addEventListener('click', () => {
+  if (!scanReview || !scanReviewBusy.hidden) return;
+  const filter = currentScanFilter();
+  const canvas = scanReviewCanvas;
+  scanPages.push({
+    dataUrl: canvas.toDataURL('image/jpeg', filter === 'bw' ? 0.9 : 0.85),
+    width: canvas.width,
+    height: canvas.height,
+    a4: scanReview.warped.dataset.a4 === '1'
+  });
+  scanReview = null;
+  scanSource = null;
   renderScanThumbnails();
   scanBtnFinish.disabled = false;
-
-  scanCropView.hidden = true;
-  scanCameraView.hidden = false;
-  startScanDetectLoop();
+  showScanView('camera');
+  scanAutoArmed = false;
+  scanSeenAfterReturn = false;
+  setScanStatus(`Seite ${scanPages.length} übernommen – nächste Seite oder „Fertig“`);
+  resumeScanCamera();
 });
+
+// ---- Kamera-App / Galerie ----
+async function handleScanFileInput(e) {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = '';
+  scanPausedForNativeCamera = false;
+  if (!file) { if (!scanCameraView.hidden) resumeScanCamera(); return; }
+  stopScanLoop();
+  setScanStatus('Foto wird geladen …');
+  try {
+    const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    const canvas = drawScaled(bmp, SCAN_MAX_SOURCE_SIDE);
+    if (bmp.close) bmp.close();
+    scanLastCapturedQuad = null;
+    await openScanSource(canvas, null);
+  } catch (err) {
+    console.error('Foto konnte nicht gelesen werden', err);
+    setScanStatus('Foto konnte nicht gelesen werden.');
+    if (!scanCameraView.hidden) resumeScanCamera();
+  }
+}
+const scanNativeInput = document.getElementById('scan-native-input');
+const scanGalleryInput = document.getElementById('scan-gallery-input');
+scanNativeInput.addEventListener('change', handleScanFileInput);
+scanGalleryInput.addEventListener('change', handleScanFileInput);
+// Die Kamera-App braucht die Kamera selbst — solange sie offen ist, gibt
+// der Scanner sie frei (Android verweigert sonst das zweite Öffnen).
+scanNativeInput.addEventListener('click', () => {
+  scanPausedForNativeCamera = true;
+  stopScanLoop();
+  stopScanStream();
+});
+// Kamera-App abgebrochen: kein change-Event — Kamera wieder starten.
+scanNativeInput.addEventListener('cancel', () => {
+  scanPausedForNativeCamera = false;
+  if (!scanModal.hidden && !scanCameraView.hidden) resumeScanCamera();
+});
+window.addEventListener('focus', () => {
+  // Fallback für Browser ohne 'cancel'-Event am Datei-Input.
+  setTimeout(() => {
+    if (scanPausedForNativeCamera && !scanModal.hidden && !scanCameraView.hidden) {
+      scanPausedForNativeCamera = false;
+      resumeScanCamera();
+    }
+  }, 800);
+});
+
+// ---- Oberleiste ----
+function updateScanAutoButton() {
+  scanBtnAuto.setAttribute('aria-pressed', String(scanAutoEnabled));
+}
+scanBtnAuto.addEventListener('click', () => {
+  scanAutoEnabled = !scanAutoEnabled;
+  try { localStorage.setItem(SCAN_AUTO_STORAGE_KEY, String(scanAutoEnabled)); } catch {}
+  updateScanAutoButton();
+  scanAutoArmed = true;
+});
+
+scanBtnTorch.addEventListener('click', async () => {
+  const track = scanStream && scanStream.getVideoTracks()[0];
+  if (!track) return;
+  const on = scanBtnTorch.getAttribute('aria-pressed') !== 'true';
+  try {
+    await track.applyConstraints({ advanced: [{ torch: on }] });
+    scanBtnTorch.setAttribute('aria-pressed', String(on));
+  } catch {}
+});
+
+// Kamera wechseln (falls die automatische Wahl daneben liegt) — die Wahl
+// wird gemerkt und beim nächsten Öffnen direkt verwendet.
+scanBtnSwitch.addEventListener('click', async () => {
+  if (scanCameras.length < 2) return;
+  const session = scanSession;
+  const idx = scanCameras.findIndex(c => c.deviceId === scanCameraId);
+  const next = scanCameras[(idx + 1) % scanCameras.length];
+  stopScanLoop();
+  setScanStatus('Kamera wird gewechselt …');
+  try {
+    const stream = await openScanStream(next.deviceId);
+    if (session !== scanSession) { stream.getTracks().forEach(t => t.stop()); return; }
+    scanStream = stream;
+    scanCameraId = next.deviceId;
+    try { localStorage.setItem(SCAN_CAMERA_STORAGE_KEY, next.deviceId); } catch {}
+    await attachScanStream();
+    setScanStatus(`Kamera: ${next.label || 'Kamera ' + (scanCameras.indexOf(next) + 1)}`);
+  } catch {
+    setScanStatus('Kamera konnte nicht gewechselt werden.');
+    try {
+      scanStream = await openScanStream(scanCameraId);
+      await attachScanStream();
+    } catch {}
+  }
+  startScanLoop();
+});
+
+// ---- Öffnen / Schließen ----
+async function openScanModal(ev) {
+  const session = ++scanSession;
+  scanCurrentEvent = ev;
+  scanPages = [];
+  scanSource = null;
+  scanReview = null;
+  renderScanThumbnails();
+  scanModal.hidden = false;
+  showScanView('camera');
+  scanBtnCapture.disabled = true;
+  scanBtnFinish.disabled = true;
+  scanBtnTorch.hidden = true;
+  scanBtnSwitch.hidden = true;
+  updateScanAutoButton();
+  scanLivePolygon.setAttribute('points', '');
+  scanAutoArmed = true;
+  scanSeenAfterReturn = false;
+  setScanStatus('Kamera wird gestartet …');
+  // OpenCV parallel zur Kamera laden — Auslösen geht schon vorher.
+  const libs = ensureScanLibs().catch((err) => { console.error('Scan-Bibliotheken konnten nicht geladen werden', err); });
+  try {
+    if (!await startScanCamera(session)) return;
+  } catch (err) {
+    console.error('Kamerazugriff fehlgeschlagen', err);
+    if (session === scanSession) setScanStatus('Kein Kamerazugriff – „Kamera-App“ oder „Galerie“ verwenden.');
+    return;
+  }
+  scanBtnCapture.disabled = false;
+  startScanLoop();
+  libs.then(() => {
+    if (session === scanSession && !scanCvReady() && !scanCameraView.hidden) {
+      setScanStatus('Kantenerkennung nicht verfügbar (offline?) – auslösen und Ecken von Hand setzen');
+    }
+  });
+}
+
+function stopScanCamera() {
+  stopScanLoop();
+  stopScanStream();
+}
+
+function closeScanModal() {
+  if (scanPages.length && !confirm('Noch nicht als PDF gespeicherte Seiten verwerfen?')) return;
+  scanSession++;
+  stopScanCamera();
+  scanPausedForNativeCamera = false;
+  scanModal.hidden = true;
+  scanCurrentEvent = null;
+  scanSource = null;
+  scanReview = null;
+  scanLoupe.hidden = true;
+}
+document.getElementById('scan-btn-close').addEventListener('click', closeScanModal);
+scanBtnCapture.addEventListener('click', captureScanPage);
 
 function renderScanThumbnails() {
   scanThumbnailsEl.innerHTML = scanPages.map((p, i) => `
     <div class="scan-thumb">
       <img src="${p.dataUrl}" alt="Seite ${i + 1}">
-      <button type="button" class="scan-thumb-remove" data-idx="${i}" title="Seite entfernen">
+      <span class="scan-thumb-num">${i + 1}</span>
+      <button type="button" class="scan-thumb-remove" data-idx="${i}" title="Seite entfernen" aria-label="Seite ${i + 1} entfernen">
         <span class="material-symbols-rounded icon">close</span>
       </button>
     </div>
@@ -8670,6 +9087,7 @@ document.getElementById('scan-btn-finish').addEventListener('click', async () =>
   if (!scanPages.length || !scanCurrentEvent) return;
   const ev = scanCurrentEvent;
   const pages = scanPages;
+  scanSession++;
   stopScanCamera();
   scanModal.hidden = true;
   scanCurrentEvent = null;
@@ -8679,27 +9097,42 @@ document.getElementById('scan-btn-finish').addEventListener('click', async () =>
   await uploadTerminkalenderAttachment(ev, file);
 });
 
-// Eigenständiger "jede Seite füllt eine eigene PDF-Seite"-Helfer, ohne
-// Bezug zu den bestehenden, an Karten-Screenshots gekoppelten
-// jsPDF-Exporten (addFlaechenkartePage & Co.) — hier gibt es weder Titel
-// noch Legende noch eine Karte, nur die gescannten Seiten selbst.
+// Jede gescannte Seite wird eine A4-Seite in passender Ausrichtung. A4-
+// Blätter füllen die Seite randlos (wie das Original), andere Formate
+// (Kassenbon, Lieferschein) werden mit schmalem Rand eingepasst. Die JPEGs
+// werden unverändert eingebettet — keine zweite Kompression.
 function buildPdfFromScanPages(pages) {
-  const doc = new window.jspdf.jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-  const pageW = doc.internal.pageSize.getWidth();
-  const pageH = doc.internal.pageSize.getHeight();
-  const margin = 8;
-  pages.forEach((p, i) => {
-    if (i > 0) doc.addPage('a4', 'portrait');
-    const maxW = pageW - margin * 2;
-    const maxH = pageH - margin * 2;
-    const scale = Math.min(maxW / p.width, maxH / p.height);
+  let doc = null;
+  pages.forEach((p) => {
+    const orientation = p.width > p.height ? 'landscape' : 'portrait';
+    if (!doc) doc = new window.jspdf.jsPDF({ orientation, unit: 'mm', format: 'a4', compress: true });
+    else doc.addPage('a4', orientation);
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
+    const margin = p.a4 ? 0 : 6;
+    const scale = Math.min((pageW - margin * 2) / p.width, (pageH - margin * 2) / p.height);
     const imgW = p.width * scale;
     const imgH = p.height * scale;
-    const imgX = (pageW - imgW) / 2;
-    const imgY = (pageH - imgH) / 2;
-    doc.addImage(p.dataUrl, 'JPEG', imgX, imgY, imgW, imgH);
+    doc.addImage(p.dataUrl, 'JPEG', (pageW - imgW) / 2, (pageH - imgH) / 2, imgW, imgH, undefined, 'NONE');
   });
   return doc.output('blob');
+}
+
+// Dev-only Testhaken: Bildverarbeitung direkt ansprechen (echte Kamera/
+// Blatt lassen sich im Test nicht zuverlässig nachstellen).
+if (import.meta.env.DEV) {
+  window.__ffTestScan = {
+    ensureLibs: () => ensureScanLibs(),
+    rankBackCameras,
+    detect: (canvas) => detectDocumentQuad(canvas),
+    warp: (canvas, quadPx) => warpDocument(canvas, quadPx),
+    filter: (canvas, mode) => applyScanFilter(canvas, mode),
+    targetSize: (quadPx) => targetSizeForQuad(quadPx),
+    createTracker: (opts) => new QuadTracker(opts),
+    cropQuad: () => (scanCropQuad ? scanCropQuad.map(p => ({ ...p })) : null),
+    pages: () => scanPages.map(p => ({ width: p.width, height: p.height, a4: p.a4 })),
+    buildPdf: (pages) => buildPdfFromScanPages(pages)
+  };
 }
 
 function selectTerminkalenderEvent(id) {

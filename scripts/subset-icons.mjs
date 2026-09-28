@@ -17,16 +17,18 @@ import subsetFont from 'subset-font';
 
 const ICON_NAMES = [
   'account_circle', 'add', 'add_box', 'arrow_back', 'arrow_downward',
-  'arrow_forward', 'arrow_upward', 'attach_file', 'backspace', 'business',
-  'barcode_scanner', 'category', 'check', 'close', 'flashlight_on', 'cloud_off', 'cloud_upload', 'content_cut',
-  'dark_mode', 'delete', 'description', 'document_scanner', 'door_front', 'fact_check',
-  'drag_handle', 'drag_indicator', 'draw', 'eco', 'edit', 'egg',
-  'expand_less', 'expand_more', 'fit_screen', 'grass', 'grid_on', 'handyman',
-  'install_mobile', 'ios_share', 'layers', 'light_mode', 'location_on',
-  'menu', 'more_horiz', 'my_location', 'open_in_new', 'pets', 'photo_camera',
-  'picture_as_pdf', 'polyline', 'radio_button_checked', 'rectangle', 'redo',
-  'refresh', 'restaurant', 'route', 'sticky_note_2', 'straighten', 'undo',
-  'view_week', 'warning', 'water_drop', 'window'
+  'arrow_forward', 'arrow_upward', 'attach_file', 'backspace',
+  'barcode_scanner', 'business', 'cameraswitch', 'category', 'check',
+  'close', 'cloud_off', 'cloud_upload', 'content_cut', 'crop', 'dark_mode',
+  'delete', 'description', 'document_scanner', 'door_front', 'drag_handle',
+  'drag_indicator', 'draw', 'eco', 'edit', 'egg', 'expand_less',
+  'expand_more', 'fact_check', 'fit_screen', 'flashlight_on', 'grass',
+  'grid_on', 'handyman', 'install_mobile', 'ios_share', 'layers',
+  'light_mode', 'location_on', 'menu', 'more_horiz', 'my_location',
+  'open_in_new', 'pets', 'photo_camera', 'photo_library', 'picture_as_pdf',
+  'polyline', 'radio_button_checked', 'rectangle', 'redo', 'refresh',
+  'restaurant', 'rotate_right', 'route', 'sticky_note_2', 'straighten',
+  'undo', 'view_week', 'warning', 'water_drop', 'window'
 ];
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

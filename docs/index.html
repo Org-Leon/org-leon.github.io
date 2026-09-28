@@ -39,8 +39,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
-  <script type="module" crossorigin src="./assets/index-CWGSOtKR.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-CtFY2HRc.css">
+  <script type="module" crossorigin src="./assets/index-GcmoccoW.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-C7Ds-Mqj.css">
 <link rel="manifest" href="./manifest.webmanifest"></head>
 <body>
 
@@ -1134,24 +1134,48 @@
 <!-- ---------- FeldFolio Plus: Dokumentenscanner (Terminkalender-Anhänge) ----------
      Eigenständiges Vollbild-Overlay statt der zentrierten .modal-card-Optik
      der übrigen Modals — Kamera-UI braucht den ganzen Bildschirm,
-     insbesondere mobil. Siehe wireScanCropDrag()/openScanModal() in
-     main.js. -->
+     insbesondere mobil. Ablauf wie Adobe Scan: Kamera (Live-Rahmen,
+     Auto-Auslöser) → Ecken prüfen → Filter/Drehen → nächste Seite. Siehe
+     openScanModal() in main.js, Bildverarbeitung in src/scan-engine.js. -->
 <div id="scan-modal-overlay" class="scan-overlay" hidden>
   <div id="scan-camera-view">
+    <!-- Das Video selbst ist die Vorschau (flüssig, volle Bildrate); der
+         erkannte Rahmen liegt als SVG darüber. viewBox = Videogröße,
+         preserveAspectRatio "meet" entspricht object-fit:contain des Videos
+         — dadurch deckt sich der Rahmen ohne Umrechnung mit dem Bild. -->
     <video id="scan-video" playsinline muted></video>
-    <canvas id="scan-raw-canvas" hidden></canvas>
-    <canvas id="scan-preview-canvas"></canvas>
+    <svg id="scan-live-overlay" preserveAspectRatio="xMidYMid meet" viewBox="0 0 100 100" aria-hidden="true">
+      <polygon id="scan-live-polygon" points=""></polygon>
+    </svg>
     <div id="scan-topbar">
-      <button type="button" id="scan-btn-close" title="Abbrechen">
+      <button type="button" id="scan-btn-close" title="Abbrechen" aria-label="Abbrechen">
         <span class="material-symbols-rounded icon">close</span>
       </button>
-      <span id="scan-status">Scan-Werkzeug wird geladen …</span>
+      <span id="scan-status">Kamera wird gestartet …</span>
+      <button type="button" id="scan-btn-auto" class="scan-pill" aria-pressed="true" title="Automatisch auslösen, sobald das Blatt ruhig erkannt ist">Auto</button>
+      <button type="button" id="scan-btn-torch" title="Taschenlampe" aria-label="Taschenlampe" aria-pressed="false" hidden>
+        <span class="material-symbols-rounded icon">flashlight_on</span>
+      </button>
+      <button type="button" id="scan-btn-switch" title="Kamera wechseln" aria-label="Kamera wechseln" hidden>
+        <span class="material-symbols-rounded icon">cameraswitch</span>
+      </button>
     </div>
     <div id="scan-thumbnails"></div>
     <div id="scan-controls">
-      <button type="button" id="scan-btn-capture" title="Seite aufnehmen" disabled>
-        <span class="material-symbols-rounded icon">radio_button_checked</span>
+      <!-- Alternative ohne Live-Erkennung: eingebaute Kamera-App des Handys
+           (beste Bildqualität, HDR) bzw. vorhandenes Foto — beides läuft
+           danach durch denselben Zuschnitt/Filter. -->
+      <label class="scan-side-btn" title="Mit der Kamera-App des Handys fotografieren">
+        <input type="file" id="scan-native-input" accept="image/*" capture="environment" hidden>
+        <span class="material-symbols-rounded icon">photo_camera</span><span>Kamera-App</span>
+      </label>
+      <button type="button" id="scan-btn-capture" title="Seite aufnehmen" aria-label="Seite aufnehmen" disabled>
+        <span class="scan-capture-ring"></span>
       </button>
+      <label class="scan-side-btn" title="Vorhandenes Foto verwenden">
+        <input type="file" id="scan-gallery-input" accept="image/*" hidden>
+        <span class="material-symbols-rounded icon">photo_library</span><span>Galerie</span>
+      </label>
       <button type="button" id="scan-btn-finish" title="Fertig — PDF erstellen" disabled>
         <span class="material-symbols-rounded icon">check</span> Fertig
       </button>
@@ -1175,12 +1199,38 @@
         <div class="scan-crop-handle" data-corner="bottomLeftCorner"></div>
         <div class="scan-crop-handle" data-corner="bottomRightCorner"></div>
       </div>
+      <!-- Lupe beim Ziehen einer Ecke — der Finger verdeckt sonst genau die
+           Stelle, die man treffen will. -->
+      <div id="scan-loupe" hidden><span></span></div>
     </div>
+    <p id="scan-crop-hint">Ecken aufs Blatt ziehen</p>
     <div id="scan-crop-actions">
       <button type="button" id="scan-crop-retake">
-        <span class="material-symbols-rounded icon">refresh</span> Erneut aufnehmen
+        <span class="material-symbols-rounded icon">refresh</span> Neu
+      </button>
+      <button type="button" id="scan-crop-reset" title="Ecken auf ganzes Bild setzen">
+        <span class="material-symbols-rounded icon">fit_screen</span> Ganzes Bild
       </button>
       <button type="button" id="scan-crop-confirm" class="primary">
+        <span class="material-symbols-rounded icon">arrow_forward</span> Weiter
+      </button>
+    </div>
+  </div>
+  <!-- Ergebnis prüfen: Filter wie Adobe Scan, Drehen. -->
+  <div id="scan-review-view" hidden>
+    <div id="scan-review-stage">
+      <canvas id="scan-review-canvas"></canvas>
+      <div id="scan-review-busy" hidden>Wird verarbeitet …</div>
+    </div>
+    <div id="scan-filter-chips" role="radiogroup" aria-label="Filter"></div>
+    <div id="scan-review-actions">
+      <button type="button" id="scan-review-back">
+        <span class="material-symbols-rounded icon">crop</span> Zuschnitt
+      </button>
+      <button type="button" id="scan-review-rotate" title="Um 90° drehen">
+        <span class="material-symbols-rounded icon">rotate_right</span> Drehen
+      </button>
+      <button type="button" id="scan-review-confirm" class="primary">
         <span class="material-symbols-rounded icon">check</span> Übernehmen
       </button>
     </div>
