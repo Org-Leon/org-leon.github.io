@@ -32,6 +32,9 @@ document.getElementById('theme-toggle').addEventListener('click', () => {
 function closeMobileSidebar() { document.body.classList.remove('sidebar-open'); }
 function toggleMobileSidebar() { document.body.classList.toggle('sidebar-open'); }
 document.getElementById('btn-sidebar-toggle').addEventListener('click', toggleMobileSidebar);
+document.getElementById('btn-current-view').addEventListener('click', toggleMobileSidebar);
+// Am Handy steckt der Hell/Dunkel-Schalter in der Schublade (Kopfzeile zu eng).
+document.getElementById('btn-theme-mobile').addEventListener('click', () => document.getElementById('theme-toggle').click());
 document.getElementById('sidebar-backdrop').addEventListener('click', closeMobileSidebar);
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMobileSidebar(); });
 
@@ -225,7 +228,8 @@ function setBasemap(key) {
   basemaps[currentBasemap].remove();
   currentBasemap = key;
   basemaps[currentBasemap].addTo(map);
-  document.getElementById('btn-basemap').textContent = 'Basiskarte: ' + basemapLabels[currentBasemap];
+  document.getElementById('btn-basemap-label').textContent = 'Basiskarte: ' + basemapLabels[currentBasemap];
+  document.getElementById('btn-basemap').title = 'Basiskarte: ' + basemapLabels[currentBasemap] + ' — antippen zum Wechseln';
 }
 
 function cycleBasemap() {
@@ -2504,6 +2508,13 @@ const SEGMENT_CAPTIONS = {
   stallplaner: 'Stallgrundrisse zeichnen, in Abteile einteilen und gegen die EU-Öko-VO abgleichen'
 };
 
+// Kurzer Funktionsname für die Handy-Kopfzeile (dort ist die Funktionsliste
+// in der Schublade versteckt — ohne Titel wüsste man nicht, wo man ist).
+const SEGMENT_TITLES = {
+  viewer: 'Karte', compare: 'Jahresvergleich', zeichner: 'Flächenzeichner', obstbaum: 'Obstbaumkataster',
+  bienenflug: 'Bienenflugkarte', hofplan: 'Hofplan', terminkalender: 'Terminkalender', stallplaner: 'Stallplaner'
+};
+
 function setActiveSegment(target) {
   // Auf schmalen Bildschirmen liegt die Sidebar als Einschub über der Karte —
   // eine Funktion auszuwählen soll die Karte gleich freigeben (no-op auf Desktop).
@@ -2539,6 +2550,9 @@ function setActiveSegment(target) {
   // sichtbar geschaltet, sobald eine ihrer beiden Gruppen aktiv sein könnte.
   document.getElementById('edit-toolbar').classList.toggle('active', target === 'zeichner' || target === 'hofplan');
   document.getElementById('brand-caption').textContent = SEGMENT_CAPTIONS[target] || '';
+  document.getElementById('current-view-title').textContent = SEGMENT_TITLES[target] || 'Karte';
+  // Nach dem Wechsel (armedTool wird unten ggf. neu gesetzt) aktualisieren.
+  setTimeout(updateMapPlaceChip, 0);
   // "Auf Inhalt zoomen" fittet auf layers/featureIndex — im Jahresvergleich
   // wird stattdessen automatisch auf das Vergleichsergebnis gezoomt, daher
   // dort ausgeblendet statt einer Funktion ohne Bezug zur aktuellen Ansicht.
@@ -4030,6 +4044,50 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && mapToolMode) { mapToolMode = null; updateShapeToolbar(); }
 });
 
+// ---- Zeichnen auf der Karte per Touch: Fertig / Letzter Punkt / Abbrechen ----
+// Leaflet.draw schließt eine Fläche sonst nur per Doppelklick bzw. Klick auf
+// den ersten Punkt ab und entfernt den letzten Punkt nur per Rechtsklick
+// (siehe contextmenu-Handler) — auf dem Handy gibt es beides nicht.
+function activeMapDrawHandler() {
+  if (armedTool === 'draw-polygon') return zeichnerDrawPolygon;
+  if (armedTool === 'split-line') return zeichnerDrawLine;
+  if (armedTool === 'draw-hofplan-poly') return hofplanDrawPoly;
+  if (armedTool === 'draw-hofplan-rect') return hofplanDrawRect;
+  return null;
+}
+function updateMapDrawActions() {
+  const handler = activeMapDrawHandler();
+  const drawing = !!(handler && handler.enabled());
+  document.getElementById('edit-toolbar').classList.toggle('is-drawing', drawing);
+  document.getElementById('map-draw-actions').hidden = !drawing;
+  if (!drawing) return;
+  // Rechteck wird gezogen, nicht Punkt für Punkt gesetzt — dort nur Abbrechen.
+  const pointBased = typeof handler.deleteLastVertex === 'function';
+  const count = pointBased && handler._markers ? handler._markers.length : 0;
+  const undoBtn = document.getElementById('map-draw-undo');
+  const finishBtn = document.getElementById('map-draw-finish');
+  undoBtn.hidden = !pointBased;
+  finishBtn.hidden = !pointBased;
+  undoBtn.disabled = count === 0;
+  finishBtn.disabled = count < (armedTool === 'split-line' ? 2 : 3);
+}
+map.on('draw:drawstart draw:drawstop draw:drawvertex', () => setTimeout(updateMapDrawActions, 0));
+document.getElementById('map-draw-undo').addEventListener('click', () => {
+  const handler = activeMapDrawHandler();
+  if (handler && handler.enabled() && handler.deleteLastVertex) handler.deleteLastVertex();
+  updateMapDrawActions();
+});
+document.getElementById('map-draw-finish').addEventListener('click', () => {
+  const handler = activeMapDrawHandler();
+  if (handler && handler.enabled() && handler.completeShape) handler.completeShape();
+  setTimeout(updateMapDrawActions, 0);
+});
+document.getElementById('map-draw-cancel').addEventListener('click', () => {
+  const handler = activeMapDrawHandler();
+  if (handler && handler.enabled()) handler.disable();
+  setTimeout(updateMapDrawActions, 0);
+});
+
 updateShapeToolbar();
 
 function renderParcelList() {
@@ -4318,16 +4376,46 @@ function showObstbaumError(msg) {
   showObstbaumError._t = setTimeout(() => el.style.display = 'none', 6000);
 }
 
+// Schwebender Hinweis auf der Karte, solange Bäume/Bienenstände gesetzt
+// werden (am Desktop per CSS ausgeblendet — dort steht das in der Seitenleiste).
+function updateMapPlaceChip() {
+  const chip = document.getElementById('map-place-chip');
+  const dot = document.getElementById('map-place-chip-dot');
+  const text = document.getElementById('map-place-chip-text');
+  const doneBtn = document.getElementById('map-place-chip-done');
+  if (armedTool === 'place-tree' && activeFruitKey) {
+    const fruit = fruitOf(activeFruitKey);
+    dot.style.background = fruit.color;
+    text.textContent = `${fruit.label} — auf die Karte tippen`;
+    doneBtn.hidden = false;
+    chip.hidden = false;
+  } else if (armedTool === 'place-hive') {
+    dot.style.background = '#E0A93B';
+    text.textContent = 'Tippen setzt einen Bienenstand';
+    doneBtn.hidden = true;
+    chip.hidden = false;
+  } else {
+    chip.hidden = true;
+  }
+}
+document.getElementById('map-place-chip-done').addEventListener('click', () => {
+  if (activeFruitKey) setActiveFruitKey(activeFruitKey); // erneuter Aufruf mit derselben Art = ausschalten
+});
+
 function setActiveFruitKey(key) {
   activeFruitKey = (activeFruitKey === key) ? null : key;
+  // Am Handy liegt die Obstart-Auswahl in der Schublade über der Karte —
+  // nach der Wahl direkt zur Karte, damit man gleich setzen kann.
+  if (activeFruitKey) closeMobileSidebar();
   armedTool = activeFruitKey ? 'place-tree' : (armedTool === 'place-tree' ? null : armedTool);
   document.querySelectorAll('.fruit-btn, .fruit-list-row').forEach(el => {
     el.classList.toggle('active', el.getAttribute('data-key') === activeFruitKey);
   });
   document.getElementById('map').classList.toggle('placing', !!activeFruitKey);
   setObstbaumStatus(activeFruitKey
-    ? `${fruitOf(activeFruitKey).label} aktiv — auf die Karte klicken, um Bäume zu setzen.`
+    ? `${fruitOf(activeFruitKey).label} aktiv — auf die Karte tippen/klicken, um Bäume zu setzen.`
     : 'Bereit.');
+  updateMapPlaceChip();
 }
 
 // Baumpunkte als L.marker (mit farbigem DivIcon) statt L.circleMarker, weil
@@ -6365,11 +6453,16 @@ async function refreshAdminRequests() {
 document.getElementById('account-admin-refresh').addEventListener('click', refreshAdminRequests);
 
 function updateAccountButton() {
+  // Am Handy nur das Symbol (Beschriftung per CSS ausgeblendet), die
+  // E-Mail steht dann im Tooltip bzw. im Konto-Dialog.
+  const label = document.getElementById('btn-account-label');
   if (accountSession) {
-    accountBtn.textContent = accountSession.user.email;
+    label.textContent = accountSession.user.email;
+    accountBtn.title = 'FeldFolio+ Konto: ' + accountSession.user.email;
     accountBtn.classList.add('logged-in');
   } else {
-    accountBtn.textContent = 'Anmelden';
+    label.textContent = 'Anmelden';
+    accountBtn.title = 'Anmelden (FeldFolio+ Konto)';
     accountBtn.classList.remove('logged-in');
   }
   // Das "+" in der Wortmarke (FeldFolio+) markiert die Cloud-Funktionen, die
@@ -6393,6 +6486,63 @@ accountModal.addEventListener('click', (e) => { if (e.target === accountModal) c
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !accountModal.hidden) closeAccountModal(); });
 
 initAccountAndState();
+
+// ---------- Als Web-App installieren ----------
+// Android/Chrome/Edge melden über 'beforeinstallprompt', dass die Seite
+// installierbar ist (Manifest + Service Worker, nur im Produktions-Build) —
+// das Ereignis wird aufgehoben und über den eigenen Button ausgelöst, statt
+// die unauffällige Browser-Leiste abzuwarten. Safari (iPhone/iPad) kennt so
+// etwas nicht: dort zeigt der Button eine kurze Anleitung übers Teilen-Menü.
+let deferredInstallPrompt = null;
+function isRunningAsInstalledApp() {
+  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+}
+function isIosSafari() {
+  const ua = navigator.userAgent;
+  const iOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  return iOS && /Safari/.test(ua) && !/CriOS|FxiOS|EdgiOS/.test(ua);
+}
+function updateInstallButton() {
+  const btn = document.getElementById('btn-install-app');
+  btn.hidden = isRunningAsInstalledApp() || !(deferredInstallPrompt || isIosSafari());
+}
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  updateInstallButton();
+});
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null;
+  updateInstallButton();
+});
+document.getElementById('btn-install-app').addEventListener('click', async () => {
+  if (deferredInstallPrompt) {
+    const promptEvent = deferredInstallPrompt;
+    deferredInstallPrompt = null;
+    promptEvent.prompt();
+    try { await promptEvent.userChoice; } catch {}
+    updateInstallButton();
+  } else if (isIosSafari()) {
+    closeMobileSidebar();
+    document.getElementById('install-ios-overlay').hidden = false;
+  }
+});
+document.getElementById('install-ios-close').addEventListener('click', () => {
+  document.getElementById('install-ios-overlay').hidden = true;
+});
+document.getElementById('install-ios-overlay').addEventListener('click', (e) => {
+  if (e.target.id === 'install-ios-overlay') e.target.hidden = true;
+});
+updateInstallButton();
+
+// App-Verknüpfungen (Manifest "shortcuts", langes Drücken aufs App-Symbol)
+// öffnen direkt eine Funktion: ?view=stallplaner / ?view=terminkalender.
+// Erst nach dem vollständigen Laden des Moduls — setActiveSegment() greift
+// auf Zustand zu, der weiter unten in dieser Datei erst angelegt wird.
+setTimeout(() => {
+  const startView = new URLSearchParams(location.search).get('view');
+  if (startView && SEGMENT_TITLES[startView] && startView !== 'viewer') setActiveSegment(startView);
+}, 0);
 
 // ---------- Offline-App (Service Worker, siehe vite.config.js) ----------
 // Nur im Produktions-Build. Eine neue Version wird erst nach Bestätigung
@@ -6713,7 +6863,8 @@ function restoreSharedState(full) {
     terminkalenderEvents = full.terminkalenderEvents.map(e => ({
       ...e, date: new Date(e.date), dateEnd: e.dateEnd ? new Date(e.dateEnd) : null,
       attachments: Array.isArray(e.attachments) ? e.attachments : [],
-      probenprotokolle: Array.isArray(e.probenprotokolle) ? e.probenprotokolle : []
+      probenprotokolle: Array.isArray(e.probenprotokolle) ? e.probenprotokolle : [],
+      crossChecks: Array.isArray(e.crossChecks) ? e.crossChecks : []
     }));
     renderTerminkalenderSummary();
     renderTerminkalenderGrid();
@@ -7685,7 +7836,7 @@ if (import.meta.env.DEV) {
         date: new Date(), bestaetigt: false, prioritaet: '', unangemeldet: false,
         telefon: '', mobil: '', email: '', strasse: '', plz: '', ort: '', address: null,
         hinweis: '', kundennummer: '', lat: null, lng: null, geocodeStatus: 'none',
-        hasTime: false, dateEnd: null, attachments: [], probenprotokolle: [],
+        hasTime: false, dateEnd: null, attachments: [], probenprotokolle: [], crossChecks: [],
         ...overrides
       };
       terminkalenderEvents.push(ev);
@@ -7705,6 +7856,12 @@ if (import.meta.env.DEV) {
 }
 
 const tkSleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+// Lokales Datum im Format des <input type="date"> (toISOString wäre UTC und
+// läge nachts um Mitternacht einen Tag daneben).
+function tkDateInputValue(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
 
 function getMondayOfWeek(date) {
   const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
@@ -7769,9 +7926,9 @@ function parseXlsxFile(arrayBuffer) {
       hasTime: false, dateEnd: null,
       // Fotos/Dateien bzw. Probenahmeprotokolle, die man einem Termin manuell
       // hinzufügt (siehe renderTerminkalenderAttachments/
-      // probenprotokollSectionHtml unten) — bleiben bei einem erneuten
+      // formularSectionHtml unten) — bleiben bei einem erneuten
       // Excel-Upload immer erhalten (siehe mergeTerminkalenderEvents).
-      attachments: [], probenprotokolle: []
+      attachments: [], probenprotokolle: [], crossChecks: []
     };
   }).filter(Boolean);
 }
@@ -7792,11 +7949,13 @@ function mergeTerminkalenderEvents(parsed) {
       const prevDate = existing.date, prevHasTime = existing.hasTime, prevDateEnd = existing.dateEnd;
       const prevAttachments = existing.attachments;
       const prevProbenprotokolle = existing.probenprotokolle;
+      const prevCrossChecks = existing.crossChecks;
       Object.assign(existing, p);
       if (!addressChanged) { existing.lat = prevLat; existing.lng = prevLng; existing.geocodeStatus = prevStatus; }
       if (sameDay && prevHasTime) { existing.date = prevDate; existing.hasTime = true; existing.dateEnd = prevDateEnd; }
       existing.attachments = prevAttachments || [];
       existing.probenprotokolle = prevProbenprotokolle || [];
+      existing.crossChecks = prevCrossChecks || [];
       updated++;
     } else {
       terminkalenderEvents.push(p);
@@ -8043,6 +8202,10 @@ function renderTerminkalenderDetail(ev) {
     <h3>${escapeHtml(ev.kunde)}</h3>
     <p class="tk-detail-time">${dateStr}</p>
     <div class="tk-badges">${badges.join('')}</div>
+    <label class="tk-move-row">
+      <span>Termin verschieben auf</span>
+      <input type="date" id="tk-move-date" value="${tkDateInputValue(ev.date)}">
+    </label>
     <div class="tk-betrieb-assign">
       <button type="button" class="tk-betrieb-assign-btn${isActiveZuordnung ? ' active' : ''}" id="tk-betrieb-assign-btn">
         ${isActiveZuordnung
@@ -8072,14 +8235,22 @@ function renderTerminkalenderDetail(ev) {
       </div>
       <p class="modal-hint" id="tk-attachment-status"></p>
     </div>
-    ${probenprotokollSectionHtml(ev)}
+    ${formularSectionsHtml(ev)}
   `;
   renderTerminkalenderAttachments(ev);
   document.getElementById('tk-photo-capture-input').addEventListener('change', (e) => handleTerminkalenderFileAdd(ev, e));
   document.getElementById('tk-file-add-input').addEventListener('change', (e) => handleTerminkalenderFileAdd(ev, e));
   document.getElementById('tk-betrieb-assign-btn').addEventListener('click', () => toggleTerminkalenderZuordnung(ev));
   document.getElementById('tk-scan-btn').addEventListener('click', () => openScanModal(ev));
-  wireProbenprotokollSection(ev);
+  // Verschieben per Datumsfeld — Drag&Drop der Karten geht auf Touch nicht.
+  document.getElementById('tk-move-date').addEventListener('change', (e) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(e.target.value);
+    if (!m) return;
+    const target = new Date(+m[1], +m[2] - 1, +m[3]);
+    terminkalenderWeekStart = getMondayOfWeek(target);
+    moveTerminkalenderEvent(ev.id, target);
+  });
+  wireFormularSections(ev);
 }
 
 // Ordnet den Termin direkt aus der Kalenderansicht heraus als aktiven Betrieb
@@ -8606,7 +8777,14 @@ function renderTerminkalenderGrid() {
   const grid = document.getElementById('terminkalender-grid');
   grid.innerHTML = html;
   grid.querySelectorAll('.tk-card').forEach(el => {
-    el.addEventListener('click', () => selectTerminkalenderEvent(el.getAttribute('data-id')));
+    el.addEventListener('click', () => {
+      selectTerminkalenderEvent(el.getAttribute('data-id'));
+      // Am Handy liegen die Details unter Liste und Karte — hinscrollen,
+      // sonst passiert beim Antippen scheinbar nichts.
+      if (window.matchMedia('(max-width: 860px)').matches) {
+        document.getElementById('terminkalender-detail').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+    });
     el.addEventListener('dragstart', (e) => {
       e.dataTransfer.effectAllowed = 'move';
       e.dataTransfer.setData('text/plain', el.getAttribute('data-id'));
@@ -8752,8 +8930,9 @@ function tkFmtDate(d) {
 function updateBetriebButton() {
   btnBetrieb.classList.toggle('active', !!activeZuordnung);
   btnBetriebLabel.innerHTML = activeZuordnung
-    ? `<span class="material-symbols-rounded icon">business</span> ${escapeHtml(activeZuordnung.betrieb)}`
-    : 'Betrieb wählen';
+    ? `<span class="material-symbols-rounded icon">business</span> <span class="btn-betrieb-name">${escapeHtml(activeZuordnung.betrieb)}</span>`
+    : '<span class="material-symbols-rounded icon">business</span> <span class="btn-betrieb-name">Betrieb wählen</span>';
+  btnBetrieb.title = activeZuordnung ? `Betrieb: ${activeZuordnung.betrieb} — antippen zum Wechseln` : 'Betrieb/Termin zuordnen';
 }
 
 function updateBetriebCurrentBox() {
@@ -11660,7 +11839,16 @@ if (import.meta.env.DEV) {
 // sondern über uploadTerminkalenderAttachment() direkt als Anhang bei
 // "Fotos & Dateien" desselben Termins gespeichert — exakt das bestehende
 // Verhalten des Dokumentenscanners (buildPdfFromScanPages weiter unten).
+//
+// Seit dem Cross-Check-Formular (FB.09.06.10) ist das Ganze ein kleines
+// Formular-System: TK_FORMULARE (weiter unten) beschreibt je Formular
+// Vorlage, Felder, Unterschriften und Listen-Texte; Modal, Pflichtfeld-
+// Prüfung, Unterschriften, Anlagen und Export sind für alle Formulare
+// dieselben Funktionen. activeProbenprotokollKind sagt, welches gerade offen
+// ist (Namen der Funktionen/IDs stammen noch aus der Zeit mit nur einem
+// Formular und wurden bewusst beibehalten).
 const PROBENEHMER_NAME_STORAGE_KEY = 'feldfolio-probenehmer-name';
+let activeProbenprotokollKind = 'probenprotokoll';
 let activeProbenprotokollEventId = null;
 let activeProbenprotokollId = null;
 
@@ -11771,14 +11959,15 @@ const PROBENPROTOKOLL_SECTIONS = [
 // Flache Sicht auf alle Feldnamen (inkl. der an eine Checkbox gekoppelten
 // Text-Felder wie "Ort Lager") — Grundlage für Vorbefüllung, Werte-Objekt-
 // Initialisierung und den PDF-Export-Durchlauf.
-const PROBENPROTOKOLL_ALL_FIELDS = (() => {
+function formularAllFields(sections) {
   const out = [];
-  PROBENPROTOKOLL_SECTIONS.forEach(sec => sec.fields.forEach(f => {
-    out.push({ name: f.name, type: f.type, options: f.options });
-    if (f.textField) out.push({ name: f.textField, type: 'text' });
+  sections.forEach(sec => sec.fields.forEach(f => {
+    out.push({ name: f.name, type: f.type, options: f.options, dependsOn: f.dependsOn });
+    if (f.textField) out.push({ name: f.textField, type: 'text', dependsOn: f.dependsOn });
   }));
   return out;
-})();
+}
+const PROBENPROTOKOLL_ALL_FIELDS = formularAllFields(PROBENPROTOKOLL_SECTIONS);
 
 // Beide Unterschriften werden als PNG (Canvas-Signaturpad) direkt auf die
 // Seite gezeichnet — die Vorlage enthält bewusst KEIN Signaturfeld mehr (das
@@ -11792,57 +11981,252 @@ const PROBENPROTOKOLL_SIGNATURE_BOXES = {
   signatureBetriebsinhaber: { x: 240, y: 54, width: 220, height: 34 }
 };
 
-function createProbenprotokoll(ev) {
-  let rememberedName = '';
-  try { rememberedName = localStorage.getItem(PROBENEHMER_NAME_STORAGE_KEY) || ''; } catch {}
+// ---------- Cross Check (FB.09.06.10, Anfrage an eine andere Kontrollstelle) ----------
+// public/crosscheck-vorlage.pdf ist das Originalformular V07 unverändert
+// (enthält keine Vorbelegung/Unterschrift). Feldnamen per Node/pdf-lib
+// ausgelesen; Radio-Werte je Kästchen über die /AP-Schlüssel der Widgets
+// zugeordnet (Group1: Auswahl1 = Empfänger, Auswahl2 = Lieferant; Group2:
+// Auswahl1 = Lieferantenprüfung, Auswahl2 = Empfängerprüfung; Group3:
+// Auswahl1 = zeitnahe Beleg-Prüfung, Auswahl2 = Routineprüfung).
+// "Bearbeitungsnummer" und "Ergebnis der Prüfung" füllt die angefragte
+// Kontrollstelle aus — dafür gibt es bewusst keine Eingaben.
+const CROSSCHECK_EMPFAENGERPRUEFUNG = { field: 'Group2', value: 'Auswahl2' };
+const CROSSCHECK_SECTIONS = [
+  {
+    title: 'Anfrage an die Kontrollstelle',
+    fields: [
+      { name: 'Kontrollstelle', label: 'Kontrollstelle', type: 'text', required: true },
+      { name: 'Codenummer', label: 'Codenummer (z. B. DE-ÖKO-006)', shortLabel: 'Codenummer', type: 'text', required: true }
+    ]
+  },
+  {
+    title: 'ÖkoP-kontrolliertes Unternehmen',
+    fields: [
+      { name: 'Name', label: 'Name', shortLabel: 'Name des Unternehmens', type: 'text', required: true },
+      { name: 'Anschrift', label: 'Adresse', shortLabel: 'Adresse des Unternehmens', type: 'textarea', rows: 2, required: true }
+    ]
+  },
+  {
+    title: 'Empfänger bzw. Lieferant',
+    fields: [
+      { name: 'Group1', label: 'Angaben zum', shortLabel: 'Empfänger oder Lieferant', type: 'radio', required: true, options: [
+        { value: 'Auswahl1', label: 'Empfänger' },
+        { value: 'Auswahl2', label: 'Lieferanten' }
+      ] },
+      { name: 'Name_2', label: 'Name', shortLabel: 'Name Empfänger/Lieferant', type: 'text', required: true },
+      { name: 'Anschrift_2', label: 'Adresse', shortLabel: 'Adresse Empfänger/Lieferant', type: 'textarea', rows: 2 }
+    ]
+  },
+  {
+    title: 'Angaben zur Lieferung',
+    fields: [
+      { name: 'ProduktRow1', label: 'Produkt', type: 'textarea', rows: 3, required: true },
+      { name: 'Lieferdatum  LieferzeitraumRow1', label: 'Lieferdatum / Lieferzeitraum', type: 'textarea', rows: 3, required: true },
+      { name: 'MengeRow1', label: 'Menge', type: 'textarea', rows: 3, required: true },
+      { name: 'Nummer und Datum Lieferschein  RechnungRow1', label: 'Nummer und Datum Lieferschein / Rechnung', shortLabel: 'Lieferschein/Rechnung', type: 'textarea', rows: 3, required: true }
+    ]
+  },
+  {
+    title: 'Anlagen',
+    fields: [
+      { name: 'Lieferschein', label: 'Lieferschein', type: 'checkbox' },
+      { name: 'Rechnung', label: 'Rechnung', type: 'checkbox' },
+      { name: 'Gutschrift', label: 'Gutschrift', type: 'checkbox' },
+      { name: 'Sonstige', label: 'sonstiges', type: 'checkbox', textField: 'sonstiges' }
+    ]
+  },
+  {
+    title: 'Zentrale Fragestellung',
+    hint: 'Bei der Empfängerprüfung mindestens eine der beiden Fragen ankreuzen.',
+    fields: [
+      { name: 'Group2', label: 'Prüfung', shortLabel: 'Zentrale Fragestellung', type: 'radio', required: true, options: [
+        { value: 'Auswahl1', label: 'Lieferantenprüfung — stammt die Lieferung vom Kunden, als Warenausgang verbucht?' },
+        { value: 'Auswahl2', label: 'Empfängerprüfung' }
+      ] },
+      { name: 'Check Box2', label: 'Empfängerprüfung: die Lieferung verbucht wurde', type: 'checkbox', dependsOn: CROSSCHECK_EMPFAENGERPRUEFUNG },
+      { name: 'Check Box3', label: 'Empfängerprüfung: noch weitere Lieferungen dieses Produktes in Empfang genommen wurden', type: 'checkbox', dependsOn: CROSSCHECK_EMPFAENGERPRUEFUNG }
+    ]
+  },
+  {
+    title: 'Weitergehende Fragestellung',
+    fields: [
+      { name: 'weitergehende Fragestellung', label: 'Weitergehende Fragestellung', type: 'textarea' }
+    ]
+  },
+  {
+    title: 'Mit der Bitte um',
+    fields: [
+      { name: 'Group3', label: 'Art der Prüfung', shortLabel: 'Mit der Bitte um', type: 'radio', required: true, options: [
+        { value: 'Auswahl1', label: 'zeitnahe Beleg-Prüfung (begründete Zweifel, kurzfristige Rücksendung)' },
+        { value: 'Auswahl2', label: 'Routineprüfung (Rückmeldung nur, falls Bio-Status nicht bestätigt)' }
+      ] },
+      { name: 'Datum', label: 'Datum', type: 'text', required: true }
+    ]
+  }
+];
+const CROSSCHECK_ALL_FIELDS = formularAllFields(CROSSCHECK_SECTIONS);
 
+// Unterschrift auf der Linie "Datum, Unterschrift Kontrolleur / Kontroll-
+// stelle" (Unterstriche bei y≈212 von x≈47 bis ≈385), rechts neben dem
+// Datumsfeld (x 46–159) — per pdf.js aus der Vorlage gemessen.
+const CROSSCHECK_SIGNATURE_BOX = { x: 172, y: 211, width: 200, height: 26 };
+
+// Die Vorlage hat nur formularweit Schriftgröße "auto" (0 Tf) — pdf-lib würde
+// kurze Texte in den 75 pt hohen Tabellenzellen riesig setzen. Feste Größen passend zur
+// jeweiligen Feldhöhe.
+function crossCheckFontSize(field) {
+  const h = field.acroField.getWidgets()[0].getRectangle().height;
+  if (field.isMultiline()) return h < 30 ? 8 : 9;
+  return Math.max(7.5, Math.min(9, h - 1.5));
+}
+
+// Alle Formulare, die an einem Termin hängen können. listKey = Array am
+// Termin (ev.probenprotokolle / ev.crossChecks), idPrefix = Präfix der
+// Listen-IDs im Detailpanel (#tk-<idPrefix>-new/-list).
+const TK_FORMULARE = {
+  probenprotokoll: {
+    listKey: 'probenprotokolle',
+    idPrefix: 'probenprotokoll',
+    containerId: 'tk-probenprotokolle',
+    title: 'Probenahmeprotokoll',
+    listTitle: 'Probenahmeprotokolle',
+    newLabel: 'Neues Protokoll',
+    emptyText: 'Noch keine Protokolle.',
+    deleteLabel: 'Protokoll löschen',
+    deleteConfirm: 'Protokoll wirklich löschen?',
+    icon: 'description',
+    template: '/probenahmeprotokoll-vorlage.pdf',
+    fileArt: 'Probenahmeprotokoll',
+    sections: PROBENPROTOKOLL_SECTIONS,
+    allFields: PROBENPROTOKOLL_ALL_FIELDS,
+    anlagenSection: 'Anlagen',
+    signatureHint: 'Keine Rechtsberatung — bitte im Zweifel das amtliche Formular gegenprüfen.',
+    signatures: [
+      { key: 'signatureProbenehmer', label: 'Unterschrift des Probenehmers', canvasId: 'pp-sig-probenehmer', box: PROBENPROTOKOLL_SIGNATURE_BOXES.signatureProbenehmer },
+      { key: 'signatureBetriebsinhaber', label: 'Unterschrift des Betriebsinhabers', fullLabel: 'Unterschrift des Betriebsinhabers oder seines Stellvertreters', canvasId: 'pp-sig-betriebsinhaber', box: PROBENPROTOKOLL_SIGNATURE_BOXES.signatureBetriebsinhaber }
+    ],
+    prefill(ev, values) {
+      let rememberedName = '';
+      try { rememberedName = localStorage.getItem(PROBENEHMER_NAME_STORAGE_KEY) || ''; } catch {}
+      values['Name des Unternehmens'] = ev.kunde;
+      values['Straße Hausnummer'] = ev.strasse || '';
+      values['PLZ  Ort'] = [ev.plz, ev.ort].filter(Boolean).join(' ');
+      values['Kundennummer'] = ev.kundennummer || '';
+      values['DatumZeitpunkt und Ort der Probenahme'] = new Date().toLocaleDateString('de-DE');
+      values['Probenehmer Name'] = rememberedName;
+    },
+    onInput(p, name, value) {
+      if (name === 'Probenehmer Name') {
+        try { localStorage.setItem(PROBENEHMER_NAME_STORAGE_KEY, value); } catch {}
+      }
+    },
+    rowTitle: p => p.values['Probe'] || '(kein Produkt angegeben)',
+    rowDate: p => p.values['DatumZeitpunkt und Ort der Probenahme']
+  },
+  crosscheck: {
+    listKey: 'crossChecks',
+    idPrefix: 'crosscheck',
+    containerId: 'tk-crosschecks',
+    title: 'Cross Check',
+    listTitle: 'Cross Checks',
+    newLabel: 'Neuer Cross Check',
+    emptyText: 'Noch keine Cross Checks.',
+    deleteLabel: 'Cross Check löschen',
+    deleteConfirm: 'Cross Check wirklich löschen?',
+    icon: 'fact_check',
+    template: '/crosscheck-vorlage.pdf',
+    fileArt: 'Cross Check',
+    sections: CROSSCHECK_SECTIONS,
+    allFields: CROSSCHECK_ALL_FIELDS,
+    anlagenSection: 'Anlagen',
+    signatureHint: 'Unterschrift erscheint auf der Linie „Datum, Unterschrift Kontrolleur / Kontrollstelle“ der Anfrage. Den Teil „Ergebnis der Prüfung“ füllt die angefragte Kontrollstelle aus.',
+    signatures: [
+      { key: 'signatureKontrolleur', label: 'Unterschrift Kontrolleur / Kontrollstelle', canvasId: 'cc-sig-kontrolleur', box: CROSSCHECK_SIGNATURE_BOX }
+    ],
+    fontSize: crossCheckFontSize,
+    prefill(ev, values) {
+      values['Name'] = ev.kunde;
+      values['Anschrift'] = [ev.strasse, [ev.plz, ev.ort].filter(Boolean).join(' ')].filter(Boolean).join('\n');
+      values['Datum'] = new Date().toLocaleDateString('de-DE');
+    },
+    // Wer angefragt wird, bestimmt die Prüfung: beim Empfänger die
+    // Empfängerprüfung, beim Lieferanten die Lieferantenprüfung — wird
+    // vorgeschlagen, solange noch keine gewählt ist.
+    onInput(p, name, value) {
+      if (name === 'Group1' && !p.values['Group2']) {
+        p.values['Group2'] = value === 'Auswahl1' ? 'Auswahl2' : 'Auswahl1';
+        const radio = document.querySelector(`#probenprotokoll-modal-form [data-field="Group2"][value="${p.values['Group2']}"]`);
+        if (radio) radio.checked = true;
+      }
+    },
+    extraMissing(p) {
+      if (p.values['Group2'] === 'Auswahl2' && !p.values['Check Box2'] && !p.values['Check Box3']) {
+        return [{ field: 'Check Box2', label: 'Frage zur Empfängerprüfung' }];
+      }
+      return [];
+    },
+    rowTitle: p => p.values['Name_2'] || '(kein Empfänger/Lieferant)',
+    rowDate: p => p.values['Datum']
+  }
+};
+
+function tkFormularDef(kind) { return TK_FORMULARE[kind]; }
+
+// Ein Feld mit dependsOn (z. B. die beiden Fragen der Empfängerprüfung) zählt
+// nur, solange die übergeordnete Auswahl passt — sonst ist es im Formular
+// ausgegraut und wird im Export leer gelassen.
+function formularFieldActive(f, values) {
+  return !f.dependsOn || values[f.dependsOn.field] === f.dependsOn.value;
+}
+
+function createFormular(ev, kind) {
+  const def = tkFormularDef(kind);
   const values = {};
-  PROBENPROTOKOLL_ALL_FIELDS.forEach(f => { values[f.name] = f.type === 'checkbox' ? false : ''; });
-  values['Name des Unternehmens'] = ev.kunde;
-  values['Straße Hausnummer'] = ev.strasse || '';
-  values['PLZ  Ort'] = [ev.plz, ev.ort].filter(Boolean).join(' ');
-  values['Kundennummer'] = ev.kundennummer || '';
-  values['DatumZeitpunkt und Ort der Probenahme'] = new Date().toLocaleDateString('de-DE');
-  values['Probenehmer Name'] = rememberedName;
+  def.allFields.forEach(f => { values[f.name] = f.type === 'checkbox' ? false : ''; });
+  def.prefill(ev, values);
 
   const now = new Date().toISOString();
   const p = {
-    id: 'protokoll-' + Date.now() + Math.random().toString(36).slice(2),
+    id: (kind === 'probenprotokoll' ? 'protokoll-' : kind + '-') + Date.now() + Math.random().toString(36).slice(2),
     betrieb: ev.kunde,
     terminId: ev.id,
     createdAt: now, updatedAt: now,
     values,
-    signatureProbenehmer: null,
-    signatureBetriebsinhaber: null,
     anlagenDateien: []
   };
-  ev.probenprotokolle = ev.probenprotokolle || [];
-  ev.probenprotokolle.push(p);
+  def.signatures.forEach(s => { p[s.key] = null; });
+  ev[def.listKey] = ev[def.listKey] || [];
+  ev[def.listKey].push(p);
   return p;
 }
 
-function deleteProbenprotokoll(ev, id) {
-  const p = (ev.probenprotokolle || []).find(x => x.id === id);
+function createProbenprotokoll(ev) {
+  return createFormular(ev, 'probenprotokoll');
+}
+
+function deleteFormular(ev, kind, id) {
+  const def = tkFormularDef(kind);
+  const p = (ev[def.listKey] || []).find(x => x.id === id);
   if (!p) return;
-  if (!confirm('Protokoll wirklich löschen?')) return;
-  ev.probenprotokolle = ev.probenprotokolle.filter(x => x.id !== id);
-  if (activeProbenprotokollEventId === ev.id && activeProbenprotokollId === id) closeProbenprotokollModal();
+  if (!confirm(def.deleteConfirm)) return;
+  ev[def.listKey] = ev[def.listKey].filter(x => x.id !== id);
+  if (activeProbenprotokollKind === kind && activeProbenprotokollEventId === ev.id && activeProbenprotokollId === id) closeProbenprotokollModal();
   if (terminkalenderSelectedId === ev.id) renderTerminkalenderDetail(ev);
 }
 
-// Rendert den Listen-Ausschnitt "Probenahmeprotokolle" innerhalb des
-// Terminkalender-Detailpanels — Aufruf und Verdrahtung analog zu
-// renderTerminkalenderAttachments()/den dortigen Button-Listenern
-// (main.js, renderTerminkalenderDetail).
-function probenprotokollSectionHtml(ev) {
-  const list = ev.probenprotokolle || [];
+// Rendert den Listen-Ausschnitt eines Formulars (Probenahmeprotokolle, Cross
+// Checks) innerhalb des Terminkalender-Detailpanels — Aufruf und
+// Verdrahtung analog zu renderTerminkalenderAttachments()/den dortigen
+// Button-Listenern (main.js, renderTerminkalenderDetail).
+function formularSectionHtml(ev, kind) {
+  const def = tkFormularDef(kind);
+  const list = ev[def.listKey] || [];
   const rows = list.slice().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(p => {
-    const complete = probenprotokollMissing(p).length === 0;
-    const datum = p.values['DatumZeitpunkt und Ort der Probenahme'] || '–';
-    const produkt = p.values['Probe'] || '(kein Produkt angegeben)';
+    const complete = probenprotokollMissing(p, kind).length === 0;
+    const datum = def.rowDate(p) || '–';
     return `<div class="probenprotokoll-row">
       <button type="button" class="probenprotokoll-row-main" data-action="open-protokoll" data-id="${escapeHtml(p.id)}">
-        <span class="probenprotokoll-row-title">${escapeHtml(produkt)}</span>
+        <span class="probenprotokoll-row-title">${escapeHtml(def.rowTitle(p))}</span>
         <span class="probenprotokoll-row-sub">${escapeHtml(datum)} · ${complete ? 'vollständig' : 'unvollständig'}</span>
       </button>
       <button type="button" class="probenprotokoll-row-delete" data-action="delete-protokoll" data-id="${escapeHtml(p.id)}" title="Löschen">
@@ -11851,42 +12235,58 @@ function probenprotokollSectionHtml(ev) {
     </div>`;
   }).join('');
   return `
-    <div class="tk-attachments" id="tk-probenprotokolle">
-      <div class="tk-attachments-head">Probenahmeprotokolle</div>
-      <div id="tk-probenprotokoll-list">${rows || '<p class="empty-hint">Noch keine Protokolle.</p>'}</div>
+    <div class="tk-attachments" id="${def.containerId}">
+      <div class="tk-attachments-head">${escapeHtml(def.listTitle)}</div>
+      <div id="tk-${def.idPrefix}-list">${rows || `<p class="empty-hint">${escapeHtml(def.emptyText)}</p>`}</div>
       <div class="tk-attachments-actions">
-        <button type="button" class="tk-attachment-btn tk-attachment-btn-primary" id="tk-probenprotokoll-new">
-          <span class="material-symbols-rounded icon">description</span> Neues Protokoll
+        <button type="button" class="tk-attachment-btn tk-attachment-btn-primary" id="tk-${def.idPrefix}-new">
+          <span class="material-symbols-rounded icon">${def.icon}</span> ${escapeHtml(def.newLabel)}
         </button>
       </div>
     </div>`;
 }
 
-function wireProbenprotokollSection(ev) {
-  document.getElementById('tk-probenprotokoll-new').addEventListener('click', () => {
-    const p = createProbenprotokoll(ev);
-    openProbenprotokoll(ev.id, p.id);
-  });
-  document.getElementById('tk-probenprotokoll-list').addEventListener('click', (e) => {
-    const delBtn = e.target.closest('[data-action="delete-protokoll"]');
-    if (delBtn) { deleteProbenprotokoll(ev, delBtn.getAttribute('data-id')); return; }
-    const openBtn = e.target.closest('[data-action="open-protokoll"]');
-    if (openBtn) openProbenprotokoll(ev.id, openBtn.getAttribute('data-id'));
+function formularSectionsHtml(ev) {
+  return Object.keys(TK_FORMULARE).map(kind => formularSectionHtml(ev, kind)).join('');
+}
+
+function wireFormularSections(ev) {
+  Object.keys(TK_FORMULARE).forEach(kind => {
+    const def = tkFormularDef(kind);
+    document.getElementById(`tk-${def.idPrefix}-new`).addEventListener('click', () => {
+      const p = createFormular(ev, kind);
+      openFormular(kind, ev.id, p.id);
+    });
+    document.getElementById(`tk-${def.idPrefix}-list`).addEventListener('click', (e) => {
+      const delBtn = e.target.closest('[data-action="delete-protokoll"]');
+      if (delBtn) { deleteFormular(ev, kind, delBtn.getAttribute('data-id')); return; }
+      const openBtn = e.target.closest('[data-action="open-protokoll"]');
+      if (openBtn) openFormular(kind, ev.id, openBtn.getAttribute('data-id'));
+    });
   });
 }
 
 function getActiveProbenprotokoll() {
   const ev = terminkalenderEvents.find(e => e.id === activeProbenprotokollEventId);
   if (!ev) return null;
-  const p = (ev.probenprotokolle || []).find(x => x.id === activeProbenprotokollId);
-  return p ? { ev, p } : null;
+  const def = tkFormularDef(activeProbenprotokollKind);
+  const p = (ev[def.listKey] || []).find(x => x.id === activeProbenprotokollId);
+  return p ? { ev, p, def, kind: activeProbenprotokollKind } : null;
+}
+
+function openFormular(kind, evId, id) {
+  const def = tkFormularDef(kind);
+  activeProbenprotokollKind = kind;
+  activeProbenprotokollEventId = evId;
+  activeProbenprotokollId = id;
+  document.getElementById('probenprotokoll-modal-title').textContent = def.title;
+  document.getElementById('probenprotokoll-modal-delete-label').textContent = def.deleteLabel;
+  document.getElementById('probenprotokoll-modal-overlay').hidden = false;
+  renderProbenprotokollForm();
 }
 
 function openProbenprotokoll(evId, id) {
-  activeProbenprotokollEventId = evId;
-  activeProbenprotokollId = id;
-  document.getElementById('probenprotokoll-modal-overlay').hidden = false;
-  renderProbenprotokollForm();
+  openFormular('probenprotokoll', evId, id);
 }
 
 function closeProbenprotokollModal() {
@@ -11895,33 +12295,30 @@ function closeProbenprotokollModal() {
   activeProbenprotokollId = null;
   document.getElementById('probenprotokoll-modal-overlay').hidden = true;
   document.getElementById('probenprotokoll-modal-form').innerHTML = '';
-  // Neu angelegte/bearbeitete Protokolle ändern Titel/Status der Zeile in
-  // der Liste (siehe probenprotokollSectionHtml) — die wurde beim Öffnen
-  // nicht neu gerendert, muss also spätestens beim Schließen aktualisiert
-  // werden, sonst zeigt sie einen veralteten Stand.
+  // Neu angelegte/bearbeitete Formulare ändern Titel/Status der Zeile in
+  // der Liste (siehe formularSectionHtml) — die wurde beim Öffnen nicht neu
+  // gerendert, muss also spätestens beim Schließen aktualisiert werden,
+  // sonst zeigt sie einen veralteten Stand.
   if (evId === terminkalenderSelectedId) {
     const ev = terminkalenderEvents.find(e => e.id === evId);
     if (ev) renderTerminkalenderDetail(ev);
   }
 }
 
-const PROBENPROTOKOLL_REQUIRED_SIGNATURES = [
-  { key: 'signatureProbenehmer', label: 'Unterschrift des Probenehmers', canvasId: 'pp-sig-probenehmer' },
-  { key: 'signatureBetriebsinhaber', label: 'Unterschrift des Betriebsinhabers', canvasId: 'pp-sig-betriebsinhaber' }
-];
-
-// Fehlende Pflichtangaben eines Protokolls — { field } für Formularfelder,
+// Fehlende Pflichtangaben eines Formulars — { field } für Formularfelder,
 // { signature } für Unterschriften. Erklärungen mit requiredUnless entfallen,
 // sobald das genannte Feld (Annahme abgelehnt) angekreuzt ist.
-function probenprotokollMissing(p) {
+function probenprotokollMissing(p, kind = activeProbenprotokollKind) {
+  const def = tkFormularDef(kind);
   const missing = [];
-  PROBENPROTOKOLL_SECTIONS.forEach(sec => sec.fields.forEach(f => {
+  def.sections.forEach(sec => sec.fields.forEach(f => {
     const v = p.values[f.name];
     const filled = typeof v === 'string' ? v.trim() !== '' : !!v;
     const needed = f.required || (f.requiredUnless && !p.values[f.requiredUnless]);
     if (needed && !filled) missing.push({ field: f.name, label: f.shortLabel || f.label });
   }));
-  PROBENPROTOKOLL_REQUIRED_SIGNATURES.forEach(s => {
+  if (def.extraMissing) missing.push(...def.extraMissing(p));
+  def.signatures.forEach(s => {
     if (!p[s.key]) missing.push({ signature: s.key, canvasId: s.canvasId, label: s.label });
   });
   return missing;
@@ -11952,6 +12349,22 @@ function refreshProbenprotokollValidation(p) {
   if (probenprotokollValidationShown) markProbenprotokollMissing(p);
 }
 
+// Graut abhängige Felder (dependsOn) aus, solange die übergeordnete Auswahl
+// nicht passt.
+function updateFormularDependencies(p) {
+  const ref = getActiveProbenprotokoll();
+  if (!ref) return;
+  const form = document.getElementById('probenprotokoll-modal-form');
+  ref.def.allFields.forEach(f => {
+    if (!f.dependsOn) return;
+    const active = formularFieldActive(f, p.values);
+    form.querySelectorAll(`[data-field="${CSS.escape(f.name)}"]`).forEach(el => {
+      el.disabled = !active;
+      el.closest('.pp-field')?.classList.toggle('pp-field-inactive', !active);
+    });
+  });
+}
+
 function probenprotokollFieldRowHtml(f, values) {
   const id = 'pp-field-' + f.name.replace(/[^a-zA-Z0-9]/g, '_');
   const req = (f.required || f.requiredUnless) ? ' <span class="pp-required" title="Pflichtfeld">*</span>' : '';
@@ -11964,7 +12377,7 @@ function probenprotokollFieldRowHtml(f, values) {
   if (f.type === 'textarea') {
     return `<div class="pp-field pp-field-wide">
       <label class="compare-label" for="${id}">${escapeHtml(f.label)}${req}</label>
-      <textarea id="${id}" class="account-input" rows="4" data-field="${escapeHtml(f.name)}">${escapeHtml(values[f.name] || '')}</textarea>
+      <textarea id="${id}" class="account-input" rows="${f.rows || 4}" data-field="${escapeHtml(f.name)}">${escapeHtml(values[f.name] || '')}</textarea>
     </div>`;
   }
   if (f.type === 'checkbox') {
@@ -11978,7 +12391,7 @@ function probenprotokollFieldRowHtml(f, values) {
   }
   if (f.type === 'radio') {
     return `<div class="pp-field pp-field-wide">
-      <span class="compare-label">${escapeHtml(f.label)}</span>
+      <span class="compare-label">${escapeHtml(f.label)}${req}</span>
       <div class="pp-radio-group">
         ${f.options.map(o => `<label class="pp-radio-option"><input type="radio" name="pp-radio-${id}" data-field="${escapeHtml(f.name)}" value="${escapeHtml(o.value)}" ${values[f.name] === o.value ? 'checked' : ''}> ${escapeHtml(o.label)}</label>`).join('')}
       </div>
@@ -12063,43 +12476,37 @@ function probenprotokollAnlagenFilesHtml() {
 function renderProbenprotokollForm() {
   const ref = getActiveProbenprotokoll();
   if (!ref) return;
-  const { p } = ref;
+  const { p, def } = ref;
   probenprotokollValidationShown = false;
   const errorEl = document.getElementById('probenprotokoll-modal-error');
   errorEl.hidden = true;
   errorEl.textContent = '';
-  const sectionsHtml = PROBENPROTOKOLL_SECTIONS.map(sec => `
+  const sectionsHtml = def.sections.map(sec => `
     <fieldset class="pp-section">
       <legend>${escapeHtml(sec.title)}</legend>
       ${sec.hint ? `<p class="modal-hint">${escapeHtml(sec.hint)}</p>` : ''}
       <div class="pp-section-grid">${sec.fields.map(f => probenprotokollFieldRowHtml(f, p.values)).join('')}</div>
-      ${sec.title === 'Anlagen' ? probenprotokollAnlagenFilesHtml() : ''}
+      ${sec.title === def.anlagenSection ? probenprotokollAnlagenFilesHtml() : ''}
     </fieldset>`).join('');
   const signaturesHtml = `
     <fieldset class="pp-section">
-      <legend>Unterschriften</legend>
-      <p class="modal-hint">Keine Rechtsberatung — bitte im Zweifel das amtliche Formular gegenprüfen.</p>
+      <legend>${def.signatures.length > 1 ? 'Unterschriften' : 'Unterschrift'}</legend>
+      <p class="modal-hint">${escapeHtml(def.signatureHint)}</p>
       <div class="pp-signature-grid">
+        ${def.signatures.map(s => `
         <div class="pp-signature-block">
-          <span class="compare-label">Unterschrift des Probenehmers <span class="pp-required" title="Pflichtfeld">*</span></span>
-          <canvas class="pp-signature-pad" id="pp-sig-probenehmer" width="480" height="140"></canvas>
-          <button type="button" class="pp-signature-clear" data-sig="signatureProbenehmer">
+          <span class="compare-label">${escapeHtml(s.fullLabel || s.label)} <span class="pp-required" title="Pflichtfeld">*</span></span>
+          <canvas class="pp-signature-pad" id="${s.canvasId}" width="480" height="140"></canvas>
+          <button type="button" class="pp-signature-clear" data-sig="${s.key}">
             <span class="material-symbols-rounded icon">refresh</span> Löschen
           </button>
-        </div>
-        <div class="pp-signature-block">
-          <span class="compare-label">Unterschrift des Betriebsinhabers oder seines Stellvertreters <span class="pp-required" title="Pflichtfeld">*</span></span>
-          <canvas class="pp-signature-pad" id="pp-sig-betriebsinhaber" width="480" height="140"></canvas>
-          <button type="button" class="pp-signature-clear" data-sig="signatureBetriebsinhaber">
-            <span class="material-symbols-rounded icon">refresh</span> Löschen
-          </button>
-        </div>
+        </div>`).join('')}
       </div>
     </fieldset>`;
   document.getElementById('probenprotokoll-modal-form').innerHTML = sectionsHtml + signaturesHtml;
-  wireProbenprotokollFormInputs(p);
-  setupSignaturePad('pp-sig-probenehmer', p, 'signatureProbenehmer');
-  setupSignaturePad('pp-sig-betriebsinhaber', p, 'signatureBetriebsinhaber');
+  wireProbenprotokollFormInputs(p, def);
+  updateFormularDependencies(p);
+  def.signatures.forEach(s => setupSignaturePad(s.canvasId, p, s.key));
   renderProbenprotokollAnlagenGrid(p);
   document.getElementById('pp-anlage-file-input').addEventListener('change', (e) => {
     const file = e.target.files[0];
@@ -12108,7 +12515,7 @@ function renderProbenprotokollForm() {
   });
 }
 
-function wireProbenprotokollFormInputs(p) {
+function wireProbenprotokollFormInputs(p, def) {
   const form = document.getElementById('probenprotokoll-modal-form');
   form.querySelectorAll('[data-field]').forEach(el => {
     const name = el.getAttribute('data-field');
@@ -12118,9 +12525,8 @@ function wireProbenprotokollFormInputs(p) {
       else if (el.type === 'radio') { if (el.checked) p.values[name] = el.value; }
       else p.values[name] = el.value;
       p.updatedAt = new Date().toISOString();
-      if (name === 'Probenehmer Name') {
-        try { localStorage.setItem(PROBENEHMER_NAME_STORAGE_KEY, el.value); } catch {}
-      }
+      if (def.onInput) def.onInput(p, name, p.values[name]);
+      updateFormularDependencies(p);
       refreshProbenprotokollValidation(p);
     });
   });
@@ -12195,7 +12601,7 @@ document.getElementById('probenprotokoll-modal-overlay').addEventListener('click
 });
 document.getElementById('probenprotokoll-modal-delete').addEventListener('click', () => {
   const ref = getActiveProbenprotokoll();
-  if (ref) deleteProbenprotokoll(ref.ev, ref.p.id);
+  if (ref) deleteFormular(ref.ev, ref.kind, ref.p.id);
 });
 
 // Zeichnet ein Unterschrift-PNG seitenverhältnistreu zentriert in eine feste
@@ -12249,15 +12655,17 @@ async function embedProbenprotokollAnlage(pdfDoc, anlage) {
   page.drawImage(img, { x: (page.getWidth() - w) / 2, y: (page.getHeight() - h) / 2, width: w, height: h });
 }
 
-async function exportProbenprotokollPdf(ev, p) {
+async function exportProbenprotokollPdf(ev, p, def = tkFormularDef('probenprotokoll')) {
   if (typeof PDFLib === 'undefined') { showError('PDF-Export nicht verfügbar (Bibliothek konnte nicht geladen werden).'); return; }
   try {
-    const templateBytes = await fetch('/probenahmeprotokoll-vorlage.pdf').then(r => r.arrayBuffer());
+    const templateBytes = await fetch(def.template).then(r => r.arrayBuffer());
     const pdfDoc = await PDFLib.PDFDocument.load(templateBytes);
     const form = pdfDoc.getForm();
 
-    PROBENPROTOKOLL_ALL_FIELDS.forEach(f => {
-      const value = p.values[f.name];
+    def.allFields.forEach(f => {
+      // Abhängige Felder (z. B. Fragen der Empfängerprüfung bei gewählter
+      // Lieferantenprüfung) bleiben leer, auch wenn sie vorher mal gesetzt waren.
+      const value = formularFieldActive(f, p.values) ? p.values[f.name] : (f.type === 'checkbox' ? false : '');
       if (f.type === 'checkbox') {
         const box = form.getCheckBox(f.name);
         if (value) box.check(); else box.uncheck();
@@ -12265,15 +12673,19 @@ async function exportProbenprotokollPdf(ev, p) {
         const group = form.getRadioGroup(f.name);
         if (value) group.select(value); else group.clear();
       } else {
-        form.getTextField(f.name).setText(value || '');
+        const field = form.getTextField(f.name);
+        // Felder ohne eigenes /DA (nur formularweit, auto-Größe): Darstellung
+        // je Feld setzen — setFontSize() verlangt ein vorhandenes /DA.
+        if (def.fontSize) field.acroField.setDefaultAppearance(`/Helv ${def.fontSize(field)} Tf 0 g`);
+        field.setText(value || '');
       }
     });
 
     const page = pdfDoc.getPage(0);
-    for (const key of ['signatureProbenehmer', 'signatureBetriebsinhaber']) {
-      if (!p[key]) continue;
-      const img = await pdfDoc.embedPng(p[key]);
-      drawSignatureFitted(page, img, PROBENPROTOKOLL_SIGNATURE_BOXES[key]);
+    for (const s of def.signatures) {
+      if (!p[s.key]) continue;
+      const img = await pdfDoc.embedPng(p[s.key]);
+      drawSignatureFitted(page, img, s.box);
     }
 
     form.flatten();
@@ -12283,9 +12695,9 @@ async function exportProbenprotokollPdf(ev, p) {
     }
 
     const bytes = await pdfDoc.save();
-    const name = `${ev.date.getFullYear()}_${sanitizeFileNamePart(ev.kunde)}_Probenahmeprotokoll.pdf`;
+    const name = `${ev.date.getFullYear()}_${sanitizeFileNamePart(ev.kunde)}_${def.fileArt}.pdf`;
     const file = new File([bytes], name, { type: 'application/pdf' });
-    await uploadTerminkalenderAttachment(ev, file, 'Probenahmeprotokoll');
+    await uploadTerminkalenderAttachment(ev, file, def.fileArt);
     closeProbenprotokollModal();
   } catch (err) {
     showError('PDF-Export fehlgeschlagen: ' + (err.message || String(err)));
@@ -12301,33 +12713,46 @@ document.getElementById('probenprotokoll-modal-export').addEventListener('click'
     document.querySelector('#probenprotokoll-modal-form .pp-invalid')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     return;
   }
-  exportProbenprotokollPdf(ref.ev, ref.p);
+  exportProbenprotokollPdf(ref.ev, ref.p, ref.def);
 });
 
 // Dev-only Testhaken (analog window.__ffTestMap/__ffTestStallplaner) — echtes
 // Canvas-Pointer-Zeichnen ist laut AGENTS.md Punkt 2 genauso wenig
 // zuverlässig per synthetischem Maus-Event simulierbar wie SVG-Vertex-Drag.
+// Je Formular ein Haken mit derselben Schnittstelle.
 if (import.meta.env.DEV) {
-  window.__ffTestProbenprotokoll = {
-    create(eventId) {
-      const ev = terminkalenderEvents.find(e => e.id === eventId);
-      if (!ev) return null;
-      return createProbenprotokoll(ev).id;
-    },
-    getActive() { return getActiveProbenprotokoll()?.p || null; },
-    get(eventId, id) {
-      const ev = terminkalenderEvents.find(e => e.id === eventId);
-      return ev ? (ev.probenprotokolle || []).find(x => x.id === id) || null : null;
-    },
-    setValue(eventId, id, name, value) {
-      const p = window.__ffTestProbenprotokoll.get(eventId, id);
-      if (p) p.values[name] = value;
-    },
-    setSignature(eventId, id, key, dataUrl) {
-      const p = window.__ffTestProbenprotokoll.get(eventId, id);
-      if (p) p[key] = dataUrl;
-    }
+  const formularTestHook = (kind) => {
+    const hook = {
+      create(eventId) {
+        const ev = terminkalenderEvents.find(e => e.id === eventId);
+        if (!ev) return null;
+        return createFormular(ev, kind).id;
+      },
+      getActive() {
+        const ref = getActiveProbenprotokoll();
+        return ref && ref.kind === kind ? ref.p : null;
+      },
+      get(eventId, id) {
+        const ev = terminkalenderEvents.find(e => e.id === eventId);
+        return ev ? (ev[tkFormularDef(kind).listKey] || []).find(x => x.id === id) || null : null;
+      },
+      setValue(eventId, id, name, value) {
+        const p = hook.get(eventId, id);
+        if (p) p.values[name] = value;
+      },
+      setSignature(eventId, id, key, dataUrl) {
+        const p = hook.get(eventId, id);
+        if (p) p[key] = dataUrl;
+      },
+      missing(eventId, id) {
+        const p = hook.get(eventId, id);
+        return p ? probenprotokollMissing(p, kind) : null;
+      }
+    };
+    return hook;
   };
+  window.__ffTestProbenprotokoll = formularTestHook('probenprotokoll');
+  window.__ffTestCrossCheck = formularTestHook('crosscheck');
 }
 
 // ---------- Dev-Tooling: Jahresvergleich-Inputs aus test-shapes/ vorbefüllen ----------

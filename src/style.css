@@ -105,6 +105,9 @@
     display: flex;
     flex-direction: column;
     height: 100vh;
+    /* dvh = sichtbare Höhe OHNE die ein-/ausfahrende Adressleiste von Handy-
+       Browsern — mit 100vh lägen untere Leisten/Buttons teils darunter. */
+    height: 100dvh;
     overflow: hidden;
     transition: background-color .15s, color .15s;
   }
@@ -116,6 +119,28 @@
     align-items: center;
     background: var(--panel);
     border-bottom: 1px solid var(--border);
+    /* Installierte App (viewport-fit=cover): nicht unter Notch/Statusleiste. */
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+  }
+  /* Nur am Handy sichtbar (siehe Media Query unten). */
+  #btn-current-view, #sidebar-mobile-settings { display: none; }
+  #topbar .topbar-icon { display: none; }
+  #edit-toolbar .tool-label { display: none; }
+  #map-place-chip { display: none; }
+  #map-draw-actions { display: contents; }
+  #map-draw-actions[hidden], #map-draw-actions [hidden] { display: none; }
+  #edit-toolbar .map-draw-primary { background: var(--accent-dim); border-color: var(--accent); color: var(--on-accent); }
+  #edit-toolbar .shape-tool-btn:disabled { opacity: 0.4; }
+
+  /* Touch-Geräte: Leaflet-Zoom-Buttons weg (Pinch-Zoom ist dort der Weg,
+     die Buttons lagen außerdem unter Werkzeugleiste/Basiskarte), und die
+     Koordinatenanzeige folgt nur der Maus — auf Touch stand dort immer
+     "–, –". */
+  @media (hover: none) and (pointer: coarse) {
+    .leaflet-control-zoom { display: none; }
+    #coord-readout { display: none; }
   }
   /* Nur unterhalb der Mobil-Breakpoint sichtbar (siehe Media Query am Dateiende) */
   #btn-sidebar-toggle {
@@ -1382,6 +1407,9 @@
     padding: 20px 22px;
     width: 320px;
     max-width: calc(100vw - 40px);
+    max-height: calc(100vh - 24px);
+    max-height: calc(100dvh - 24px);
+    overflow-y: auto;
     box-shadow: 0 20px 50px rgba(0,0,0,0.5);
   }
   .modal-card h3 { margin: 0 0 8px; font-size: 15px; font-weight: 600; color: var(--text); }
@@ -1677,6 +1705,45 @@
     font-size: 12.5px;
   }
 
+  /* ---------- Als Web-App installieren (Schublade, siehe initInstallPrompt) ---------- */
+  #btn-install-app {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: calc(100% - 28px);
+    margin: 12px 14px 0;
+    padding: 10px 12px;
+    min-height: 56px;
+    text-align: left;
+    background: var(--accent-dim);
+    border: 1px solid var(--accent);
+    border-radius: 10px;
+    color: var(--on-accent);
+    font: 13px var(--sans);
+    cursor: pointer;
+  }
+  #btn-install-app[hidden] { display: none; }
+  #btn-install-app .icon { font-size: 26px; flex: 0 0 auto; }
+  #btn-install-app > span:last-child { display: flex; flex-direction: column; gap: 2px; }
+  #btn-install-app small { font-size: 11.5px; opacity: 0.85; }
+  .install-steps { margin: 4px 0 10px; padding-left: 20px; font-size: 13.5px; line-height: 1.6; color: var(--text); }
+  .install-steps .icon { font-size: 18px; vertical-align: -4px; color: var(--accent); }
+  #sidebar-mobile-settings { padding: 8px 14px 16px; border-top: 1px solid var(--border); margin-top: 8px; }
+  #btn-theme-mobile {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: 44px;
+    padding: 0 12px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font: 13.5px var(--sans);
+    cursor: pointer;
+  }
+
   /* ---------- FeldFolio Plus: Konto-Button (Tabbar) ---------- */
   #btn-account {
     background: transparent;
@@ -1688,12 +1755,16 @@
     border-radius: 6px;
     cursor: pointer;
     margin: 0 10px 0 0;
-    max-width: 160px;
+    max-width: 180px;
     overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
     flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
   }
+  #btn-account .account-icon { font-size: 17px; flex: 0 0 auto; }
+  #btn-account-label { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   #btn-account:hover { border-color: var(--accent); color: var(--text); }
   #btn-account.logged-in { border-color: var(--accent); color: var(--accent); }
 
@@ -1715,6 +1786,9 @@
     flex-shrink: 1;
     min-width: 0;
   }
+  #btn-betrieb-label { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
+  #btn-betrieb-label .icon { font-size: 16px; flex: 0 0 auto; }
+  .btn-betrieb-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   #btn-betrieb:hover { border-color: var(--accent); color: var(--text); }
   #btn-betrieb.active { border-color: var(--accent); color: var(--accent); }
 
@@ -1984,6 +2058,17 @@
   }
   .tk-day-body.tk-drop-target { background: var(--accent-tint); outline: 2px dashed var(--accent); outline-offset: -2px; }
   .tk-day-empty { margin: 0; color: var(--muted); font-size: 11.5px; text-align: center; pointer-events: none; }
+  .tk-move-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 0; font-size: 12.5px; color: var(--muted); }
+  .tk-move-row input {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 5px 8px;
+    font: 13px var(--sans);
+    color-scheme: dark;
+  }
+  :root[data-theme="light"] .tk-move-row input { color-scheme: light; }
 
   .tk-card {
     background: var(--panel-2);
@@ -2174,8 +2259,42 @@
      in #tabbar ein-/ausgeblendet wird (Logik in main.js: btn-sidebar-toggle/
      sidebar-backdrop/body.sidebar-open). */
   @media (max-width: 860px) {
-    #btn-sidebar-toggle { display: inline-flex; }
-    #brand-logo { margin-left: 4px; }
+    #btn-sidebar-toggle { display: inline-flex; padding: 10px 6px 10px 12px; }
+    /* Kopfzeile am Handy: Menü · Apfel · aktuelle Funktion · Betrieb · Sync ·
+       Konto — Wortmarke nur als Apfel, Konto nur als Symbol, Hell/Dunkel in
+       der Schublade. Vorher lief sie über (E-Mail im Konto-Button, "B…"). */
+    #brand-logo { margin: 0 2px 0 2px; font-size: 26px; }
+    #brand-logo .ff-txt, #brand-logo .ff-plus { display: none; }
+    #btn-current-view {
+      display: inline-flex;
+      align-items: center;
+      gap: 1px;
+      flex: 0 1 auto;
+      min-width: 0;
+      max-width: 44%;
+      min-height: 44px;
+      padding: 0 4px;
+      background: transparent;
+      border: none;
+      color: var(--text);
+      font: 600 15px var(--sans);
+      cursor: pointer;
+    }
+    #current-view-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #btn-current-view .icon { font-size: 20px; color: var(--muted); flex: 0 0 auto; }
+    #btn-betrieb { margin: 0 6px 0 auto; max-width: 34%; min-height: 36px; padding: 6px 8px; }
+    #theme-toggle { display: none; }
+    #btn-account-label { display: none; }
+    #btn-account {
+      width: 40px;
+      height: 40px;
+      margin-right: 8px;
+      padding: 0;
+      justify-content: center;
+      border-radius: 50%;
+    }
+    #btn-account .account-icon { font-size: 26px; }
+    #sidebar-mobile-settings { display: block; }
 
     /* position:absolute statt fixed, verankert an #app-body (position:relative,
        siehe dort) statt am Viewport — #app-body beginnt im normalen Fluss
@@ -2209,10 +2328,95 @@
        #map-wrap füllt dadurch automatisch die volle Breite. */
 
     #view-switcher { grid-template-columns: 1fr 1fr; }
-    .segment-btn { padding: 11px 8px; font-size: 12.5px; }
+    .segment-btn { padding: 11px 8px; font-size: 12.5px; min-height: 46px; }
+    /* Unter 16px Schriftgröße zoomt iOS Safari beim Antippen eines Feldes
+       die ganze Seite heran — am Handy daher überall mindestens 16px. */
+    input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
+    select,
+    textarea { font-size: 16px; }
+    .export-btn, .export-flaechenkarten-btn, .danger-btn, .dropzone-mini { min-height: 44px; }
 
-    #topbar { top: 8px; left: 8px; right: 8px; gap: 6px; }
+    #topbar { top: 8px; left: 8px; right: 8px; gap: 8px; }
     #topbar button { padding: 7px 10px; font-size: 12px; }
+    /* Basiskarte/Auf Inhalt zoomen als runde Symbol-Buttons (wie GPS), der
+       Jahresvergleich-Umschalter bekommt dafür eine eigene volle Zeile. */
+    #btn-basemap, #btn-fit {
+      width: 44px;
+      height: 44px;
+      padding: 0;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #topbar .topbar-icon { display: inline; font-size: 22px; }
+
+    /* Zeichen-Werkzeuge (Flächenzeichner/Hofplan) als beschriftete Leiste
+       unten statt schwebender Icon-Spalte — !important, weil die Leiste am
+       Desktop per Ziehen (wireEditToolbarDrag) Inline-Positionen bekommt. */
+    #edit-toolbar.active {
+      top: auto !important;
+      left: 8px !important;
+      right: 8px !important;
+      bottom: calc(26px + env(safe-area-inset-bottom, 0px)) !important;
+      flex-direction: row;
+      justify-content: center;
+      padding: 4px;
+    }
+    #edit-toolbar-handle { display: none; }
+    #edit-toolbar:not(.horizontal) .edit-toolbar-group.active,
+    #edit-toolbar.horizontal .edit-toolbar-group.active { flex-direction: row; flex: 1; justify-content: space-around; }
+    #edit-toolbar .shape-tool-btn {
+      width: auto;
+      min-width: 52px;
+      height: 54px;
+      flex: 1 1 0;
+      flex-direction: column;
+      gap: 1px;
+      padding: 2px 2px;
+    }
+    #edit-toolbar .shape-tool-btn .icon { font-size: 22px; }
+    #edit-toolbar .tool-label { display: block; font-size: 10.5px; font-weight: 600; white-space: nowrap; }
+    /* Während des Zeichnens nur Fertig/Letzter Punkt/Abbrechen. */
+    #edit-toolbar.is-drawing .edit-toolbar-group { display: none; }
+
+    #map-place-chip:not([hidden]) {
+      position: absolute;
+      left: 50%;
+      bottom: calc(30px + env(safe-area-inset-bottom, 0px));
+      transform: translateX(-50%);
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      max-width: calc(100% - 24px);
+      padding: 6px 6px 6px 14px;
+      background: var(--panel);
+      border: 1px solid var(--accent);
+      border-radius: 999px;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.4);
+      font-size: 14px;
+      color: var(--text);
+      white-space: nowrap;
+    }
+    #map-place-chip-dot { flex: 0 0 auto; width: 14px; height: 14px; border-radius: 50%; border: 2px solid #fff; }
+    #map-place-chip-text { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    #map-place-chip-done {
+      flex: 0 0 auto;
+      min-height: 38px;
+      padding: 0 14px;
+      background: var(--accent-dim);
+      border: 1px solid var(--accent);
+      border-radius: 999px;
+      color: var(--on-accent);
+      font: 600 13px var(--sans);
+      cursor: pointer;
+    }
+    #map-place-chip-done[hidden] { display: none; }
+    #topbar .topbar-label { display: none; }
+    #topbar .topbar-extra[data-view="compare"].active { order: -1; flex: 1 0 100%; display: flex; }
+    #compare-view-toggle { flex: 1; display: flex; }
+    #compare-view-toggle .cvt-btn { flex: 1; min-height: 40px; }
 
     /* Bodenleisten-Panels (Flächen-/Vergleichs-/Baumtabelle) dürfen auf einem
        kurzen Bildschirm nie mehr als ~70% der Karte einnehmen — die JS-Logik
@@ -2231,10 +2435,18 @@
        scrollen seitlich statt sich unlesbar zusammenzuquetschen. */
     #terminkalender-main { flex-direction: column; overflow-y: auto; overflow-x: hidden; }
     #terminkalender-calendar { border-right: none; border-bottom: 1px solid var(--border); flex: none; }
-    #terminkalender-grid-wrap { overflow-x: auto; }
-    #terminkalender-grid { min-width: 720px; }
+    /* Woche als Tagesliste untereinander statt sieben Spalten, die seitlich
+       gescrollt werden mussten (nur drei Tage passten auf den Bildschirm). */
+    #terminkalender-grid-wrap { overflow: visible; }
+    #terminkalender-grid { flex-direction: column; min-height: 0; }
+    .tk-day-col { flex: none; min-width: 0; border-left: none; border-bottom: 1px solid var(--border); }
+    .tk-day-head { position: static; text-align: left; padding: 8px 14px; font-size: 13px; }
+    .tk-day-body { min-height: 0; padding: 6px 14px 10px; }
+    .tk-day-empty { text-align: left; }
+    .tk-card { min-height: 48px; }
     #terminkalender-side { width: auto; }
-    #terminkalender-map { height: 200px; }
+    #terminkalender-map { height: 160px; }
+    .tk-move-row input { min-height: 44px; font-size: 16px; }
 
     /* Foto-/Kontakt-Aktionen brauchen auf dem Handy größere Tippflächen statt
        der kompakten Desktop-Größe — Buttons über die volle Breite, Kontakt-
@@ -2253,8 +2465,8 @@
   /* Sehr schmale Telefone (Hochformat, <400px) — Wortmarke und Theme-Toggle
      brauchen etwas weniger Luft, damit nichts umbricht. */
   @media (max-width: 400px) {
-    #brand-logo { font-size: 18px; margin-right: 6px; }
-    #theme-toggle { margin-right: 8px; }
+    #brand-logo { font-size: 24px; }
+    #btn-current-view { font-size: 14px; }
   }
 
   /* ---------- Dokumentenscanner (Terminkalender-Anhänge) ----------
@@ -3277,8 +3489,9 @@
   .pp-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
   .pp-field-wide { grid-column: 1 / -1; }
   .pp-checkbox-row { flex-direction: row; align-items: center; flex-wrap: wrap; grid-column: 1 / -1; }
-  .pp-checkbox-row > label { flex: 0 0 auto; }
+  .pp-checkbox-row > label { flex: 0 1 auto; min-width: 0; }
   .pp-checkbox-row > .account-input { flex: 1; min-width: 120px; }
+  .pp-field-inactive { opacity: 0.45; }
 
   .pp-radio-group { display: flex; flex-wrap: wrap; gap: 6px 16px; }
   .pp-radio-option {
@@ -3323,5 +3536,36 @@
   .pp-signature-clear:hover { border-color: var(--accent); color: var(--text); }
 
   @media (max-width: 640px) {
-    .modal-card-xl { width: calc(100vw - 24px); max-height: 92vh; }
+    /* Große Formulare (Probenahmeprotokoll) am Handy als Vollbild: Kopf oben
+       und Aktionen unten bleiben beim Scrollen stehen — der Export-Button
+       war sonst erst ganz am Ende des langen Formulars erreichbar. */
+    .modal-card-xl {
+      width: 100vw;
+      max-width: 100vw;
+      height: 100vh;
+      height: 100dvh;
+      max-height: none;
+      border: none;
+      border-radius: 0;
+      padding: env(safe-area-inset-top, 0px) 14px 0;
+    }
+    #probenprotokoll-modal-header {
+      position: sticky;
+      top: calc(-1 * env(safe-area-inset-top, 0px));
+      z-index: 3;
+      margin: 0 -14px 8px;
+      padding: 10px 14px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+    }
+    .modal-card-xl > .modal-actions {
+      position: sticky;
+      bottom: 0;
+      z-index: 3;
+      margin: 12px -14px 0;
+      padding: 10px 14px calc(10px + env(safe-area-inset-bottom, 0px));
+      background: var(--panel);
+      border-top: 1px solid var(--border);
+    }
+    .modal-card-xl > .modal-actions button { flex: 1; min-height: 46px; }
   }
