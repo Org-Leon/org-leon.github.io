@@ -95,3 +95,18 @@ test.describe('Werkzeugleisten-Sichtbarkeit', () => {
     await expect(toolbar).toHaveClass(/horizontal/);
   });
 });
+
+test.describe('Kopfzeile', () => {
+  test('Cloud-Sync-Schalter erscheint nur mit Anmeldung', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('#btn-account')).toBeVisible();
+    await expect(page.locator('#btn-sync')).toBeHidden();
+
+    await page.evaluate(() => window.__ffTestTk.loginFake());
+    await expect(page.locator('#btn-sync')).toBeVisible();
+
+    // Abmelden (derselbe Weg wie der Abmelden-Button: Session weg + Kopfzeile neu).
+    await page.evaluate(() => window.__ffTestTk.logoutFake());
+    await expect(page.locator('#btn-sync')).toBeHidden();
+  });
+});

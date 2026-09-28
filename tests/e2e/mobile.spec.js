@@ -18,7 +18,9 @@ test.describe('Handy-Ansicht', () => {
     const [scrollW, clientW] = await tabbar.evaluate(el => [el.scrollWidth, el.clientWidth]);
     expect(scrollW).toBeLessThanOrEqual(clientW);
     await expect(page.locator('#current-view-title')).toHaveText('Karte');
-    await expect(page.locator('#btn-betrieb .btn-betrieb-name')).toBeVisible();
+    // Noch kein Betrieb gewählt: unter 400 px nur das Symbol (Name per title).
+    await expect(page.locator('#btn-betrieb')).toBeVisible();
+    await expect(page.locator('#btn-betrieb .btn-betrieb-name')).toBeHidden();
     // Die E-Mail steht nicht mehr sichtbar im Konto-Button, nur im Tooltip.
     await expect(page.locator('#btn-account-label')).toBeHidden();
 
@@ -131,5 +133,40 @@ test.describe('Handy-Ansicht auf dem iPhone', () => {
     await expect(page.locator('#install-ios-overlay')).toContainText('Home-Bildschirm');
     await page.locator('#install-ios-close').click();
     await expect(page.locator('#install-ios-overlay')).toBeHidden();
+  });
+});
+
+// Galaxy S20 & Co. (360 px breit): Funktionsname stand nur als "H…" da —
+// Hell/Dunkel und das "+" am Logo blieben trotz Handy-Regel sichtbar
+// (spezifischere Desktop-Selektoren) und nahmen ihm den Platz.
+test.describe('Handy-Ansicht, schmales Gerät (360 px)', () => {
+  test.use({ viewport: { width: 360, height: 800 } });
+
+  test('Funktionsname steht vollständig in der Kopfzeile — auch angemeldet und mit Betrieb', async ({ page }) => {
+    await page.goto('/');
+    await page.evaluate(() => window.__ffTestTk.loginFake());
+    await expect(page.locator('#theme-toggle')).toBeHidden();
+    await expect(page.locator('#brand-logo .ff-plus')).toBeHidden();
+
+    const titleFits = () => page.evaluate(() => {
+      const t = document.getElementById('current-view-title');
+      const bar = document.getElementById('tabbar');
+      return t.scrollWidth <= t.clientWidth && bar.scrollWidth <= bar.clientWidth;
+    });
+    for (const withBetrieb of [false, true]) {
+      if (withBetrieb) {
+        await page.evaluate(() => {
+          const b = document.getElementById('btn-betrieb');
+          b.classList.add('active');
+          b.querySelector('.btn-betrieb-name').textContent = 'Obsthof Huber GbR';
+        });
+      }
+      for (const view of ['obstbaum', 'terminkalender', 'compare', 'hofplan']) {
+        await openFunction(page, view);
+        expect(await titleFits(), `${view}, Betrieb: ${withBetrieb}`).toBe(true);
+      }
+    }
+    // Bei kurzem Funktionsnamen ist der Betriebsname zu sehen.
+    await expect(page.locator('#btn-betrieb .btn-betrieb-name')).toBeVisible();
   });
 });
