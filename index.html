@@ -4,7 +4,11 @@
 <!-- hello -->
 
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="FeldFolio">
 <title>FeldFolio</title>
 <link rel="icon" type="image/svg+xml" href="/favicon-feldfolio.svg">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
@@ -56,15 +60,21 @@
       </svg>
     </span><span class="ff-txt">lio</span><span class="ff-plus" aria-hidden="true">+</span>
   </span>
+  <!-- Handy: Name der aktiven Funktion (die Funktionsliste steckt dort in der
+       Schublade) — Antippen öffnet die Schublade. -->
+  <button type="button" id="btn-current-view" aria-label="Funktion wechseln">
+    <span id="current-view-title">Karte</span>
+    <span class="material-symbols-rounded icon" aria-hidden="true">expand_more</span>
+  </button>
   <button id="btn-betrieb" title="Betrieb/Termin für Dateibenennung zuordnen">
-    <span id="btn-betrieb-label">Betrieb wählen</span>
+    <span id="btn-betrieb-label"><span class="material-symbols-rounded icon">business</span> <span class="btn-betrieb-name">Betrieb wählen</span></span>
   </button>
   <button id="btn-sync" class="sync-toggle" type="button" role="switch" aria-checked="true" title="Automatische Cloud-Synchronisation">
     <span class="material-symbols-rounded icon sync-toggle-status" aria-hidden="true"></span>
     <span class="sync-toggle-label">Sync</span>
     <span class="sync-toggle-switch"><span class="sync-toggle-thumb"></span></span>
   </button>
-  <button id="btn-account" title="FeldFolio+ Konto">Anmelden</button>
+  <button id="btn-account" title="FeldFolio+ Konto"><span class="material-symbols-rounded icon account-icon" aria-hidden="true">account_circle</span><span id="btn-account-label">Anmelden</span></button>
   <button id="theme-toggle" title="Hell-/Dunkelmodus umschalten" aria-label="Hell-/Dunkelmodus umschalten">
     <span class="material-symbols-rounded icon theme-icon theme-icon-sun">light_mode</span>
     <span class="theme-thumb"></span>
@@ -75,6 +85,13 @@
 <div id="app-body">
 <div id="sidebar-backdrop"></div>
 <div id="sidebar">
+  <!-- Nur sichtbar, wenn der Browser die Installation anbietet (Android/
+       Chrome/Edge) bzw. auf iPhone/iPad (Anleitung) — siehe
+       updateInstallButton() in main.js. In der installierten App nie. -->
+  <button type="button" id="btn-install-app" hidden>
+    <span class="material-symbols-rounded icon" aria-hidden="true">install_mobile</span>
+    <span><strong>App installieren</strong><small>Eigenes Symbol auf dem Startbildschirm, läuft auch offline</small></span>
+  </button>
   <div id="terminkalender-switcher">
     <button class="segment-btn terminkalender-standalone-btn" data-view="terminkalender">Terminkalender</button>
   </div>
@@ -299,6 +316,14 @@
       <div id="terminkalender-status" class="status-line">Bereit.</div>
     </div>
   </div>
+  <!-- Am Handy wandert der Hell/Dunkel-Schalter aus der vollen Kopfzeile
+       hierher. -->
+  <div id="sidebar-mobile-settings">
+    <button type="button" id="btn-theme-mobile">
+      <span class="material-symbols-rounded icon" aria-hidden="true">dark_mode</span>
+      <span>Hell / Dunkel umschalten</span>
+    </button>
+  </div>
 </div>
 
 <div id="map-wrap">
@@ -321,48 +346,62 @@
     </div>
     <div class="topbar-extra edit-toolbar-group" data-view="zeichner">
       <button type="button" id="shape-tool-draw" class="shape-tool-btn" title="Neue Fläche zeichnen">
-        <span class="material-symbols-rounded icon">draw</span>
+        <span class="material-symbols-rounded icon">draw</span><span class="tool-label">Zeichnen</span>
       </button>
       <button type="button" id="shape-tool-edit" class="shape-tool-btn" title="Fläche auf der Karte anklicken, um ihre Eckpunkte per Ziehen zu bearbeiten">
-        <span class="material-symbols-rounded icon">edit</span>
+        <span class="material-symbols-rounded icon">edit</span><span class="tool-label">Bearbeiten</span>
       </button>
       <button type="button" id="shape-tool-split" class="shape-tool-btn" title="Fläche anklicken, dann Schnittlinie ziehen, um sie in zwei Teile zu zerlegen">
-        <span class="material-symbols-rounded icon">content_cut</span>
+        <span class="material-symbols-rounded icon">content_cut</span><span class="tool-label">Teilen</span>
       </button>
       <button type="button" id="shape-tool-delete" class="shape-tool-btn" title="Fläche auf der Karte anklicken, um sie zu löschen">
-        <span class="material-symbols-rounded icon">delete</span>
+        <span class="material-symbols-rounded icon">delete</span><span class="tool-label">Löschen</span>
       </button>
       <button type="button" id="shape-tool-undo" class="shape-tool-btn" title="Letzte Änderung rückgängig machen" disabled>
-        <span class="material-symbols-rounded icon">undo</span>
+        <span class="material-symbols-rounded icon">undo</span><span class="tool-label">Zurück</span>
       </button>
       <button type="button" id="shape-tool-redo" class="shape-tool-btn" title="Letzte rückgängig gemachte Änderung wiederherstellen" disabled>
-        <span class="material-symbols-rounded icon">redo</span>
+        <span class="material-symbols-rounded icon">redo</span><span class="tool-label">Wieder</span>
+      </button>
+    </div>
+    <!-- Während eine Fläche/Linie gezeichnet wird (Leaflet.draw aktiv):
+         Abschließen/letzten Punkt entfernen ohne Doppelklick/Rechtsklick —
+         auf Touch gibt es beides nicht (siehe updateMapDrawActions()). -->
+    <div id="map-draw-actions" hidden>
+      <button type="button" id="map-draw-undo" class="shape-tool-btn" title="Letzten Punkt entfernen">
+        <span class="material-symbols-rounded icon">backspace</span><span class="tool-label">Letzter Punkt</span>
+      </button>
+      <button type="button" id="map-draw-cancel" class="shape-tool-btn" title="Zeichnen abbrechen">
+        <span class="material-symbols-rounded icon">close</span><span class="tool-label">Abbrechen</span>
+      </button>
+      <button type="button" id="map-draw-finish" class="shape-tool-btn map-draw-primary" title="Fläche abschließen">
+        <span class="material-symbols-rounded icon">check</span><span class="tool-label">Fertig</span>
       </button>
     </div>
     <div class="topbar-extra edit-toolbar-group" data-view="hofplan">
       <button type="button" id="hofplan-tool-rect" class="shape-tool-btn" title="Rechteckiges Gebäude zeichnen">
-        <span class="material-symbols-rounded icon">rectangle</span>
+        <span class="material-symbols-rounded icon">rectangle</span><span class="tool-label">Rechteck</span>
       </button>
       <button type="button" id="hofplan-tool-poly" class="shape-tool-btn" title="Frei geformtes Gebäude zeichnen">
-        <span class="material-symbols-rounded icon">polyline</span>
+        <span class="material-symbols-rounded icon">polyline</span><span class="tool-label">Freiform</span>
       </button>
       <button type="button" id="hofplan-tool-edit" class="shape-tool-btn" title="Gebäude auf der Karte anklicken, um seine Eckpunkte per Ziehen zu bearbeiten">
-        <span class="material-symbols-rounded icon">edit</span>
+        <span class="material-symbols-rounded icon">edit</span><span class="tool-label">Bearbeiten</span>
       </button>
       <button type="button" id="hofplan-tool-delete" class="shape-tool-btn" title="Gebäude auf der Karte anklicken, um es zu löschen">
-        <span class="material-symbols-rounded icon">delete</span>
+        <span class="material-symbols-rounded icon">delete</span><span class="tool-label">Löschen</span>
       </button>
       <button type="button" id="hofplan-tool-undo" class="shape-tool-btn" title="Letzte Änderung rückgängig machen" disabled>
-        <span class="material-symbols-rounded icon">undo</span>
+        <span class="material-symbols-rounded icon">undo</span><span class="tool-label">Zurück</span>
       </button>
       <button type="button" id="hofplan-tool-redo" class="shape-tool-btn" title="Letzte rückgängig gemachte Änderung wiederherstellen" disabled>
-        <span class="material-symbols-rounded icon">redo</span>
+        <span class="material-symbols-rounded icon">redo</span><span class="tool-label">Wieder</span>
       </button>
     </div>
   </div>
   <div id="topbar">
-    <button id="btn-basemap">Basiskarte: Standard</button>
-    <button id="btn-fit">Auf Inhalt zoomen</button>
+    <button id="btn-basemap" title="Basiskarte wechseln" aria-label="Basiskarte wechseln"><span class="material-symbols-rounded icon topbar-icon" aria-hidden="true">layers</span><span class="topbar-label" id="btn-basemap-label">Basiskarte: Standard</span></button>
+    <button id="btn-fit" title="Auf Inhalt zoomen" aria-label="Auf Inhalt zoomen"><span class="material-symbols-rounded icon topbar-icon" aria-hidden="true">fit_screen</span><span class="topbar-label">Auf Inhalt zoomen</span></button>
     <button id="btn-locate" title="Mein Standort" aria-label="Mein Standort">
       <span class="material-symbols-rounded icon gps-icon">my_location</span>
     </button>
@@ -375,6 +414,14 @@
     </div>
   </div>
   <div id="coord-readout">–, –</div>
+  <!-- Handy: zeigt, dass gerade ein Setz-Werkzeug aktiv ist (Obstbaum/
+       Bienenstand) — die Auswahl selbst steckt in der geschlossenen
+       Schublade. Siehe updateMapPlaceChip() in main.js. -->
+  <div id="map-place-chip" hidden>
+    <span id="map-place-chip-dot"></span>
+    <span id="map-place-chip-text"></span>
+    <button type="button" id="map-place-chip-done">Fertig</button>
+  </div>
 
   <div id="table-panel">
     <div id="table-resize-handle"></div>
@@ -779,7 +826,9 @@
 </div>
 </div>
 
-<!-- ---------- FeldFolio Plus: Probenahmeprotokoll ----------
+<!-- ---------- FeldFolio Plus: Probenahmeprotokoll / Cross Check ----------
+     Ein Modal für alle Termin-Formulare (TK_FORMULARE in main.js); Titel
+     und Löschen-Beschriftung setzt openFormular().
      Termin-gebundenes Modal, geöffnet aus dem Terminkalender-Detailpanel
      heraus (siehe probenprotokollSectionHtml()/renderTerminkalenderDetail()
      in main.js) — füllt das amtliche Probenahmeprotokoll-Formular aus und
@@ -790,7 +839,7 @@
 <div id="probenprotokoll-modal-overlay" class="modal-overlay" hidden>
   <div class="modal-card modal-card-xl">
     <div id="probenprotokoll-modal-header">
-      <h3>Probenahmeprotokoll</h3>
+      <h3 id="probenprotokoll-modal-title">Probenahmeprotokoll</h3>
       <button type="button" id="probenprotokoll-modal-close" title="Schließen">
         <span class="material-symbols-rounded icon">close</span>
       </button>
@@ -799,11 +848,28 @@
     <p class="modal-hint modal-error" id="probenprotokoll-modal-error" hidden></p>
     <div class="modal-actions">
       <button type="button" id="probenprotokoll-modal-delete">
-        <span class="material-symbols-rounded icon">delete</span> Protokoll löschen
+        <span class="material-symbols-rounded icon">delete</span> <span id="probenprotokoll-modal-delete-label">Protokoll löschen</span>
       </button>
       <button type="button" id="probenprotokoll-modal-export" class="primary">
         <span class="material-symbols-rounded icon">open_in_new</span> Als PDF exportieren
       </button>
+    </div>
+  </div>
+</div>
+
+<!-- ---------- Web-App installieren: Anleitung für iPhone/iPad ----------
+     Safari bietet keine Installations-Schaltfläche für Webseiten an — der
+     Weg führt über das Teilen-Menü. -->
+<div id="install-ios-overlay" class="modal-overlay" hidden>
+  <div class="modal-card" role="dialog" aria-labelledby="install-ios-title">
+    <h3 id="install-ios-title">FeldFolio auf den Home-Bildschirm</h3>
+    <ol class="install-steps">
+      <li>Unten (iPad: oben) auf <span class="material-symbols-rounded icon" aria-hidden="true">ios_share</span> <strong>Teilen</strong> tippen.</li>
+      <li><span class="material-symbols-rounded icon" aria-hidden="true">add_box</span> <strong>Zum Home-Bildschirm</strong> wählen und bestätigen.</li>
+    </ol>
+    <p class="modal-hint">Danach startet FeldFolio wie eine App — ohne Browserleiste und auch ohne Empfang. Geht nur in Safari.</p>
+    <div class="modal-actions">
+      <button type="button" id="install-ios-close" class="primary">Verstanden</button>
     </div>
   </div>
 </div>

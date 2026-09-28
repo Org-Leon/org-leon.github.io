@@ -31,15 +31,26 @@ export default defineConfig({
       // statt mitten in der Arbeit die Seite auszutauschen.
       registerType: 'prompt',
       injectRegister: false,
-      includeAssets: ['favicon-feldfolio.svg', 'apple-touch-icon.png', 'probenahmeprotokoll-vorlage.pdf'],
+      includeAssets: ['favicon-feldfolio.svg', 'apple-touch-icon.png', 'probenahmeprotokoll-vorlage.pdf', 'crosscheck-vorlage.pdf'],
       manifest: {
+        id: '/',
         name: 'FeldFolio',
         short_name: 'FeldFolio',
         description: 'Flächen, Hofplan, Stallplaner und Termine — auch offline im Stall nutzbar.',
         lang: 'de',
+        dir: 'ltr',
         start_url: '.',
         scope: '.',
         display: 'standalone',
+        orientation: 'any',
+        categories: ['business', 'productivity', 'utilities'],
+        // Langes Drücken aufs App-Symbol: direkt in eine Funktion springen
+        // (ausgewertet über ?view= in main.js).
+        shortcuts: [
+          { name: 'Stallplaner', short_name: 'Stallplan', url: '?view=stallplaner', icons: [{ src: 'pwa-192.png', sizes: '192x192', type: 'image/png' }] },
+          { name: 'Terminkalender', short_name: 'Termine', url: '?view=terminkalender', icons: [{ src: 'pwa-192.png', sizes: '192x192', type: 'image/png' }] },
+          { name: 'Flächenzeichner', short_name: 'Flächen', url: '?view=zeichner', icons: [{ src: 'pwa-192.png', sizes: '192x192', type: 'image/png' }] }
+        ],
         background_color: '#12151A',
         theme_color: '#12151A',
         icons: [
