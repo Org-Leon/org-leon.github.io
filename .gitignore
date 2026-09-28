@@ -3,6 +3,10 @@ node_modules
 test-shapes
 .playwright-mcp
 *.png
+# App-Icons (PWA-Manifest, Startbildschirm) müssen mit veröffentlicht werden —
+# ohne sie ist die App nicht installierbar und der Service Worker scheitert.
+!public/*.png
+!docs/*.png
 .env
 .env.*
 playwright-report
