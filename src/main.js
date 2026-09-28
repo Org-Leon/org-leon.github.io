@@ -12095,7 +12095,8 @@ const TK_FORMULARE = {
     deleteLabel: 'Protokoll löschen',
     deleteConfirm: 'Protokoll wirklich löschen?',
     icon: 'description',
-    template: '/probenahmeprotokoll-vorlage.pdf',
+    // Relativ zur App (BASE_URL) — sie läuft ggf. unter einem Unterpfad.
+    template: `${import.meta.env.BASE_URL}probenahmeprotokoll-vorlage.pdf`,
     fileArt: 'Probenahmeprotokoll',
     sections: PROBENPROTOKOLL_SECTIONS,
     allFields: PROBENPROTOKOLL_ALL_FIELDS,
@@ -12134,7 +12135,7 @@ const TK_FORMULARE = {
     deleteLabel: 'Cross Check löschen',
     deleteConfirm: 'Cross Check wirklich löschen?',
     icon: 'fact_check',
-    template: '/crosscheck-vorlage.pdf',
+    template: `${import.meta.env.BASE_URL}crosscheck-vorlage.pdf`,
     fileArt: 'Cross Check',
     sections: CROSSCHECK_SECTIONS,
     allFields: CROSSCHECK_ALL_FIELDS,

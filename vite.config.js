@@ -17,6 +17,12 @@ const CDN_URLS = [...new Set(readFileSync(new URL('./index.html', import.meta.ur
 // liegen lokal in IndexedDB (src/offline-store.js). Nur im Produktions-Build
 // aktiv — der Dev-Server bleibt unverändert.
 export default defineConfig({
+  // Relative Pfade im Build: GitHub Pages liefert das Repo unter einem
+  // Unterpfad aus (…github.io/ShapeViewer/). Mit absoluten Pfaden
+  // (/assets, /sw.js, /manifest.webmanifest) zeigten Skripte, Manifest und
+  // Service Worker auf die Domain-Wurzel — die App war dann nicht
+  // installierbar. './' funktioniert unter Unterpfad und eigener Domain.
+  base: './',
   server: {
     port: 5173,
     strictPort: true,
@@ -33,7 +39,8 @@ export default defineConfig({
       injectRegister: false,
       includeAssets: ['favicon-feldfolio.svg', 'apple-touch-icon.png', 'probenahmeprotokoll-vorlage.pdf', 'crosscheck-vorlage.pdf'],
       manifest: {
-        id: '/',
+        // Relativ zur start_url aufgelöst -> Ordner der App, nicht die Domain-Wurzel.
+        id: './',
         name: 'FeldFolio',
         short_name: 'FeldFolio',
         description: 'Flächen, Hofplan, Stallplaner und Termine — auch offline im Stall nutzbar.',
