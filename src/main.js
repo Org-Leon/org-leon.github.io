@@ -2145,7 +2145,7 @@ function setParcelKulturplan(entry, plan) {
 function renderLayerList() {
   const list = document.getElementById('layer-list');
   const ids = Object.keys(layers);
-  document.getElementById('empty-hint').style.display = ids.length ? 'none' : 'block';
+  document.getElementById('empty-hint').hidden = ids.length > 0;
   list.innerHTML = '';
   ids.forEach(id => {
     const l = layers[id];
@@ -2498,15 +2498,16 @@ document.getElementById('btn-locate').addEventListener('click', () => {
 // Wechseln nie neu aufgebaut oder verschoben wird — nur die Sidebar-Sektion,
 // eventuelle Topbar-Zusatzelemente und das gerade "scharfe" Kartenwerkzeug
 // (Zeichnen/Baum setzen/Bienenstock setzen) ändern sich.
+// Eine kurze Zeile unter der Funktionsauswahl: was die Funktion tut.
 const SEGMENT_CAPTIONS = {
-  viewer: 'Shapefiles & GeoJSON lokal auf der Karte darstellen',
-  compare: 'Zwei Parzellen-Stände gegenüberstellen — Zugänge, Abgänge, Änderungen',
-  zeichner: 'Eigene Parzellen direkt auf der Karte zeichnen',
-  obstbaum: 'Obstbäume als farbige Punkte auf der Karte erfassen',
-  bienenflug: 'Bienenstöcke markieren — theoretischer Flugradius 3 km',
-  hofplan: 'Hof- und Gebäudepläne direkt auf dem Satellitenbild einzeichnen',
-  terminkalender: 'Termine aus Excel importieren und in der Kalenderwoche navigieren',
-  stallplaner: 'Stallgrundrisse zeichnen, in Abteile einteilen und gegen die EU-Öko-VO abgleichen'
+  viewer: 'Shapefiles und GeoJSON auf der Karte ansehen',
+  compare: 'Zwei Jahre vergleichen: Zugänge, Abgänge, Änderungen',
+  zeichner: 'Eigene Flächen auf der Karte zeichnen',
+  obstbaum: 'Obstbäume auf der Karte erfassen',
+  bienenflug: 'Bienenstöcke mit 3-km-Flugradius markieren',
+  hofplan: 'Gebäude auf dem Luftbild einzeichnen',
+  terminkalender: 'Termine aus Excel importieren und planen',
+  stallplaner: 'Stall vermessen, in Abteile teilen, Öko-VO prüfen'
 };
 
 // Kurzer Funktionsname für die Handy-Kopfzeile (dort ist die Funktionsliste
@@ -2551,6 +2552,7 @@ function setActiveSegment(target) {
   // sichtbar geschaltet, sobald eine ihrer beiden Gruppen aktiv sein könnte.
   document.getElementById('edit-toolbar').classList.toggle('active', target === 'zeichner' || target === 'hofplan');
   document.getElementById('brand-caption').textContent = SEGMENT_CAPTIONS[target] || '';
+  document.body.dataset.view = target; // für funktionsabhängiges Seitenleisten-Layout (style.css)
   document.getElementById('current-view-title').textContent = SEGMENT_TITLES[target] || 'Karte';
   // Nach dem Wechsel (armedTool wird unten ggf. neu gesetzt) aktualisieren.
   setTimeout(updateMapPlaceChip, 0);
@@ -2591,9 +2593,9 @@ function setActiveSegment(target) {
   }
 }
 
-// Es gibt keinen eigenen "Viewer"-Button mehr — Viewer ist die Standardansicht.
-// Klick auf den bereits aktiven Funktions-Button schaltet dorthin zurück,
-// klick auf einen anderen wechselt direkt zur neuen Funktion.
+// "Karte" (viewer) ist die Standardansicht und hat einen eigenen Button.
+// Klick auf den bereits aktiven Funktions-Button schaltet ebenfalls dorthin
+// zurück, Klick auf einen anderen wechselt direkt zur neuen Funktion.
 document.querySelectorAll('.segment-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     const target = btn.getAttribute('data-view');
@@ -4097,7 +4099,7 @@ updateShapeToolbar();
 
 function renderParcelList() {
   const list = document.getElementById('zeichner-list');
-  document.getElementById('zeichner-empty-hint').style.display = zeichnerParcels.length ? 'none' : 'block';
+  document.getElementById('zeichner-empty-hint').hidden = zeichnerParcels.length > 0;
   list.innerHTML = '';
   zeichnerParcels.forEach(p => {
     const item = document.createElement('div');
@@ -4418,8 +4420,8 @@ function setActiveFruitKey(key) {
   });
   document.getElementById('map').classList.toggle('placing', !!activeFruitKey);
   setObstbaumStatus(activeFruitKey
-    ? `${fruitOf(activeFruitKey).label} aktiv — auf die Karte tippen/klicken, um Bäume zu setzen.`
-    : 'Bereit.');
+    ? `${fruitOf(activeFruitKey).label} aktiv — auf die Karte tippen, um Bäume zu setzen.`
+    : '');
   updateMapPlaceChip();
 }
 
@@ -4683,7 +4685,7 @@ function renderFruitPicker() {
     btn.type = 'button';
     btn.className = 'fruit-btn';
     btn.setAttribute('data-key', key);
-    btn.innerHTML = `<span class="fruit-dot" style="background:${fruit.color}"></span><span class="fruit-label">${escapeHtml(fruit.label)}</span>`;
+    btn.innerHTML = `<span class="fruit-dot" style="background:${fruit.color}"></span><span class="fruit-label">${escapeHtml(fruit.label).split('/').join('/<wbr>')}</span>`;
     btn.classList.toggle('active', key === activeFruitKey);
     btn.addEventListener('click', () => setActiveFruitKey(key));
     makeFruitDraggable(btn, key);
@@ -4706,7 +4708,7 @@ function renderFruitPicker() {
       row.type = 'button';
       row.className = 'fruit-list-row';
       row.setAttribute('data-key', fruit.key);
-      row.innerHTML = `<span class="fruit-dot" style="background:${fruit.color}"></span><span class="fruit-label">${escapeHtml(fruit.label)}</span>`;
+      row.innerHTML = `<span class="fruit-dot" style="background:${fruit.color}"></span><span class="fruit-label">${escapeHtml(fruit.label).split('/').join('/<wbr>')}</span>`;
       row.classList.toggle('active', fruit.key === activeFruitKey);
       row.addEventListener('click', () => setActiveFruitKey(fruit.key));
       makeFruitDraggable(row, fruit.key);
@@ -5323,7 +5325,7 @@ function zoomToBeehive(id) {
 
 function renderBienenflugList() {
   const list = document.getElementById('bienenflug-list');
-  document.getElementById('bienenflug-empty-hint').style.display = bienenflugPoints.length ? 'none' : 'block';
+  document.getElementById('bienenflug-empty-hint').hidden = bienenflugPoints.length > 0;
   list.innerHTML = '';
   bienenflugPoints.forEach(entry => {
     const item = document.createElement('div');
@@ -5754,7 +5756,7 @@ function zoomToHofplanShape(id) {
 
 function renderHofplanList() {
   const list = document.getElementById('hofplan-list');
-  document.getElementById('hofplan-empty-hint').style.display = hofplanShapes.length ? 'none' : 'block';
+  document.getElementById('hofplan-empty-hint').hidden = hofplanShapes.length > 0;
   list.innerHTML = '';
   hofplanShapes.forEach((s, i) => {
     const item = document.createElement('div');
@@ -11855,6 +11857,7 @@ function renderStallplanerPlanPicker() {
   select.innerHTML = stallplaene.map(p => `<option value="${p.id}"${p.id === activeStallplanId ? ' selected' : ''}>${escapeHtml(p.name)}</option>`).join('');
   document.getElementById('stallplaner-empty-hint').hidden = stallplaene.length > 0;
   document.getElementById('stallplaner-settings').hidden = !activeStallplanId;
+  document.getElementById('stallplaner-footer').hidden = !activeStallplanId;
 }
 
 // Eine Abteil-Karte (Name, Fläche, Tierbestand, Öko-VO-Ampel, Aktionen) —
