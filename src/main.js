@@ -6473,6 +6473,11 @@ function updateAccountButton() {
   // abgesetzte Umschalter-Button lenkt in der normalen (nicht angemeldeten)
   // Ansicht nur unnötig ab und erscheint daher erst nach der Anmeldung.
   document.getElementById('terminkalender-switcher').hidden = !accountSession;
+  // Cloud-Sync gibt es nur mit Konto — ohne Anmeldung ist der Schalter
+  // wirkungslos und nimmt in der Kopfzeile nur Platz weg. Offline mit dem
+  // zuletzt angemeldeten Nutzer gestartet (accountSession.offline) bleibt er
+  // sichtbar: dann zeigt er "offline"/"noch nicht hochgeladen" an.
+  document.getElementById('btn-sync').hidden = !accountSession;
 }
 
 function openAccountModal() { setAuthMode('signin'); renderAccountModal(); accountModal.hidden = false; }
@@ -7850,6 +7855,10 @@ if (import.meta.env.DEV) {
     // durchlaufen.
     loginFake(email = 'test@example.com') {
       accountSession = { user: { id: 'test-user', email } };
+      updateAccountButton();
+    },
+    logoutFake() {
+      accountSession = null;
       updateAccountButton();
     }
   };

@@ -296,6 +296,8 @@
     font-size: 12px;
     cursor: pointer;
   }
+  /* Nur mit Anmeldung sichtbar (updateAccountButton in main.js). */
+  #btn-sync.sync-toggle[hidden] { display: none; }
   #btn-sync.sync-toggle:hover { border-color: var(--accent); color: var(--text); }
   #btn-sync.sync-toggle.active { border-color: var(--accent); color: var(--accent); }
   .sync-toggle-switch {
@@ -2264,14 +2266,18 @@
        Konto — Wortmarke nur als Apfel, Konto nur als Symbol, Hell/Dunkel in
        der Schublade. Vorher lief sie über (E-Mail im Konto-Button, "B…"). */
     #brand-logo { margin: 0 2px 0 2px; font-size: 26px; }
-    #brand-logo .ff-txt, #brand-logo .ff-plus { display: none; }
+    /* .is-logged-in/#tabbar button#… sind spezifischer als die schlichten
+       Regeln — ohne diese Selektoren blieben "+" und Hell/Dunkel sichtbar und
+       nahmen dem Funktionsnamen den Platz (Galaxy S20: nur "H…"). */
+    #brand-logo .ff-txt, #brand-logo .ff-plus, #brand-logo.is-logged-in .ff-plus { display: none; }
+    /* Funktionsname hat Vorrang: er wächst, der Betrieb-Button gibt zuerst nach. */
     #btn-current-view {
       display: inline-flex;
       align-items: center;
       gap: 1px;
-      flex: 0 1 auto;
+      flex: 0 0 auto;
       min-width: 0;
-      max-width: 44%;
+      max-width: 50%;
       min-height: 44px;
       padding: 0 4px;
       background: transparent;
@@ -2282,8 +2288,13 @@
     }
     #current-view-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #btn-current-view .icon { font-size: 20px; color: var(--muted); flex: 0 0 auto; }
-    #btn-betrieb { margin: 0 6px 0 auto; max-width: 34%; min-height: 36px; padding: 6px 8px; }
-    #theme-toggle { display: none; }
+    /* Container: ist der Button zu schmal für ein erkennbares Stück Namen
+       ("O…"), zeigt er nur das Symbol (grüner Rahmen = Betrieb gewählt). */
+    #btn-betrieb { margin: 0 6px 0 auto; max-width: 34%; min-width: 40px; min-height: 36px; padding: 6px 8px; flex: 0 1 34%; overflow: hidden; container-type: inline-size; }
+    @container (max-width: 96px) {
+      .btn-betrieb-name { display: none; }
+    }
+    #tabbar button#theme-toggle { display: none; }
     #btn-account-label { display: none; }
     #btn-account {
       width: 40px;
@@ -2467,6 +2478,12 @@
   @media (max-width: 400px) {
     #brand-logo { font-size: 24px; }
     #btn-current-view { font-size: 14px; }
+    /* Noch kein Betrieb gewählt: nur das Symbol — "Betrieb wählen" passt
+       neben dem Funktionsnamen nicht mehr sinnvoll hin (Titel sagt es). */
+    #btn-betrieb:not(.active) .btn-betrieb-name { display: none; }
+    #btn-betrieb:not(.active) { padding: 6px 9px; flex: 0 0 auto; container-type: normal; }
+    #btn-sidebar-toggle { padding: 10px 4px 10px 10px; }
+    #btn-account { margin-right: 6px; }
   }
 
   /* ---------- Dokumentenscanner (Terminkalender-Anhänge) ----------
