@@ -108,8 +108,9 @@ test.describe('Stallplaner', () => {
         [{ x: 1, y: 1 }, { x: 5, y: 1 }, { x: 5, y: 6 }, { x: 1, y: 6 }] // 4x5 = 20 m²
       );
     });
-    await page.locator('#stallplaner-tierart-select').selectOption('rinder');
+    // Tierart gehört zur einzelnen Tier-Zeile (nicht mehr zum ganzen Plan).
     await page.locator('.stallplan-tb-add').click();
+    await page.locator('.stallplan-tb-tierart').selectOption('rinder');
     await page.locator('.stallplan-tb-kategorie').selectOption('rind_milchkuh'); // 6 m²/Tier
     // 3 Milchkühe -> 18 m² benötigt, 20 m² vorhanden -> konform
     await page.locator('.stallplan-tb-anzahl').fill('3');
@@ -130,9 +131,9 @@ test.describe('Stallplaner', () => {
       // 4x5 = 20 m²
       window.__ffTestStallplaner.addCompartment([{ x: 1, y: 1 }, { x: 5, y: 1 }, { x: 5, y: 6 }, { x: 1, y: 6 }]);
     });
-    await page.locator('#stallplaner-tierart-select').selectOption('rinder');
     // 2 Kälber (1.5 m²/Tier = 3 m²) + 3 Milchkühe (6 m²/Tier = 18 m²) = 21 m² > 20 m² -> nicht konform
     await page.locator('.stallplan-tb-add').click();
+    await page.locator('.stallplan-tb-tierart').first().selectOption('rinder');
     await page.locator('.stallplan-tb-kategorie').first().selectOption('rind_kalb');
     await page.locator('.stallplan-tb-anzahl').first().fill('2');
     await page.locator('.stallplan-tb-anzahl').first().dispatchEvent('change');
@@ -241,6 +242,52 @@ test.describe('Stallplaner', () => {
     expect(download.suggestedFilename()).toMatch(/\.pdf$/);
     const path = await download.path();
     expect(path).toBeTruthy();
+  });
+
+  test('PDF-Hintergrund ist wählbar: weiß (Standard) oder dunkel, mit passenden Farben', async ({ page }) => {
+    await page.evaluate(() => {
+      window.__ffTestStallplaner.setOutline([{ x: 0, y: 0 }, { x: 6, y: 0 }, { x: 6, y: 4 }, { x: 0, y: 4 }]);
+      window.__ffTestStallplaner.addCompartment([{ x: 1, y: 1 }, { x: 3, y: 1 }, { x: 3, y: 3 }, { x: 1, y: 3 }], { name: 'Bucht' });
+    });
+    // Farbe am Rand (Hintergrund) und die Farbe der Abteil-Beschriftung im
+    // tatsächlich exportierten Bild.
+    const exportAndSample = async () => {
+      await Promise.all([
+        page.waitForEvent('download', { timeout: 30000 }),
+        page.locator('#btn-export-stallplaner-pdf').click()
+      ]);
+      return page.evaluate(() => {
+        const c = window.__ffTestLastStallplanCanvas;
+        const px = c.getContext('2d').getImageData(2, 2, 1, 1).data;
+        const label = getComputedStyle(document.querySelector('.stallplan-compartment-label')).fill;
+        return { bg: [px[0], px[1], px[2]], exporting: document.getElementById('stallplaner-canvas').className, label };
+      });
+    };
+
+    await expect(page.locator('#stallplaner-export-bg [data-bg="light"]')).toHaveAttribute('aria-checked', 'true');
+    const light = await exportAndSample();
+    expect(light.bg).toEqual([255, 255, 255]);
+    // Nach dem Export ist die Zeichenfläche wieder normal (dunkel, helle Schrift)
+    // und die nur für den Export eingebettete Icon-Schrift wieder entfernt.
+    expect(light.exporting).not.toContain('stallplaner-export');
+    await expect(page.locator('#stallplan-svg style')).toHaveCount(0);
+
+    await page.locator('#stallplaner-export-bg [data-bg="dark"]').click();
+    await expect(page.locator('#stallplaner-export-bg [data-bg="dark"]')).toHaveAttribute('aria-checked', 'true');
+    await expect(page.locator('#stallplaner-export-bg-select')).toHaveValue('dark');
+    const dark = await exportAndSample();
+    expect(Math.max(...dark.bg)).toBeLessThan(40);
+    expect(await page.evaluate(() => localStorage.getItem('feldfolio-stallplan-export-bg'))).toBe('dark');
+
+    // Beschriftung im weißen Schema dunkel, im dunklen hell.
+    const labelColors = await page.evaluate(() => {
+      const wrap = document.getElementById('stallplaner-canvas');
+      const label = document.querySelector('.stallplan-compartment-label');
+      const read = (cls) => { wrap.classList.add(cls); const f = getComputedStyle(label).fill; wrap.classList.remove(cls); return f; };
+      return { light: read('stallplaner-export-light'), dark: read('stallplaner-export-dark') };
+    });
+    expect(labelColors.light).toBe('rgb(28, 36, 24)');
+    expect(labelColors.dark).toBe('rgb(238, 241, 232)');
   });
 
   test('Zoomen per Mausrad verengt den sichtbaren Ausschnitt', async ({ page }) => {

@@ -97,3 +97,57 @@ test.describe('Flächenzeichner', () => {
     await expect(page.locator('#zeichner-list .parcel-item')).toHaveCount(1);
   });
 });
+
+// Ein Klick auf eine selbst gezeichnete Fläche sprang früher immer in den
+// Flächenzeichner — auch im Obstbaumkataster/in der Bienenflugkarte, wo er
+// einen Baum bzw. Bienenstock setzen soll (der Wechsel setzte das Werkzeug
+// zurück, bevor der Baum entstand).
+test.describe('Gezeichnete Flächen in anderen Funktionen', () => {
+  async function drawAndShow(page) {
+    await page.goto('/');
+    await gotoTab(page, 'Flächenzeichner');
+    await drawZeichnerPolygon(page, TEST_POLY_A);
+    await expect(page.locator('#zeichner-list .parcel-item')).toHaveCount(1);
+    await page.evaluate((poly) => window.__ffTestMap.fitBounds(poly, { animate: false }), TEST_POLY_A);
+  }
+  // Echter Mausklick mitten in die Fläche (Flächen- UND Karten-Klick feuern).
+  // Flächen liegen auf einem Canvas (renderer: L.canvas()) — Position daher
+  // über die Karte berechnet statt über ein DOM-Element.
+  async function clickIntoParcel(page, dx = 0) {
+    const pt = await page.evaluate((poly) => {
+      const map = window.__ffTestMap;
+      const center = window.L.latLngBounds(poly).getCenter();
+      const p = map.latLngToContainerPoint(center);
+      const rect = document.getElementById('map').getBoundingClientRect();
+      return { x: rect.left + p.x, y: rect.top + p.y };
+    }, TEST_POLY_A);
+    await page.mouse.click(pt.x + dx, pt.y);
+  }
+
+  test('Obstbaum: Baum lässt sich auf eine gezeichnete Fläche setzen', async ({ page }) => {
+    await drawAndShow(page);
+    await gotoTab(page, 'Obstbaumkataster');
+    await page.locator('.fruit-btn').first().click();
+    await clickIntoParcel(page);
+    await expect(page.locator('.tree-marker-icon')).toHaveCount(1);
+    await expect(page.locator('.segment-btn[data-view="obstbaum"]')).toHaveClass(/active/);
+    await expect(page.locator('.fruit-btn.active')).toHaveCount(1); // Setzen bleibt aktiv
+    await clickIntoParcel(page, 40); // daneben — ein Klick auf den Baum selbst öffnet dessen Details
+    await expect(page.locator('.tree-marker-icon')).toHaveCount(2);
+  });
+
+  test('Bienenflug: Bienenstock lässt sich auf eine gezeichnete Fläche setzen', async ({ page }) => {
+    await drawAndShow(page);
+    await gotoTab(page, 'Bienenflugkarte');
+    await clickIntoParcel(page);
+    await expect(page.locator('#bienenflug-list > *')).toHaveCount(1);
+    await expect(page.locator('.segment-btn[data-view="bienenflug"]')).toHaveClass(/active/);
+  });
+
+  test('In der Ansicht „Karte“ öffnet ein Klick auf die Fläche weiterhin den Flächenzeichner', async ({ page }) => {
+    await drawAndShow(page);
+    await page.locator('.segment-btn[data-view="viewer"]').click();
+    await clickIntoParcel(page);
+    await expect(page.locator('.segment-btn[data-view="zeichner"]')).toHaveClass(/active/);
+  });
+});
