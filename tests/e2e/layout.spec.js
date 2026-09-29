@@ -159,3 +159,113 @@ test.describe('Seitenleiste: einheitliches Schema', () => {
     await expect(page.locator('#stallplaner-import-drop')).toBeVisible();
   });
 });
+
+// Einheitliche Umschalter (style.css "Funktionswahl" / "Einheitlicher
+// An/Aus-Schalter"): Funktionskacheln mit Symbol, Terminkalender als
+// normale Kachel nur mit Konto, An/Aus überall als Schiebeschalter.
+test.describe('Seitenleiste: einheitliche Umschalter', () => {
+  test('Funktionswahl: jede Kachel mit Symbol, Terminkalender nur mit Anmeldung', async ({ page }) => {
+    await page.goto('/');
+    const tiles = page.locator('#view-switcher .segment-btn');
+    await expect(tiles.filter({ visible: true })).toHaveCount(7);
+    expect(await page.locator('#view-switcher .segment-btn:visible .icon').count()).toBe(7);
+    await expect(page.locator('#terminkalender-switcher')).toBeHidden();
+    await page.evaluate(() => window.__ffTestTk.loginFake());
+    await expect(tiles.filter({ visible: true })).toHaveCount(8);
+    await page.locator('#terminkalender-switcher').click();
+    await expect(page.locator('#terminkalender-switcher')).toHaveClass(/active/);
+    await expect(page.locator('#terminkalender-btn-save')).toHaveClass(/tool-btn/);
+  });
+
+  test('Ebenen-Sichtbarkeit ist ein Schalter (Maus und Tastatur)', async ({ page }) => {
+    await page.goto('/');
+    const fc = { type: 'FeatureCollection', features: [{ type: 'Feature', properties: { NAME: 'A' },
+      geometry: { type: 'Polygon', coordinates: [[[10.4, 51.1], [10.41, 51.1], [10.41, 51.11], [10.4, 51.1]]] } }] };
+    await page.setInputFiles('#file-input', { name: 'Test.geojson', mimeType: 'application/geo+json', buffer: Buffer.from(JSON.stringify(fc)) });
+    const sw = page.locator('#layer-list .vis-toggle').first();
+    await expect(sw).toHaveAttribute('role', 'switch');
+    await expect(sw).toHaveAttribute('aria-checked', 'true');
+    await sw.click();
+    await expect(page.locator('#layer-list .vis-toggle').first()).toHaveAttribute('aria-checked', 'false');
+    await page.locator('#layer-list .vis-toggle').first().focus();
+    await page.keyboard.press('Space');
+    await expect(page.locator('#layer-list .vis-toggle').first()).toHaveAttribute('aria-checked', 'true');
+  });
+
+  test('Alle An/Aus-Einstellungen nutzen denselben Schalter', async ({ page }) => {
+    await page.goto('/');
+    for (const id of ['crit-groesse', 'crit-kultur', 'table-include-teilflaechen', 'stallplaner-grid-snap']) {
+      await expect(page.locator('#' + id)).toHaveClass(/ff-switch/);
+    }
+  });
+});
+
+// Umsetzung der Vereinheitlichungs-Vorschläge: Terminkalender gesondert,
+// einklappbare Ebenen mit Symbol-Aktionen, Segment-Umschalter überall,
+// Kurzhinweis nur bis zur ersten Nutzung.
+test.describe('Seitenleiste: Vereinheitlichung', () => {
+  test('Terminkalender steht gesondert als breite Kachel über den Werkzeugen', async ({ page }) => {
+    await page.goto('/');
+    await page.evaluate(() => window.__ffTestTk.loginFake());
+    const tk = page.locator('#terminkalender-switcher');
+    await expect(tk).toBeVisible();
+    await expect(tk).toHaveClass(/segment-btn-wide/);
+    const first = await page.locator('#view-switcher .segment-btn').first().getAttribute('data-view');
+    expect(first).toBe('terminkalender');
+    const [tkBox, karteBox, gridBox] = await Promise.all([
+      tk.boundingBox(),
+      page.locator('.segment-btn[data-view="viewer"]').boundingBox(),
+      page.locator('#view-switcher').boundingBox()
+    ]);
+    expect(tkBox.width).toBeGreaterThan(gridBox.width - 2); // volle Breite
+    expect(tkBox.y + tkBox.height).toBeLessThanOrEqual(karteBox.y); // darüber
+  });
+
+  test('Ebenen: in "Karte" offen, in Werkzeugen eingeklappt, Aktionen als Symbole', async ({ page }) => {
+    await page.goto('/');
+    const fc = { type: 'FeatureCollection', features: [{ type: 'Feature', properties: { NAME: 'A' },
+      geometry: { type: 'Polygon', coordinates: [[[10.4, 51.1], [10.41, 51.1], [10.41, 51.11], [10.4, 51.1]]] } }] };
+    await page.setInputFiles('#file-input', { name: 'Test.geojson', mimeType: 'application/geo+json', buffer: Buffer.from(JSON.stringify(fc)) });
+    await expect(page.locator('#layer-section-count')).toHaveText('1');
+    await expect(page.locator('#layer-list .layer-item')).toBeVisible();
+    await expect(page.locator('#layer-list .icon-btn')).toHaveCount(3);
+    await expect(page.locator('#layer-list .icon-btn[data-action="zoom"]')).toHaveAttribute('title', /zoomen/);
+
+    await page.locator('.segment-btn[data-view="hofplan"]').click();
+    await expect(page.locator('#layer-list')).toBeHidden();
+    await expect(page.locator('#layer-section-toggle')).toHaveAttribute('aria-expanded', 'false');
+    await page.locator('#layer-section-toggle').click();
+    await expect(page.locator('#layer-list .layer-item')).toBeVisible();
+    // Zurück zur Karte: dort wieder offen
+    await page.locator('.segment-btn[data-view="viewer"]').click();
+    await expect(page.locator('#layer-list .layer-item')).toBeVisible();
+  });
+
+  test('Basiskarte und Jahresvergleich nutzen denselben Segment-Umschalter', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('#basemap-seg')).toBeVisible();
+    await expect(page.locator('#btn-basemap')).toBeHidden();
+    await page.locator('#basemap-seg [data-basemap="satellite"]').click();
+    await expect(page.locator('#basemap-seg [data-basemap="satellite"]')).toHaveAttribute('aria-checked', 'true');
+    await expect(page.locator('#basemap-seg [data-basemap="osm"]')).toHaveAttribute('aria-checked', 'false');
+    await expect(page.locator('#btn-basemap-label')).toHaveText('Basiskarte: Satellit');
+    await page.locator('.segment-btn[data-view="compare"]').click();
+    await expect(page.locator('#compare-view-toggle')).toHaveClass(/ff-seg/);
+    await expect(page.locator('#stallplaner-equip-geometry-toggle')).toHaveClass(/ff-seg/);
+    await expect(page.locator('#stallplaner-export-bg')).toHaveClass(/ff-seg/);
+  });
+
+  test('Kurzhinweis verschwindet, sobald die Funktion einmal benutzt wurde', async ({ page }) => {
+    await page.goto('/');
+    await page.locator('.segment-btn[data-view="bienenflug"]').click();
+    const hint = page.locator('#bienenflug-hint');
+    await expect(hint).toBeVisible();
+    await page.evaluate(() => window.__ffTestMap.fire('click', { latlng: window.L.latLng(51.1, 10.4) }));
+    await expect(hint).toBeHidden();
+    // "Tipps" bleibt erreichbar, und nach dem Neuladen bleibt der Hinweis weg.
+    await expect(page.locator('.sidebar-section[data-view="bienenflug"] .tool-tips')).toBeVisible();
+    await page.reload();
+    await page.locator('.segment-btn[data-view="bienenflug"]').click();
+    await expect(page.locator('#bienenflug-hint')).toBeHidden();
+  });
+});

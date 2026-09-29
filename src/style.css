@@ -192,31 +192,16 @@
      für eine einzeilige Anordnung in der 300px-Sidebar zu lang. Aktiv-Klick
      auf den bereits aktiven Button schaltet zurück auf die Standardansicht
      (Viewer), siehe setActiveSegment() in main.js. */
-  /* Terminkalender steht als eigene, andersartige Funktion (eigene zweite
-     Karteninstanz statt Werkzeug auf der geteilten Parzellen-Karte) bewusst
-     abgesetzt über den anderen vier Funktionen statt als fünfter Button im
-     selben Raster. */
-  #terminkalender-switcher { margin: 14px 14px 0; flex-shrink: 0; }
-  .terminkalender-standalone-btn {
-    display: block;
-    width: 100%;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-  }
-
+  /* ---------- Funktionswahl ----------
+     Kacheln mit Symbol + Name, drei je Reihe — die Reihen entsprechen den
+     Gruppen Karte & Flächen · Erfassen · Stall & Termine. Aktiv: heller
+     Grünton + grüner Rahmen/Unterstrich (wie alle ausgewählten Zustände der
+     App), keine knallige Vollfläche. */
   #view-switcher {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    /* Trennlinien über gap+Hintergrund statt einzelner border-right/-bottom-
-       Regeln je Button — funktioniert unabhängig von der Button-Anzahl (auch
-       bei einer ungeraden letzten Reihe), die vorherige :nth-child-Logik war
-       exakt auf 4 Buttons in 2 Spalten zugeschnitten und brach bei 5. */
-    gap: 1px;
-    background: var(--border);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    overflow: hidden;
-    margin: 8px 14px 0;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    margin: 14px 14px 0;
     /* flex-shrink:0 ist Pflicht, nicht nur Stilfrage: overflow:hidden (für die
        runden Ecken) setzt die automatische Mindestgröße als Flex-Kind sonst
        auf 0 — bei viel Sidebar-Inhalt (z.B. Obstbaumkataster) würde der
@@ -226,22 +211,201 @@
     flex-shrink: 0;
   }
   .segment-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    min-width: 0;
+    min-height: 60px;
+    padding: 8px 4px 7px;
     background: var(--panel-2);
-    border: none;
+    border: 1px solid var(--border);
+    border-radius: 9px;
     color: var(--muted);
-    font-family: var(--sans);
-    font-size: 12px;
-    line-height: 1.25;
-    padding: 10px 8px;
-    cursor: pointer;
+    font: 500 11px/1.2 var(--sans);
     text-align: center;
-    transition: background-color .12s, color .12s;
+    cursor: pointer;
+    transition: background-color .12s, color .12s, border-color .12s;
   }
-  .segment-btn:hover { color: var(--text); background: var(--panel); }
-  .segment-btn.active { background: var(--accent); color: var(--on-accent); }
-  /* Eine ungerade letzte Reihe (z.B. der 5. Button) bekäme sonst eine leere
-     Lücke daneben — stattdessen über die volle Breite spannen. */
-  .segment-btn:last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .segment-btn .icon { font-size: 22px; }
+  .segment-label { max-width: 100%; }
+  .segment-btn:hover { color: var(--text); border-color: var(--accent); }
+  .segment-btn.active {
+    background: var(--accent-tint);
+    border-color: var(--accent);
+    color: var(--text);
+    font-weight: 600;
+    box-shadow: inset 0 -3px 0 var(--accent);
+  }
+  .segment-btn.active .icon { color: var(--accent); }
+  /* Terminkalender: gesonderte, breite Kachel über allen Werkzeugen —
+     waagerecht, mit Untertitel, eigener Akzentkante links. */
+  .segment-btn.segment-btn-wide {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    justify-content: flex-start;
+    gap: 12px;
+    min-height: 56px;
+    margin-bottom: 4px;
+    padding: 8px 12px;
+    text-align: left;
+    border-left: 4px solid var(--accent);
+    background: linear-gradient(90deg, var(--accent-tint), var(--panel-2) 70%);
+    color: var(--text);
+  }
+  .segment-btn-wide > .icon { font-size: 26px; color: var(--accent); }
+  .segment-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+  .segment-btn-wide .segment-label { font-size: 13px; font-weight: 600; }
+  .segment-sub { font-size: 11px; font-weight: 400; color: var(--muted); }
+  .segment-chevron { font-size: 20px !important; color: var(--muted) !important; }
+  .segment-btn-wide.active { box-shadow: inset 0 -3px 0 var(--accent); }
+
+  /* ---------- Einheitlicher Segment-Umschalter (Auswahl aus mehreren) ----------
+     Basiskarte, Jahresvergleich-Ansicht, Stallplaner (Richtung/Form),
+     PDF-Hintergrund, Scanner-Filter — überall dieselbe Form: Schiene mit
+     Knöpfen, ausgewählt = heller Grünton + grüner Rahmen (wie aktive
+     Funktionskachel). An/Aus dagegen immer .ff-switch. */
+  .ff-seg {
+    display: flex;
+    gap: 3px;
+    padding: 3px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  .ff-seg > button, #topbar .ff-seg > button, #compare-view-toggle.ff-seg .cvt-btn {
+    flex: 1 1 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    min-height: 30px;
+    padding: 0 11px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 7px;
+    color: var(--muted);
+    font: 500 12px var(--sans);
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .ff-seg > button:hover, #topbar .ff-seg > button:hover { color: var(--text); border-color: transparent; }
+  .ff-seg > button.active, .ff-seg > button[aria-checked="true"], .ff-seg > button[aria-pressed="true"],
+  #topbar .ff-seg > button.active, #topbar .ff-seg > button[aria-checked="true"], #compare-view-toggle.ff-seg .cvt-btn.active {
+    background: var(--accent-tint);
+    border-color: var(--accent);
+    color: var(--text);
+    font-weight: 600;
+  }
+  .ff-seg > button .icon { font-size: 17px; }
+  .ff-seg > button.active .icon, .ff-seg > button[aria-checked="true"] .icon { color: var(--accent); }
+  .ff-seg > button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .ff-seg > button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .ff-seg.ff-seg-lg > button { min-height: 40px; font-size: 13px; }
+  .tool-seg-row { display: flex; align-items: center; gap: 8px; }
+  .tool-seg-row .ff-seg { flex: 0 0 auto; }
+  /* Basiskarte: am Desktop als Segment-Umschalter, am Handy als runder
+     Symbol-Button (zu wenig Platz über der Karte). */
+  #topbar #btn-basemap { display: none; }
+
+  /* ---------- Ebenen: einklappbar, Aktionen als Symbole ---------- */
+  #layer-section-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    width: calc(100% - 20px);
+    margin: 10px 10px 6px;
+    padding: 6px 4px;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: var(--muted);
+    font: 600 10.5px var(--sans);
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    cursor: pointer;
+  }
+  #layer-section-toggle:hover { color: var(--text); background: var(--panel-2); }
+  .layer-section-chevron { font-size: 18px; transition: transform .15s; }
+  body.layers-collapsed .layer-section-chevron { transform: rotate(-90deg); }
+  #layer-section-count {
+    margin-left: 4px;
+    min-width: 18px;
+    padding: 0 5px;
+    border-radius: 9px;
+    background: var(--panel-2);
+    color: var(--muted);
+    font: 600 10.5px var(--mono);
+    text-align: center;
+    letter-spacing: 0;
+  }
+  body.layers-collapsed #layer-list,
+  body.layers-collapsed #empty-hint,
+  body.layers-collapsed #dropzone { display: none; }
+  body.layers-collapsed #layer-section { min-height: 0; }
+  .layer-icon-btns { display: flex; gap: 2px; margin-left: 2px; }
+  .icon-btn {
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .icon-btn .icon { font-size: 18px; }
+  .icon-btn:hover { color: var(--text); border-color: var(--border); background: var(--panel); }
+  .icon-btn.danger:hover { color: var(--warn); border-color: var(--warn); }
+
+  /* Kurzhinweis nur beim ersten Mal: sobald eine Funktion einmal benutzt
+     wurde (markToolHintDone in main.js), bleibt nur "Tipps". */
+  body[data-hints-done~="zeichner"] .sidebar-section[data-view="zeichner"] .tool-hint,
+  body[data-hints-done~="obstbaum"] .sidebar-section[data-view="obstbaum"] .tool-hint,
+  body[data-hints-done~="bienenflug"] .sidebar-section[data-view="bienenflug"] .tool-hint,
+  body[data-hints-done~="hofplan"] .sidebar-section[data-view="hofplan"] .tool-hint,
+  body[data-hints-done~="compare"] .sidebar-section[data-view="compare"] .tool-hint,
+  body[data-hints-done~="terminkalender"] #terminkalender-controls > .tool-hint { display: none; }
+  .segment-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ---------- Einheitlicher An/Aus-Schalter ----------
+     Derselbe Schiebeschalter wie Cloud-Sync in der Kopfzeile — für alle
+     An/Aus-Einstellungen (Ebene sichtbar, Vergleichskriterien, Raster
+     einrasten, Teilflächen einbeziehen). Auswahl aus mehreren Optionen
+     dagegen immer als .tool-segmented. */
+  input[type="checkbox"].ff-switch, .vis-toggle {
+    -webkit-appearance: none;
+    appearance: none;
+    position: relative;
+    flex: 0 0 auto;
+    width: 32px;
+    height: 18px;
+    margin: 0;
+    border: none;
+    border-radius: 999px;
+    background: var(--border);
+    cursor: pointer;
+    transition: background-color .15s;
+  }
+  input[type="checkbox"].ff-switch::after, .vis-toggle::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--muted);
+    transition: transform .15s, background-color .15s;
+  }
+  input[type="checkbox"].ff-switch:checked, .vis-toggle.on { background: var(--accent-dim); }
+  input[type="checkbox"].ff-switch:checked::after, .vis-toggle.on::after { transform: translateX(14px); background: var(--accent); }
+  input[type="checkbox"].ff-switch:focus-visible, .vis-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .vis-toggle svg { display: none; }
 
   #tabbar button#theme-toggle {
     margin: 0 14px 0 0;
@@ -509,25 +673,26 @@
     font-family: var(--sans);
   }
   .layer-actions button:hover { border-color: var(--accent); color: var(--text); }
+  /* Symbol vor jeder Aktion (Zoom, Tabelle, Entfernen …) — per CSS, damit die
+     Beschriftung als Text erhalten bleibt. */
+  .layer-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 28px; }
+  .layer-actions button[data-action]::before {
+    font-family: 'Material Symbols Rounded';
+    font-size: 15px;
+    line-height: 1;
+    font-feature-settings: 'liga';
+    -webkit-font-smoothing: antialiased;
+  }
+  .layer-actions button[data-action="zoom"]::before { content: 'zoom_in'; }
+  .layer-actions button[data-action="table"]::before { content: 'table_view'; }
+  .layer-actions button[data-action="remove"]::before { content: 'delete'; }
+  .layer-actions button[data-action="reset-color"]::before { content: 'format_color_reset'; }
+  .layer-actions button[data-action="open-stallplan"]::before { content: 'space_dashboard'; }
   .layer-actions button.danger:hover { border-color: var(--warn); color: var(--warn); }
   /* "Form bearbeiten" aktiv — Eckpunkte der Fläche sind gerade per Ziehen
      anpassbar (siehe toggleParcelShapeEdit() in main.js). */
   .layer-actions button.active { border-color: var(--accent); color: var(--accent); background: var(--accent-tint); }
 
-  .vis-toggle {
-    width: 15px;
-    height: 15px;
-    border: 1px solid var(--border);
-    border-radius: 3px;
-    cursor: pointer;
-    flex-shrink: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-  .vis-toggle.on { background: var(--accent-tint); border-color: var(--accent); color: var(--accent); }
-  .vis-toggle svg { width: 10px; height: 10px; display: none; }
-  .vis-toggle.on svg { display: block; }
 
   #status, .status-line {
     padding: 8px 14px;
@@ -801,14 +966,29 @@
   }
   .dropzone-mini {
     position: relative;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 40px;
     border: 1.5px dashed var(--border);
-    border-radius: 6px;
-    padding: 10px 12px;
-    font-size: 12px;
-    color: var(--muted);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 12.5px;
+    color: var(--text);
     cursor: pointer;
     overflow: hidden;
   }
+  /* Gleiches Bild wie "Karten-Datei laden" (#dropzone). */
+  .dropzone-mini::before {
+    content: 'upload_file';
+    font-family: 'Material Symbols Rounded';
+    font-size: 20px;
+    line-height: 1;
+    color: var(--accent);
+    font-feature-settings: 'liga';
+  }
+  .dropzone-mini:hover { border-color: var(--accent); }
+  .dropzone-mini > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .dropzone-mini.filled { border-color: var(--accent); color: var(--text); border-style: solid; }
   .dropzone-mini input {
     position: absolute; inset: 0; opacity: 0; cursor: pointer;
@@ -907,30 +1087,8 @@
     color: #12151A;
   }
 
-  #compare-view-toggle {
-    display: flex;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    overflow: hidden;
-  }
-  /* Höher gewichtet als "#topbar button" (ID+Klasse schlägt ID+Typ), damit die
-     Segment-Optik des Diff/Jahr-A/Jahr-B-Umschalters nicht vom generischen
-     Topbar-Button-Stil überschrieben wird, seit beide dieselbe geteilte
-     Kopfleiste teilen. */
-  #compare-view-toggle .cvt-btn {
-    background: transparent;
-    border: none;
-    border-right: 1px solid var(--border);
-    color: var(--muted);
-    font-size: 12px;
-    padding: 6px 11px;
-    cursor: pointer;
-    font-family: var(--sans);
-  }
-  #compare-view-toggle .cvt-btn:last-child { border-right: none; }
-  #compare-view-toggle .cvt-btn:hover { color: var(--text); }
-  #compare-view-toggle .cvt-btn.active { background: var(--accent-tint); color: var(--text); }
+  /* Jahresvergleich-Ansicht: einheitlicher Segment-Umschalter (.ff-seg). */
+  #compare-view-toggle { background: var(--panel); }
   #compare-error-toast {
     position: absolute;
     top: 12px;
@@ -2268,7 +2426,8 @@
      Flusses; die Reihenfolge regelt "order" — so stehen die Werkzeuge oben
      statt unter Dateiablage und Ebenenliste. Der Terminkalender (nur mit
      Konto) behält sein eigenes Layout. */
-  .sidebar-section.active:not([data-view="terminkalender"]) { display: contents; }
+  .sidebar-section.active { display: contents; }
+  #sidebar #terminkalender-controls > .tool-btn { margin: 10px 14px 4px; width: calc(100% - 28px); }
   .tool-main { order: 1; display: flex; flex-direction: column; padding-bottom: 6px; }
   #dropzone { order: 2; }
   #layer-section { order: 3; }
@@ -2475,8 +2634,7 @@
     /* #sidebar liegt jetzt außerhalb des normalen Flusses (position:absolute) —
        #map-wrap füllt dadurch automatisch die volle Breite. */
 
-    #view-switcher { grid-template-columns: 1fr 1fr; }
-    .segment-btn { padding: 11px 8px; font-size: 12.5px; min-height: 46px; }
+    .segment-btn { min-height: 64px; font-size: 11.5px; }
     /* Unter 16px Schriftgröße zoomt iOS Safari beim Antippen eines Feldes
        die ganze Seite heran — am Handy daher überall mindestens 16px. */
     input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
@@ -2566,7 +2724,9 @@
     #topbar .topbar-label { display: none; }
     #topbar .topbar-extra[data-view="compare"].active { order: -1; flex: 1 0 100%; display: flex; }
     #compare-view-toggle { flex: 1; display: flex; }
-    #compare-view-toggle .cvt-btn { flex: 1; min-height: 40px; }
+    #compare-view-toggle.ff-seg .cvt-btn { flex: 1; min-height: 38px; }
+    #basemap-seg { display: none; }
+    #topbar #btn-basemap { display: inline-flex; }
 
     /* Bodenleisten-Panels (Flächen-/Vergleichs-/Baumtabelle) dürfen auf einem
        kurzen Bildschirm nie mehr als ~70% der Karte einnehmen — die JS-Logik
@@ -3004,19 +3164,10 @@
     background: #111;
     justify-content: center;
   }
-  .scan-filter-chip {
-    flex: 0 0 auto;
-    min-height: 38px;
-    padding: 0 16px;
-    border-radius: 19px;
-    border: 1px solid rgba(255,255,255,0.3);
-    background: transparent;
-    color: #fff;
-    font: 500 13px var(--sans);
-    cursor: pointer;
-  }
-  .scan-filter-chip[aria-checked="true"] { background: #fff; color: #111; border-color: #fff; font-weight: 600; }
-  .scan-filter-chip:disabled { opacity: 0.4; cursor: not-allowed; }
+  /* Scanner: immer dunkle Oberfläche, Segment-Umschalter entsprechend dunkel. */
+  #scan-filter-chips.ff-seg { background: #1c1c1c; border-color: #333; margin: 10px auto 0; width: fit-content; max-width: calc(100% - 24px); overflow-x: auto; }
+  #scan-filter-chips.ff-seg > button { color: rgba(255,255,255,0.75); }
+  #scan-filter-chips.ff-seg > button[aria-checked="true"] { background: #fff; border-color: #fff; color: #111; }
   #scan-crop-actions button, #scan-review-actions button {
     display: flex;
     align-items: center;
@@ -3444,24 +3595,6 @@
   .stallplaner-dir-btn[data-dir="right"] { grid-area: 2 / 3; }
   .stallplaner-dir-btn[data-dir="down"] { grid-area: 3 / 2; }
 
-  .stallplaner-segmented { display: flex; gap: 6px; }
-  .stallplaner-segmented button {
-    flex: 1;
-    min-height: 44px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    padding: 4px 8px;
-    background: var(--panel-2);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    color: var(--muted);
-    font: 13px var(--sans);
-    cursor: pointer;
-  }
-  .stallplaner-segmented button .icon { font-size: 18px; }
-  .stallplaner-segmented button.active { background: var(--accent-dim); border-color: var(--accent); color: var(--on-accent); }
 
   #stallplaner-equip-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
   #stallplaner-equip-grid button {
@@ -3776,17 +3909,6 @@
   /* Kleiner Umschalter (z. B. PDF-Hintergrund) im Export-Block. */
   .tool-segmented { display: flex; align-items: center; gap: 4px; }
   .tool-segmented-label { flex: 1; font-size: 12px; color: var(--muted); }
-  .tool-segmented button {
-    min-height: 32px;
-    padding: 0 12px;
-    border: 1px solid var(--border);
-    border-radius: 16px;
-    background: transparent;
-    color: var(--muted);
-    font: 500 12.5px var(--sans);
-    cursor: pointer;
-  }
-  .tool-segmented button[aria-checked="true"] { background: var(--accent-dim); border-color: var(--accent); color: var(--on-accent); }
 
   .stallplan-badge {
     grid-column: 1 / -1;
