@@ -39,10 +39,10 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
-  <script type="module" crossorigin src="./assets/index-GcmoccoW.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-C7Ds-Mqj.css">
+  <script type="module" crossorigin src="./assets/index-BScyLL9J.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-DAGOZ5wP.css">
 <link rel="manifest" href="./manifest.webmanifest"></head>
-<body>
+<body data-view="viewer">
 
 <div id="tabbar">
   <button id="btn-sidebar-toggle" title="Menü öffnen" aria-label="Menü öffnen">
@@ -98,6 +98,7 @@
   </div>
 
   <div id="view-switcher">
+    <button class="segment-btn active" data-view="viewer">Karte</button>
     <button class="segment-btn" data-view="compare">Jahresvergleich</button>
     <button class="segment-btn" data-view="zeichner">Flächenzeichner</button>
     <button class="segment-btn" data-view="obstbaum">Obstbaumkataster</button>
@@ -107,188 +108,252 @@
   </div>
 
   <div id="brand">
-    <p id="brand-caption">Shapefiles &amp; GeoJSON lokal auf der Karte darstellen</p>
+    <p id="brand-caption">Shapefiles und GeoJSON auf der Karte ansehen</p>
   </div>
 
-  <div id="dropzone">
-    <div><strong>Datei hierher ziehen</strong><br>oder klicken zum Auswählen</div>
-    <div class="fmt">.zip (auch mit mehreren Shapefiles) · .geojson · .json</div>
+  <!-- Einheitliches Schema jeder Funktion (siehe style.css "Seitenleiste:
+       einheitliches Werkzeug-Schema"):
+         .tool-main    Kurzhinweis (.tool-hint), einklappbare Tipps
+                       (.tool-tips), Werkzeug/Listen
+         #dropzone + #layer-section   geteilte Karten-Dateien/Ebenen
+         .tool-footer  "Exportieren" + Statuszeile (nur bei Meldungen)
+       Die Sektionen sind per display:contents in den Fluss von #sidebar
+       eingebettet und über "order" angeordnet — so liegen Werkzeug oben,
+       Ebenen in der Mitte und Exporte unten, obwohl Dateiablage/Ebenen nur
+       einmal im DOM existieren. -->
+  <div id="dropzone" role="button" tabindex="0" aria-label="Karten-Datei laden">
+    <span class="material-symbols-rounded icon" aria-hidden="true">upload_file</span>
+    <div>
+      <strong>Karten-Datei laden</strong>
+      <div class="fmt">Shapefile als .zip · GeoJSON — oder hierher ziehen</div>
+    </div>
     <input type="file" id="file-input" accept=".zip,.geojson,.json" multiple>
   </div>
 
   <div id="layer-section">
     <h2>Ebenen</h2>
     <div id="layer-list"></div>
-    <div class="empty-hint" id="empty-hint">Noch keine Ebene geladen. Ein Shapefile besteht meist aus .shp, .shx und .dbf — am einfachsten alle Dateien zusammen als .zip hochladen. Einmal geladen, stehen die Ebenen in allen Werkzeugen zur Verfügung.</div>
+    <div class="empty-hint" id="empty-hint">Noch keine Ebene geladen.</div>
   </div>
 
   <div class="sidebar-section active" data-view="viewer">
-    <button id="btn-export-flaechenkarten" class="export-flaechenkarten-btn">Flächenkarten exportieren</button>
-    <div id="gesamtexport-buttons">
-      <button id="btn-export-gesamt-pdf" class="export-flaechenkarten-btn">Gesamtübersicht als PDF exportieren</button>
-      <button id="btn-export-gesamt-geojson" class="export-flaechenkarten-btn">Alles als GeoJSON exportieren</button>
+    <div class="tool-footer">
+      <div class="tool-footer-title">Exportieren</div>
+      <button id="btn-export-flaechenkarten" class="tool-btn primary"><span class="material-symbols-rounded icon">picture_as_pdf</span>Flächenkarten (PDF)</button>
+      <button id="btn-export-gesamt-pdf" class="tool-btn"><span class="material-symbols-rounded icon">picture_as_pdf</span>Gesamtübersicht (PDF)</button>
+      <button id="btn-export-gesamt-geojson" class="tool-btn"><span class="material-symbols-rounded icon">download</span>Alles als GeoJSON</button>
+      <div id="status" class="status-line"></div>
     </div>
-    <div id="status" class="status-line">Bereit.</div>
   </div>
 
   <div class="sidebar-section" data-view="compare">
-    <div class="compare-upload">
-      <label class="compare-label">Jahr A (älter)</label>
-      <div class="dropzone-mini" id="compare-drop-a">
-        <span id="compare-file-a-name">.zip auswählen…</span>
-        <input type="file" id="compare-file-a" accept=".zip">
+    <div class="tool-main">
+      <div class="tool-hint"><span class="material-symbols-rounded icon">info</span><span>Älteres Jahr laden — verglichen wird mit der geladenen Ebene.</span></div>
+      <div class="compare-upload">
+        <label class="compare-label">Jahr A (älter)</label>
+        <div class="dropzone-mini" id="compare-drop-a">
+          <span id="compare-file-a-name">.zip auswählen…</span>
+          <input type="file" id="compare-file-a" accept=".zip">
+        </div>
+      </div>
+      <div class="compare-upload" id="compare-jahrb-picker-wrap" hidden>
+        <label class="compare-label">Jahr B (geladene Ebene)</label>
+        <select id="compare-jahrb-picker"></select>
+      </div>
+      <button id="btn-compare-run" class="tool-btn primary" disabled><span class="material-symbols-rounded icon">compare_arrows</span>Vergleichen</button>
+      <div id="compare-criteria">
+        <label class="compare-label">Als „verändert“ zählt</label>
+        <label class="criteria-option">
+          <input type="checkbox" id="crit-groesse" checked> Flächengröße
+        </label>
+        <label class="criteria-option">
+          <input type="checkbox" id="crit-kultur" checked> Kulturart
+        </label>
+      </div>
+      <details class="tool-tips">
+        <summary>Tipps</summary>
+        <ul id="compare-hint">
+          <li>Jahr B ist die Ebene, die unten unter „Ebenen“ geladen ist.</li>
+          <li>Teilflächen und sonstige Ebenen werden nicht verglichen.</li>
+        </ul>
+      </details>
+
+      <div id="compare-summary"></div>
+
+      <div id="compare-legend">
+        <div><span class="legend-swatch" style="background:#6FBF73"></span> Zugang (neu dazugekommen)</div>
+        <div><span class="legend-swatch" style="background:#D97757"></span> Abgang (weggefallen)</div>
+        <div><span class="legend-swatch" style="background:#C9A24F"></span> Verändert (Umriss)</div>
+        <div><span class="legend-swatch" style="background:#5A6270"></span> Unverändert</div>
+        <div style="margin-top:4px; padding-top:4px; border-top:1px solid var(--border);">
+          <span class="legend-swatch" style="background:#5F7A93"></span> Bestandsfläche (in beiden Jahren gleich)</div>
+        <div><span class="legend-swatch" style="background:#2EE6B8"></span> geometrisch dazugekommenes Stück</div>
+        <div><span class="legend-swatch" style="background:#E0507A"></span> geometrisch weggefallenes Stück</div>
       </div>
     </div>
-    <div class="compare-upload" id="compare-jahrb-picker-wrap" hidden>
-      <label class="compare-label">Jahr B (aktuell geladene Ebene)</label>
-      <select id="compare-jahrb-picker"></select>
+    <div class="tool-footer">
+      <div id="compare-status" class="status-line"></div>
     </div>
-
-    <button id="btn-compare-run" disabled>Vergleichen</button>
-    <div class="empty-hint" id="compare-hint">Jahr A separat hochladen — Jahr B kommt automatisch aus den oben geladenen Ebenen. Teilflächen &amp; sonstige Ebenen werden für den Vergleich ignoriert.</div>
-
-    <div id="compare-criteria">
-      <label class="compare-label" style="margin: 10px 0 6px;">Als "Verändert" zählt eine Abweichung bei:</label>
-      <label class="criteria-option">
-        <input type="checkbox" id="crit-groesse" checked> Flächengröße
-      </label>
-      <label class="criteria-option">
-        <input type="checkbox" id="crit-kultur" checked> Kulturart
-      </label>
-    </div>
-
-    <div id="compare-summary"></div>
-
-    <div id="compare-legend">
-      <div><span class="legend-swatch" style="background:#6FBF73"></span> Zugang (neu dazugekommen)</div>
-      <div><span class="legend-swatch" style="background:#D97757"></span> Abgang (weggefallen)</div>
-      <div><span class="legend-swatch" style="background:#C9A24F"></span> Verändert (Umriss)</div>
-      <div><span class="legend-swatch" style="background:#5A6270"></span> Unverändert</div>
-      <div style="margin-top:4px; padding-top:4px; border-top:1px solid var(--border);">
-        <span class="legend-swatch" style="background:#5F7A93"></span> Bestandsfläche (in beiden Jahren gleich)</div>
-      <div><span class="legend-swatch" style="background:#2EE6B8"></span> geometrisch dazugekommenes Stück</div>
-      <div><span class="legend-swatch" style="background:#E0507A"></span> geometrisch weggefallenes Stück</div>
-    </div>
-    <div id="compare-status" class="status-line">Bereit.</div>
   </div>
 
   <div class="sidebar-section" data-view="zeichner">
-    <div class="empty-hint" id="zeichner-empty-hint">Noch keine Fläche gezeichnet. „Zeichnen" in der Werkzeugleiste über der Karte anklicken, dann Eckpunkte per Klick setzen und mit Doppelklick abschließen. Rechtsklick entfernt den zuletzt gesetzten Punkt, Esc bricht das Zeichnen ganz ab. Gezeichnete Flächen erscheinen sofort auch in der Ebenenliste oben und stehen dort allen Werkzeugen zur Verfügung.</div>
-    <div id="zeichner-section">
-      <h2>Gezeichnete Flächen</h2>
-      <div id="zeichner-list"></div>
+    <div class="tool-main">
+      <div class="tool-hint" id="zeichner-empty-hint"><span class="material-symbols-rounded icon">touch_app</span><span>„Zeichnen“ wählen, Eckpunkte auf die Karte setzen, „Fertig“.</span></div>
+      <details class="tool-tips">
+        <summary>Tipps</summary>
+        <ul>
+          <li>Am PC: Doppelklick schließt die Fläche, Rechtsklick nimmt den letzten Punkt zurück, Esc bricht ab.</li>
+          <li>„Bearbeiten“, „Teilen“ und „Löschen“: danach die Fläche auf der Karte antippen.</li>
+          <li>Gezeichnete Flächen stehen auch unter „Ebenen“ und in allen anderen Werkzeugen bereit.</li>
+        </ul>
+      </details>
+      <div id="zeichner-section">
+        <h2>Gezeichnete Flächen</h2>
+        <div id="zeichner-list"></div>
+      </div>
     </div>
-    <div class="export-buttons" id="zeichner-export-buttons">
-      <button id="btn-export-zeichner-geojson" class="export-btn">GeoJSON speichern</button>
+    <div class="tool-footer">
+      <div class="tool-footer-title">Exportieren</div>
+      <button id="btn-export-zeichner-flaechenkarten" class="tool-btn primary"><span class="material-symbols-rounded icon">picture_as_pdf</span>Flächenkarten (PDF)</button>
+      <button id="btn-export-zeichner-geojson" class="tool-btn"><span class="material-symbols-rounded icon">download</span>GeoJSON speichern</button>
+      <div id="zeichner-status" class="status-line"></div>
     </div>
-    <button id="btn-export-zeichner-flaechenkarten">Flächenkarten exportieren</button>
-    <div id="zeichner-status" class="status-line">Bereit.</div>
   </div>
 
   <div class="sidebar-section" data-view="obstbaum">
-    <div id="obstbaum-picker">
-      <label class="compare-label">Obstart zum Setzen wählen</label>
-      <div id="obstbaum-fruit-grid"></div>
-      <button type="button" id="obstbaum-sonstige-toggle">Sonstige Obstart <span class="chev">▾</span></button>
-      <div id="obstbaum-sonstige-list" hidden></div>
-    </div>
-    <div class="empty-hint" id="obstbaum-placement-hint">Obstart anklicken, dann auf die Karte klicken, um dort einen Baum zu setzen — bleibt aktiv für mehrere Bäume derselben Art. Erneuter Klick auf die aktive Obstart (oder Esc) beendet das Setzen. Gesetzte Punkte lassen sich auf der Karte per Drag verschieben, per Rechtsklick sofort löschen. Tipp: Eine Obstart aus „Sonstige" auf einen der Buttons oben ziehen, um sie dorthin zu holen.</div>
-
-    <div class="compare-upload">
-      <label class="compare-label">Baumkataster laden</label>
-      <div class="dropzone-mini" id="obstbaum-drop">
-        <span id="obstbaum-file-name">.geojson auswählen…</span>
-        <input type="file" id="obstbaum-file-input" accept=".geojson,.json">
+    <div class="tool-main">
+      <div class="tool-hint" id="obstbaum-placement-hint"><span class="material-symbols-rounded icon">touch_app</span><span>Obstart wählen, dann Bäume auf die Karte tippen.</span></div>
+      <div id="obstbaum-picker">
+        <div id="obstbaum-fruit-grid"></div>
+        <button type="button" id="obstbaum-sonstige-toggle">Sonstige Obstart <span class="chev">▾</span></button>
+        <div id="obstbaum-sonstige-list" hidden></div>
+      </div>
+      <details class="tool-tips">
+        <summary>Tipps</summary>
+        <ul>
+          <li>Die Obstart bleibt aktiv — mehrere Bäume nacheinander setzen. Nochmal antippen (oder Esc) beendet.</li>
+          <li>Bäume auf der Karte verschieben: ziehen. Löschen: Rechtsklick.</li>
+          <li>Eine „Sonstige Obstart“ auf einen der Buttons oben ziehen, um sie dort abzulegen.</li>
+        </ul>
+      </details>
+      <div class="tool-btn-row">
+        <button id="btn-obstbaum-table" class="tool-btn"><span class="material-symbols-rounded icon">table_view</span>Bäume</button>
+        <button id="btn-obstbaum-parcel-table" class="tool-btn"><span class="material-symbols-rounded icon">table_view</span>Flächen</button>
+      </div>
+      <div class="compare-upload">
+        <label class="compare-label">Gespeichertes Kataster laden</label>
+        <div class="dropzone-mini" id="obstbaum-drop">
+          <span id="obstbaum-file-name">.geojson auswählen…</span>
+          <input type="file" id="obstbaum-file-input" accept=".geojson,.json">
+        </div>
       </div>
     </div>
-
-    <button id="btn-obstbaum-table">Baumtabelle</button>
-    <button id="btn-obstbaum-parcel-table">Flächentabelle</button>
-
-    <div id="obstbaum-spacer"></div>
-
-    <div class="export-buttons" id="obstbaum-export-buttons">
-      <button id="btn-export-baumkataster" class="export-btn">Kataster speichern</button>
+    <div class="tool-footer">
+      <div class="tool-footer-title">Exportieren</div>
+      <button id="btn-export-obstbaum-flaechenkarten" class="tool-btn primary"><span class="material-symbols-rounded icon">picture_as_pdf</span>Flächenkarten (PDF)</button>
+      <button id="btn-export-baumkataster" class="tool-btn"><span class="material-symbols-rounded icon">download</span>Kataster speichern</button>
+      <div id="obstbaum-status" class="status-line"></div>
     </div>
-    <button id="btn-export-obstbaum-flaechenkarten">Flächenkarten exportieren</button>
-
-    <div id="obstbaum-status" class="status-line">Bereit.</div>
   </div>
 
   <div class="sidebar-section" data-view="bienenflug">
-    <div class="empty-hint" id="bienenflug-hint">Auf die Karte klicken, um dort einen Bienenstock zu setzen — der Flugradius wird automatisch mit angezeigt. Gesetzte Punkte lassen sich per Drag verschieben.</div>
-
-    <div id="bienenflug-section">
-      <h2>Gesetzte Bienenstöcke</h2>
-      <div id="bienenflug-list"></div>
-      <div class="empty-hint" id="bienenflug-empty-hint">Noch kein Bienenstock gesetzt.</div>
+    <div class="tool-main">
+      <div class="tool-hint" id="bienenflug-hint"><span class="material-symbols-rounded icon">touch_app</span><span>Auf die Karte tippen, um einen Bienenstock zu setzen.</span></div>
+      <details class="tool-tips">
+        <summary>Tipps</summary>
+        <ul>
+          <li>Der Flugradius (3 km) wird automatisch angezeigt.</li>
+          <li>Bienenstöcke lassen sich auf der Karte verschieben.</li>
+        </ul>
+      </details>
+      <div id="bienenflug-section">
+        <h2>Bienenstöcke</h2>
+        <div id="bienenflug-list"></div>
+        <div class="empty-hint" id="bienenflug-empty-hint">Noch keiner gesetzt.</div>
+      </div>
     </div>
-
-    <button id="btn-export-bienenflug-flaechenkarten">Flächenkarten exportieren</button>
-
-    <div id="bienenflug-status" class="status-line">Bereit.</div>
+    <div class="tool-footer">
+      <div class="tool-footer-title">Exportieren</div>
+      <button id="btn-export-bienenflug-flaechenkarten" class="tool-btn primary"><span class="material-symbols-rounded icon">picture_as_pdf</span>Flächenkarten (PDF)</button>
+      <div id="bienenflug-status" class="status-line"></div>
+    </div>
   </div>
 
   <div class="sidebar-section" data-view="hofplan">
-    <div class="empty-hint" id="hofplan-empty-hint">Noch kein Gebäude gezeichnet. „Rechteck" oder „Freiform" in der Werkzeugleiste über der Karte anklicken, dann auf der Karte zeichnen (Freiform: Eckpunkte per Klick setzen, mit Doppelklick abschließen). Gebäudetyp und Name lassen sich danach in der Liste unten zuweisen.</div>
-    <div id="hofplan-section">
-      <h2>Gebäude</h2>
-      <div id="hofplan-list"></div>
+    <div class="tool-main">
+      <div class="tool-hint" id="hofplan-empty-hint"><span class="material-symbols-rounded icon">touch_app</span><span>„Rechteck“ oder „Freiform“ wählen und das Gebäude einzeichnen.</span></div>
+      <details class="tool-tips">
+        <summary>Tipps</summary>
+        <ul>
+          <li>Freiform: Eckpunkte setzen, mit „Fertig“ (am PC Doppelklick) abschließen.</li>
+          <li>Gebäudetyp und Name danach in der Liste einstellen.</li>
+          <li>Für Ställe lässt sich aus der Liste direkt ein Stallplan anlegen.</li>
+        </ul>
+      </details>
+      <div id="hofplan-section">
+        <h2>Gebäude</h2>
+        <div id="hofplan-list"></div>
+      </div>
     </div>
-    <div class="export-buttons" id="hofplan-export-buttons">
-      <button id="btn-export-hofplan-geojson" class="export-btn">GeoJSON speichern</button>
+    <div class="tool-footer">
+      <div class="tool-footer-title">Exportieren</div>
+      <button id="btn-export-hofplan-uebersicht" class="tool-btn primary"><span class="material-symbols-rounded icon">picture_as_pdf</span>Lageplan (PDF)</button>
+      <button id="btn-export-hofplan-geojson" class="tool-btn"><span class="material-symbols-rounded icon">download</span>GeoJSON speichern</button>
+      <div id="hofplan-status" class="status-line"></div>
     </div>
-    <button id="btn-export-hofplan-uebersicht">Lageplan exportieren</button>
-    <div id="hofplan-status" class="status-line">Bereit.</div>
   </div>
 
   <!-- ---------- FeldFolio Plus: Stallplaner ----------
        Eigenständiges Grundriss-Werkzeug ohne Kartenbezug (anders als
        Hofplan) — siehe #stallplaner-view weiter unten für die eigentliche
-       Zeichenfläche (SVG statt Karte), analog zum Terminkalender-Muster
-       (eigener Vollbereich statt Kartenwerkzeug). Diese Sidebar-Sektion
-       trägt nur Plan-Auswahl, Abteile-Liste und Export. -->
+       Zeichenfläche (SVG statt Karte). Diese Sidebar-Sektion trägt nur
+       Plan-Auswahl, Abteile-Liste und Export. -->
   <div class="sidebar-section" data-view="stallplaner">
-    <div id="stallplaner-plan-picker">
-      <label class="compare-label" for="stallplaner-plan-select">Stallplan</label>
-      <select id="stallplaner-plan-select"></select>
-      <button type="button" id="stallplaner-new-plan">+ Neuer Stallplan</button>
-    </div>
-    <div id="stallplaner-empty-hint" class="empty-hint">Noch kein Stallplan angelegt. „+ Neuer Stallplan" antippen — danach führen die Schritte über dem Plan durch Umriss, Abteile, Ausstattung und Tiere.</div>
-    <div id="stallplaner-settings" hidden>
-      <label class="compare-label" for="stallplaner-name-input">Name</label>
-      <input type="text" id="stallplaner-name-input" placeholder="z.B. Milchviehstall Nord">
-      <label class="compare-label" for="stallplaner-tierart-select">Tierart</label>
-      <select id="stallplaner-tierart-select">
-        <option value="">– wählen –</option>
-        <option value="rinder">Rinder</option>
-        <option value="schweine">Schweine</option>
-        <option value="gefluegel">Geflügel</option>
-        <option value="schafe_ziegen">Schafe/Ziegen</option>
-        <option value="pferde">Pferde/Equiden</option>
-        <option value="kaninchen">Kaninchen</option>
-      </select>
-      <p class="modal-hint">Flächenwerte laut Anhang I VO (EU) 2018/848 i.d.F. DVO (EU) 2020/464 — keine Rechtsberatung, im Zweifel Originaltext prüfen.</p>
-
-      <div id="stallplaner-section">
-        <h2>Abteile <span id="stallplaner-total-area"></span></h2>
-        <div id="stallplaner-abteile-list"></div>
-        <div class="empty-hint" id="stallplaner-abteile-empty-hint">Noch kein Abteil gezeichnet.</div>
+    <div class="tool-main">
+      <div id="stallplaner-plan-picker">
+        <label class="compare-label" for="stallplaner-plan-select">Stallplan</label>
+        <select id="stallplaner-plan-select"></select>
+        <button type="button" id="stallplaner-new-plan" class="tool-btn"><span class="material-symbols-rounded icon">add</span>Neuer Stallplan</button>
       </div>
+      <div id="stallplaner-empty-hint" class="tool-hint"><span class="material-symbols-rounded icon">touch_app</span><span>Neuen Stallplan anlegen — die Schritte oben führen durch.</span></div>
+      <div id="stallplaner-settings" hidden>
+        <label class="compare-label" for="stallplaner-name-input">Name</label>
+        <input type="text" id="stallplaner-name-input" placeholder="z.B. Milchviehstall Nord">
 
-      <div class="export-buttons" id="stallplaner-export-buttons">
-        <button id="btn-export-stallplaner-pdf" class="export-btn">Als PDF exportieren</button>
-        <button id="btn-stallplaner-export-json" class="export-btn">Als Datei speichern (.json)</button>
+        <div id="stallplaner-section">
+          <h2>Abteile <span id="stallplaner-total-area"></span></h2>
+          <div id="stallplaner-abteile-list"></div>
+          <div class="empty-hint" id="stallplaner-abteile-empty-hint">Noch kein Abteil gezeichnet.</div>
+        </div>
+        <details class="tool-tips">
+          <summary>Rechtsgrundlage</summary>
+          <ul>
+            <li>Flächenwerte laut Anhang I VO (EU) 2018/848 i.d.F. DVO (EU) 2020/464.</li>
+            <li>Keine Rechtsberatung — im Zweifel den Originaltext prüfen.</li>
+          </ul>
+        </details>
       </div>
       <div class="compare-upload">
-        <label class="compare-label">Stallplan laden (.json)</label>
+        <label class="compare-label">Gespeicherten Stallplan laden</label>
         <div class="dropzone-mini" id="stallplaner-import-drop">
           <span id="stallplaner-import-file-name">.json auswählen…</span>
           <input type="file" id="stallplaner-import-input" accept=".json">
         </div>
       </div>
-      <button id="btn-stallplaner-delete-plan" class="danger-btn">Stallplan löschen</button>
-      <div id="stallplaner-status" class="status-line">Bereit.</div>
+    </div>
+    <div class="tool-footer" id="stallplaner-footer" hidden>
+      <div class="tool-footer-title">Exportieren</div>
+      <div class="tool-segmented" id="stallplaner-export-bg" role="radiogroup" aria-label="Hintergrund im PDF">
+        <span class="tool-segmented-label">Hintergrund</span>
+        <button type="button" role="radio" data-bg="light" aria-checked="true">Weiß</button>
+        <button type="button" role="radio" data-bg="dark" aria-checked="false">Dunkel</button>
+      </div>
+      <button id="btn-export-stallplaner-pdf" class="tool-btn primary"><span class="material-symbols-rounded icon">picture_as_pdf</span>Stallplan (PDF)</button>
+      <button id="btn-stallplaner-export-json" class="tool-btn"><span class="material-symbols-rounded icon">download</span>Als Datei speichern</button>
+      <button id="btn-stallplaner-delete-plan" class="tool-btn danger"><span class="material-symbols-rounded icon">delete</span>Stallplan löschen</button>
+    </div>
+    <div class="tool-footer tool-footer-status">
+      <div id="stallplaner-status" class="status-line"></div>
     </div>
   </div>
 
@@ -314,7 +379,7 @@
       </div>
       <div id="terminkalender-summary" class="empty-hint">Noch keine Termine geladen.</div>
       <button id="terminkalender-btn-save">In Cloud speichern</button>
-      <div id="terminkalender-status" class="status-line">Bereit.</div>
+      <div id="terminkalender-status" class="status-line"></div>
     </div>
   </div>
   <!-- Am Handy wandert der Hell/Dunkel-Schalter aus der vollen Kopfzeile
@@ -766,18 +831,7 @@
       <div class="stallplaner-panel" id="stallplaner-panel-selection" hidden></div>
 
       <div class="stallplaner-panel" id="stallplaner-panel-animals" hidden>
-        <label class="stallplaner-field stallplaner-field-wide">
-          <span>Tierart</span>
-          <select id="stallplaner-sheet-tierart">
-            <option value="">– wählen –</option>
-            <option value="rinder">Rinder</option>
-            <option value="schweine">Schweine</option>
-            <option value="gefluegel">Geflügel</option>
-            <option value="schafe_ziegen">Schafe/Ziegen</option>
-            <option value="pferde">Pferde/Equiden</option>
-            <option value="kaninchen">Kaninchen</option>
-          </select>
-        </label>
+        <p class="stallplaner-panel-hint">Je Bucht Tierart, Kategorie und Anzahl eintragen — auch mehrere Tierarten in einer Bucht.</p>
         <div id="stallplaner-animals-list"></div>
       </div>
     </section>
@@ -792,6 +846,10 @@
         <button type="button" class="stallplaner-act" id="stallplaner-tool-outline" data-tool="draw-outline" data-show="create-outline"><span class="material-symbols-rounded icon">draw</span><span>Skizzieren</span></button>
         <button type="button" class="stallplaner-act" data-act="add-compartment" data-show="abteile"><span class="material-symbols-rounded icon">add</span><span>Abteil</span></button>
         <button type="button" class="stallplaner-act" data-act="split" data-show="abteile"><span class="material-symbols-rounded icon">view_week</span><span>Teilen</span></button>
+        <!-- Abteile sind optional: Umriss = ganze Stallfläche. -->
+        <button type="button" class="stallplaner-act" data-act="whole-stall" data-show="whole-stall"><span class="material-symbols-rounded icon">crop_free</span><span>Ganzer Stall</span></button>
+        <!-- Noch nicht belegte Stallfläche als Abteil (z. B. Futtergang). -->
+        <button type="button" class="stallplaner-act" data-act="rest-area" data-show="rest-area"><span class="material-symbols-rounded icon">format_color_fill</span><span>Restfläche</span></button>
         <button type="button" class="stallplaner-act" id="stallplaner-tool-equipment" data-tool="place-equipment" data-show="ausstattung"><span class="material-symbols-rounded icon">handyman</span><span>Platzieren</span></button>
         <button type="button" class="stallplaner-act" data-act="animals" data-show="tiere"><span class="material-symbols-rounded icon">pets</span><span>Tiere</span></button>
         <button type="button" class="stallplaner-act" id="stallplaner-act-pdf" data-show="tiere"><span class="material-symbols-rounded icon">picture_as_pdf</span><span>PDF</span></button>
@@ -819,6 +877,13 @@
           <label class="stallplaner-more-row">
             <span>Beim Skizzieren am Raster einrasten</span>
             <input type="checkbox" id="stallplaner-grid-snap" checked>
+          </label>
+          <label class="stallplaner-more-row">
+            <span>Hintergrund im PDF</span>
+            <select id="stallplaner-export-bg-select">
+              <option value="light">Weiß</option>
+              <option value="dark">Dunkel</option>
+            </select>
           </label>
         </div>
       </div>

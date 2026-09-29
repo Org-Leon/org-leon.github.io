@@ -134,10 +134,10 @@ test.describe('Stallplaner vor Ort (Handy, Touch)', () => {
     await expect(sheet).toBeVisible();
     await expect(page.locator('#stallplaner-sheet-title')).toHaveText('Kuhbox');
 
-    // Tierart im Tiere-Schritt wählen, dann Tierzahl im Sheet eintragen.
+    // Im Tiere-Schritt je Abteil Tiere hinzufügen: Tierart, Kategorie, Anzahl.
     await page.locator('.stallplaner-step[data-step="tiere"]').tap();
-    await page.locator('#stallplaner-sheet-tierart').selectOption('rinder');
     await sheet.locator('.stallplan-tb-add').tap();
+    await sheet.locator('.stallplan-tb-tierart').selectOption('rinder');
     await sheet.locator('.stallplan-tb-kategorie').selectOption('rind_milchkuh'); // 6 m²/Tier
     await sheet.locator('.stallplan-tb-anzahl').fill('3');
     await sheet.locator('.stallplan-tb-anzahl').dispatchEvent('change');

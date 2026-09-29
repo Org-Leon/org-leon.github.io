@@ -1,6 +1,7 @@
 import { isSupabaseConfigured, signUp, signIn, signOut, getSession, saveState, loadState, uploadPhoto, getPhotoUrl, deletePhoto, requestAccess, listPendingAccessRequests, approveAccessRequest, declineAccessRequest } from './supabase.js';
 import { readLocalState, writeLocalState, deleteLocalState, readLastUser, writeLastUser, addBackup, listBackups } from './offline-store.js';
 import { registerSW } from 'virtual:pwa-register';
+import iconFontUrl from './assets/material-symbols-rounded-subset.woff2?url';
 import { rankBackCameras, drawScaled, rotateCanvas, defaultQuad, detectDocumentQuad, QuadTracker, quadDistance, warpDocument, applyScanFilter, SCAN_FILTERS, targetSizeForQuad } from './scan-engine.js';
 // Icon-Font selbst NICHT über das npm-Paket eingebunden (5+ MB Variable-Font
 // mit allen ~3000 Icons) — stattdessen ein auf die tatsächlich genutzten
@@ -1957,12 +1958,19 @@ function buildFeatureEntry(feature, lyr, layerId, layerName, isTeilflaechen, col
     if (mapToolMode === 'edit') { toggleShapeEdit(entry); return; }
     if (mapToolMode === 'delete') { deleteShapeViaTool(entry); return; }
     if (mapToolMode === 'split') { mapToolMode = null; updateShapeToolbar(); startParcelSplit(entry); return; }
+    // Beim Setzen von Bäumen/Bienenstöcken gehört der Klick dem Setz-Werkzeug
+    // (map.on('click') in initObstbaumMap/initBienenflugMap läuft nach
+    // diesem Handler) — weder auswählen noch die Funktion wechseln, sonst
+    // setzt setActiveSegment() das Werkzeug zurück, bevor der Baum entsteht.
+    if (armedTool === 'place-tree' || armedTool === 'place-hive') return;
     // Selbst gezeichnete Flächen (Flächenzeichner) landen technisch als ganz
     // normaler Eintrag in derselben layers-Ebenenliste wie hochgeladene
-    // Shapefiles (siehe addFeatureToLayer) — ein Klick darauf soll aber
-    // direkt in den Flächenzeichner wechseln statt nur die Viewer-Tabelle zu
-    // öffnen, damit man sie dort sofort bearbeiten kann.
-    if (zeichnerParcels.some(p => p.id === entry.id)) {
+    // Shapefiles (siehe addFeatureToLayer) — ein Klick darauf in der
+    // Ansicht "Karte" wechselt direkt in den Flächenzeichner, damit man sie
+    // dort sofort bearbeiten kann. In anderen Funktionen (Obstbaum, Hofplan,
+    // Jahresvergleich …) bleibt man dagegen, wo man ist.
+    const view = document.body.dataset.view || 'viewer';
+    if ((view === 'viewer' || view === 'zeichner') && zeichnerParcels.some(p => p.id === entry.id)) {
       highlightFeature(entry);
       setActiveSegment('zeichner');
       const row = document.querySelector(`#zeichner-list [data-id="${entry.id}"]`)?.closest('.parcel-item');
@@ -6809,7 +6817,7 @@ function restoreWorkspace(data) {
   if ((data.stallplaene || []).length) {
     stallplaene = data.stallplaene.map(p => {
       const plan = structuredClone(p);
-      plan.compartments = (plan.compartments || []).map(normalizeCompartment);
+      plan.compartments = (plan.compartments || []).map(c => normalizeCompartment(c, plan.tierart));
       plan.equipment = (plan.equipment || []).map(normalizeEquipment);
       return plan;
     });
@@ -9670,26 +9678,49 @@ function benoetigteFlaecheOekoVo(kategorie, tieranzahl, avgGewichtKg) {
 // Ein Abteil kann mehrere Tier-Kategorien gleichzeitig beherbergen (z.B.
 // Kälber + Milchkühe im selben Abteil) — die benötigte Fläche je Kategorie
 // wird aufsummiert und als Ganzes gegen die gezeichnete Abteilfläche geprüft.
+// Öko-VO-Ampel erst, wenn wirklich Tiere gezählt sind (Kategorie + Anzahl) —
+// eine gerade angelegte, noch leere Tier-Zeile ist kein "✓ konform".
+function compartmentHasCountedAnimals(c) {
+  return c.tierbestand.some(tb => tb.kategorieId && tb.tieranzahl > 0);
+}
 function compartmentBenoetigteFlaeche(c) {
   return (c.tierbestand || []).reduce((sum, tb) => {
     const kategorie = OEKO_VO_KATEGORIEN.find(k => k.id === tb.kategorieId);
     return sum + (kategorie ? benoetigteFlaecheOekoVo(kategorie, tb.tieranzahl, tb.avgGewichtKg) : 0);
   }, 0);
 }
-function newTierbestandEntry() {
-  return { id: 'tb-' + Date.now() + Math.random().toString(36).slice(2), kategorieId: null, tieranzahl: 0, avgGewichtKg: null };
+// Die Tierart gehört zur einzelnen Tier-Zeile, nicht zum ganzen Stall — in
+// einem Stall (sogar in einer Bucht) können z. B. Schafe und Ziegen oder
+// Rinder und Pferde nebeneinander stehen.
+const STALLPLANER_TIERARTEN = [
+  { id: 'rinder', label: 'Rinder' },
+  { id: 'schweine', label: 'Schweine' },
+  { id: 'gefluegel', label: 'Geflügel' },
+  { id: 'schafe_ziegen', label: 'Schafe/Ziegen' },
+  { id: 'pferde', label: 'Pferde/Equiden' },
+  { id: 'kaninchen', label: 'Kaninchen' }
+];
+function newTierbestandEntry(tierart = null) {
+  return { id: 'tb-' + Date.now() + Math.random().toString(36).slice(2), tierart, kategorieId: null, tieranzahl: 0, avgGewichtKg: null };
 }
-// Rückwärtskompatibel für Stallpläne aus der ersten Version (eine einzelne
-// kategorieId/tieranzahl/avgGewichtKg-Kombination je Abteil statt einer
-// tierbestand-Liste) — greift beim Laden einer alten .json-Exportdatei oder
-// eines alten Cloud-Stands.
-function normalizeCompartment(c) {
+// Rückwärtskompatibel für Stallpläne aus früheren Versionen — greift beim
+// Laden einer alten .json-Exportdatei oder eines alten Cloud-Stands:
+//   * erste Version: eine einzelne kategorieId/tieranzahl/avgGewichtKg-
+//     Kombination je Abteil statt einer tierbestand-Liste
+//   * zweite Version: eine Tierart für den ganzen Plan (plan.tierart) statt
+//     je Tier-Zeile — wird aus der Kategorie bzw. der Plan-Tierart übernommen.
+function normalizeCompartment(c, planTierart = null) {
   if (!Array.isArray(c.tierbestand)) {
     c.tierbestand = c.kategorieId
       ? [{ id: newTierbestandEntry().id, kategorieId: c.kategorieId, tieranzahl: c.tieranzahl || 0, avgGewichtKg: c.avgGewichtKg || null }]
       : [];
   }
   delete c.kategorieId; delete c.tieranzahl; delete c.avgGewichtKg;
+  c.tierbestand.forEach(tb => {
+    if (tb.tierart) return;
+    const kategorie = OEKO_VO_KATEGORIEN.find(k => k.id === tb.kategorieId);
+    tb.tierart = kategorie ? kategorie.tierart : (typeof planTierart === 'string' ? planTierart : null);
+  });
   return c;
 }
 // Rückwärtskompatibel für Ausstattung aus der ersten Version (einzelnes
@@ -9751,7 +9782,7 @@ function activeStallplan() {
 function newStallplanId() { return 'stallplan-' + Date.now() + Math.random().toString(36).slice(2); }
 function createEmptyStallplan(name) {
   return {
-    id: newStallplanId(), name: name || 'Neuer Stallplan', tierart: null,
+    id: newStallplanId(), name: name || 'Neuer Stallplan',
     gridScale: 1, gridSnap: true, outline: null, compartments: [], equipment: [],
     updatedAt: new Date().toISOString()
   };
@@ -10176,7 +10207,10 @@ function wireStallplanVertexDrag(handleEl, kind, ownerId, index) {
     trackStallplanDrag(e, (ev) => {
       const plan = activeStallplan();
       if (!plan) return;
-      stallplanPointsFor(plan, kind, ownerId)[index] = snapStallplanPoint(stallplanSvgPoint(ev), plan);
+      const raw = stallplanSvgPoint(ev);
+      stallplanPointsFor(plan, kind, ownerId)[index] = kind === 'equipment'
+        ? snapStallplanPoint(raw, plan)
+        : snapStallplanDrawPoint(raw, plan, { exclude: { kind, id: ownerId } }).point;
       renderStallplan();
     }, () => renderStallplanerSidebar());
   });
@@ -10267,7 +10301,7 @@ function renderStallplanCompartments(plan) {
   g.innerHTML = '';
   plan.compartments.forEach(c => {
     const area = shoelaceArea(c.points) * plan.gridScale * plan.gridScale;
-    const benoetigt = c.tierbestand.length ? compartmentBenoetigteFlaeche(c) : null;
+    const benoetigt = compartmentHasCountedAnimals(c) ? compartmentBenoetigteFlaeche(c) : null;
     const compliant = benoetigt == null ? null : area >= benoetigt;
     const selfX = polygonSelfIntersects(c.points);
     const wrap = svgEl('g', {
@@ -10375,10 +10409,14 @@ function isNearStallplanDrawStart(p) {
   const start = stallplanerDrawPoints[0];
   return Math.hypot(p.x - start.x, p.y - start.y) <= stallplanScreenSize(STALLPLAN_CLOSE_TOLERANCE_PX);
 }
-function renderStallplanDrawPreview(cursor) {
+function renderStallplanDrawPreview(cursor, snapKind = null) {
   const g = document.getElementById('stallplan-draw-preview-layer');
   g.innerHTML = '';
   if (!stallplanerDrawPoints || !stallplanerDrawPoints.length) return;
+  // Zeigt, woran der Punkt eingerastet ist (Ecke, Wand, Achse).
+  if (cursor && (snapKind === 'vertex' || snapKind === 'edge' || snapKind === 'axis')) {
+    g.appendChild(svgEl('circle', { cx: cursor.x, cy: cursor.y, r: stallplanScreenSize(12), class: 'stallplan-snap-mark snap-' + snapKind }));
+  }
   const canClose = !!cursor && isNearStallplanDrawStart(cursor);
   // Statt einer offenen Linie bis zum Cursor schon die schließende Kante
   // zurück zum Startpunkt einzeichnen — dieselbe Rückmeldung, die auch
@@ -10397,6 +10435,7 @@ function renderStallplanDrawPreview(cursor) {
 
 function renderStallplan() {
   const plan = activeStallplan();
+  if (plan) syncStallplanWholeStall(plan);
   if (!plan) {
     ['stallplan-outline-layer', 'stallplan-compartments-layer', 'stallplan-equipment-layer', 'stallplan-draw-preview-layer'].forEach(id => {
       document.getElementById(id).innerHTML = '';
@@ -10688,20 +10727,215 @@ function redoStallplaner() {
 }
 
 // ---- Zeichnen-Zustandsmaschine ----
+// ---- Zeichenhilfen für Abteile (und Umriss/Ausstattung) ----
+// Einrasten in dieser Reihenfolge, jeweils im Fingerbereich
+// (STALLPLAN_SNAP_PX, zoomunabhängig):
+//   1. vorhandene Ecken von Umriss und Abteilen
+//   2. die Wände selbst (Lotfußpunkt) — auf geraden Wänden zusätzlich am
+//      Raster entlang, damit Buchtenbreiten glatte Meter bleiben
+//   3. exakt waagerecht/senkrecht zum vorherigen Punkt
+//   4. sonst das Raster (falls eingeschaltet)
+// exclude: { kind, id } der gerade bearbeiteten Form — beim Verschieben
+// einer Ecke soll sie nicht an sich selbst einrasten.
+const STALLPLAN_SNAP_PX = 18;
+function stallplanSnapShapes(plan, exclude) {
+  const shapes = [];
+  if (plan.outline && !(exclude && exclude.kind === 'outline')) shapes.push(plan.outline.points);
+  plan.compartments.forEach(c => {
+    if (c.wholeStall) return; // liegt deckungsgleich auf dem Umriss
+    if (exclude && exclude.kind === 'compartment' && exclude.id === c.id) return;
+    shapes.push(c.points);
+  });
+  return shapes;
+}
+function projectOnStallplanSegment(p, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  if (len2 < 1e-12) return { ...a };
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2));
+  return { x: a.x + dx * t, y: a.y + dy * t };
+}
+function snapStallplanDrawPoint(raw, plan, { prev = null, exclude = null } = {}) {
+  const tol = stallplanScreenSize(STALLPLAN_SNAP_PX);
+  const shapes = stallplanSnapShapes(plan, exclude);
+  let best = null, bestD = tol;
+  shapes.forEach(pts => pts.forEach(v => {
+    const d = Math.hypot(v.x - raw.x, v.y - raw.y);
+    if (d <= bestD) { bestD = d; best = { point: { x: v.x, y: v.y }, kind: 'vertex' }; }
+  }));
+  if (best) return best;
+  shapes.forEach(pts => pts.forEach((a, i) => {
+    const b = pts[(i + 1) % pts.length];
+    const q = projectOnStallplanSegment(raw, a, b);
+    const d = Math.hypot(q.x - raw.x, q.y - raw.y);
+    if (d <= bestD) { bestD = d; best = { point: q, kind: 'edge', a, b }; }
+  }));
+  if (best) {
+    const { a, b } = best;
+    if (plan.gridSnap) {
+      const eps = 1e-9;
+      if (Math.abs(a.y - b.y) < eps) best.point.x = Math.min(Math.max(Math.round(best.point.x), Math.min(a.x, b.x)), Math.max(a.x, b.x));
+      else if (Math.abs(a.x - b.x) < eps) best.point.y = Math.min(Math.max(Math.round(best.point.y), Math.min(a.y, b.y)), Math.max(a.y, b.y));
+    }
+    return { point: best.point, kind: 'edge' };
+  }
+  const p = snapStallplanPoint(raw, plan);
+  if (prev) {
+    const alignX = Math.abs(raw.x - prev.x) <= tol, alignY = Math.abs(raw.y - prev.y) <= tol;
+    if (alignY && (!alignX || Math.abs(raw.y - prev.y) <= Math.abs(raw.x - prev.x))) return { point: { x: p.x, y: prev.y }, kind: 'axis' };
+    if (alignX) return { point: { x: prev.x, y: p.y }, kind: 'axis' };
+  }
+  return { point: p, kind: plan.gridSnap ? 'grid' : null };
+}
+
+// Planare Polygon-Rechnungen über Turf (ohnehin geladen, index.html) — die
+// Rastereinheiten des Stallplans sind ein ebenes Koordinatensystem, das
+// Clipping von Turf (polygon-clipping) rechnet ebenfalls rein planar.
+function stallplanTurfPolygon(points) {
+  const ring = points.map(p => [p.x, p.y]);
+  ring.push(ring[0]);
+  return turf.polygon([ring]);
+}
+// Größtes Teilstück (Außenring) eines Turf-Ergebnisses als Punktliste.
+function stallplanPiecesFromTurf(feature) {
+  if (!feature) return [];
+  const polys = feature.geometry.type === 'Polygon' ? [feature.geometry.coordinates] : feature.geometry.coordinates;
+  return polys.map(poly => {
+    const ring = poly[0].slice(0, -1).map(([x, y]) => ({ x: Math.round(x * 1e6) / 1e6, y: Math.round(y * 1e6) / 1e6 }));
+    const dedup = ring.filter((p, i) => { const n = ring[(i + 1) % ring.length]; return Math.hypot(p.x - n.x, p.y - n.y) > 1e-6; });
+    return dedup.length >= 3 ? simplifyCollinearPoints(dedup) : null;
+  }).filter(Boolean).sort((a, b) => shoelaceArea(b) - shoelaceArea(a));
+}
+
+// Ein grob gezeichnetes Abteil passend machen: auf den Stall-Umriss
+// zuschneiden (über die Wand hinaus gezeichnet) und bereits belegte Fläche
+// anderer Abteile abziehen (Überlappung). Rückgabe { points, adjusted } oder
+// null, wenn nichts übrig bleibt (ganz außerhalb / schon belegt).
+const STALLPLAN_MIN_COMPARTMENT_M2 = 0.05;
+function fitStallplanCompartmentToStall(plan, points, excludeId = null) {
+  if (typeof turf === 'undefined' || !turf.intersect || points.length < 3 || polygonSelfIntersects(points)) {
+    return { points, adjusted: false };
+  }
+  try {
+    let shape = stallplanTurfPolygon(points);
+    if (plan.outline && plan.outline.points.length >= 3 && !polygonSelfIntersects(plan.outline.points)) {
+      shape = turf.intersect(shape, stallplanTurfPolygon(plan.outline.points));
+      if (!shape) return null;
+    }
+    for (const c of plan.compartments) {
+      if (c.id === excludeId || c.wholeStall || c.points.length < 3 || polygonSelfIntersects(c.points)) continue;
+      shape = turf.difference(shape, stallplanTurfPolygon(c.points));
+      if (!shape) return null;
+    }
+    const piece = stallplanPiecesFromTurf(shape)[0];
+    if (!piece || shoelaceArea(piece) * plan.gridScale * plan.gridScale < STALLPLAN_MIN_COMPARTMENT_M2) return null;
+    const adjusted = Math.abs(shoelaceArea(piece) - shoelaceArea(points)) > 1e-6;
+    return { points: adjusted ? piece : points, adjusted };
+  } catch (err) {
+    console.warn('Abteil konnte nicht angepasst werden', err);
+    return { points, adjusted: false };
+  }
+}
+
+// Noch nicht belegte Stallfläche (Umriss minus alle Abteile) als Teilstücke.
+function stallplanRestPieces(plan) {
+  if (!plan.outline || !plan.compartments.length || typeof turf === 'undefined' || !turf.difference) return [];
+  if (plan.compartments.some(c => c.wholeStall) || polygonSelfIntersects(plan.outline.points)) return [];
+  try {
+    let shape = stallplanTurfPolygon(plan.outline.points);
+    for (const c of plan.compartments) {
+      if (c.points.length < 3 || polygonSelfIntersects(c.points)) continue;
+      shape = turf.difference(shape, stallplanTurfPolygon(c.points));
+      if (!shape) return [];
+    }
+    return stallplanPiecesFromTurf(shape)
+      .filter(p => shoelaceArea(p) * plan.gridScale * plan.gridScale >= 0.1);
+  } catch {
+    return [];
+  }
+}
+
+function newStallplanCompartment(plan, points, overrides = {}) {
+  return {
+    id: 'abteil-' + Date.now() + Math.random().toString(36).slice(2),
+    name: `Abteil ${plan.compartments.length + 1}`,
+    points, tierbestand: [], ...overrides
+  };
+}
+
+function addStallplanRestArea() {
+  const plan = activeStallplan();
+  if (!plan) return;
+  const pieces = stallplanRestPieces(plan);
+  if (!pieces.length) { stallplanerFlash('Der ganze Stall ist schon in Abteile eingeteilt.'); return; }
+  pushStallplanerUndo();
+  pieces.forEach((points, i) => {
+    plan.compartments.push(newStallplanCompartment(plan, points, { name: pieces.length > 1 ? `Restfläche ${i + 1}` : 'Restfläche' }));
+  });
+  const m2 = pieces.reduce((s, p) => s + shoelaceArea(p), 0) * plan.gridScale * plan.gridScale;
+  renderStallplan();
+  renderStallplanerSidebar();
+  stallplanerFlash(`Restfläche mit ${m2.toFixed(1).replace('.', ',')} m² als Abteil angelegt — z. B. Futtergang. Antippen zum Umbenennen.`);
+}
+
+// ---- Abteile sind optional: der ganze Stall als eine Fläche ----
+// Viele Ställe (Mobilstall, Offenfront, Laufstall) haben keine Abteile — dann
+// ist der Umriss selbst die Stallfläche. Als eigenes, markiertes Abteil
+// (wholeStall), damit Tiere/Öko-VO-Prüfung/PDF unverändert funktionieren;
+// seine Form folgt immer dem Umriss (syncStallplanWholeStall).
+function stallplanWholeStall(plan) {
+  return plan.compartments.find(c => c.wholeStall) || null;
+}
+function syncStallplanWholeStall(plan) {
+  const c = stallplanWholeStall(plan);
+  if (c && plan.outline) c.points = plan.outline.points.map(p => ({ x: p.x, y: p.y }));
+}
+function useWholeStallAsCompartment() {
+  const plan = activeStallplan();
+  if (!plan) return;
+  if (!plan.outline) { stallplanerFlash('Erst den Umriss anlegen (Schritt 1).'); return; }
+  if (stallplanWholeStall(plan)) { setStallplanerStep('tiere'); return; }
+  const hasAnimals = plan.compartments.some(c => c.tierbestand.length);
+  if (plan.compartments.length && !confirm(`Die ${plan.compartments.length} Abteile werden durch den ganzen Stall ersetzt${hasAnimals ? ' — eingetragene Tiere werden übernommen' : ''}. Fortfahren?`)) return;
+  pushStallplanerUndo();
+  const animals = plan.compartments.flatMap(c => c.tierbestand);
+  plan.compartments = [newStallplanCompartment(plan, plan.outline.points.map(p => ({ ...p })), { name: 'Ganzer Stall', tierbestand: animals, wholeStall: true })];
+  const m2 = (shoelaceArea(plan.outline.points) * plan.gridScale * plan.gridScale).toFixed(1).replace('.', ',');
+  setStallplanerStep('tiere');
+  stallplanerFlash(`Ganzer Stall (${m2} m²) als eine Fläche — jetzt Tiere eintragen.`);
+}
+// Sobald doch einzelne Abteile entstehen sollen, macht "Ganzer Stall" Platz
+// (sonst lägen beide übereinander). false = abgebrochen.
+function releaseStallplanWholeStall(plan) {
+  const whole = stallplanWholeStall(plan);
+  if (!whole) return true;
+  if (whole.tierbestand.length && !confirm('„Ganzer Stall“ hat eingetragene Tiere. Durch einzelne Abteile ersetzen? Die Tierangaben gehen dabei verloren.')) return false;
+  plan.compartments = plan.compartments.filter(c => c !== whole);
+  return true;
+}
+
 function finishStallplanDraw() {
   const plan = activeStallplan();
   const isEquip = stallplanerMode === 'place-equipment';
   const minPoints = (isEquip && stallplanerEquipGeometryKind === 'line') ? 2 : 3;
   if (!plan || !stallplanerDrawPoints || stallplanerDrawPoints.length < minPoints) { cancelStallplanDraw(); return; }
+  let compartmentMsg = null;
+  if (stallplanerMode === 'draw-compartment') {
+    if (!releaseStallplanWholeStall(plan)) { cancelStallplanDraw(); return; }
+    const fitted = fitStallplanCompartmentToStall(plan, stallplanerDrawPoints);
+    if (!fitted) {
+      stallplanerFlash('Das Abteil liegt außerhalb des Stalls oder auf schon belegter Fläche.');
+      cancelStallplanDraw();
+      return;
+    }
+    if (fitted.adjusted) compartmentMsg = `Abteil an Stallwand/Nachbarabteile angepasst: ${(shoelaceArea(fitted.points) * plan.gridScale * plan.gridScale).toFixed(1).replace('.', ',')} m².`;
+    stallplanerDrawPoints = fitted.points;
+  }
   pushStallplanerUndo();
   if (stallplanerMode === 'draw-outline') {
     plan.outline = { points: stallplanerDrawPoints };
   } else if (stallplanerMode === 'draw-compartment') {
-    plan.compartments.push({
-      id: 'abteil-' + Date.now() + Math.random().toString(36).slice(2),
-      name: `Abteil ${plan.compartments.length + 1}`,
-      points: stallplanerDrawPoints, tierbestand: []
-    });
+    plan.compartments.push(newStallplanCompartment(plan, stallplanerDrawPoints));
   } else if (isEquip) {
     plan.equipment.push({
       id: 'eq-' + Date.now() + Math.random().toString(36).slice(2),
@@ -10723,6 +10957,7 @@ function finishStallplanDraw() {
   // dem fertigen Umriss/Abteil liegen.
   renderStallplanDrawPreview(null);
   renderStallplanerSidebar();
+  if (compartmentMsg) stallplanerFlash(compartmentMsg);
 }
 function cancelStallplanDraw() {
   stallplanerDrawPoints = null;
@@ -10773,11 +11008,12 @@ stallplanSvgEl.addEventListener('click', (e) => {
   if (stallplanDrawModeActive()) {
     const raw = stallplanSvgPoint(e);
     if (isNearStallplanDrawStart(raw)) { finishStallplanDraw(); return; }
-    const p = snapStallplanPoint(raw, plan);
+    const prev = stallplanerDrawPoints && stallplanerDrawPoints[stallplanerDrawPoints.length - 1];
+    const snap = snapStallplanDrawPoint(raw, plan, { prev });
     stallplanerDrawPoints = stallplanerDrawPoints || [];
-    stallplanerDrawPoints.push(p);
+    stallplanerDrawPoints.push(snap.point);
     renderStallplan();
-    renderStallplanDrawPreview(p);
+    renderStallplanDrawPreview(snap.point, snap.kind);
     return;
   }
   // Tipp ins Leere ohne Werkzeug hebt eine Auswahl auf (Formen selbst
@@ -10791,7 +11027,9 @@ stallplanSvgEl.addEventListener('pointermove', (e) => {
   if (e.pointerType !== 'mouse' || stallplanPointers.size > 1) return;
   if (stallplanDrawModeActive() && stallplanerDrawPoints && stallplanerDrawPoints.length) {
     const plan = activeStallplan();
-    if (plan) renderStallplanDrawPreview(snapStallplanPoint(stallplanSvgPoint(e), plan));
+    if (!plan) return;
+    const snap = snapStallplanDrawPoint(stallplanSvgPoint(e), plan, { prev: stallplanerDrawPoints[stallplanerDrawPoints.length - 1] });
+    renderStallplanDrawPreview(snap.point, snap.kind);
   }
 });
 stallplanSvgEl.addEventListener('dblclick', (e) => {
@@ -11046,13 +11284,16 @@ function stallplanerHintText(plan) {
   }
   const m2 = (pts) => (shoelaceArea(pts) * plan.gridScale * plan.gridScale).toFixed(1).replace('.', ',');
   if (stallplanerStep === 'umriss') return plan.outline ? `Stall: ${m2(plan.outline.points)} m². Weiter mit „2 Abteile" — oder „Vermessen", um Maße zu korrigieren.` : '';
-  if (stallplanerStep === 'abteile') return plan.compartments.length
-    ? 'Abteil antippen für Details. Weiter mit „3 Ausstattung" oder „4 Tiere".'
-    : '„Teilen" legt eine Buchtenreihe an, „Abteil" ein einzelnes Abteil.';
+  if (stallplanerStep === 'abteile') {
+    if (stallplanWholeStall(plan)) return 'Der ganze Stall ist eine Fläche. Für einzelne Buchten „Teilen“ oder „Abteil“.';
+    return plan.compartments.length
+      ? 'Abteil antippen für Details. Weiter mit „3 Ausstattung" oder „4 Tiere".'
+      : '„Teilen" legt Buchten an, „Abteil" ein einzelnes — ohne Abteile: „Ganzer Stall".';
+  }
   if (stallplanerStep === 'ausstattung') return '„Platzieren" antippen, Art wählen und im Plan antippen. Antippen einer Ausstattung zeigt sie an.';
   if (stallplanerStep === 'tiere') {
-    if (!plan.compartments.length) return 'Erst Abteile anlegen (Schritt 2), dann hier Tierzahlen eintragen.';
-    return isWideStallplanerLayout() ? 'Tierart und Tierzahlen links in der Abteil-Liste eintragen.' : 'Tierart und Tierzahlen unten je Abteil eintragen.';
+    if (!plan.compartments.length) return plan.outline ? 'Keine Abteile? „Ganzer Stall“ nimmt den Umriss als eine Fläche.' : 'Erst den Umriss anlegen (Schritt 1).';
+    return isWideStallplanerLayout() ? 'Links je Abteil „+ Tiere“: Tierart, Kategorie und Anzahl.' : 'Unten je Abteil „+ Tiere“: Tierart, Kategorie und Anzahl.';
   }
   return '';
 }
@@ -11079,6 +11320,9 @@ function renderStallplanerChrome() {
     'drawing': drawing,
     'create-outline': stallplanerStep === 'umriss' && !!plan && !plan.outline,
     'abteile': stallplanerStep === 'abteile',
+    // Abteile sind optional: ohne Abteile den Umriss als ganze Stallfläche
+    'whole-stall': (stallplanerStep === 'abteile' || stallplanerStep === 'tiere') && !!plan && !!plan.outline && !plan.compartments.length,
+    'rest-area': stallplanerStep === 'abteile' && !!plan && stallplanRestPieces(plan).length > 0,
     'ausstattung': stallplanerStep === 'ausstattung',
     'tiere': stallplanerStep === 'tiere',
     'geometry': stallplanerStep !== 'tiere' && hasGeometry,
@@ -11272,6 +11516,8 @@ document.querySelectorAll('#stallplaner-view [data-act]').forEach(btn => {
     else if (act === 'rect-compartment') openStallplanRectPanel('compartment');
     else if (act === 'walls-outline') openStallplanWallsPanel('outline');
     else if (act === 'walls-compartment') openStallplanWallsPanel('compartment');
+    else if (act === 'whole-stall') useWholeStallAsCompartment();
+    else if (act === 'rest-area') addStallplanRestArea();
     else if (act === 'add-compartment') {
       resetStallplanerInteraction();
       openStallplanerSheet('stallplaner-panel-add-compartment', 'Abteil hinzufügen');
@@ -11299,17 +11545,7 @@ function defaultStallplanCompartmentStart(plan) {
 // Tippen während einer Aufgabe wählt die Startecke: rastet auf die nächste
 // vorhandene Ecke (Umriss/Abteile) im Fingerbereich ein, sonst aufs Raster.
 function pickStallplanStartPoint(raw, plan) {
-  const tol = stallplanScreenSize(STALLPLAN_CLOSE_TOLERANCE_PX);
-  let best = null, bestDist = Infinity;
-  const candidates = [];
-  if (plan.outline) candidates.push(...plan.outline.points);
-  plan.compartments.forEach(c => candidates.push(...c.points));
-  candidates.forEach(p => {
-    const d = Math.hypot(p.x - raw.x, p.y - raw.y);
-    if (d < bestDist) { bestDist = d; best = p; }
-  });
-  if (best && bestDist <= tol) return { ...best };
-  return snapStallplanPoint(raw, plan);
+  return snapStallplanDrawPoint(raw, plan).point;
 }
 
 // Stellt ein im Plan-Koordinatensystem (Rastereinheiten) aus Metern
@@ -11385,15 +11621,19 @@ document.getElementById('stallplaner-rect-apply').addEventListener('click', appl
 // Übernimmt eine per Maß-Eingabe entstandene Form als Umriss bzw. neues
 // Abteil — ein Undo-Schritt, danach automatisch weiter zum nächsten Schritt.
 function commitStallplanTaskShape(plan, target, points) {
+  let adjusted = false;
+  if (target !== 'outline') {
+    if (!releaseStallplanWholeStall(plan)) return;
+    const fitted = fitStallplanCompartmentToStall(plan, points);
+    if (!fitted) { stallplanerFlash('Das Abteil liegt außerhalb des Stalls oder auf schon belegter Fläche.'); return; }
+    points = fitted.points;
+    adjusted = fitted.adjusted;
+  }
   pushStallplanerUndo();
   if (target === 'outline') {
     plan.outline = { points };
   } else {
-    plan.compartments.push({
-      id: 'abteil-' + Date.now() + Math.random().toString(36).slice(2),
-      name: `Abteil ${plan.compartments.length + 1}`,
-      points, tierbestand: []
-    });
+    plan.compartments.push(newStallplanCompartment(plan, points));
   }
   endStallplanTask();
   hideStallplanerSheet();
@@ -11404,11 +11644,11 @@ function commitStallplanTaskShape(plan, target, points) {
     fitStallplanerView();
     renderStallplan();
     renderStallplanerSidebar();
-    stallplanerFlash(`Stall mit ${areaM2} m² angelegt. Jetzt Abteile anlegen oder den Stall in Buchten teilen.`);
+    stallplanerFlash(`Stall mit ${areaM2} m² angelegt. Abteile anlegen — oder „Ganzer Stall“, wenn es keine gibt.`);
   } else {
     renderStallplan();
     renderStallplanerSidebar();
-    stallplanerFlash(`Abteil mit ${areaM2} m² angelegt.`);
+    stallplanerFlash(adjusted ? `Abteil an Stallwand/Nachbarabteile angepasst: ${areaM2} m².` : `Abteil mit ${areaM2} m² angelegt.`);
   }
 }
 
@@ -11650,6 +11890,7 @@ function applyStallplanSplit() {
   const result = parseStallplanSplitWidths(stallplanSplitTotalM(plan, task));
   if (result.error) { errorEl.textContent = result.error; errorEl.hidden = false; return; }
   const original = task.target.kind === 'compartment' ? plan.compartments.find(c => c.id === task.target.id) : null;
+  if (task.target.kind === 'outline' && !releaseStallplanWholeStall(plan)) return;
   if (original && original.tierbestand.length &&
       !confirm(`„${original.name}" hat eingetragene Tiere — beim Teilen gehen diese Angaben verloren. Trotzdem teilen?`)) return;
   pushStallplanerUndo();
@@ -11819,17 +12060,22 @@ function openStallplanerAnimalsPanel() {
 function renderStallplanAnimalsPanel() {
   const plan = activeStallplan();
   if (!plan) return;
-  document.getElementById('stallplaner-sheet-tierart').value = plan.tierart || '';
   const list = document.getElementById('stallplaner-animals-list');
   if (!plan.compartments.length) {
-    list.innerHTML = '<p class="stallplaner-panel-hint">Noch keine Abteile — erst in Schritt 2 anlegen.</p>';
+    // Abteile sind optional — ohne sie direkt den ganzen Stall belegen.
+    list.innerHTML = plan.outline
+      ? `<p class="stallplaner-panel-hint">Keine Abteile angelegt. Tiere für den ganzen Stall eintragen?</p>
+         <button type="button" class="stallplaner-big-btn primary" id="stallplaner-animals-whole-stall">
+           <span class="material-symbols-rounded icon">crop_free</span>
+           <span><strong>Ganzer Stall</strong><small>Umriss als eine Fläche nehmen</small></span>
+         </button>`
+      : '<p class="stallplaner-panel-hint">Erst den Umriss anlegen (Schritt 1).</p>';
+    const btn = document.getElementById('stallplaner-animals-whole-stall');
+    if (btn) btn.addEventListener('click', useWholeStallAsCompartment);
     return;
   }
   renderStallplanAbteilCards(list, plan, plan.compartments);
 }
-document.getElementById('stallplaner-sheet-tierart').addEventListener('change', (e) => {
-  setStallplanTierart(e.target.value || null);
-});
 
 // ---- Bildschirm anlassen, solange der Stallplaner offen ist ----
 // Wake Lock API: sonst geht das Display beim Messen mit dem Zollstock aus.
@@ -11867,9 +12113,8 @@ function renderStallplanerPlanPicker() {
 // Milchkühe im selben Abteil) — daher eine verschachtelte Liste von
 // Kategorie-Zeilen je Abteil statt nur eines einzelnen Kategorie-Felds.
 function stallplanAbteilCardHtml(plan, c) {
-  const kategorien = OEKO_VO_KATEGORIEN.filter(k => k.tierart === plan.tierart);
   const area = shoelaceArea(c.points) * plan.gridScale * plan.gridScale;
-  const benoetigt = c.tierbestand.length ? compartmentBenoetigteFlaeche(c) : null;
+  const benoetigt = compartmentHasCountedAnimals(c) ? compartmentBenoetigteFlaeche(c) : null;
   const badge = benoetigt == null ? ''
     : area >= benoetigt
       ? `<span class="stallplan-badge ok">✓ ${(area - benoetigt).toFixed(1)} m² Reserve</span>`
@@ -11877,24 +12122,29 @@ function stallplanAbteilCardHtml(plan, c) {
   const tbRows = c.tierbestand.map(tb => {
     const kategorie = OEKO_VO_KATEGORIEN.find(k => k.id === tb.kategorieId);
     const showWeight = kategorie && kategorie.indoorKgJeQm != null;
+    const kategorien = OEKO_VO_KATEGORIEN.filter(k => k.tierart === tb.tierart);
     return `
       <div class="stallplan-tb-row">
-        <select class="stallplan-tb-kategorie" data-c="${c.id}" data-tb="${tb.id}"${plan.tierart ? '' : ' disabled'}>
+        <select class="stallplan-tb-tierart" data-c="${c.id}" data-tb="${tb.id}" aria-label="Tierart">
+          <option value="">– Tierart –</option>
+          ${STALLPLANER_TIERARTEN.map(t => `<option value="${t.id}"${t.id === tb.tierart ? ' selected' : ''}>${escapeHtml(t.label)}</option>`).join('')}
+        </select>
+        <select class="stallplan-tb-kategorie" data-c="${c.id}" data-tb="${tb.id}" aria-label="Kategorie"${tb.tierart ? '' : ' disabled'}>
           <option value="">– Kategorie –</option>
           ${kategorien.map(k => `<option value="${k.id}"${k.id === tb.kategorieId ? ' selected' : ''}>${escapeHtml(k.label)}</option>`).join('')}
         </select>
         <input type="number" inputmode="numeric" min="0" class="stallplan-tb-anzahl" data-c="${c.id}" data-tb="${tb.id}" value="${tb.tieranzahl || 0}" placeholder="Tierzahl" aria-label="Tierzahl">
         ${showWeight ? `<input type="text" inputmode="decimal" class="stallplan-tb-gewicht" data-c="${c.id}" data-tb="${tb.id}" value="${tb.avgGewichtKg ? String(tb.avgGewichtKg).replace('.', ',') : ''}" placeholder="Ø-Gewicht kg" aria-label="Durchschnittsgewicht in kg">` : ''}
-        <button type="button" class="stallplan-tb-remove" data-c="${c.id}" data-tb="${tb.id}" title="Kategorie entfernen"><span class="material-symbols-rounded icon">close</span></button>
+        <button type="button" class="stallplan-tb-remove" data-c="${c.id}" data-tb="${tb.id}" title="Tiere entfernen" aria-label="Tiere entfernen"><span class="material-symbols-rounded icon">close</span></button>
       </div>`;
   }).join('');
   const selected = stallplanerSelection && stallplanerSelection.kind === 'compartment' && stallplanerSelection.id === c.id;
   return `
-    <div class="stallplan-abteil-row${selected ? ' selected' : ''}" data-id="${c.id}">
+    <div class="stallplan-abteil-row${selected ? ' selected' : ''}${c.wholeStall ? ' whole-stall' : ''}" data-id="${c.id}">
       <input type="text" class="stallplan-abteil-name" data-id="${c.id}" value="${escapeHtml(c.name)}" aria-label="Name des Abteils">
       <span class="stallplan-abteil-area">${area.toFixed(1)} m²</span>
-      <div class="stallplan-tierbestand-list">${tbRows}</div>
-      <button type="button" class="stallplan-tb-add" data-c="${c.id}"${plan.tierart ? '' : ' disabled title="Erst die Tierart wählen"'}>+ Kategorie</button>
+      <div class="stallplan-tierbestand-list">${tbRows || '<p class="stallplan-tb-empty">Noch keine Tiere eingetragen.</p>'}</div>
+      <button type="button" class="stallplan-tb-add" data-c="${c.id}"><span class="material-symbols-rounded icon">add</span> Tiere</button>
       ${badge}
       <div class="stallplan-abteil-actions">
         <button type="button" class="stallplan-abteil-act" data-card-act="measure" data-id="${c.id}"><span class="material-symbols-rounded icon">straighten</span> Maße</button>
@@ -11926,7 +12176,18 @@ function renderStallplanAbteilCards(container, plan, compartments) {
     const c = findC(btn);
     if (!c) return;
     pushStallplanerUndo();
-    c.tierbestand.push(newTierbestandEntry());
+    c.tierbestand.push(newTierbestandEntry(suggestStallplanTierart(plan, c)));
+    refreshStallplanAfterCardChange();
+  }));
+  container.querySelectorAll('.stallplan-tb-tierart').forEach(sel => sel.addEventListener('change', () => {
+    const tb = findTb(sel);
+    if (!tb) return;
+    pushStallplanerUndo();
+    tb.tierart = sel.value || null;
+    // Kategorie gehört zur alten Tierart — sonst stünde z. B. "Milchkühe"
+    // unter "Schweine".
+    const kategorie = OEKO_VO_KATEGORIEN.find(k => k.id === tb.kategorieId);
+    if (!kategorie || kategorie.tierart !== tb.tierart) { tb.kategorieId = null; tb.avgGewichtKg = null; }
     refreshStallplanAfterCardChange();
   }));
   container.querySelectorAll('.stallplan-tb-remove').forEach(btn => btn.addEventListener('click', () => {
@@ -11988,7 +12249,6 @@ function renderStallplanerSidebar() {
   const plan = activeStallplan();
   if (!plan) { renderStallplanerChrome(); return; }
   document.getElementById('stallplaner-name-input').value = plan.name;
-  document.getElementById('stallplaner-tierart-select').value = plan.tierart || '';
   document.getElementById('stallplaner-grid-scale').value = String(plan.gridScale);
   document.getElementById('stallplaner-grid-snap').checked = plan.gridSnap;
 
@@ -12007,15 +12267,16 @@ function renderStallplanerSidebar() {
   renderStallplanerChrome();
 }
 
-function setStallplanTierart(tierart) {
-  const plan = activeStallplan();
-  if (!plan) return;
-  pushStallplanerUndo();
-  plan.tierart = tierart;
-  // Kategorie-Zuordnungen gehören zur alten Tierart — ungültig geworden,
-  // zurückgesetzt statt als unsichtbare Karteileiche zu behalten.
-  plan.compartments.forEach(c => { c.tierbestand.forEach(tb => { tb.kategorieId = null; }); });
-  refreshStallplanAfterCardChange();
+// Vorschlag für eine neue Tier-Zeile: die Tierart der letzten Zeile in
+// dieser Bucht, sonst die im Stall häufigste — meist stehen gleiche Tiere
+// nebeneinander, eine andere Tierart ist aber jederzeit wählbar.
+function suggestStallplanTierart(plan, c) {
+  const own = c.tierbestand.filter(tb => tb.tierart);
+  if (own.length) return own[own.length - 1].tierart;
+  const counts = {};
+  plan.compartments.forEach(x => x.tierbestand.forEach(tb => { if (tb.tierart) counts[tb.tierart] = (counts[tb.tierart] || 0) + 1; }));
+  const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+  return best ? best[0] : null;
 }
 
 // ---- Plan-Verwaltung ----
@@ -12042,9 +12303,6 @@ document.getElementById('stallplaner-name-input').addEventListener('change', (e)
   if (!plan) return;
   plan.name = e.target.value.trim() || plan.name;
   renderStallplanerPlanPicker();
-});
-document.getElementById('stallplaner-tierart-select').addEventListener('change', (e) => {
-  setStallplanTierart(e.target.value || null);
 });
 document.getElementById('stallplaner-grid-scale').addEventListener('change', (e) => {
   const plan = activeStallplan();
@@ -12084,7 +12342,7 @@ document.getElementById('stallplaner-import-input').addEventListener('change', a
       throw new Error('Datei enthält keinen gültigen Stallplan.');
     }
     data.id = newStallplanId(); // Kollision mit vorhandener Id vermeiden
-    data.compartments = data.compartments.map(normalizeCompartment);
+    data.compartments = data.compartments.map(c => normalizeCompartment(c, data.tierart));
     data.equipment = data.equipment.map(normalizeEquipment);
     stallplaene.push(data);
     setActiveStallplan(data.id);
@@ -12093,6 +12351,52 @@ document.getElementById('stallplaner-import-input').addEventListener('change', a
     statusEl.textContent = 'Fehler: ' + (err.message || 'Datei konnte nicht geladen werden.');
   }
 });
+
+// ---- Hintergrund des Plans im PDF ----
+// Weiß (druckfreundlich, Standard) oder dunkel wie am Bildschirm. Gilt nur
+// für den Export — die Zeichenfläche selbst bleibt dunkel. Eigenes
+// Farbschema je Hintergrund (style.css .stallplaner-export-light/-dark),
+// sonst wären z. B. die hellen Beschriftungen auf Weiß unlesbar.
+const STALLPLAN_EXPORT_BG_KEY = 'feldfolio-stallplan-export-bg';
+const STALLPLAN_EXPORT_BG_COLORS = { light: '#ffffff', dark: '#10140f' };
+let stallplanExportBg = 'light';
+try { if (localStorage.getItem(STALLPLAN_EXPORT_BG_KEY) === 'dark') stallplanExportBg = 'dark'; } catch {}
+function setStallplanExportBg(bg) {
+  stallplanExportBg = bg === 'dark' ? 'dark' : 'light';
+  try { localStorage.setItem(STALLPLAN_EXPORT_BG_KEY, stallplanExportBg); } catch {}
+  updateStallplanExportBgControls();
+}
+function updateStallplanExportBgControls() {
+  document.querySelectorAll('#stallplaner-export-bg [data-bg]').forEach(b => {
+    b.setAttribute('aria-checked', String(b.getAttribute('data-bg') === stallplanExportBg));
+  });
+  document.getElementById('stallplaner-export-bg-select').value = stallplanExportBg;
+}
+document.querySelectorAll('#stallplaner-export-bg [data-bg]').forEach(b => {
+  b.addEventListener('click', () => setStallplanExportBg(b.getAttribute('data-bg')));
+});
+document.getElementById('stallplaner-export-bg-select').addEventListener('change', (e) => setStallplanExportBg(e.target.value));
+updateStallplanExportBgControls();
+
+// html2canvas zeichnet das SVG als eigenständiges Bild — dort ist die
+// Icon-Schrift der Seite nicht geladen, Ausstattungs-Symbole erschienen im
+// PDF als Text ("water_drop"). Für den Export wird die Schrift deshalb als
+// data:-URL direkt ins SVG eingebettet (einmal geladen, dann zwischengespeichert).
+let stallplanIconFontDataUrl = null;
+async function stallplanIconFontStyle() {
+  if (!stallplanIconFontDataUrl) {
+    const blob = await (await fetch(iconFontUrl)).blob();
+    stallplanIconFontDataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  }
+  const style = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+  style.textContent = `@font-face { font-family: 'Material Symbols Rounded'; font-style: normal; font-weight: 400; src: url(${stallplanIconFontDataUrl}) format('woff2'); }`;
+  return style;
+}
 
 // ---- PDF-Export (Seite 1: Plan, Seite 2: Abteilgrößen-Tabelle) ----
 async function exportStallplanPDF() {
@@ -12113,13 +12417,19 @@ async function exportStallplanPDF() {
     // rutschen (gleiches Problem wie bei Hofplans Kartenscreenshot,
     // captureHofplanScreenshot) — vor dem Capture ausgeblendet.
     const wrap = document.getElementById('stallplaner-canvas');
-    wrap.classList.add('stallplaner-exporting');
+    const themeClass = 'stallplaner-export-' + stallplanExportBg;
+    let fontStyle = null;
+    try { fontStyle = await stallplanIconFontStyle(); } catch {} // ohne Schrift: Export trotzdem
+    if (fontStyle) document.getElementById('stallplan-svg').prepend(fontStyle);
+    wrap.classList.add('stallplaner-exporting', themeClass);
     let canvas;
     try {
-      canvas = await html2canvas(wrap, { backgroundColor: '#ffffff', logging: false });
+      canvas = await html2canvas(wrap, { backgroundColor: STALLPLAN_EXPORT_BG_COLORS[stallplanExportBg], logging: false });
     } finally {
-      wrap.classList.remove('stallplaner-exporting');
+      wrap.classList.remove('stallplaner-exporting', themeClass);
+      if (fontStyle) fontStyle.remove();
     }
+    if (import.meta.env.DEV) window.__ffTestLastStallplanCanvas = canvas;
 
     const doc = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
     const pageW = doc.internal.pageSize.getWidth(), pageH = doc.internal.pageSize.getHeight();
@@ -12149,7 +12459,7 @@ async function exportStallplanPDF() {
           }).filter(Boolean).join(', ') || '–'
         : '–';
       const gesamtTierzahl = c.tierbestand.reduce((s, tb) => s + (tb.tieranzahl || 0), 0);
-      const benoetigt = c.tierbestand.length ? compartmentBenoetigteFlaeche(c) : null;
+      const benoetigt = compartmentHasCountedAnimals(c) ? compartmentBenoetigteFlaeche(c) : null;
       const status = benoetigt == null ? '–' : (area >= benoetigt ? 'OK' : 'zu klein');
       return [c.name, kategorieText, String(gesamtTierzahl), area.toFixed(1), benoetigt == null ? '–' : benoetigt.toFixed(1), status];
     });
@@ -12203,6 +12513,16 @@ if (import.meta.env.DEV) {
     // gezielten Test der Geometrie (rechtwinklige Ecken, Schlussfehler-
     // Ausgleich).
     reconstructRectilinear(points, lengths) { return reconstructPolygonFromSketch(points, lengths); },
+    // Zeichenhilfen: Einrasten und Zuschneiden direkt prüfen.
+    snap(raw, opts) { const plan = activeStallplan(); return plan ? snapStallplanDrawPoint(raw, plan, opts) : null; },
+    fitCompartment(points) { const plan = activeStallplan(); return plan ? fitStallplanCompartmentToStall(plan, points) : null; },
+    // Bildschirmposition (clientX/Y) eines Plan-Punkts — damit Tests gezielt
+    // "ein paar Pixel neben eine Wand" klicken können.
+    clientPoint(x, y) {
+      const rect = document.getElementById('stallplan-svg').getBoundingClientRect();
+      const vb = stallplanDisplayBox();
+      return { x: rect.left + ((x - vb.x) / vb.w) * rect.width, y: rect.top + ((y - vb.y) / vb.h) * rect.height };
+    },
     // Rundlauf-Test für die Workspace-Persistenz (serializeWorkspace/
     // restoreWorkspace sind modul-intern, nicht auf window) — ruft exakt
     // dieselben Funktionen auf, die auch beim echten Cloud-Speichern/Laden

@@ -318,16 +318,6 @@
       <div id="stallplaner-settings" hidden>
         <label class="compare-label" for="stallplaner-name-input">Name</label>
         <input type="text" id="stallplaner-name-input" placeholder="z.B. Milchviehstall Nord">
-        <label class="compare-label" for="stallplaner-tierart-select">Tierart</label>
-        <select id="stallplaner-tierart-select">
-          <option value="">– wählen –</option>
-          <option value="rinder">Rinder</option>
-          <option value="schweine">Schweine</option>
-          <option value="gefluegel">Geflügel</option>
-          <option value="schafe_ziegen">Schafe/Ziegen</option>
-          <option value="pferde">Pferde/Equiden</option>
-          <option value="kaninchen">Kaninchen</option>
-        </select>
 
         <div id="stallplaner-section">
           <h2>Abteile <span id="stallplaner-total-area"></span></h2>
@@ -352,6 +342,11 @@
     </div>
     <div class="tool-footer" id="stallplaner-footer" hidden>
       <div class="tool-footer-title">Exportieren</div>
+      <div class="tool-segmented" id="stallplaner-export-bg" role="radiogroup" aria-label="Hintergrund im PDF">
+        <span class="tool-segmented-label">Hintergrund</span>
+        <button type="button" role="radio" data-bg="light" aria-checked="true">Weiß</button>
+        <button type="button" role="radio" data-bg="dark" aria-checked="false">Dunkel</button>
+      </div>
       <button id="btn-export-stallplaner-pdf" class="tool-btn primary"><span class="material-symbols-rounded icon">picture_as_pdf</span>Stallplan (PDF)</button>
       <button id="btn-stallplaner-export-json" class="tool-btn"><span class="material-symbols-rounded icon">download</span>Als Datei speichern</button>
       <button id="btn-stallplaner-delete-plan" class="tool-btn danger"><span class="material-symbols-rounded icon">delete</span>Stallplan löschen</button>
@@ -835,18 +830,7 @@
       <div class="stallplaner-panel" id="stallplaner-panel-selection" hidden></div>
 
       <div class="stallplaner-panel" id="stallplaner-panel-animals" hidden>
-        <label class="stallplaner-field stallplaner-field-wide">
-          <span>Tierart</span>
-          <select id="stallplaner-sheet-tierart">
-            <option value="">– wählen –</option>
-            <option value="rinder">Rinder</option>
-            <option value="schweine">Schweine</option>
-            <option value="gefluegel">Geflügel</option>
-            <option value="schafe_ziegen">Schafe/Ziegen</option>
-            <option value="pferde">Pferde/Equiden</option>
-            <option value="kaninchen">Kaninchen</option>
-          </select>
-        </label>
+        <p class="stallplaner-panel-hint">Je Bucht Tierart, Kategorie und Anzahl eintragen — auch mehrere Tierarten in einer Bucht.</p>
         <div id="stallplaner-animals-list"></div>
       </div>
     </section>
@@ -861,6 +845,10 @@
         <button type="button" class="stallplaner-act" id="stallplaner-tool-outline" data-tool="draw-outline" data-show="create-outline"><span class="material-symbols-rounded icon">draw</span><span>Skizzieren</span></button>
         <button type="button" class="stallplaner-act" data-act="add-compartment" data-show="abteile"><span class="material-symbols-rounded icon">add</span><span>Abteil</span></button>
         <button type="button" class="stallplaner-act" data-act="split" data-show="abteile"><span class="material-symbols-rounded icon">view_week</span><span>Teilen</span></button>
+        <!-- Abteile sind optional: Umriss = ganze Stallfläche. -->
+        <button type="button" class="stallplaner-act" data-act="whole-stall" data-show="whole-stall"><span class="material-symbols-rounded icon">crop_free</span><span>Ganzer Stall</span></button>
+        <!-- Noch nicht belegte Stallfläche als Abteil (z. B. Futtergang). -->
+        <button type="button" class="stallplaner-act" data-act="rest-area" data-show="rest-area"><span class="material-symbols-rounded icon">format_color_fill</span><span>Restfläche</span></button>
         <button type="button" class="stallplaner-act" id="stallplaner-tool-equipment" data-tool="place-equipment" data-show="ausstattung"><span class="material-symbols-rounded icon">handyman</span><span>Platzieren</span></button>
         <button type="button" class="stallplaner-act" data-act="animals" data-show="tiere"><span class="material-symbols-rounded icon">pets</span><span>Tiere</span></button>
         <button type="button" class="stallplaner-act" id="stallplaner-act-pdf" data-show="tiere"><span class="material-symbols-rounded icon">picture_as_pdf</span><span>PDF</span></button>
@@ -888,6 +876,13 @@
           <label class="stallplaner-more-row">
             <span>Beim Skizzieren am Raster einrasten</span>
             <input type="checkbox" id="stallplaner-grid-snap" checked>
+          </label>
+          <label class="stallplaner-more-row">
+            <span>Hintergrund im PDF</span>
+            <select id="stallplaner-export-bg-select">
+              <option value="light">Weiß</option>
+              <option value="dark">Dunkel</option>
+            </select>
           </label>
         </div>
       </div>
