@@ -3,6 +3,7 @@ import { readLocalState, writeLocalState, deleteLocalState, readLastUser, writeL
 import { registerSW } from 'virtual:pwa-register';
 import iconFontUrl from './assets/material-symbols-rounded-subset.woff2?url';
 import { BerichtPdf, BRAND, CULTURE_COLORS, formatHa, formatPct } from './gesamtbericht.js';
+import { renderFlaechenuebersicht } from './flaechenuebersicht.js';
 import { rankBackCameras, drawScaled, rotateCanvas, defaultQuad, detectDocumentQuad, QuadTracker, quadDistance, warpDocument, applyScanFilter, SCAN_FILTERS, targetSizeForQuad } from './scan-engine.js';
 // Icon-Font selbst NICHT über das npm-Paket eingebunden (5+ MB Variable-Font
 // mit allen ~3000 Icons) — stattdessen ein auf die tatsächlich genutzten
@@ -2164,6 +2165,7 @@ function renderLayerList() {
   const ids = Object.keys(layers);
   document.getElementById('empty-hint').hidden = ids.length > 0;
   document.getElementById('layer-section-count').textContent = String(ids.length);
+  refreshFlaechenuebersichtIfOpen();
   list.innerHTML = '';
   ids.forEach(id => {
     const l = layers[id];
@@ -2521,7 +2523,7 @@ document.getElementById('btn-locate').addEventListener('click', () => {
 // Ebenen einklappbar: in "Karte" und Jahresvergleich sind sie die
 // Hauptsache (offen), in den Werkzeugen Nebensache (zu). Eigenes Auf-/
 // Zuklappen gilt für die jeweilige Ansicht bis zum Neuladen.
-const LAYERS_OPEN_BY_DEFAULT = new Set(['viewer', 'compare']);
+const LAYERS_OPEN_BY_DEFAULT = new Set(['viewer', 'compare', 'uebersicht']);
 const layersOpenByView = {};
 function applyLayerSectionState() {
   const view = document.body.dataset.view || 'viewer';
@@ -2552,6 +2554,7 @@ function markToolHintDone(view) {
 // Eine kurze Zeile unter der Funktionsauswahl: was die Funktion tut.
 const SEGMENT_CAPTIONS = {
   viewer: 'Shapefiles und GeoJSON auf der Karte ansehen',
+  uebersicht: 'Flächen und Kulturen auf einen Blick',
   compare: 'Zwei Jahre vergleichen: Zugänge, Abgänge, Änderungen',
   zeichner: 'Eigene Flächen auf der Karte zeichnen',
   obstbaum: 'Obstbäume auf der Karte erfassen',
@@ -2564,7 +2567,7 @@ const SEGMENT_CAPTIONS = {
 // Kurzer Funktionsname für die Handy-Kopfzeile (dort ist die Funktionsliste
 // in der Schublade versteckt — ohne Titel wüsste man nicht, wo man ist).
 const SEGMENT_TITLES = {
-  viewer: 'Karte', compare: 'Jahresvergleich', zeichner: 'Flächenzeichner', obstbaum: 'Obstbaumkataster',
+  viewer: 'Karte', uebersicht: 'Flächenübersicht', compare: 'Jahresvergleich', zeichner: 'Flächenzeichner', obstbaum: 'Obstbaumkataster',
   bienenflug: 'Bienenflugkarte', hofplan: 'Hofplan', terminkalender: 'Terminkalender', stallplaner: 'Stallplaner'
 };
 
@@ -2628,7 +2631,9 @@ function setActiveSegment(target) {
   // geteilten Parzellen-Karte, Stallplaner hat gar keine Karte (eigenes
   // SVG) — #map-wrap schließt sich mit beiden aus statt wie die anderen
   // Funktionen nur Layer auf derselben Karte umzuschalten.
-  document.getElementById('map-wrap').hidden = target === 'terminkalender' || target === 'stallplaner';
+  document.getElementById('map-wrap').hidden = target === 'terminkalender' || target === 'stallplaner' || target === 'uebersicht';
+  document.getElementById('uebersicht-view').hidden = target !== 'uebersicht';
+  if (target === 'uebersicht') openFlaechenuebersicht({ animate: true });
   const tkView = document.getElementById('terminkalender-view');
   tkView.hidden = target !== 'terminkalender';
   document.getElementById('stallplaner-view').hidden = target !== 'stallplaner';
@@ -4159,6 +4164,7 @@ updateShapeToolbar();
 
 function renderParcelList() {
   if (zeichnerParcels.length) markToolHintDone('zeichner');
+  refreshFlaechenuebersichtIfOpen();
   const list = document.getElementById('zeichner-list');
   document.getElementById('zeichner-empty-hint').hidden = zeichnerParcels.length > 0;
   list.innerHTML = '';
@@ -6268,6 +6274,54 @@ async function safeGesamtCapture(fn, what) {
   try { return await fn(); }
   catch (err) { console.error('Kartenbild fehlgeschlagen:', what, err); return null; }
 }
+
+// ---- Flächenübersicht (eigene Ansicht, src/flaechenuebersicht.js) ----
+// Dieselben Daten wie die Übersichtsseite der Gesamtübersicht.
+function openFlaechenuebersicht({ animate = false } = {}) {
+  const { rows, teilflaechen } = collectGesamtFlaechen();
+  const kulturen = summarizeGesamtKulturen(rows);
+  const betrieb = activeZuordnung ? activeZuordnung.betrieb : 'Kein Betrieb zugeordnet';
+  renderFlaechenuebersicht({ rows, kulturen, teilflaechen }, {
+    animate,
+    onRowClick: showFlaecheOnMap,
+    subtitle: `${betrieb} · Stand ${new Date().toLocaleDateString('de-DE')}`
+  });
+}
+// Daten geändert, während die Übersicht offen ist: neu zeichnen, ohne
+// die Einblend-Animationen zu wiederholen.
+let flaechenuebersichtRefreshTimer = null;
+function refreshFlaechenuebersichtIfOpen() {
+  if (document.body.dataset.view !== 'uebersicht') return;
+  clearTimeout(flaechenuebersichtRefreshTimer);
+  flaechenuebersichtRefreshTimer = setTimeout(() => openFlaechenuebersicht({ animate: false }), 50);
+}
+// Fläche aus der Übersicht auf der Karte zeigen.
+function showFlaecheOnMap(id) {
+  const entry = featureIndex.find(e => e.id === id);
+  if (!entry) return;
+  setActiveSegment('viewer');
+  map.invalidateSize();
+  if (entry.leafletLayer.getBounds) map.fitBounds(entry.leafletLayer.getBounds(), { padding: [60, 60], maxZoom: 17 });
+  highlightFeature(entry);
+}
+document.querySelectorAll('#uebersicht-view [data-goto]').forEach(btn => {
+  btn.addEventListener('click', () => setActiveSegment(btn.getAttribute('data-goto')));
+});
+// Die Gesamtübersicht braucht die sichtbare Karte (Luftbild-Ausschnitte) —
+// kurz zur Karte, exportieren, zurück zur Übersicht.
+document.getElementById('btn-ue-pdf').addEventListener('click', async () => {
+  setActiveSegment('viewer');
+  map.invalidateSize();
+  try { await exportKombiniertesPDF(); } finally { setActiveSegment('uebersicht'); }
+});
+document.getElementById('btn-ue-xlsx').addEventListener('click', () => {
+  const { rows } = collectGesamtFlaechen();
+  if (!rows.length) { showError('Noch keine Flächen vorhanden.'); return; }
+  const headers = ['Nr.', 'Name', 'Kulturart', 'Flächen-ID', 'Herkunft', 'Größe (ha)', 'Größe berechnet'];
+  const data = rows.map(r => [r.nummer, r.name, r.kultur || 'Ohne Angabe', r.flaechenId, r.isDrawn ? 'Gezeichnet' : r.quelle, Math.round(r.ha * 10000) / 10000, r.computed ? 'ja' : '']);
+  exportXlsx(headers, data, zuordnungFileName('Flächenliste', 'xlsx') || `Flaechenliste_${new Date().toISOString().slice(0, 10)}.xlsx`, 'Flächen');
+  document.getElementById('ue-status').textContent = 'Flächenliste als Excel gespeichert.';
+});
 
 async function exportKombiniertesPDF() {
   if (typeof html2canvas === 'undefined') { showError('Export nicht verfügbar (html2canvas konnte nicht geladen werden).'); return; }

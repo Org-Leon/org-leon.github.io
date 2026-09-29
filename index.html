@@ -102,6 +102,7 @@
          Kartenfunktion wie die übrigen. -->
     <button class="segment-btn segment-btn-wide" data-view="terminkalender" id="terminkalender-switcher" hidden><span class="material-symbols-rounded icon" aria-hidden="true">calendar_month</span><span class="segment-text"><span class="segment-label">Terminkalender</span><span class="segment-sub">Termine · Protokolle · Scans</span></span><span class="material-symbols-rounded icon segment-chevron" aria-hidden="true">chevron_right</span></button>
     <button class="segment-btn active" data-view="viewer"><span class="material-symbols-rounded icon" aria-hidden="true">map</span><span class="segment-label">Karte</span></button>
+    <button class="segment-btn" data-view="uebersicht"><span class="material-symbols-rounded icon" aria-hidden="true">donut_small</span><span class="segment-label">Flächen<wbr>übersicht</span></button>
     <button class="segment-btn" data-view="compare"><span class="material-symbols-rounded icon" aria-hidden="true">compare</span><span class="segment-label">Jahres<wbr>vergleich</span></button>
     <button class="segment-btn" data-view="zeichner"><span class="material-symbols-rounded icon" aria-hidden="true">draw</span><span class="segment-label">Flächen<wbr>zeichner</span></button>
     <button class="segment-btn" data-view="obstbaum"><span class="material-symbols-rounded icon" aria-hidden="true">park</span><span class="segment-label">Obstbaum<wbr>kataster</span></button>
@@ -152,6 +153,26 @@
       <button id="btn-export-gesamt-pdf" class="tool-btn"><span class="material-symbols-rounded icon">picture_as_pdf</span>Gesamtübersicht (PDF)</button>
       <button id="btn-export-gesamt-geojson" class="tool-btn"><span class="material-symbols-rounded icon">download</span>Alles als GeoJSON</button>
       <div id="status" class="status-line"></div>
+    </div>
+  </div>
+
+  <div class="sidebar-section" data-view="uebersicht">
+    <div class="tool-main">
+      <details class="tool-tips">
+        <summary>Was wird gezählt?</summary>
+        <ul>
+          <li>Alle Flächen aus geladenen Shapedateien und aus dem Flächenzeichner.</li>
+          <li>Größe aus der Shapedatei; fehlt sie, aus der Form berechnet (*).</li>
+          <li>Teilflächen-Ebenen zählen nicht mit — sie liegen in anderen Flächen.</li>
+          <li>Fläche in der Tabelle antippen: springt zur Karte.</li>
+        </ul>
+      </details>
+    </div>
+    <div class="tool-footer">
+      <div class="tool-footer-title">Exportieren</div>
+      <button id="btn-ue-pdf" class="tool-btn primary"><span class="material-symbols-rounded icon">picture_as_pdf</span>Gesamtübersicht (PDF)</button>
+      <button id="btn-ue-xlsx" class="tool-btn"><span class="material-symbols-rounded icon">table_view</span>Flächenliste (Excel)</button>
+      <div id="ue-status" class="status-line"></div>
     </div>
   </div>
 
@@ -646,6 +667,72 @@
      in main.js). Koordinaten in Rastereinheiten (nicht Pixel), Maßstab per
      gridScale je Plan — siehe layoutStallplanSvg()/renderStallplan() in
      main.js. -->
+<!-- ---------- Flächenübersicht ----------
+     Eigene Vollansicht (wie Terminkalender/Stallplaner) — Kennzahlen,
+     Kulturarten, Herkunft, größte Flächen, Tabelle. Inhalt rendert
+     src/flaechenuebersicht.js (renderFlaechenuebersicht), Daten wie in der
+     Gesamtübersicht (collectGesamtFlaechen in main.js). -->
+<div id="uebersicht-view" hidden>
+  <div id="uebersicht-scroll">
+    <header class="ue-head ue-anim" style="--i:0">
+      <div>
+        <h2>Flächenübersicht</h2>
+        <p id="ue-subtitle"></p>
+      </div>
+    </header>
+
+    <div id="ue-empty" class="ue-card ue-empty" hidden>
+      <span class="material-symbols-rounded icon" aria-hidden="true">donut_large</span>
+      <h3>Noch keine Flächen</h3>
+      <p>Lade eine Shapedatei (links „Karten-Datei laden“) oder zeichne Flächen im Flächenzeichner — hier erscheint dann die Übersicht.</p>
+      <button type="button" class="ue-empty-btn" data-goto="zeichner"><span class="material-symbols-rounded icon">draw</span> Zum Flächenzeichner</button>
+    </div>
+
+    <div id="ue-content">
+      <div class="ue-kpis" id="ue-kpis"></div>
+
+      <section class="ue-card ue-kultur-card ue-anim" style="--i:2">
+        <h3>Kulturarten</h3>
+        <div class="ue-kultur-layout">
+          <div class="ue-donut" id="ue-donut"></div>
+          <div class="ue-bars" id="ue-kulturen"></div>
+        </div>
+        <p class="ue-hint-line">Kultur antippen, um die Tabelle zu filtern.</p>
+      </section>
+
+      <div class="ue-grid2">
+        <section class="ue-card ue-anim" style="--i:3">
+          <h3>Herkunft der Flächen</h3>
+          <div id="ue-herkunft"></div>
+        </section>
+        <section class="ue-card ue-anim" style="--i:4">
+          <h3>Die größten Flächen</h3>
+          <ol class="ue-top" id="ue-top"></ol>
+        </section>
+      </div>
+
+      <section class="ue-card ue-anim" id="ue-table-card" style="--i:5">
+        <div class="ue-table-head">
+          <h3>Alle Flächen</h3>
+          <button type="button" id="ue-filter" class="ue-filter-chip" hidden title="Filter aufheben"></button>
+          <label class="ue-search">
+            <span class="material-symbols-rounded icon" aria-hidden="true">search</span>
+            <input type="search" id="ue-search" placeholder="Nr., Name, Kultur …" aria-label="Flächen durchsuchen">
+          </label>
+        </div>
+        <div class="ue-table-wrap">
+          <table id="ue-table">
+            <thead></thead>
+            <tbody></tbody>
+            <tfoot></tfoot>
+          </table>
+        </div>
+        <p class="ue-note" id="ue-notes" hidden></p>
+      </section>
+    </div>
+  </div>
+</div>
+
 <div id="stallplaner-view" hidden>
   <div id="stallplaner-plan-wrap">
     <!-- Schrittleiste: führt vor Ort in fester Reihenfolge durch den Plan

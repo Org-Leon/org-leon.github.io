@@ -167,11 +167,11 @@ test.describe('Seitenleiste: einheitliche Umschalter', () => {
   test('Funktionswahl: jede Kachel mit Symbol, Terminkalender nur mit Anmeldung', async ({ page }) => {
     await page.goto('/');
     const tiles = page.locator('#view-switcher .segment-btn');
-    await expect(tiles.filter({ visible: true })).toHaveCount(7);
-    expect(await page.locator('#view-switcher .segment-btn:visible .icon').count()).toBe(7);
+    await expect(tiles.filter({ visible: true })).toHaveCount(8);
+    expect(await page.locator('#view-switcher .segment-btn:visible .icon').count()).toBe(8);
     await expect(page.locator('#terminkalender-switcher')).toBeHidden();
     await page.evaluate(() => window.__ffTestTk.loginFake());
-    await expect(tiles.filter({ visible: true })).toHaveCount(8);
+    await expect(tiles.filter({ visible: true })).toHaveCount(9);
     await page.locator('#terminkalender-switcher').click();
     await expect(page.locator('#terminkalender-switcher')).toHaveClass(/active/);
     await expect(page.locator('#terminkalender-btn-save')).toHaveClass(/tool-btn/);
