@@ -2,6 +2,7 @@ import { isSupabaseConfigured, signUp, signIn, signOut, getSession, saveState, l
 import { readLocalState, writeLocalState, deleteLocalState, readLastUser, writeLastUser, addBackup, listBackups } from './offline-store.js';
 import { registerSW } from 'virtual:pwa-register';
 import iconFontUrl from './assets/material-symbols-rounded-subset.woff2?url';
+import { BerichtPdf, BRAND, CULTURE_COLORS, formatHa, formatPct } from './gesamtbericht.js';
 import { rankBackCameras, drawScaled, rotateCanvas, defaultQuad, detectDocumentQuad, QuadTracker, quadDistance, warpDocument, applyScanFilter, SCAN_FILTERS, targetSizeForQuad } from './scan-engine.js';
 // Icon-Font selbst NICHT über das npm-Paket eingebunden (5+ MB Variable-Font
 // mit allen ~3000 Icons) — stattdessen ein auf die tatsächlich genutzten
@@ -3141,10 +3142,13 @@ function exportXlsx(headers, rows, filename, sheetName) {
 // nicht bei jedem Export erneut gerendert werden muss. Feste Markenfarbe
 // (Light-Mode-Grün) statt var(--accent), da das PDF-Papier immer weiß ist,
 // unabhängig vom gerade aktiven Dark-/Hellmodus der App.
-let feldfolioLogoDataUrlPromise = null;
-function getFeldFolioLogoDataUrl() {
-  if (!feldfolioLogoDataUrlPromise) {
-    feldfolioLogoDataUrlPromise = (async () => {
+// transparent: ohne weißen Hintergrund (Wasserzeichen/Kopfzeile der
+// Gesamtübersicht, dort liegt das Logo auch über Luftbildern).
+const feldfolioLogoDataUrlPromises = {};
+function getFeldFolioLogoDataUrl({ transparent = false } = {}) {
+  const key = transparent ? 'transparent' : 'white';
+  if (!feldfolioLogoDataUrlPromises[key]) {
+    feldfolioLogoDataUrlPromises[key] = (async () => {
       if (typeof html2canvas === 'undefined') return null;
       const source = document.getElementById('brand-logo');
       if (!source) return null;
@@ -3156,11 +3160,15 @@ function getFeldFolioLogoDataUrl() {
       clone.style.padding = '6px 10px';
       clone.style.fontSize = '64px';
       clone.style.color = '#607E60';
-      clone.style.background = '#ffffff';
+      clone.style.background = transparent ? 'transparent' : '#ffffff';
+      // Am Handy blendet die Kopfzeile den Schriftzug aus (nur Apfel) — im
+      // PDF immer die volle Wortmarke "FeldFolio", ohne das "+".
+      clone.querySelectorAll('.ff-txt').forEach(el => { el.style.display = 'inline'; });
+      clone.querySelectorAll('.ff-plus').forEach(el => { el.style.display = 'none'; });
       document.body.appendChild(clone);
       try {
         if (document.fonts && document.fonts.ready) await document.fonts.ready;
-        const canvas = await html2canvas(clone, { backgroundColor: '#ffffff', scale: 2 });
+        const canvas = await html2canvas(clone, { backgroundColor: transparent ? null : '#ffffff', scale: 2 });
         return { dataUrl: canvas.toDataURL('image/png'), aspectRatio: canvas.width / canvas.height };
       } catch {
         return null;
@@ -3169,7 +3177,7 @@ function getFeldFolioLogoDataUrl() {
       }
     })();
   }
-  return feldfolioLogoDataUrlPromise;
+  return feldfolioLogoDataUrlPromises[key];
 }
 
 // Stempelt den Schriftzug klein und halbtransparent in die untere rechte Ecke
@@ -6107,12 +6115,9 @@ document.getElementById('btn-export-hofplan-uebersicht').addEventListener('click
 // ---------- Gesamtexport (Flächenzeichner + Obstbaumkataster + Hofplan) ----------
 // Kombiniert genau die Funktionen, die auch einzeln als GeoJSON exportierbar
 // sind (Bienenflugkarte hat keinen eigenen GeoJSON-Export und bleibt daher
-// hier bewusst außen vor) — einmal als eine gemeinsame .geojson-Datei,
-// einmal als ein gemeinsames PDF mit Deckblatt + einem Abschnitt je
-// Funktion. Nutzt für das PDF dieselben Seiten-Bausteine wie die einzelnen
-// Flächenkarten-Exporte (addFlaechenkartePage/addObstbaumParcelPages/
-// addObstbaumClusterPages/addHofplanUebersichtPage), nur mit einem
-// gemeinsamen jsPDF-Dokument statt je einem eigenen.
+// hier bewusst außen vor) als eine gemeinsame .geojson-Datei. Die
+// Gesamtübersicht als PDF (exportKombiniertesPDF weiter unten) hat ein
+// eigenes Layout im Markendesign (src/gesamtbericht.js).
 function exportKombiniertesGeoJSON() {
   const zeichnerFeatures = zeichnerParcels.map(p => ({
     ...cloneFeature(p.leafletLayer.feature),
@@ -6137,10 +6142,90 @@ function exportKombiniertesGeoJSON() {
 }
 document.getElementById('btn-export-gesamt-geojson').addEventListener('click', exportKombiniertesGeoJSON);
 
+// ---- Gesamtübersicht als PDF (Markendesign, siehe src/gesamtbericht.js) ----
+// Aufbau: Deckblatt mit Inhalt → Flächenübersicht (Summen, Kulturen) →
+// Flächenliste (alle Flächen aus Shapedateien + gezeichnete) → Flächenkarten
+// (nur Flächenzeichner) → Obstbaumkataster → Bienenflugkarte → Hofplan.
+// Abschnitte ohne Inhalt entfallen.
+
+// Alle Flächen für Übersicht und Tabelle. Teilflächen-Ebenen liegen
+// innerhalb anderer Flächen und würden die Summe doppelt zählen — sie
+// werden nur gezählt und auf der Übersicht erwähnt. Größe aus dem
+// Shapedatei-Attribut; fehlt es, aus der Geometrie berechnet (markiert).
+function collectGesamtFlaechen() {
+  const treeLists = computeObstbaumParcelTreeLists();
+  const drawnIds = new Set(zeichnerParcels.map(p => p.id));
+  const rows = [];
+  let teilflaechen = 0;
+  featureIndex.forEach(e => {
+    if (e.isTeilflaechen) { teilflaechen++; return; }
+    const isDrawn = drawnIds.has(e.id);
+    let ha = parseFloat(String(e.groesse).replace(',', '.'));
+    let computed = false;
+    if (!Number.isFinite(ha)) {
+      computed = true;
+      ha = isDrawn && Number.isFinite(e.areaHa) ? e.areaHa : 0;
+      if (!ha) { try { ha = turf.area(e.leafletLayer.feature || e.leafletLayer.toGeoJSON()) / 10000; } catch { ha = 0; } }
+    }
+    rows.push({
+      id: e.id,
+      nummer: e.nummer ? String(e.nummer) : '',
+      name: e.featName || '',
+      kultur: (e.kultur || '').trim(),
+      flaechenId: e.flaechenId || '',
+      quelle: isDrawn ? 'Gezeichnet' : e.layerName,
+      isDrawn, ha, computed,
+      trees: (treeLists.get(e.id) || []).length
+    });
+  });
+  rows.sort((a, b) => (a.isDrawn - b.isDrawn) || a.quelle.localeCompare(b.quelle) ||
+    a.nummer.localeCompare(b.nummer, undefined, { numeric: true }));
+  return { rows, teilflaechen, treeLists };
+}
+
+// Kulturen summiert, größte zuerst, mit fester Farbe je Kultur (dieselbe in
+// Balken, Tabelle und Legenden). Mehr als 10 Kulturen: Rest zusammengefasst.
+function summarizeGesamtKulturen(rows) {
+  const byKultur = new Map();
+  rows.forEach(r => {
+    const key = r.kultur || 'Ohne Angabe';
+    const cur = byKultur.get(key) || { label: key, value: 0, count: 0 };
+    cur.value += r.ha;
+    cur.count++;
+    byKultur.set(key, cur);
+  });
+  const sorted = [...byKultur.values()].sort((a, b) => b.value - a.value);
+  const colorOf = new Map();
+  sorted.forEach((k, i) => colorOf.set(k.label, k.label === 'Ohne Angabe' ? '#B8BFB2' : CULTURE_COLORS[i % CULTURE_COLORS.length]));
+  sorted.forEach(k => { k.color = colorOf.get(k.label); });
+  let shown = sorted;
+  if (sorted.length > 10) {
+    const rest = sorted.slice(9);
+    shown = [...sorted.slice(0, 9), { label: `Weitere (${rest.length} Kulturen)`, value: rest.reduce((s, k) => s + k.value, 0), count: rest.reduce((s, k) => s + k.count, 0), color: '#B8BFB2' }];
+  }
+  return { all: sorted, shown, colorOf };
+}
+
+function gesamtFlaecheLabel(r) {
+  return [r.nummer, r.name].filter(Boolean).join(' – ') || 'Ohne Bezeichnung';
+}
+
+// Karte vorbereiten/zurücksetzen: je Kartenseite nur die jeweils passenden
+// Inhalte (keine 3-km-Kreise auf Flächenkarten, keine Bäume im Lageplan).
+function setGesamtMapOverlays({ trees = false, hives = false } = {}) {
+  if (obstbaumLayerGroup) { if (trees) obstbaumLayerGroup.addTo(map); else map.removeLayer(obstbaumLayerGroup); }
+  if (bienenflugLayerGroup) { if (hives) bienenflugLayerGroup.addTo(map); else map.removeLayer(bienenflugLayerGroup); }
+}
+async function safeGesamtCapture(fn, what) {
+  try { return await fn(); }
+  catch (err) { console.error('Kartenbild fehlgeschlagen:', what, err); return null; }
+}
+
 async function exportKombiniertesPDF() {
   if (typeof html2canvas === 'undefined') { showError('Export nicht verfügbar (html2canvas konnte nicht geladen werden).'); return; }
   if (typeof window.jspdf === 'undefined') { showError('Export nicht verfügbar (jsPDF konnte nicht geladen werden).'); return; }
-  if (!zeichnerParcels.length && !obstbaumTrees.length && !hofplanShapes.length) {
+  const { rows, teilflaechen, treeLists } = collectGesamtFlaechen();
+  if (!rows.length && !obstbaumTrees.length && !hofplanShapes.length && !bienenflugPoints.length) {
     showError('Noch keine Inhalte zum Exportieren vorhanden.');
     return;
   }
@@ -6153,12 +6238,9 @@ async function exportKombiniertesPDF() {
   const savedCenter = map.getCenter();
   const savedZoom = map.getZoom();
   const savedBasemap = currentBasemap;
-  // Alle Ebenen (inkl. der Flächenzeichner-Ebene, die wie jede andere Fläche
-  // Teil von layers{} ist) und die Hofplan-Ebene ausblenden — jeder Abschnitt
-  // zeigt sonst zusätzlich noch die farbig gefüllten Formen der jeweils
-  // ANDEREN Funktionen im Hintergrund. Baumpunkte (obstbaumLayerGroup) sind
-  // bewusst NICHT Teil von layers{} und bleiben daher sichtbar.
   const visibleLayerIds = Object.keys(layers).filter(id => layers[id].visible);
+  const treesWereVisible = !!obstbaumLayerGroup && map.hasLayer(obstbaumLayerGroup);
+  const hivesWereVisible = !!bienenflugLayerGroup && map.hasLayer(bienenflugLayerGroup);
   visibleLayerIds.forEach(id => map.removeLayer(layers[id].leafletLayer));
   if (hofplanLayerGroup) map.removeLayer(hofplanLayerGroup);
   if (armedTool === 'draw-hofplan-rect' && hofplanDrawRect) hofplanDrawRect.disable();
@@ -6167,84 +6249,229 @@ async function exportKombiniertesPDF() {
   if (currentBasemap !== 'satellite') setBasemap('satellite');
   map.removeControl(map.zoomControl);
 
-  const doc = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
-  const pageW = doc.internal.pageSize.getWidth();
-  const pageH = doc.internal.pageSize.getHeight();
-  const margin = 12;
-
   try {
-    // Deckblatt
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(20);
-    doc.text('FeldFolio – Gesamtübersicht', margin, margin + 12);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(12);
-    doc.text(activeZuordnung ? activeZuordnung.betrieb : 'Kein Betrieb zugeordnet', margin, margin + 22);
-    doc.text(new Date().toLocaleDateString('de-DE'), margin, margin + 29);
-    doc.setFontSize(11);
-    let sy = margin + 42;
-    if (zeichnerParcels.length) { doc.text(`${zeichnerParcels.length} gezeichnete Fläche(n)`, margin, sy); sy += 7; }
-    if (obstbaumTrees.length) { doc.text(`${obstbaumTrees.length} Baum/Bäume`, margin, sy); sy += 7; }
-    if (hofplanShapes.length) { doc.text(`${hofplanShapes.length} Gebäude`, margin, sy); sy += 7; }
+    setStatus('Gesamtübersicht wird erstellt …');
+    const logo = await getFeldFolioLogoDataUrl({ transparent: true });
+    const betrieb = activeZuordnung ? activeZuordnung.betrieb : 'Kein Betrieb zugeordnet';
+    const datum = new Date().toLocaleDateString('de-DE', { day: '2-digit', month: 'long', year: 'numeric' });
+    const b = new BerichtPdf({ betrieb, datum, logo });
+    const M = b.M, W = b.W;
 
-    let pageIdx = 1; // Deckblatt zählt bereits als erste Seite
+    const totalHa = rows.reduce((s, r) => s + r.ha, 0);
+    const kulturen = summarizeGesamtKulturen(rows);
+    const drawnRows = rows.filter(r => r.isDrawn);
 
-    if (zeichnerParcels.length) {
-      doc.addPage('a4', 'landscape');
-      pageIdx++;
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(16);
-      doc.text('Flächenzeichner', margin, margin + 6);
-      for (let i = 0; i < zeichnerParcels.length; i++) {
-        const p = zeichnerParcels[i];
-        setStatus(`Gesamtexport … Flächenzeichner (${i + 1}/${zeichnerParcels.length})`);
-        let canvas;
-        try {
-          canvas = await captureParcelScreenshot(map, basemaps.satellite, 'map', p.leafletLayer.toGeoJSON());
-        } catch (err) {
-          console.error('Kartenbild-Erfassung fehlgeschlagen für', p.nummer, err);
-          showError('Kartenbild konnte nicht erfasst werden (evtl. CORS-Einschränkung der Kachel-Quelle).');
-          return;
-        }
-        // Immer eine neue Seite, auch beim ersten Durchlauf — die aktuelle
-        // Seite trägt bereits die Abschnitts-Überschrift, addFlaechenkartePage
-        // schreibt sonst ihren eigenen Titel darüber (Überlappung).
-        doc.addPage('a4', 'landscape');
-        pageIdx++;
-        addFlaechenkartePage(doc, pageW, pageH, margin, canvas, {
-          nummer: p.nummer, featName: p.featName, groesse: String(p.areaHa), kultur: p.kultur, flaechenId: ''
+    // ---- Deckblatt ----
+    const highlights = [];
+    if (rows.length) {
+      highlights.push({ value: `${formatHa(totalHa)} ha`, label: `Gesamtfläche · ${rows.length} ${rows.length === 1 ? 'Fläche' : 'Flächen'}` });
+      highlights.push({ value: String(kulturen.all.filter(k => k.label !== 'Ohne Angabe').length), label: 'Kulturarten' });
+    }
+    if (obstbaumTrees.length) highlights.push({ value: String(obstbaumTrees.length), label: 'Obstbäume im Kataster' });
+    if (bienenflugPoints.length) highlights.push({ value: String(bienenflugPoints.length), label: bienenflugPoints.length === 1 ? 'Bienenstock' : 'Bienenstöcke' });
+    if (hofplanShapes.length) highlights.push({ value: String(hofplanShapes.length), label: 'Gebäude im Hofplan' });
+    b.cover({ title: 'Gesamtübersicht', subtitle: 'Flächen, Kulturen und Karten des Betriebs', highlights: highlights.slice(0, 6) });
+
+    // ---- Flächenübersicht ----
+    if (rows.length) {
+      let y = b.addPage('Flächenübersicht', 'Summen über alle Flächen aus Shapedateien und Flächenzeichner', { section: 'Flächenübersicht' });
+      const tiles = [
+        { label: 'Gesamtfläche', value: formatHa(totalHa), unit: 'ha', sub: `${rows.length} ${rows.length === 1 ? 'Fläche' : 'Flächen'}` },
+        { label: 'Kulturarten', value: String(kulturen.all.filter(k => k.label !== 'Ohne Angabe').length), sub: kulturen.all[0] ? `größte: ${kulturen.all[0].label}` : '' },
+        { label: 'Ø Flächengröße', value: formatHa(totalHa / rows.length), unit: 'ha' }
+      ];
+      if (drawnRows.length) tiles.push({ label: 'Davon gezeichnet', value: formatHa(drawnRows.reduce((s, r) => s + r.ha, 0)), unit: 'ha', sub: `${drawnRows.length} ${drawnRows.length === 1 ? 'Fläche' : 'Flächen'}` });
+      if (obstbaumTrees.length) tiles.push({ label: 'Obstbäume', value: String(obstbaumTrees.length) });
+      y = b.kpiTiles(y, tiles) + 10;
+
+      y = b.sectionHeading('Flächenanteile nach Kulturart', M, y);
+      y = b.stackedBar(M, y, W - M * 2, 6, kulturen.shown, totalHa) + 9;
+
+      const leftW = (W - M * 2) * 0.62;
+      const rightX = M + leftW + 10;
+      const rightW = W - M - rightX;
+      const listTop = y;
+      b.sectionHeading('Kulturarten summiert', M, listTop);
+      b.barList(M, listTop + 8, leftW, kulturen.shown, totalHa);
+
+      // Herkunft: je Shapedatei (Ebene) und gezeichnete Flächen
+      const bySource = new Map();
+      rows.forEach(r => {
+        const cur = bySource.get(r.quelle) || { n: 0, ha: 0 };
+        cur.n++; cur.ha += r.ha;
+        bySource.set(r.quelle, cur);
+      });
+      const sourceRows = [...bySource.entries()].map(([quelle, s]) => ({
+        label: quelle === 'Gezeichnet' ? 'Flächenzeichner' : quelle,
+        value: `${s.n} ${s.n === 1 ? 'Fläche' : 'Flächen'} · ${formatHa(s.ha)} ha`
+      }));
+      let py = b.infoPanel(rightX, listTop - 4, rightW, 'Herkunft der Flächen', sourceRows) + 5;
+      const notes = [];
+      if (rows.some(r => r.computed)) notes.push('Größen ohne Angabe in der Shapedatei wurden aus der Geometrie berechnet (in der Flächenliste mit * markiert).');
+      if (teilflaechen) notes.push(`${teilflaechen} Teilfläche(n) aus Teilflächen-Ebenen sind in den Summen nicht enthalten, da sie innerhalb anderer Flächen liegen.`);
+      notes.forEach(n => { py = b.note(n, rightX, py + 3, rightW) + 1; });
+      if (rows.length > 1) {
+        const top = [...rows].sort((a, c) => c.ha - a.ha).slice(0, 5);
+        b.sectionHeading('Die größten Flächen', rightX, py + 7);
+        b.doc.autoTable({
+          body: top.map(r => [gesamtFlaecheLabel(r), r.kultur || 'Ohne Angabe', formatHa(r.ha) + ' ha']),
+          startY: py + 10,
+          margin: { left: rightX, right: M, top: b.contentTop, bottom: 18 },
+          theme: 'plain',
+          styles: { fontSize: 8.5, textColor: BRAND.text, cellPadding: 1.8, lineWidth: 0 },
+          alternateRowStyles: { fillColor: BRAND.tintLight },
+          columnStyles: { 0: { fontStyle: 'bold' }, 2: { halign: 'right', cellWidth: 22 } },
+          pageBreak: 'avoid'
         });
       }
+
+      // ---- Flächenliste ----
+      const withTrees = obstbaumTrees.length > 0;
+      const head = [['Nr.', 'Name', 'Kulturart', 'Flächen-ID', 'Herkunft', ...(withTrees ? ['Bäume'] : []), 'Größe (ha)']];
+      const body = rows.map(r => [
+        r.nummer || '–', r.name || '–', r.kultur || 'Ohne Angabe', r.flaechenId || '–',
+        r.isDrawn ? 'Gezeichnet' : r.quelle,
+        ...(withTrees ? [r.trees ? String(r.trees) : '–'] : []),
+        formatHa(r.ha) + (r.computed ? '*' : '')
+      ]);
+      const right = (content) => ({ content, styles: { halign: 'right' } });
+      const foot = [['', `Summe (${rows.length} Flächen)`, '', '', '', ...(withTrees ? [right(String(rows.reduce((s, r) => s + r.trees, 0)))] : []), right(formatHa(totalHa))]];
+      const kulturCol = 2;
+      const lastCol = head[0].length - 1;
+      const columnStyles = { 0: { cellWidth: 20 }, [kulturCol]: { cellPadding: { top: 2.2, bottom: 2.2, left: 7, right: 2.5 } }, [lastCol]: { halign: 'right', cellWidth: 26 } };
+      if (withTrees) columnStyles[lastCol - 1] = { halign: 'right', cellWidth: 16 };
+      b.table({
+        title: 'Flächenliste', subtitle: `${rows.length} Flächen · ${formatHa(totalHa)} ha`, section: 'Flächenliste',
+        head, body, foot, columnStyles,
+        didDrawCell: (data) => {
+          // Farbfeld der Kultur (wie in der Übersicht) vor dem Namen
+          if (data.section !== 'body' || data.column.index !== kulturCol) return;
+          const color = kulturen.colorOf.get(data.cell.raw) || '#B8BFB2';
+          b.doc.setFillColor(color);
+          b.doc.rect(data.cell.x + 2.5, data.cell.y + data.cell.height / 2 - 1.4, 2.8, 2.8, 'F');
+        }
+      });
     }
 
+    // ---- Flächenkarten: nur Flächen aus dem Flächenzeichner ----
+    setGesamtMapOverlays({ trees: false, hives: false });
+    for (let i = 0; i < drawnRows.length; i++) {
+      const r = drawnRows[i];
+      const parcel = zeichnerParcels.find(p => p.id === r.id);
+      setStatus(`Gesamtübersicht … Flächenkarten (${i + 1}/${drawnRows.length})`);
+      const canvas = parcel ? await safeGesamtCapture(() => captureParcelScreenshot(map, basemaps.satellite, 'map', parcel.leafletLayer.toGeoJSON()), r.nummer) : null;
+      const panel = [
+        { label: 'Größe', value: `${formatHa(r.ha)} ha`, bold: true },
+        { label: 'Kulturart', value: r.kultur || 'Ohne Angabe' }
+      ];
+      if (r.name) panel.unshift({ label: 'Name', value: r.name });
+      if (r.trees) panel.push({ label: 'Obstbäume', value: String(r.trees) });
+      panel.push({ label: 'Anteil an Gesamtfläche', value: formatPct(r.ha, totalHa) });
+      b.mapPage(`Flächenkarte · ${gesamtFlaecheLabel(r)}`, 'Gezeichnete Fläche auf dem Luftbild', canvas,
+        `Fläche ${r.nummer || i + 1}`, panel, { section: i === 0 ? 'Flächenkarten (Flächenzeichner)' : null });
+    }
+
+    // ---- Obstbaumkataster ----
     if (obstbaumTrees.length) {
-      doc.addPage('a4', 'landscape');
-      pageIdx++;
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(16);
-      doc.text('Obstbaumkataster', margin, margin + 6);
-      const grandTotal = new Map();
-      if (featureIndex.length) {
-        const treeLists = computeObstbaumParcelTreeLists();
-        const parcelsWithTrees = featureIndex
-          .filter(p => treeLists.has(p.id))
-          .sort((a, b) => String(a.nummer).localeCompare(String(b.nummer), undefined, { numeric: true }));
-        pageIdx = await addObstbaumParcelPages(doc, parcelsWithTrees, treeLists, pageW, pageH, margin, pageIdx, grandTotal);
-        const unassigned = obstbaumTrees.filter(t => !t.parcelId);
-        if (unassigned.length) {
-          const clusters = clusterTrees(unassigned, TREE_VISIBILITY_RADIUS);
-          pageIdx = await addObstbaumClusterPages(doc, clusters, pageW, pageH, margin, pageIdx, grandTotal, 'Nicht zugeordnet');
+      const totals = new Map();
+      obstbaumTrees.forEach(t => totals.set(t.art, (totals.get(t.art) || 0) + 1));
+      const fruitItems = [...totals.entries()].sort((a, c) => c[1] - a[1])
+        .map(([key, n]) => ({ label: fruitOf(key).label, value: n, color: fruitOf(key).color }));
+      let y = b.addPage('Obstbaumkataster', `${obstbaumTrees.length} Bäume · ${fruitItems.length} Obstarten`, { section: 'Obstbaumkataster' });
+      const leftW = (W - M * 2) * 0.45;
+      b.sectionHeading('Bäume nach Obstart', M, y + 2);
+      b.barList(M, y + 10, leftW, fruitItems, obstbaumTrees.length, { valueFmt: (v) => `${v} ${v === 1 ? 'Baum' : 'Bäume'}` });
+
+      // Bäume je Fläche (mit Flächenbezug) + ohne Fläche
+      const parcelRows = [];
+      treeLists.forEach((trees, parcelId) => {
+        const entry = featureIndex.find(e => e.id === parcelId);
+        if (!entry) return;
+        const counts = new Map();
+        trees.forEach(t => counts.set(t.art, (counts.get(t.art) || 0) + 1));
+        parcelRows.push([
+          [entry.nummer, entry.featName].filter(Boolean).join(' – ') || 'Ohne Bezeichnung',
+          entry.kultur || '–',
+          [...counts.entries()].map(([k, n]) => `${fruitOf(k).label} ${n}`).join(' · '),
+          String(trees.length)
+        ]);
+      });
+      parcelRows.sort((a, c) => a[0].localeCompare(c[0], undefined, { numeric: true }));
+      const unassigned = obstbaumTrees.filter(t => !t.parcelId);
+      if (unassigned.length) {
+        const counts = new Map();
+        unassigned.forEach(t => counts.set(t.art, (counts.get(t.art) || 0) + 1));
+        parcelRows.push(['Ohne Flächenbezug', '–', [...counts.entries()].map(([k, n]) => `${fruitOf(k).label} ${n}`).join(' · '), String(unassigned.length)]);
+      }
+      const tableX = M + leftW + 10;
+      b.sectionHeading('Bäume je Fläche', tableX, y + 2);
+      b.doc.autoTable({
+        head: [['Fläche', 'Kulturart', 'Obstarten', 'Bäume']],
+        body: parcelRows,
+        startY: y + 6,
+        margin: { top: b.contentTop, bottom: 18, left: tableX, right: M },
+        theme: 'plain',
+        styles: { fontSize: 8.5, textColor: BRAND.text, cellPadding: 2, lineWidth: 0 },
+        headStyles: { fillColor: BRAND.green, textColor: BRAND.white, fontStyle: 'bold', lineWidth: 0 },
+        alternateRowStyles: { fillColor: BRAND.tintLight },
+        columnStyles: { 3: { halign: 'right', cellWidth: 14 } },
+        didDrawPage: (data) => { if (data.pageNumber > 1) b.drawHeader('Obstbaumkataster (Fortsetzung)'); }
+      });
+
+      // Kartenseiten: je Fläche mit Bäumen (eng gezoomte Ausschnitte), dann
+      // Bäume ohne Fläche als geografische Gruppen.
+      setGesamtMapOverlays({ trees: true, hives: false });
+      const legendFor = (trees) => {
+        const counts = new Map();
+        trees.forEach(t => counts.set(t.art, (counts.get(t.art) || 0) + 1));
+        return [...counts.entries()].map(([k, n]) => ({ label: `${fruitOf(k).label}: ${n}`, color: fruitOf(k).color, round: true }));
+      };
+      const parcelsWithTrees = featureIndex.filter(e => treeLists.has(e.id))
+        .sort((a, c) => String(a.nummer).localeCompare(String(c.nummer), undefined, { numeric: true }));
+      for (let i = 0; i < parcelsWithTrees.length; i++) {
+        const entry = parcelsWithTrees[i];
+        const trees = treeLists.get(entry.id);
+        const clusters = clusterTrees(trees, TREE_VISIBILITY_RADIUS);
+        for (let j = 0; j < clusters.length; j++) {
+          setStatus(`Gesamtübersicht … Obstbaumkataster (${i + 1}/${parcelsWithTrees.length})`);
+          const canvas = await safeGesamtCapture(() => captureTreeClusterScreenshot(map, basemaps.satellite, 'map', entry.leafletLayer.feature, clusters[j].map(t => t.latlng)), entry.nummer);
+          const label = [entry.nummer, entry.featName].filter(Boolean).join(' – ') || 'Fläche';
+          const part = clusters.length > 1 ? ` · Ausschnitt ${j + 1}/${clusters.length}` : '';
+          b.mapPage(`Obstbäume · ${label}${part}`, `Verknüpft mit Fläche ${label}${entry.kultur ? ' · ' + entry.kultur : ''}`, canvas,
+            `${clusters[j].length} ${clusters[j].length === 1 ? 'Baum' : 'Bäume'}`,
+            [{ label: 'Fläche', value: label }, ...(entry.kultur ? [{ label: 'Kulturart', value: entry.kultur }] : []), ...legendFor(clusters[j])]);
         }
-      } else {
-        const clusters = clusterTrees(obstbaumTrees, TREE_VISIBILITY_RADIUS);
-        pageIdx = await addObstbaumClusterPages(doc, clusters, pageW, pageH, margin, pageIdx, grandTotal, '');
+      }
+      const groups = clusterTrees(unassigned, TREE_VISIBILITY_RADIUS);
+      for (let i = 0; i < groups.length; i++) {
+        setStatus(`Gesamtübersicht … Obstbäume ohne Fläche (${i + 1}/${groups.length})`);
+        const canvas = await safeGesamtCapture(() => captureTreeClusterScreenshot(map, basemaps.satellite, 'map', null, groups[i].map(t => t.latlng)), 'Gruppe ' + (i + 1));
+        b.mapPage(`Obstbäume ohne Flächenbezug · Gruppe ${i + 1}`, 'Bäume, die keiner geladenen Fläche zugeordnet sind', canvas,
+          `${groups[i].length} ${groups[i].length === 1 ? 'Baum' : 'Bäume'}`, legendFor(groups[i]));
       }
     }
 
+    // ---- Bienenflugkarte ----
+    if (bienenflugPoints.length) {
+      setGesamtMapOverlays({ trees: false, hives: true });
+      for (let i = 0; i < bienenflugPoints.length; i++) {
+        const entry = bienenflugPoints[i];
+        setStatus(`Gesamtübersicht … Bienenflugkarte (${i + 1}/${bienenflugPoints.length})`);
+        const canvas = await safeGesamtCapture(() => captureBeehiveScreenshot(entry), 'Bienenstock ' + entry.nummer);
+        const title = entry.name ? `${entry.name} (Bienenstock ${entry.nummer})` : `Bienenstock ${entry.nummer}`;
+        b.mapPage(`Bienenflugkarte · ${title}`, 'Theoretischer Flugradius 3 km um den Standort', canvas, `Bienenstock ${entry.nummer}`, [
+          ...(entry.name ? [{ label: 'Name', value: entry.name }] : []),
+          { label: 'Koordinaten', value: `${entry.latlng.lat.toFixed(5)}, ${entry.latlng.lng.toFixed(5)}` },
+          { label: 'Flugradius', value: '3 km (theoretisch)' },
+          { label: 'Radius auf der Karte', color: '#E0A93B', round: true }
+        ], { section: i === 0 ? 'Bienenflugkarte' : null });
+      }
+    }
+
+    // ---- Hofplan ----
     if (hofplanShapes.length) {
-      doc.addPage('a4', 'landscape');
-      pageIdx++;
-      setStatus('Gesamtexport … Hofplan');
+      setGesamtMapOverlays({ trees: false, hives: false });
+      setStatus('Gesamtübersicht … Hofplan');
       const fc = {
         type: 'FeatureCollection',
         features: hofplanShapes.map(s => ({
@@ -6253,26 +6480,55 @@ async function exportKombiniertesPDF() {
           properties: { kategorie: s.kategorie, farbe: hofplanEffectiveColor(s), label: hofplanLabelText(s) }
         }))
       };
-      let canvas;
-      try {
-        canvas = await captureHofplanScreenshot(map, basemaps.satellite, 'map', fc);
-      } catch (err) {
-        console.error('Kartenbild-Erfassung für Hofplan fehlgeschlagen', err);
-        showError('Kartenbild konnte nicht erfasst werden (evtl. CORS-Einschränkung der Kachel-Quelle).');
-        return;
-      }
-      addHofplanUebersichtPage(doc, pageW, pageH, margin, canvas, computeHofplanLegend());
+      const canvas = await safeGesamtCapture(() => captureHofplanScreenshot(map, basemaps.satellite, 'map', fc), 'Hofplan');
+      const totalQm = hofplanShapes.reduce((s, x) => s + (x.areaQm || 0), 0);
+      const HOFPLAN_PANEL_MAX = 16;
+      const sortedShapes = [...hofplanShapes].sort((a, c) => (c.areaQm || 0) - (a.areaQm || 0));
+      const shapeRow = (s) => ({ label: `${s.name || s.kategorie || 'Gebäude'} · ${Math.round(s.areaQm || 0).toLocaleString('de-DE')} m²`, color: hofplanEffectiveColor(s) });
+      const panelRows = hofplanShapes.length <= HOFPLAN_PANEL_MAX
+        ? [...sortedShapes.map(shapeRow), { label: 'Grundfläche gesamt', value: `${Math.round(totalQm).toLocaleString('de-DE')} m²`, bold: true }]
+        : computeHofplanLegend().map(l => ({ label: l.label, color: l.color }));
+      b.mapPage('Hofplan · Lageplan', `${hofplanShapes.length} Gebäude · ${Math.round(totalQm).toLocaleString('de-DE')} m² Grundfläche`, canvas,
+        hofplanShapes.length <= HOFPLAN_PANEL_MAX ? 'Gebäude' : 'Legende', panelRows, { section: 'Hofplan' });
+      if (hofplanShapes.length > HOFPLAN_PANEL_MAX) b.table({
+        title: 'Hofplan · Gebäude', subtitle: `${hofplanShapes.length} Gebäude`,
+        head: [['Gebäudetyp', 'Name', 'Grundfläche (m²)']],
+        body: hofplanShapes.map(s => [s.kategorie || 'Ohne Typ', s.name || '–', Math.round(s.areaQm || 0).toLocaleString('de-DE')]),
+        foot: [['Summe', '', { content: Math.round(totalQm).toLocaleString('de-DE'), styles: { halign: 'right' } }]],
+        columnStyles: { 2: { halign: 'right', cellWidth: 40 } },
+        didDrawCell: (data) => {
+          if (data.section !== 'body' || data.column.index !== 0) return;
+          const s = hofplanShapes[data.row.index];
+          if (!s) return;
+          b.doc.setFillColor(hofplanEffectiveColor(s));
+          b.doc.rect(data.cell.x + data.cell.width - 5, data.cell.y + data.cell.height / 2 - 1.4, 2.8, 2.8, 'F');
+        }
+      });
     }
 
-    stampFeldFolioLogo(doc, await getFeldFolioLogoDataUrl());
+    b.finalize();
+    if (import.meta.env.DEV) {
+      window.__ffTestLastGesamt = {
+        sections: b.sections.map(x => x.title),
+        pages: b.doc.internal.getNumberOfPages(),
+        mapPages: b.mapPages.size,
+        totalHa,
+        rows: rows.map(r => ({ nummer: r.nummer, kultur: r.kultur, quelle: r.quelle, ha: r.ha, trees: r.trees, computed: r.computed })),
+        kulturen: kulturen.all.map(k => ({ label: k.label, value: k.value, count: k.count }))
+      };
+    }
     const ts = new Date().toISOString().slice(0, 10);
-    doc.save(zuordnungFileName('FeldFolio', 'pdf') || `FeldFolio_${ts}.pdf`);
+    b.doc.save(zuordnungFileName('FeldFolio Gesamtübersicht', 'pdf') || `FeldFolio_Gesamtuebersicht_${ts}.pdf`);
     setStatus('Gesamtübersicht als PDF exportiert.');
+  } catch (err) {
+    console.error('Gesamtübersicht fehlgeschlagen', err);
+    showError('Gesamtübersicht konnte nicht erstellt werden: ' + (err.message || err));
   } finally {
     map.zoomControl.addTo(map);
     if (currentBasemap !== savedBasemap) setBasemap(savedBasemap);
     visibleLayerIds.forEach(id => layers[id] && layers[id].leafletLayer.addTo(map));
     if (hofplanLayerGroup) hofplanLayerGroup.addTo(map);
+    setGesamtMapOverlays({ trees: treesWereVisible, hives: hivesWereVisible });
     map.setView(savedCenter, savedZoom);
     btnPdf.disabled = false;
     btnGeo.disabled = false;
