@@ -18,19 +18,20 @@ import subsetFont from 'subset-font';
 const ICON_NAMES = [
   'account_circle', 'add', 'add_box', 'arrow_back', 'arrow_downward',
   'arrow_forward', 'arrow_upward', 'attach_file', 'backspace',
-  'barcode_scanner', 'business', 'cameraswitch', 'category', 'check',
-  'close', 'cloud_off', 'cloud_upload', 'compare_arrows', 'content_cut',
-  'crop', 'crop_free', 'dark_mode', 'delete', 'description',
-  'document_scanner', 'door_front', 'download', 'drag_handle',
-  'drag_indicator', 'draw', 'eco', 'edit', 'egg', 'expand_less',
-  'expand_more', 'fact_check', 'fit_screen', 'flashlight_on',
-  'format_color_fill', 'grass', 'grid_on', 'handyman', 'info',
-  'install_mobile', 'ios_share', 'layers', 'light_mode', 'location_on',
-  'menu', 'more_horiz', 'my_location', 'open_in_new', 'pets', 'photo_camera',
-  'photo_library', 'picture_as_pdf', 'polyline', 'radio_button_checked',
-  'rectangle', 'redo', 'refresh', 'restaurant', 'rotate_right', 'route',
+  'barcode_scanner', 'business', 'calendar_month', 'cameraswitch',
+  'category', 'check', 'chevron_right', 'close', 'cloud_off', 'cloud_upload',
+  'compare', 'compare_arrows', 'content_cut', 'crop', 'crop_free',
+  'dark_mode', 'delete', 'description', 'document_scanner', 'door_front',
+  'download', 'drag_handle', 'drag_indicator', 'draw', 'eco', 'edit', 'egg',
+  'expand_less', 'expand_more', 'fact_check', 'fit_screen', 'flashlight_on',
+  'format_color_fill', 'format_color_reset', 'grass', 'grid_on', 'handyman',
+  'hive', 'home_work', 'info', 'install_mobile', 'ios_share', 'layers',
+  'light_mode', 'location_on', 'map', 'menu', 'more_horiz', 'my_location',
+  'open_in_new', 'park', 'pets', 'photo_camera', 'photo_library',
+  'picture_as_pdf', 'polyline', 'radio_button_checked', 'rectangle', 'redo',
+  'refresh', 'restaurant', 'rotate_right', 'route', 'space_dashboard',
   'sticky_note_2', 'straighten', 'table_view', 'touch_app', 'undo',
-  'upload_file', 'view_week', 'warning', 'water_drop', 'window'
+  'upload_file', 'view_week', 'warning', 'water_drop', 'window', 'zoom_in'
 ];
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

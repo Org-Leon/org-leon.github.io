@@ -233,7 +233,15 @@ function setBasemap(key) {
   basemaps[currentBasemap].addTo(map);
   document.getElementById('btn-basemap-label').textContent = 'Basiskarte: ' + basemapLabels[currentBasemap];
   document.getElementById('btn-basemap').title = 'Basiskarte: ' + basemapLabels[currentBasemap] + ' — antippen zum Wechseln';
+  document.querySelectorAll('#basemap-seg [data-basemap]').forEach(b => {
+    b.setAttribute('aria-checked', String(b.getAttribute('data-basemap') === currentBasemap));
+  });
 }
+// Desktop: Segment-Umschalter (Standard/Topo/Luftbild), Handy: runder
+// Button, der durchschaltet (siehe style.css #basemap-seg/#btn-basemap).
+document.querySelectorAll('#basemap-seg [data-basemap]').forEach(b => {
+  b.addEventListener('click', () => { if (b.getAttribute('data-basemap') !== currentBasemap) setBasemap(b.getAttribute('data-basemap')); });
+});
 
 function cycleBasemap() {
   const nextIdx = (basemapOrder.indexOf(currentBasemap) + 1) % basemapOrder.length;
@@ -2155,6 +2163,7 @@ function renderLayerList() {
   const list = document.getElementById('layer-list');
   const ids = Object.keys(layers);
   document.getElementById('empty-hint').hidden = ids.length > 0;
+  document.getElementById('layer-section-count').textContent = String(ids.length);
   list.innerHTML = '';
   ids.forEach(id => {
     const l = layers[id];
@@ -2162,22 +2171,24 @@ function renderLayerList() {
     item.className = 'layer-item';
     item.innerHTML = `
       <div class="layer-row">
-        <div class="vis-toggle ${l.visible ? 'on' : ''}" data-id="${id}" data-action="toggle">
-          <svg viewBox="0 0 12 12"><path d="M2 6l3 3 5-6" stroke="currentColor" stroke-width="1.6" fill="none"/></svg>
-        </div>
+        <div class="vis-toggle ${l.visible ? 'on' : ''}" data-id="${id}" data-action="toggle" role="switch" tabindex="0" aria-checked="${l.visible}" aria-label="${escapeHtml(l.name)} anzeigen" title="Auf der Karte anzeigen"></div>
         <div class="swatch" style="background:${l.color}"></div>
-        <div class="layer-name" title="${l.name}">${l.name}</div>
-        <div class="layer-count">${l.count}</div>
-      </div>
-      <div class="layer-actions">
-        <button data-id="${id}" data-action="zoom">Zoom</button>
-        <button data-id="${id}" data-action="table">Tabelle</button>
-        <button data-id="${id}" data-action="remove" class="danger">Entfernen</button>
+        <div class="layer-name" title="${escapeHtml(l.name)}">${escapeHtml(l.name)}</div>
+        <div class="layer-count" title="${l.count} Flächen">${l.count}</div>
+        <div class="layer-icon-btns">
+          <button type="button" class="icon-btn" data-id="${id}" data-action="zoom" title="Auf Ebene zoomen" aria-label="Auf ${escapeHtml(l.name)} zoomen"><span class="material-symbols-rounded icon">zoom_in</span></button>
+          <button type="button" class="icon-btn" data-id="${id}" data-action="table" title="Flächentabelle öffnen" aria-label="Flächentabelle öffnen"><span class="material-symbols-rounded icon">table_view</span></button>
+          <button type="button" class="icon-btn danger" data-id="${id}" data-action="remove" title="Ebene entfernen" aria-label="${escapeHtml(l.name)} entfernen"><span class="material-symbols-rounded icon">delete</span></button>
+        </div>
       </div>
     `;
     list.appendChild(item);
   });
 
+  // Schalter auch per Tastatur (Leertaste/Enter), wie ein echtes Bedienelement.
+  list.querySelectorAll('.vis-toggle').forEach(el => el.addEventListener('keydown', (e) => {
+    if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); el.click(); }
+  }));
   list.querySelectorAll('[data-action]').forEach(el => {
     el.addEventListener('click', () => {
       const id = el.getAttribute('data-id');
@@ -2507,6 +2518,37 @@ document.getElementById('btn-locate').addEventListener('click', () => {
 // Wechseln nie neu aufgebaut oder verschoben wird — nur die Sidebar-Sektion,
 // eventuelle Topbar-Zusatzelemente und das gerade "scharfe" Kartenwerkzeug
 // (Zeichnen/Baum setzen/Bienenstock setzen) ändern sich.
+// Ebenen einklappbar: in "Karte" und Jahresvergleich sind sie die
+// Hauptsache (offen), in den Werkzeugen Nebensache (zu). Eigenes Auf-/
+// Zuklappen gilt für die jeweilige Ansicht bis zum Neuladen.
+const LAYERS_OPEN_BY_DEFAULT = new Set(['viewer', 'compare']);
+const layersOpenByView = {};
+function applyLayerSectionState() {
+  const view = document.body.dataset.view || 'viewer';
+  const open = view in layersOpenByView ? layersOpenByView[view] : LAYERS_OPEN_BY_DEFAULT.has(view);
+  document.body.classList.toggle('layers-collapsed', !open);
+  document.getElementById('layer-section-toggle').setAttribute('aria-expanded', String(open));
+}
+document.getElementById('layer-section-toggle').addEventListener('click', () => {
+  const view = document.body.dataset.view || 'viewer';
+  layersOpenByView[view] = document.body.classList.contains('layers-collapsed');
+  applyLayerSectionState();
+});
+
+// Kurzhinweis ("So geht's") nur, bis eine Funktion einmal benutzt wurde —
+// danach bleibt nur "Tipps". Gemerkt je Gerät (localStorage).
+const TOOL_HINTS_DONE_KEY = 'feldfolio-hints-done';
+let toolHintsDone = [];
+try { toolHintsDone = JSON.parse(localStorage.getItem(TOOL_HINTS_DONE_KEY) || '[]'); } catch {}
+if (!Array.isArray(toolHintsDone)) toolHintsDone = [];
+document.body.dataset.hintsDone = toolHintsDone.join(' ');
+function markToolHintDone(view) {
+  if (toolHintsDone.includes(view)) return;
+  toolHintsDone.push(view);
+  document.body.dataset.hintsDone = toolHintsDone.join(' ');
+  try { localStorage.setItem(TOOL_HINTS_DONE_KEY, JSON.stringify(toolHintsDone)); } catch {}
+}
+
 // Eine kurze Zeile unter der Funktionsauswahl: was die Funktion tut.
 const SEGMENT_CAPTIONS = {
   viewer: 'Shapefiles und GeoJSON auf der Karte ansehen',
@@ -2562,6 +2604,7 @@ function setActiveSegment(target) {
   document.getElementById('edit-toolbar').classList.toggle('active', target === 'zeichner' || target === 'hofplan');
   document.getElementById('brand-caption').textContent = SEGMENT_CAPTIONS[target] || '';
   document.body.dataset.view = target; // für funktionsabhängiges Seitenleisten-Layout (style.css)
+  applyLayerSectionState();
   document.getElementById('current-view-title').textContent = SEGMENT_TITLES[target] || 'Karte';
   // Nach dem Wechsel (armedTool wird unten ggf. neu gesetzt) aktualisieren.
   setTimeout(updateMapPlaceChip, 0);
@@ -2800,6 +2843,7 @@ function parseHa(v) {
 }
 
 function runComparison() {
+  markToolHintDone('compare');
   const jahrBLayerId = getSelectedJahrBLayerId();
   if (!compareDataA || !jahrBLayerId) return;
 
@@ -4114,6 +4158,7 @@ document.getElementById('map-draw-cancel').addEventListener('click', () => {
 updateShapeToolbar();
 
 function renderParcelList() {
+  if (zeichnerParcels.length) markToolHintDone('zeichner');
   const list = document.getElementById('zeichner-list');
   document.getElementById('zeichner-empty-hint').hidden = zeichnerParcels.length > 0;
   list.innerHTML = '';
@@ -4455,6 +4500,7 @@ function createTreeIcon(color) {
 }
 
 function addTree(key, latlng) {
+  markToolHintDone('obstbaum');
   const fruit = fruitOf(key);
   obstbaumTreeCounter++;
   const entry = {
@@ -5294,6 +5340,7 @@ function beehiveLabel(entry) {
 }
 
 function addBeehive(latlng) {
+  markToolHintDone('bienenflug');
   bienenflugCounter++;
   const entry = { id: 'bienenstock-' + bienenflugCounter, nummer: bienenflugCounter, name: '', latlng, marker: null, circle: null };
 
@@ -5546,6 +5593,7 @@ function computeHofplanArea(shape) {
 // löst aber selbst KEINEN Rückgängig-Eintrag aus (das macht der jeweilige
 // Aufrufer gezielt, siehe CREATED-Handler weiter unten).
 function addHofplanShapeFromLayer(layer, kategorie, name, idOverride, colorOverride, stallplanIdOverride) {
+  markToolHintDone('hofplan');
   const shape = {
     id: idOverride || 'gebaeude-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7),
     kategorie: kategorie || '',
@@ -8414,6 +8462,7 @@ const terminkalenderSummaryEl = document.getElementById('terminkalender-summary'
 function setTerminkalenderStatus(msg) { terminkalenderStatusEl.textContent = msg; }
 
 function renderTerminkalenderSummary() {
+  if (terminkalenderEvents.length) markToolHintDone('terminkalender');
   if (!terminkalenderEvents.length) {
     terminkalenderSummaryEl.textContent = 'Noch keine Termine geladen.';
     return;

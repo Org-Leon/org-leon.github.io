@@ -39,8 +39,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
-  <script type="module" crossorigin src="./assets/index-BScyLL9J.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-DAGOZ5wP.css">
+  <script type="module" crossorigin src="./assets/index-CjLNoGRA.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-COQIPG3d.css">
 <link rel="manifest" href="./manifest.webmanifest"></head>
 <body data-view="viewer">
 
@@ -93,19 +93,23 @@
     <span class="material-symbols-rounded icon" aria-hidden="true">install_mobile</span>
     <span><strong>App installieren</strong><small>Eigenes Symbol auf dem Startbildschirm, läuft auch offline</small></span>
   </button>
-  <div id="terminkalender-switcher">
-    <button class="segment-btn terminkalender-standalone-btn" data-view="terminkalender">Terminkalender</button>
-  </div>
-
-  <div id="view-switcher">
-    <button class="segment-btn active" data-view="viewer">Karte</button>
-    <button class="segment-btn" data-view="compare">Jahresvergleich</button>
-    <button class="segment-btn" data-view="zeichner">Flächenzeichner</button>
-    <button class="segment-btn" data-view="obstbaum">Obstbaumkataster</button>
-    <button class="segment-btn" data-view="bienenflug">Bienenflugkarte</button>
-    <button class="segment-btn" data-view="hofplan">Hofplan</button>
-    <button class="segment-btn" data-view="stallplaner">Stallplaner</button>
-  </div>
+  <!-- Funktionswahl: Kacheln mit Symbol + Name, zeilenweise gruppiert
+       (Karte & Flächen · Erfassen · Stall & Termine). Der Terminkalender ist
+       eine normale Kachel, nur mit Konto sichtbar (updateAccountButton).
+       <wbr> erlaubt den Umbruch langer Namen an der Wortfuge. -->
+  <nav id="view-switcher" aria-label="Funktionen">
+    <!-- Terminkalender gesondert: breite Kachel über den Werkzeugen — der
+         Einstieg in den Arbeitstag (Termine, Protokolle, Scans), keine
+         Kartenfunktion wie die übrigen. -->
+    <button class="segment-btn segment-btn-wide" data-view="terminkalender" id="terminkalender-switcher" hidden><span class="material-symbols-rounded icon" aria-hidden="true">calendar_month</span><span class="segment-text"><span class="segment-label">Terminkalender</span><span class="segment-sub">Termine · Protokolle · Scans</span></span><span class="material-symbols-rounded icon segment-chevron" aria-hidden="true">chevron_right</span></button>
+    <button class="segment-btn active" data-view="viewer"><span class="material-symbols-rounded icon" aria-hidden="true">map</span><span class="segment-label">Karte</span></button>
+    <button class="segment-btn" data-view="compare"><span class="material-symbols-rounded icon" aria-hidden="true">compare</span><span class="segment-label">Jahres<wbr>vergleich</span></button>
+    <button class="segment-btn" data-view="zeichner"><span class="material-symbols-rounded icon" aria-hidden="true">draw</span><span class="segment-label">Flächen<wbr>zeichner</span></button>
+    <button class="segment-btn" data-view="obstbaum"><span class="material-symbols-rounded icon" aria-hidden="true">park</span><span class="segment-label">Obstbaum<wbr>kataster</span></button>
+    <button class="segment-btn" data-view="bienenflug"><span class="material-symbols-rounded icon" aria-hidden="true">hive</span><span class="segment-label">Bienenflug<wbr>karte</span></button>
+    <button class="segment-btn" data-view="hofplan"><span class="material-symbols-rounded icon" aria-hidden="true">home_work</span><span class="segment-label">Hofplan</span></button>
+    <button class="segment-btn" data-view="stallplaner"><span class="material-symbols-rounded icon" aria-hidden="true">space_dashboard</span><span class="segment-label">Stall<wbr>planer</span></button>
+  </nav>
 
   <div id="brand">
     <p id="brand-caption">Shapefiles und GeoJSON auf der Karte ansehen</p>
@@ -131,7 +135,13 @@
   </div>
 
   <div id="layer-section">
-    <h2>Ebenen</h2>
+    <!-- Einklappbar: in der Ansicht "Karte"/Jahresvergleich offen, in den
+         Werkzeugen standardmäßig zu (applyLayerSectionState in main.js). -->
+    <button type="button" id="layer-section-toggle" aria-expanded="true" aria-controls="layer-list">
+      <span class="material-symbols-rounded icon layer-section-chevron" aria-hidden="true">expand_more</span>
+      <span>Ebenen</span>
+      <span id="layer-section-count">0</span>
+    </button>
     <div id="layer-list"></div>
     <div class="empty-hint" id="empty-hint">Noch keine Ebene geladen.</div>
   </div>
@@ -164,10 +174,10 @@
       <div id="compare-criteria">
         <label class="compare-label">Als „verändert“ zählt</label>
         <label class="criteria-option">
-          <input type="checkbox" id="crit-groesse" checked> Flächengröße
+          <input type="checkbox" class="ff-switch" id="crit-groesse" checked> Flächengröße
         </label>
         <label class="criteria-option">
-          <input type="checkbox" id="crit-kultur" checked> Kulturart
+          <input type="checkbox" class="ff-switch" id="crit-kultur" checked> Kulturart
         </label>
       </div>
       <details class="tool-tips">
@@ -343,10 +353,12 @@
     </div>
     <div class="tool-footer" id="stallplaner-footer" hidden>
       <div class="tool-footer-title">Exportieren</div>
-      <div class="tool-segmented" id="stallplaner-export-bg" role="radiogroup" aria-label="Hintergrund im PDF">
+      <div class="tool-seg-row">
         <span class="tool-segmented-label">Hintergrund</span>
-        <button type="button" role="radio" data-bg="light" aria-checked="true">Weiß</button>
-        <button type="button" role="radio" data-bg="dark" aria-checked="false">Dunkel</button>
+        <div class="ff-seg" id="stallplaner-export-bg" role="radiogroup" aria-label="Hintergrund im PDF">
+          <button type="button" role="radio" data-bg="light" aria-checked="true">Weiß</button>
+          <button type="button" role="radio" data-bg="dark" aria-checked="false">Dunkel</button>
+        </div>
       </div>
       <button id="btn-export-stallplaner-pdf" class="tool-btn primary"><span class="material-symbols-rounded icon">picture_as_pdf</span>Stallplan (PDF)</button>
       <button id="btn-stallplaner-export-json" class="tool-btn"><span class="material-symbols-rounded icon">download</span>Als Datei speichern</button>
@@ -358,11 +370,12 @@
   </div>
 
   <div class="sidebar-section" data-view="terminkalender">
+    <div class="tool-main">
     <div id="terminkalender-not-logged-in" hidden>
-      <p class="modal-hint">Der Terminkalender ist eine Cloud-Konto-Funktion. Bitte zuerst
-        anmelden (Konto-Button oben rechts), um ihn zu nutzen.</p>
+      <div class="tool-hint"><span class="material-symbols-rounded icon">info</span><span>Der Terminkalender braucht ein Konto — oben rechts anmelden.</span></div>
     </div>
     <div id="terminkalender-controls">
+      <div class="tool-hint"><span class="material-symbols-rounded icon">info</span><span>Termine als Excel aus dem Portal laden, Uhrzeiten optional per .ics.</span></div>
       <div class="compare-upload">
         <label class="compare-label">Termine (.xlsx) hochladen</label>
         <div class="dropzone-mini" id="terminkalender-drop">
@@ -378,8 +391,9 @@
         </div>
       </div>
       <div id="terminkalender-summary" class="empty-hint">Noch keine Termine geladen.</div>
-      <button id="terminkalender-btn-save">In Cloud speichern</button>
+      <button id="terminkalender-btn-save" class="tool-btn primary">In Cloud speichern</button>
       <div id="terminkalender-status" class="status-line"></div>
+    </div>
     </div>
   </div>
   <!-- Am Handy wandert der Hell/Dunkel-Schalter aus der vollen Kopfzeile
@@ -466,13 +480,18 @@
     </div>
   </div>
   <div id="topbar">
+    <div class="ff-seg" id="basemap-seg" role="radiogroup" aria-label="Basiskarte">
+      <button type="button" role="radio" data-basemap="osm" aria-checked="true">Standard</button>
+      <button type="button" role="radio" data-basemap="topo" aria-checked="false">Topo</button>
+      <button type="button" role="radio" data-basemap="satellite" aria-checked="false">Luftbild</button>
+    </div>
     <button id="btn-basemap" title="Basiskarte wechseln" aria-label="Basiskarte wechseln"><span class="material-symbols-rounded icon topbar-icon" aria-hidden="true">layers</span><span class="topbar-label" id="btn-basemap-label">Basiskarte: Standard</span></button>
     <button id="btn-fit" title="Auf Inhalt zoomen" aria-label="Auf Inhalt zoomen"><span class="material-symbols-rounded icon topbar-icon" aria-hidden="true">fit_screen</span><span class="topbar-label">Auf Inhalt zoomen</span></button>
     <button id="btn-locate" title="Mein Standort" aria-label="Mein Standort">
       <span class="material-symbols-rounded icon gps-icon">my_location</span>
     </button>
     <div class="topbar-extra" data-view="compare">
-      <div id="compare-view-toggle">
+      <div id="compare-view-toggle" class="ff-seg">
         <button class="cvt-btn active" data-mode="diff">Vergleich</button>
         <button class="cvt-btn" data-mode="onlyA">Nur Jahr A</button>
         <button class="cvt-btn" data-mode="onlyB">Nur Jahr B</button>
@@ -494,7 +513,7 @@
     <div id="table-head">
       <span class="title">Flächenübersicht (<span id="table-count">0</span>)</span>
       <label id="table-teilflaechen-toggle">
-        <input type="checkbox" id="table-include-teilflaechen"> Teilflächen einschließen
+        <input type="checkbox" class="ff-switch" id="table-include-teilflaechen"> Teilflächen einschließen
       </label>
       <div class="export-buttons">
         <button class="export-btn" data-export="csv" data-target="viewer">CSV</button>
@@ -752,7 +771,7 @@
 
       <div class="stallplaner-panel" id="stallplaner-panel-split" hidden>
         <p class="stallplaner-panel-hint" id="stallplaner-split-target"></p>
-        <div class="stallplaner-segmented" role="group" aria-label="Teilungsrichtung">
+        <div class="ff-seg ff-seg-lg" role="group" aria-label="Teilungsrichtung">
           <button type="button" data-split-dir="x" class="active">Buchten nebeneinander ↔</button>
           <button type="button" data-split-dir="y">Buchten übereinander ↕</button>
         </div>
@@ -821,7 +840,7 @@
           <button type="button" data-equip="fenster"><span class="material-symbols-rounded icon">window</span>Fenster</button>
           <button type="button" data-equip="futtergang"><span class="material-symbols-rounded icon">route</span>Futtergang</button>
         </div>
-        <div id="stallplaner-equip-geometry-toggle" class="stallplaner-segmented" role="group" aria-label="Form">
+        <div id="stallplaner-equip-geometry-toggle" class="ff-seg ff-seg-lg" role="group" aria-label="Form">
           <button type="button" data-geometry="point"><span class="material-symbols-rounded icon">radio_button_checked</span>Punkt</button>
           <button type="button" data-geometry="line"><span class="material-symbols-rounded icon">polyline</span>Linie</button>
           <button type="button" data-geometry="area"><span class="material-symbols-rounded icon">rectangle</span>Fläche</button>
@@ -876,7 +895,7 @@
           </label>
           <label class="stallplaner-more-row">
             <span>Beim Skizzieren am Raster einrasten</span>
-            <input type="checkbox" id="stallplaner-grid-snap" checked>
+            <input type="checkbox" class="ff-switch" id="stallplaner-grid-snap" checked>
           </label>
           <label class="stallplaner-more-row">
             <span>Hintergrund im PDF</span>
@@ -1287,7 +1306,7 @@
       <canvas id="scan-review-canvas"></canvas>
       <div id="scan-review-busy" hidden>Wird verarbeitet …</div>
     </div>
-    <div id="scan-filter-chips" role="radiogroup" aria-label="Filter"></div>
+    <div id="scan-filter-chips" class="ff-seg ff-seg-lg" role="radiogroup" aria-label="Filter"></div>
     <div id="scan-review-actions">
       <button type="button" id="scan-review-back">
         <span class="material-symbols-rounded icon">crop</span> Zuschnitt
