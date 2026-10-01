@@ -65,6 +65,21 @@
         if (cur) lines.push(cur);
         return lines;
       },
+      // Fetter Anfang + Fließtext; Folgezeilen beginnen wieder bei x.
+      lead(boldStr, rest, x, t, maxW, { size = 7.8, boldSize = 8.2, lead = 9.4 } = {}) {
+        s.text(boldStr, x, t, { size: boldSize, bold: true });
+        const bw = s.width(boldStr + ' ', boldSize, true);
+        const words = rest.split(' ');
+        let line = '', first = true, tt = t;
+        const flush = () => { s.text(line, first ? x + bw : x, tt, { size }); first = false; tt += lead; line = ''; };
+        words.forEach(wd => {
+          const next = line ? line + ' ' + wd : wd;
+          if (line && s.width(next, size) > maxW - (first ? bw : 0)) flush();
+          line = line ? line + ' ' + wd : wd;
+        });
+        if (line) flush();
+        return tt - lead;
+      },
       para(str, x, t, maxW, { size = 7.8, lead = 9.6, color = C.muted, bold = false } = {}) {
         const lines = s.wrap(str, size, maxW, bold);
         lines.forEach((l, i) => s.text(l, x, t + i * lead, { size, color, bold }));
@@ -103,7 +118,14 @@
       textField(name, x, t, w, h, { multiline = false, size = 9 } = {}) {
         const tf = form.createTextField(name);
         if (multiline) tf.enableMultiline();
-        tf.addToPage(page, { x, y: y(t + h), width: w, height: h, borderWidth: 0, backgroundColor: undefined, textColor: C.text });
+        tf.addToPage(page, { x, y: y(t + h), width: w, height: h, borderWidth: 0, textColor: C.text });
+        // pdf-lib setzt sonst schwarzen Rahmen/weißen Grund (MK) — beim
+        // Ausfüllen erschiene dann ein Kasten in der weichen Box.
+        tf.acroField.getWidgets().forEach(wd => {
+          const mk = wd.dict.lookup(PDFName.of('MK'));
+          if (mk) { mk.delete(PDFName.of('BC')); mk.delete(PDFName.of('BG')); }
+          wd.dict.set(PDFName.of('BS'), doc.context.obj({ W: 0 }));
+        });
         tf.acroField.setDefaultAppearance(`/Helv ${size} Tf ${TEXT_DA}`);
         return tf;
       },
@@ -129,17 +151,18 @@
   }
 
   // Kopf: Farbband, Apfel, Firmenname, Titel, Untertitel, Info-Box rechts.
-  function header(s, { title, subtitle, info }) {
+  function header(s, { title, subtitle, subtitle2 = '', info }) {
     s.page.drawRectangle({ x: 0, y: H - 5, width: W, height: 5, color: C.green });
     s.page.drawRectangle({ x: W - 90, y: H - 5, width: 90, height: 5, color: C.coral });
     s.apple(M, 20, 36);
     s.text('ÖkoP Zertifizierungs GmbH', M + 38, 28, { size: 7.6, bold: true, color: C.green });
     s.text(title, M + 38, 47, { size: 18, bold: true });
-    s.text(subtitle, M + 38, 59, { size: 7.4, color: C.muted });
+    s.text(subtitle, M + 38, 58.5, { size: 7.4, color: C.muted });
+    if (subtitle2) s.text(subtitle2, M + 38, 67.5, { size: 7.4, color: C.muted });
     const bw = 176, bx = W - M - bw;
     s.round(bx, 15, bw, 48, 7, { fill: C.tint });
     info.forEach((l, i) => s.text(l, bx + 9, 26 + i * 9.4, { size: 6.7, color: i === 0 ? C.greenDark : C.muted, bold: i === 0 }));
-    s.line(M, 70, W - M, 70, { color: C.line, width: 0.8 });
+    s.line(M, 74, W - M, 74, { color: C.line, width: 0.8 });
   }
   function footer(s, left) {
     s.line(M, 814, W - M, 814, { color: C.line, width: 0.6 });
@@ -175,7 +198,8 @@
     const colGap = 12, colW = (CW - colGap) / 2, x2 = M + colW + colGap;
     header(s, {
       title: 'Probenahmeprotokoll',
-      subtitle: 'Protokoll über die Entnahme einer Probe sowie Probenahmebegleitpapier · Auftraggeber: ÖkoP Zertifizierungs GmbH',
+      subtitle: 'Protokoll über die Entnahme einer Probe sowie Probenahmebegleitpapier',
+      subtitle2: 'Auftraggeber: ÖkoP Zertifizierungs GmbH',
       info: ['FB.09.06.01 · Ausgabe 7', 'gültig ab 01.01.2026 · ersetzt Ausgabe 6', 'Verteiler: ZB/KSL/QMB/FQS/DAkkS', 'Freigabe: AW']
     });
 
@@ -350,11 +374,9 @@
     s.section('Mit der Bitte um', 506);
     const g3 = s.form.createRadioGroup('Group3');
     s.radio(g3, 'Auswahl1', M, 512, 10);
-    s.text('zeitnahe Beleg-Prüfung', M + 15, 520, { size: 8.2, bold: true });
-    s.para('(begründete Zweifel, z. B. an der Öko-Qualität der Lieferung. Kurzfristige Rücksendung der Ergebnisse erforderlich an: biokontrollstelle@oekop.de).', M + 15 + s.width('zeitnahe Beleg-Prüfung ', 8.2, true), 520, CW - 120, { size: 7.8, color: C.text, lead: 9.4 });
+    s.lead('zeitnahe Beleg-Prüfung', '(begründete Zweifel, z. B. an der Öko-Qualität der Lieferung. Kurzfristige Rücksendung der Ergebnisse erforderlich an: biokontrollstelle@oekop.de).', M + 15, 520, CW - 15);
     s.radio(g3, 'Auswahl2', M, 541, 10);
-    s.text('Routineprüfung', M + 15, 549, { size: 8.2, bold: true });
-    s.para('im Rahmen einer Jahres- oder Stichprobenkontrolle. Bitte Ergebnisse nur dann an biokontrollstelle@oekop.de zurücksenden, falls der Bio-Status nicht zweifelsfrei bestätigt werden kann.', M + 15 + s.width('Routineprüfung ', 8.2, true), 549, CW - 90, { size: 7.8, color: C.text, lead: 9.4 });
+    s.lead('Routineprüfung', 'im Rahmen einer Jahres- oder Stichprobenkontrolle. Bitte Ergebnisse nur dann an biokontrollstelle@oekop.de zurücksenden, falls der Bio-Status nicht zweifelsfrei bestätigt werden kann.', M + 15, 549, CW - 15);
 
     // Datum + Unterschrift (App: Unterschrift x 172–372, y 211–237).
     s.textField('Datum', M + 6, H - 230, 118, 17, { size: 9 });

@@ -65,6 +65,46 @@ test.describe('Flächenübersicht', () => {
     await expect(page.locator('#ue-table tbody tr').first()).toContainText('Schlag 1');
   });
 
+  test('Kulturarten markieren und kopieren (als Tabelle)', async ({ page }) => {
+    await page.goto('/');
+    await loadShapefile(page);
+    await openUebersicht(page);
+    await expect(page.locator('.ue-bar-row')).toHaveCount(3);
+
+    // Ganze Liste markieren -> Kopieren liefert Tabelle mit Tabulatoren
+    const copied = await page.evaluate(() => {
+      const box = document.getElementById('ue-kulturen');
+      const range = document.createRange();
+      range.selectNodeContents(box);
+      const sel = window.getSelection();
+      sel.removeAllRanges(); sel.addRange(range);
+      const dt = new DataTransfer();
+      box.dispatchEvent(new ClipboardEvent('copy', { clipboardData: dt, bubbles: true, cancelable: true }));
+      return dt.getData('text/plain');
+    });
+    const lines = copied.split('\n');
+    expect(lines[0]).toBe('Kulturart\tFlächen\tFläche (ha)\tAnteil');
+    expect(lines[1]).toMatch(/^Winterweizen\t2\t4,00\t51/);
+    expect(lines).toHaveLength(4);
+
+    // Mit Markierung löst ein Klick den Filter NICHT aus
+    await page.evaluate(() => {
+      const row = document.querySelector('.ue-bar-row');
+      const range = document.createRange();
+      range.selectNodeContents(row.querySelector('.ue-bar-label'));
+      const sel = window.getSelection();
+      sel.removeAllRanges(); sel.addRange(range);
+      row.click();
+    });
+    await expect(page.locator('#ue-filter')).toBeHidden();
+    // Ohne Markierung filtert er wie gewohnt
+    await page.evaluate(() => window.getSelection().removeAllRanges());
+    await page.locator('.ue-bar-row', { hasText: 'Silomais' }).click();
+    await expect(page.locator('#ue-table tbody tr')).toHaveCount(1);
+    await page.locator('#ue-filter').click();
+    await expect(page.locator('#ue-kulturen-copy')).toHaveCount(0);
+  });
+
   test('Fläche antippen springt zur Karte', async ({ page }) => {
     await page.goto('/');
     await loadShapefile(page);

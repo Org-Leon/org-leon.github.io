@@ -102,7 +102,23 @@
     <span class="material-symbols-rounded icon theme-icon theme-icon-sun" aria-hidden="true">light_mode</span>
     <span class="material-symbols-rounded icon theme-icon theme-icon-moon" aria-hidden="true">dark_mode</span>
   </button>
-  <button id="btn-account" title="FeldFolio+ Konto" aria-label="Konto"><span class="material-symbols-rounded icon account-icon" aria-hidden="true">account_circle</span><span id="btn-account-label">Anmelden</span></button>
+  <button id="btn-account" aria-haspopup="menu" aria-expanded="false" title="FeldFolio+ Konto" aria-label="Konto"><span class="material-symbols-rounded icon account-icon" aria-hidden="true">account_circle</span><span id="btn-account-label">Anmelden</span></button>
+  <!-- Konto-Menü (angemeldet): Status + Schnellzugriffe -->
+  <div id="account-menu" class="account-menu" role="menu" aria-label="Konto" hidden>
+    <div class="account-menu-head">
+      <span class="account-avatar" id="account-menu-avatar" aria-hidden="true"></span>
+      <div class="account-menu-who">
+        <strong id="account-menu-name"></strong>
+        <span id="account-menu-email"></span>
+      </div>
+    </div>
+    <div class="account-menu-sync" id="account-menu-sync"><span class="account-sync-dot" aria-hidden="true"></span><span id="account-menu-sync-text"></span></div>
+    <button type="button" role="menuitem" class="account-menu-item" id="account-menu-sync-now"><span class="material-symbols-rounded icon" aria-hidden="true">sync</span>Jetzt synchronisieren</button>
+    <button type="button" role="menuitem" class="account-menu-item" id="account-menu-settings"><span class="material-symbols-rounded icon" aria-hidden="true">manage_accounts</span>Konto &amp; Einstellungen</button>
+    <button type="button" role="menuitem" class="account-menu-item" id="account-menu-admin" hidden><span class="material-symbols-rounded icon" aria-hidden="true">admin_panel_settings</span>Zugangsanfragen<span class="account-tab-count" id="account-menu-admin-count" hidden></span></button>
+    <div class="account-menu-sep"></div>
+    <button type="button" role="menuitem" class="account-menu-item" id="account-menu-signout"><span class="material-symbols-rounded icon" aria-hidden="true">logout</span>Abmelden</button>
+  </div>
 </div>
 
 <div id="app-body">
@@ -792,7 +808,7 @@
           <div class="ue-donut" id="ue-donut"></div>
           <div class="ue-bars" id="ue-kulturen"></div>
         </div>
-        <p class="ue-hint-line">Kultur antippen, um die Tabelle zu filtern.</p>
+        <p class="ue-hint-line">Kultur antippen, um die Tabelle zu filtern — Zeilen lassen sich auch markieren und kopieren (Rechtsklick → Kopieren).</p>
       </section>
 
       <div class="ue-grid2">
@@ -1176,80 +1192,282 @@
 </div>
 
 <!-- ---------- FeldFolio Plus: Cloud-Konto ---------- -->
+<!-- Abgemeldet: Anmelden / Registrieren / Passwort vergessen / Zugang anfragen.
+     Angemeldet: Konto-Seite mit Reitern Profil · Sicherheit · Sync & Gerät ·
+     Verwaltung (nur Admins). Siehe "FeldFolio Plus: Cloud-Konto" in main.js. -->
 <div id="account-modal-overlay" class="modal-overlay" hidden>
-  <div class="modal-card">
-    <h3>FeldFolio+ Konto</h3>
-
-    <div id="account-not-configured" hidden>
-      <p class="modal-hint">Cloud-Speicherung ist auf dieser Instanz nicht eingerichtet
-        (fehlende Supabase-Zugangsdaten). Alle anderen Funktionen bleiben normal nutzbar.</p>
-      <div class="modal-actions">
-        <button type="button" id="account-modal-close-1">Schließen</button>
-      </div>
-    </div>
-
-    <div id="account-auth-wrap">
-      <div class="auth-mode-switch" role="tablist">
-        <button type="button" class="auth-mode-btn active" id="account-mode-signin" data-mode="signin" role="tab" aria-selected="true">Anmelden</button>
-        <button type="button" class="auth-mode-btn" id="account-mode-signup" data-mode="signup" role="tab" aria-selected="false">Registrieren</button>
-      </div>
-
-      <form id="account-auth-form">
-        <p class="modal-hint" id="account-auth-hint">Mit bestehendem Cloud-Konto anmelden, um den
-          aktuellen Stand zu speichern und auf einem anderen Gerät weiterzuarbeiten.</p>
-        <label class="compare-label" for="account-email">E-Mail</label>
-        <input type="email" id="account-email" class="account-input" required autocomplete="email">
-        <p class="modal-hint" id="account-domain-hint" hidden></p>
-        <label class="compare-label" for="account-password" style="margin-top:10px;">Passwort</label>
-        <input type="password" id="account-password" class="account-input" required autocomplete="current-password" minlength="6">
-        <p class="modal-hint modal-error" id="account-auth-error" hidden></p>
-        <div class="modal-actions">
-          <button type="button" id="account-modal-close-2">Abbrechen</button>
-          <button type="submit" id="account-btn-submit" class="primary">Anmelden</button>
-        </div>
-      </form>
-
-      <div id="account-request-block" hidden>
-        <p class="modal-hint">Diese Adresse ist noch nicht freigeschaltet. Zugangsanfrage
-          senden — du bekommst Bescheid, sobald sie freigeschaltet ist.</p>
-        <label class="compare-label" for="account-request-email">E-Mail</label>
-        <input type="email" id="account-request-email" class="account-input" readonly>
-        <label class="compare-label" for="account-request-name" style="margin-top:10px;">Name (optional)</label>
-        <input type="text" id="account-request-name" class="account-input" autocomplete="name">
-        <label class="compare-label" for="account-request-message" style="margin-top:10px;">Nachricht (optional)</label>
-        <textarea id="account-request-message" class="account-input" rows="3"></textarea>
-        <p class="modal-hint modal-error" id="account-request-error" hidden></p>
-        <p class="modal-hint" id="account-request-status"></p>
-        <div class="modal-actions">
-          <button type="button" id="account-request-cancel">Zurück</button>
-          <button type="button" id="account-request-submit" class="primary">Zugang anfragen</button>
+  <div class="modal-card betrieb-card account-card" role="dialog" aria-modal="true" aria-labelledby="account-title">
+    <div class="betrieb-head account-head">
+      <div class="account-head-main">
+        <span class="account-head-badge" id="account-head-badge" aria-hidden="true">
+          <span class="material-symbols-rounded icon">account_circle</span>
+        </span>
+        <div>
+          <h3 id="account-title">FeldFolio<span class="account-plus">+</span></h3>
+          <p class="betrieb-head-sub" id="account-head-sub">Dein Konto für Cloud &amp; Kontrolle</p>
         </div>
       </div>
-    </div>
-
-    <div id="account-logged-in" hidden>
-      <p class="modal-hint">Angemeldet als <strong id="account-email-display"></strong>.</p>
-      <p class="modal-hint" id="account-sync-status"></p>
-      <!-- Auto-Sync-Schalter (früher in der Kopfzeile, dort steht jetzt nur
-           noch der Speicherstatus #save-status). -->
-      <button id="btn-sync" class="sync-toggle" type="button" hidden role="switch" aria-checked="true" title="Automatische Cloud-Synchronisation">
-        <span class="material-symbols-rounded icon sync-toggle-status" aria-hidden="true"></span>
-        <span class="sync-toggle-label">Sync</span>
-        <span class="sync-toggle-text">Automatisch mit der Cloud synchronisieren</span>
-        <span class="sync-toggle-switch"><span class="sync-toggle-thumb"></span></span>
+      <button type="button" id="account-modal-close-x" class="betrieb-icon-btn" aria-label="Schließen" title="Schließen">
+        <span class="material-symbols-rounded icon" aria-hidden="true">close</span>
       </button>
-      <div class="modal-actions">
-        <button type="button" id="account-btn-signout">Abmelden</button>
-        <button type="button" id="account-modal-close-3" class="primary">Fertig</button>
+    </div>
+
+    <div class="account-body">
+      <div id="account-not-configured" hidden>
+        <p class="modal-hint">Cloud-Speicherung ist auf dieser Instanz nicht eingerichtet
+          (fehlende Supabase-Zugangsdaten). Alle anderen Funktionen bleiben normal nutzbar.</p>
+        <div class="account-actions">
+          <button type="button" id="account-modal-close-1" class="betrieb-btn">Schließen</button>
+        </div>
       </div>
 
-      <div id="account-admin-requests" hidden>
-        <div class="admin-requests-head">
-          <span>Offene Zugangsanfragen</span>
-          <button type="button" id="account-admin-refresh" title="Aktualisieren"><span class="material-symbols-rounded icon">refresh</span></button>
+      <!-- ===== Abgemeldet ===== -->
+      <div id="account-auth-wrap">
+        <ul class="account-benefits">
+          <li><span class="material-symbols-rounded icon" aria-hidden="true">cloud_done</span>Arbeitsstand sicher in der Cloud</li>
+          <li><span class="material-symbols-rounded icon" aria-hidden="true">devices</span>Auf Handy, Tablet und PC weiterarbeiten</li>
+          <li><span class="material-symbols-rounded icon" aria-hidden="true">fact_check</span>Kontrolle mit Terminen, Protokollen, Dokumenten</li>
+        </ul>
+
+        <div class="ff-seg auth-mode-switch" role="tablist">
+          <button type="button" class="auth-mode-btn active" id="account-mode-signin" data-mode="signin" role="tab" aria-selected="true">Anmelden</button>
+          <button type="button" class="auth-mode-btn" id="account-mode-signup" data-mode="signup" role="tab" aria-selected="false">Registrieren</button>
         </div>
-        <p class="modal-hint modal-error" id="account-admin-error" hidden></p>
-        <div id="account-admin-requests-list"></div>
+
+        <form id="account-auth-form" novalidate>
+          <p class="modal-hint" id="account-auth-hint">Mit bestehendem Cloud-Konto anmelden, um den
+            aktuellen Stand zu speichern und auf einem anderen Gerät weiterzuarbeiten.</p>
+          <label class="account-label" for="account-email">E-Mail</label>
+          <input type="email" id="account-email" class="account-input" required autocomplete="email" inputmode="email">
+          <p class="modal-hint" id="account-domain-hint" hidden></p>
+          <div class="account-label-row">
+            <label class="account-label" for="account-password">Passwort</label>
+            <button type="button" id="account-forgot" class="inline-link">Passwort vergessen?</button>
+          </div>
+          <div class="account-pw-wrap">
+            <input type="password" id="account-password" class="account-input" required autocomplete="current-password" minlength="6">
+            <button type="button" class="account-pw-toggle" data-pw-toggle="account-password" aria-label="Passwort anzeigen" title="Passwort anzeigen">
+              <span class="material-symbols-rounded icon" aria-hidden="true">visibility</span>
+            </button>
+          </div>
+          <p class="account-caps" id="account-caps" hidden><span class="material-symbols-rounded icon" aria-hidden="true">warning</span>Feststelltaste ist aktiv</p>
+          <div id="account-signup-extra" hidden>
+            <label class="account-label" for="account-password2">Passwort wiederholen</label>
+            <div class="account-pw-wrap">
+              <input type="password" id="account-password2" class="account-input" autocomplete="new-password">
+            </div>
+            <div class="account-strength" id="account-strength" aria-live="polite"><span class="account-strength-bar"><span></span></span><span class="account-strength-text"></span></div>
+          </div>
+          <p class="modal-hint modal-error" id="account-auth-error" role="alert" hidden></p>
+          <div class="account-actions">
+            <button type="button" id="account-modal-close-2" class="betrieb-btn">Abbrechen</button>
+            <button type="submit" id="account-btn-submit" class="betrieb-btn primary">Anmelden</button>
+          </div>
+        </form>
+
+        <!-- Passwort vergessen -->
+        <div id="account-forgot-block" hidden>
+          <p class="modal-hint">Wir schicken dir einen Link per E-Mail. Damit legst du in der App ein neues Passwort fest.</p>
+          <label class="account-label" for="account-forgot-email">E-Mail</label>
+          <input type="email" id="account-forgot-email" class="account-input" autocomplete="email" inputmode="email">
+          <p class="modal-hint" id="account-forgot-status" role="status"></p>
+          <div class="account-actions">
+            <button type="button" id="account-forgot-back" class="betrieb-btn">Zurück</button>
+            <button type="button" id="account-forgot-send" class="betrieb-btn primary">Link senden</button>
+          </div>
+        </div>
+
+        <div id="account-request-block" hidden>
+          <p class="modal-hint">Diese Adresse ist noch nicht freigeschaltet. Zugangsanfrage
+            senden — du bekommst Bescheid, sobald sie freigeschaltet ist.</p>
+          <label class="account-label" for="account-request-email">E-Mail</label>
+          <input type="email" id="account-request-email" class="account-input" readonly>
+          <label class="account-label" for="account-request-name">Name (optional)</label>
+          <input type="text" id="account-request-name" class="account-input" autocomplete="name">
+          <label class="account-label" for="account-request-message">Nachricht (optional)</label>
+          <textarea id="account-request-message" class="account-input" rows="3"></textarea>
+          <p class="modal-hint modal-error" id="account-request-error" hidden></p>
+          <p class="modal-hint" id="account-request-status"></p>
+          <div class="account-actions">
+            <button type="button" id="account-request-cancel" class="betrieb-btn">Zurück</button>
+            <button type="button" id="account-request-submit" class="betrieb-btn primary">Zugang anfragen</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Neues Passwort nach dem Link aus "Passwort vergessen" -->
+      <div id="account-recovery-block" hidden>
+        <p class="modal-hint">Lege ein neues Passwort für dein Konto fest.</p>
+        <label class="account-label" for="account-recovery-password">Neues Passwort</label>
+        <div class="account-pw-wrap">
+          <input type="password" id="account-recovery-password" class="account-input" autocomplete="new-password">
+          <button type="button" class="account-pw-toggle" data-pw-toggle="account-recovery-password" aria-label="Passwort anzeigen" title="Passwort anzeigen">
+            <span class="material-symbols-rounded icon" aria-hidden="true">visibility</span>
+          </button>
+        </div>
+        <label class="account-label" for="account-recovery-password2">Neues Passwort wiederholen</label>
+        <input type="password" id="account-recovery-password2" class="account-input" autocomplete="new-password">
+        <p class="modal-hint" id="account-recovery-status" role="status"></p>
+        <div class="account-actions">
+          <button type="button" id="account-recovery-save" class="betrieb-btn primary">Passwort speichern</button>
+        </div>
+      </div>
+
+      <!-- ===== Angemeldet: Konto-Seite ===== -->
+      <div id="account-logged-in" hidden>
+        <div class="ff-seg account-tabs" id="account-tabs" role="tablist" aria-label="Konto">
+          <button type="button" role="tab" data-account-tab="profil" aria-selected="true"><span class="material-symbols-rounded icon" aria-hidden="true">person</span><span>Profil</span></button>
+          <button type="button" role="tab" data-account-tab="sicherheit" aria-selected="false"><span class="material-symbols-rounded icon" aria-hidden="true">shield</span><span>Sicherheit</span></button>
+          <button type="button" role="tab" data-account-tab="sync" aria-selected="false"><span class="material-symbols-rounded icon" aria-hidden="true">sync</span><span>Sync &amp; Gerät</span></button>
+          <button type="button" role="tab" data-account-tab="admin" id="account-tab-admin" aria-selected="false" hidden><span class="material-symbols-rounded icon" aria-hidden="true">admin_panel_settings</span><span>Verwaltung</span><span class="account-tab-count" id="account-admin-count" hidden></span></button>
+        </div>
+
+        <!-- Profil -->
+        <section class="account-panel" data-account-panel="profil">
+          <p class="modal-hint">Wird auf allen deinen Geräten verwendet. Der Name wird in Probenahmeprotokollen
+            als Probenehmer vorbelegt, die Unterschrift lässt sich dort per Knopfdruck einsetzen.</p>
+          <div class="account-grid">
+            <div>
+              <label class="account-label" for="profil-name">Name</label>
+              <input type="text" id="profil-name" class="account-input" autocomplete="name" placeholder="Vor- und Nachname">
+            </div>
+            <div>
+              <label class="account-label" for="profil-telefon">Telefon</label>
+              <input type="tel" id="profil-telefon" class="account-input" autocomplete="tel" inputmode="tel">
+            </div>
+            <div>
+              <label class="account-label" for="profil-kontrollstelle">Kontrollstelle</label>
+              <input type="text" id="profil-kontrollstelle" class="account-input" placeholder="z. B. ÖkoP Zertifizierungs GmbH">
+            </div>
+            <div>
+              <label class="account-label" for="profil-kuerzel">Kürzel / Prüfernummer</label>
+              <input type="text" id="profil-kuerzel" class="account-input">
+            </div>
+          </div>
+          <div class="account-label-row">
+            <span class="account-label">Meine Unterschrift</span>
+            <button type="button" id="profil-signatur-clear" class="inline-link">Löschen</button>
+          </div>
+          <canvas id="profil-signatur-pad" class="pp-signature-pad account-signature" width="480" height="140" aria-label="Unterschriftsfeld"></canvas>
+          <p class="modal-hint" id="profil-status" role="status"></p>
+          <div class="account-actions">
+            <button type="button" id="profil-save" class="betrieb-btn primary">Profil speichern</button>
+          </div>
+        </section>
+
+        <!-- Sicherheit -->
+        <section class="account-panel" data-account-panel="sicherheit" hidden>
+          <h4 class="account-h4">Passwort ändern</h4>
+          <label class="account-label" for="pw-current">Aktuelles Passwort</label>
+          <div class="account-pw-wrap">
+            <input type="password" id="pw-current" class="account-input" autocomplete="current-password">
+            <button type="button" class="account-pw-toggle" data-pw-toggle="pw-current" aria-label="Passwort anzeigen" title="Passwort anzeigen">
+              <span class="material-symbols-rounded icon" aria-hidden="true">visibility</span>
+            </button>
+          </div>
+          <div class="account-grid">
+            <div>
+              <label class="account-label" for="pw-new">Neues Passwort</label>
+              <input type="password" id="pw-new" class="account-input" autocomplete="new-password">
+            </div>
+            <div>
+              <label class="account-label" for="pw-new2">Neues Passwort wiederholen</label>
+              <input type="password" id="pw-new2" class="account-input" autocomplete="new-password">
+            </div>
+          </div>
+          <p class="modal-hint" id="pw-status" role="status"></p>
+          <div class="account-actions">
+            <button type="button" id="pw-change" class="betrieb-btn primary">Passwort ändern</button>
+          </div>
+
+          <h4 class="account-h4">Angemeldete Geräte</h4>
+          <p class="modal-hint">Beendet die Anmeldung auf allen Geräten, auch hier — z. B. wenn ein Handy verloren gegangen ist.</p>
+          <p class="modal-hint" id="signout-everywhere-status" role="status"></p>
+          <div class="account-actions account-actions-start">
+            <button type="button" id="account-signout-everywhere" class="betrieb-btn"><span class="material-symbols-rounded icon" aria-hidden="true">devices</span>Auf allen Geräten abmelden</button>
+          </div>
+
+          <div class="account-danger">
+            <h4 class="account-h4">Konto löschen</h4>
+            <p class="modal-hint">Löscht dein Konto, den gespeicherten Arbeitsstand und alle hochgeladenen Fotos und Dateien endgültig.</p>
+            <button type="button" id="account-delete-open" class="betrieb-btn account-btn-danger"><span class="material-symbols-rounded icon" aria-hidden="true">delete</span>Konto löschen …</button>
+            <div id="account-delete-block" hidden>
+              <label class="account-label" for="delete-password">Passwort zur Bestätigung</label>
+              <input type="password" id="delete-password" class="account-input" autocomplete="current-password">
+              <label class="account-label" for="delete-confirm">Zum Bestätigen <strong>LÖSCHEN</strong> eintippen</label>
+              <input type="text" id="delete-confirm" class="account-input" autocomplete="off" autocapitalize="characters">
+              <p class="modal-hint modal-error" id="delete-status" role="status"></p>
+              <div class="account-actions">
+                <button type="button" id="account-delete-cancel" class="betrieb-btn">Abbrechen</button>
+                <button type="button" id="account-delete-confirm" class="betrieb-btn account-btn-danger" disabled>Endgültig löschen</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Sync & Gerät -->
+        <section class="account-panel" data-account-panel="sync" hidden>
+          <div class="account-sync-card">
+            <span class="account-sync-dot" id="account-sync-dot" aria-hidden="true"></span>
+            <div class="account-sync-text">
+              <strong id="account-sync-title">Gespeichert</strong>
+              <span id="account-sync-status"></span>
+            </div>
+            <button type="button" id="account-sync-now" class="betrieb-btn"><span class="material-symbols-rounded icon" aria-hidden="true">sync</span>Jetzt synchronisieren</button>
+          </div>
+          <!-- Auto-Sync-Schalter (früher in der Kopfzeile). -->
+          <button id="btn-sync" class="sync-toggle" type="button" hidden role="switch" aria-checked="true" title="Automatische Cloud-Synchronisation">
+            <span class="material-symbols-rounded icon sync-toggle-status" aria-hidden="true"></span>
+            <span class="sync-toggle-label">Sync</span>
+            <span class="sync-toggle-text">Automatisch mit der Cloud synchronisieren</span>
+            <span class="sync-toggle-switch"><span class="sync-toggle-thumb"></span></span>
+          </button>
+          <p class="modal-hint" id="account-uploads-line"></p>
+          <h4 class="account-h4">Sicherungen auf diesem Gerät</h4>
+          <p class="modal-hint">Entstehen automatisch, wenn beim Abgleich zwei Stände kollidieren — die jeweils verworfene Fassung bleibt hier erhalten.</p>
+          <div id="account-backups-list"></div>
+        </section>
+
+        <!-- Verwaltung (nur @oekop.de) -->
+        <section class="account-panel" data-account-panel="admin" hidden>
+          <div id="account-admin-requests" hidden>
+            <div class="admin-requests-head">
+              <span>Offene Zugangsanfragen</span>
+              <button type="button" id="account-admin-refresh" title="Aktualisieren" aria-label="Aktualisieren"><span class="material-symbols-rounded icon">refresh</span></button>
+            </div>
+            <p class="modal-hint modal-error" id="account-admin-error" hidden></p>
+            <div id="account-admin-requests-list"></div>
+          </div>
+        </section>
+
+        <div class="account-footer">
+          <button type="button" id="account-btn-signout" class="betrieb-btn"><span class="material-symbols-rounded icon" aria-hidden="true">logout</span>Abmelden</button>
+          <button type="button" id="account-modal-close-3" class="betrieb-btn primary">Fertig</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Abmelden: mit Wahl, ob die Daten auf diesem Gerät bleiben. -->
+<div id="signout-overlay" class="modal-overlay" hidden>
+  <div class="modal-card betrieb-card signout-card" role="dialog" aria-modal="true" aria-labelledby="signout-title">
+    <div class="betrieb-head">
+      <div>
+        <h3 id="signout-title">Abmelden</h3>
+        <p class="betrieb-head-sub" id="signout-sub"></p>
+      </div>
+    </div>
+    <div class="account-body">
+      <label class="modal-checkbox-row signout-wipe-row">
+        <input type="checkbox" id="signout-wipe" checked>
+        <span><strong>Daten auf diesem Gerät löschen</strong><br>
+          Empfohlen auf fremden oder geliehenen Geräten. Ohne Häkchen bleibt dein Stand hier gespeichert und ist bei der nächsten Anmeldung sofort da (auch offline).</span>
+      </label>
+      <p class="modal-hint modal-error" id="signout-warning" hidden></p>
+      <div class="account-actions">
+        <button type="button" id="signout-cancel" class="betrieb-btn">Abbrechen</button>
+        <button type="button" id="signout-confirm" class="betrieb-btn primary"><span class="material-symbols-rounded icon" aria-hidden="true">logout</span>Abmelden</button>
       </div>
     </div>
   </div>
@@ -1431,6 +1649,133 @@
       <div class="betrieb-footer">
         <button type="button" id="betrieb-modal-close-2" class="betrieb-btn">Fertig</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ---------- Warenflussprüfung (Kontrolle) ----------
+     Tabellen mit Referenzwerten oder vorformulierter Freitext; gehört zu
+     einem Termin (ev.warenfluss). Logik in src/warenfluss.js. -->
+<div id="warenfluss-overlay" class="modal-overlay" hidden>
+  <div class="modal-card betrieb-card wf-card" role="dialog" aria-modal="true" aria-labelledby="wf-title">
+    <div class="betrieb-head">
+      <div class="wf-head-main">
+        <span class="wf-head-icon material-symbols-rounded icon" id="wf-icon" aria-hidden="true">grass</span>
+        <div>
+          <h3 id="wf-title">Warenflussprüfung</h3>
+          <p class="betrieb-head-sub" id="wf-sub"></p>
+        </div>
+      </div>
+      <button type="button" id="wf-close" class="betrieb-icon-btn" aria-label="Schließen" title="Schließen">
+        <span class="material-symbols-rounded icon" aria-hidden="true">close</span>
+      </button>
+    </div>
+    <div class="wf-toolbar">
+      <label class="wf-field"><span>Zeitraum / Wirtschaftsjahr</span><input type="text" id="wf-zeitraum" class="wf-input" placeholder="z. B. 2025 oder 01.07.2024–30.06.2025"></label>
+      <label class="wf-field wf-field-small"><span>Toleranz Referenz ±%</span><input type="text" id="wf-tol-ertrag" class="wf-input wf-num" inputmode="decimal"></label>
+      <label class="wf-field wf-field-small"><span>Toleranz Bilanz ±%</span><input type="text" id="wf-tol-bilanz" class="wf-input wf-num" inputmode="decimal"></label>
+      <div class="ff-seg wf-mode" id="wf-mode" role="radiogroup" aria-label="Darstellung">
+        <button type="button" role="radio" data-mode="tabelle" aria-checked="true"><span class="material-symbols-rounded icon" aria-hidden="true">table_view</span>Tabelle</button>
+        <button type="button" role="radio" data-mode="text" aria-checked="false"><span class="material-symbols-rounded icon" aria-hidden="true">description</span>Freitext</button>
+      </div>
+    </div>
+    <div class="wf-summary" id="wf-summary" aria-live="polite"></div>
+    <div class="wf-body">
+      <div id="wf-tables"></div>
+      <div id="wf-text-wrap" hidden>
+        <p class="wf-hint" id="wf-text-status"></p>
+        <textarea id="wf-text" class="wf-text" rows="22" aria-label="Freitext der Warenflussprüfung"></textarea>
+        <div class="wf-text-actions">
+          <button type="button" id="wf-text-regen" class="betrieb-btn"><span class="material-symbols-rounded icon" aria-hidden="true">refresh</span>Aus Tabelle neu erzeugen</button>
+          <button type="button" id="wf-text-copy" class="betrieb-btn"><span class="material-symbols-rounded icon" aria-hidden="true">content_copy</span>Text kopieren</button>
+        </div>
+      </div>
+    </div>
+    <div class="wf-footer">
+      <button type="button" id="wf-delete" class="betrieb-btn account-btn-danger"><span class="material-symbols-rounded icon" aria-hidden="true">delete</span>Löschen</button>
+      <span class="wf-footer-note">Referenzwerte sind Orientierungswerte (Quelle am Wert) und überschreibbar.</span>
+      <button type="button" id="wf-done" class="betrieb-btn primary">Fertig</button>
+    </div>
+  </div>
+</div>
+
+<!-- ---------- Dokumenten- und Fotoviewer ----------
+     Vollbild über allem (auch über Dialogen wie dem Probenahmeprotokoll):
+     Fotos mit Zoom/Verschieben/Drehen, PDFs seitenweise (pdf.js), Wischen
+     bzw. Pfeile zum Blättern. Siehe openDocViewer() in main.js. -->
+<div id="docviewer" class="docviewer" role="dialog" aria-modal="true" aria-label="Dokumentenansicht" hidden>
+  <div class="dv-top">
+    <button type="button" id="dv-close" class="dv-btn" aria-label="Schließen" title="Schließen (Esc)">
+      <span class="material-symbols-rounded icon" aria-hidden="true">close</span>
+    </button>
+    <div class="dv-title">
+      <span id="dv-name"></span>
+      <span id="dv-meta"></span>
+    </div>
+    <div class="dv-actions">
+      <button type="button" id="dv-zoom-out" class="dv-btn" aria-label="Verkleinern" title="Verkleinern (−)"><span class="material-symbols-rounded icon" aria-hidden="true">zoom_out</span></button>
+      <button type="button" id="dv-zoom-in" class="dv-btn" aria-label="Vergrößern" title="Vergrößern (+)"><span class="material-symbols-rounded icon" aria-hidden="true">zoom_in</span></button>
+      <button type="button" id="dv-rotate" class="dv-btn" aria-label="Drehen" title="Drehen (R)"><span class="material-symbols-rounded icon" aria-hidden="true">rotate_right</span></button>
+      <a id="dv-download" class="dv-btn" aria-label="Herunterladen" title="Herunterladen"><span class="material-symbols-rounded icon" aria-hidden="true">download</span></a>
+      <button type="button" id="dv-open" class="dv-btn" aria-label="In neuem Tab öffnen" title="In neuem Tab öffnen"><span class="material-symbols-rounded icon" aria-hidden="true">open_in_new</span></button>
+      <button type="button" id="dv-delete" class="dv-btn dv-btn-danger" aria-label="Löschen" title="Löschen"><span class="material-symbols-rounded icon" aria-hidden="true">delete</span></button>
+    </div>
+  </div>
+  <div class="dv-stage" id="dv-stage">
+    <button type="button" id="dv-prev" class="dv-nav dv-nav-prev" aria-label="Vorheriges" title="Vorheriges (←)"><span class="material-symbols-rounded icon" aria-hidden="true">chevron_left</span></button>
+    <div id="dv-content" class="dv-content"></div>
+    <button type="button" id="dv-next" class="dv-nav dv-nav-next" aria-label="Nächstes" title="Nächstes (→)"><span class="material-symbols-rounded icon" aria-hidden="true">chevron_right</span></button>
+    <span id="dv-page" class="dv-page" hidden></span>
+  </div>
+  <div class="dv-bottom" id="dv-bottom">
+    <div id="dv-thumbs" class="dv-thumbs" role="tablist" aria-label="Dateien"></div>
+  </div>
+</div>
+
+<!-- ---------- Fotomappe: mehrere Fotos -> eine PDF am Termin ----------
+     Fotos werden sofort auf dem Gerät gesichert (IndexedDB, Entwurf bleibt
+     auch nach Neuladen erhalten), die fertige PDF läuft über die
+     Upload-Warteschlange. Siehe openFotomappe() in main.js. -->
+<div id="fotomappe-modal-overlay" class="modal-overlay" hidden>
+  <div class="modal-card betrieb-card fotomappe-card" role="dialog" aria-modal="true" aria-labelledby="fotomappe-title">
+    <div class="betrieb-head">
+      <div>
+        <h3 id="fotomappe-title">Fotomappe</h3>
+        <p class="betrieb-head-sub" id="fotomappe-sub">Mehrere Fotos als eine PDF-Datei</p>
+      </div>
+      <button type="button" id="fotomappe-close" class="betrieb-icon-btn" aria-label="Schließen (Entwurf bleibt erhalten)" title="Schließen — Entwurf bleibt erhalten">
+        <span class="material-symbols-rounded icon" aria-hidden="true">close</span>
+      </button>
+    </div>
+    <div class="fotomappe-body">
+      <label class="fotomappe-label" for="fotomappe-titel">Bezeichnung (optional)</label>
+      <input type="text" id="fotomappe-titel" class="fotomappe-input" placeholder="z. B. Stallrundgang, Lager, Etiketten" autocomplete="off">
+      <div class="fotomappe-add">
+        <label class="tk-attachment-btn tk-attachment-btn-primary">
+          <input type="file" id="fotomappe-capture" accept="image/*" capture="environment" hidden>
+          <span class="material-symbols-rounded icon" aria-hidden="true">photo_camera</span> Foto aufnehmen
+        </label>
+        <label class="tk-attachment-btn">
+          <input type="file" id="fotomappe-pick" accept="image/*" multiple hidden>
+          <span class="material-symbols-rounded icon" aria-hidden="true">photo_library</span> Aus Galerie wählen
+        </label>
+      </div>
+      <div id="fotomappe-grid" class="fotomappe-grid"></div>
+      <div class="fotomappe-layout">
+        <span class="fotomappe-label">Fotos pro Seite</span>
+        <div class="ff-seg" id="fotomappe-layout" role="radiogroup" aria-label="Fotos pro Seite">
+          <button type="button" role="radio" data-per="1" aria-checked="true">1</button>
+          <button type="button" role="radio" data-per="2" aria-checked="false">2</button>
+          <button type="button" role="radio" data-per="4" aria-checked="false">4</button>
+        </div>
+      </div>
+      <p class="modal-hint" id="fotomappe-status">Die Fotos bleiben auf dem Gerät gespeichert, bis die Mappe erstellt ist — auch bei schlechtem Empfang.</p>
+    </div>
+    <div class="betrieb-footer fotomappe-footer">
+      <button type="button" id="fotomappe-discard" class="betrieb-btn">Verwerfen</button>
+      <button type="button" id="fotomappe-create" class="betrieb-btn primary" disabled>
+        <span class="material-symbols-rounded icon" aria-hidden="true">picture_as_pdf</span><span id="fotomappe-create-label">PDF erstellen</span>
+      </button>
     </div>
   </div>
 </div>

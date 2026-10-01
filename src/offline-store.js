@@ -22,9 +22,15 @@
 // verworfene Fassung aufbewahrt statt still überschrieben.
 
 const DB_NAME = 'feldfolio-offline';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STATE_STORE = 'state';
 const BACKUP_STORE = 'backups';
+// Fotos/Dateien, die noch hochgeladen werden müssen (inkl. Datei als Blob) —
+// überleben so ein Neuladen des Tabs (z. B. wenn Android den Browser beim
+// Öffnen der Kamera beendet) und fehlenden Empfang.
+const UPLOAD_STORE = 'uploads';
+// Entwürfe der Fotomappe (mehrere Fotos -> eine PDF), noch nicht hochgeladen.
+const FOTOMAPPE_STORE = 'fotomappe';
 const META_KEY = '__meta__';
 const MAX_BACKUPS_PER_USER = 10;
 
@@ -38,6 +44,12 @@ function openDb() {
       req.onupgradeneeded = () => {
         const db = req.result;
         if (!db.objectStoreNames.contains(STATE_STORE)) db.createObjectStore(STATE_STORE);
+        [UPLOAD_STORE, FOTOMAPPE_STORE].forEach(name => {
+          if (!db.objectStoreNames.contains(name)) {
+            const store = db.createObjectStore(name, { keyPath: 'id' });
+            store.createIndex('userId', 'userId');
+          }
+        });
         if (!db.objectStoreNames.contains(BACKUP_STORE)) {
           const store = db.createObjectStore(BACKUP_STORE, { keyPath: 'id', autoIncrement: true });
           store.createIndex('userId', 'userId');
@@ -115,3 +127,22 @@ export async function listBackups(userId) {
   if (!userId) return [];
   return run(BACKUP_STORE, 'readonly', store => requestResult(store.index('userId').getAll(userId)));
 }
+
+// ---- Upload-Warteschlange / Fotomappe ----
+// Datensätze mit { id, userId, ..., blob }; je Nutzer abrufbar.
+function putItem(storeName, rec) {
+  return run(storeName, 'readwrite', store => requestResult(store.put(rec)));
+}
+function listItems(storeName, userId) {
+  if (!userId) return Promise.resolve([]);
+  return run(storeName, 'readonly', store => requestResult(store.index('userId').getAll(userId)));
+}
+function deleteItem(storeName, id) {
+  return run(storeName, 'readwrite', store => requestResult(store.delete(id)));
+}
+export const saveQueuedUpload = (rec) => putItem(UPLOAD_STORE, rec);
+export const listQueuedUploads = (userId) => listItems(UPLOAD_STORE, userId);
+export const deleteQueuedUpload = (id) => deleteItem(UPLOAD_STORE, id);
+export const saveFotomappeFoto = (rec) => putItem(FOTOMAPPE_STORE, rec);
+export const listFotomappeFotos = (userId) => listItems(FOTOMAPPE_STORE, userId);
+export const deleteFotomappeFoto = (id) => deleteItem(FOTOMAPPE_STORE, id);

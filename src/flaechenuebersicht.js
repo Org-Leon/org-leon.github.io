@@ -118,19 +118,51 @@ function renderDonut(container, d, animate) {
   });
 }
 
+// Kulturarten summiert. Die Zeilen sind markierbar (Text kopieren per
+// Rechtsklick/Strg+C) — darum kein <button> (Buttons lassen sich nicht
+// markieren), sondern role="button"; ein Klick filtert nur, wenn dabei
+// nichts markiert wurde. Kopiert wird als Tabelle mit Tabulatoren
+// (Kulturart, Flächen, ha, Anteil), damit es in Excel in Spalten landet.
+function kulturCopyLine(k, totalHa) {
+  return [k.label, k.count, ha(k.value), pct(k.value, totalHa)].join('\t');
+}
+const KULTUR_COPY_HEADER = ['Kulturart', 'Flächen', 'Fläche (ha)', 'Anteil'].join('\t');
+function hasTextSelection() {
+  const sel = window.getSelection();
+  return !!(sel && !sel.isCollapsed && sel.toString().trim());
+}
+
 function renderKulturBars(container, d, animate) {
   const { kulturen, totalHa } = d;
   const max = Math.max(...kulturen.shown.map(k => k.value), 0.0001);
   container.innerHTML = kulturen.shown.map((k, i) => `
-    <button type="button" class="ue-bar-row${state.filterKultur === k.label ? ' active' : ''}${animate ? ' ue-anim' : ''}" style="--i:${i + 2}" data-kultur="${esc(k.label)}" title="${esc(k.label)} — Tabelle filtern">
+    <div role="button" tabindex="0" class="ue-bar-row${state.filterKultur === k.label ? ' active' : ''}${animate ? ' ue-anim' : ''}" style="--i:${i + 2}" data-kultur="${esc(k.label)}" data-idx="${i}" title="${esc(k.label)} — antippen filtert die Tabelle, Text lässt sich markieren und kopieren">
       <span class="ue-bar-swatch" style="background:${k.color}"></span>
       <span class="ue-bar-label">${esc(k.label)}<small>${k.count} ${k.count === 1 ? 'Fläche' : 'Flächen'}</small></span>
       <span class="ue-bar-track"><span class="ue-bar-fill" style="background:${k.color}; width:${animate ? 0 : (k.value / max) * 100}%; transition-delay:${animate ? 300 + i * 70 : 0}ms" data-w="${(k.value / max) * 100}"></span></span>
       <span class="ue-bar-value">${ha(k.value)} ha</span>
       <span class="ue-bar-pct">${pct(k.value, totalHa)}</span>
-    </button>`).join('');
+    </div>`).join('');
   if (animate) afterPaint(() => container.querySelectorAll('.ue-bar-fill').forEach(el => { el.style.width = el.dataset.w + '%'; }));
-  container.querySelectorAll('.ue-bar-row').forEach(b => b.addEventListener('click', () => toggleFilter(b.dataset.kultur)));
+  container.querySelectorAll('.ue-bar-row').forEach(b => {
+    b.addEventListener('click', () => { if (!hasTextSelection()) toggleFilter(b.dataset.kultur); });
+    b.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleFilter(b.dataset.kultur); }
+    });
+  });
+  // Markierte Zeilen sauber als Tabelle kopieren (statt Rohtext mit
+  // Zeilenumbrüchen zwischen jedem Feld).
+  container.oncopy = (e) => {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) return;
+    const rows = [...container.querySelectorAll('.ue-bar-row')].filter(r => sel.containsNode(r, true));
+    if (!rows.length) return;
+    // Nur ein Stück Text innerhalb einer Zeile: so lassen, wie markiert.
+    if (rows.length === 1 && !sel.containsNode(rows[0], false) && sel.toString().trim().split(/\s+/).length < 3) return;
+    const lines = rows.map(r => kulturCopyLine(kulturen.shown[+r.dataset.idx], totalHa));
+    e.clipboardData.setData('text/plain', (rows.length > 1 ? KULTUR_COPY_HEADER + '\n' : '') + lines.join('\n'));
+    e.preventDefault();
+  };
 }
 
 function renderHerkunft(container, d, animate) {

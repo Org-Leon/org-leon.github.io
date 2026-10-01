@@ -97,9 +97,9 @@ test.describe('Werkzeugleisten-Sichtbarkeit', () => {
 });
 
 test.describe('Kopfzeile', () => {
-  // Der Auto-Sync-Schalter steht seit dem Top-Bar-Umbau im Konto-Dialog,
-  // in der Kopfzeile nur noch der Speicherstatus.
-  test('Cloud-Sync-Schalter erscheint nur mit Anmeldung (im Konto-Dialog)', async ({ page }) => {
+  // Der Auto-Sync-Schalter steht im Konto (Reiter "Sync & Gerät"), in der
+  // Kopfzeile nur noch der Speicherstatus.
+  test('Cloud-Sync-Schalter erscheint nur mit Anmeldung (im Konto, Sync & Gerät)', async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('#btn-account')).toBeVisible();
     await expect(page.locator('#tabbar #btn-sync')).toHaveCount(0);
@@ -109,6 +109,8 @@ test.describe('Kopfzeile', () => {
     await page.evaluate(() => window.__ffTestTk.loginFake());
     await expect(page.locator('#btn-sync')).not.toHaveAttribute('hidden', '');
     await page.locator('#btn-account').click();
+    await page.locator('#account-menu-settings').click();
+    await page.locator('#account-tabs [data-account-tab="sync"]').click();
     await expect(page.locator('#btn-sync')).toBeVisible();
     await page.locator('#account-modal-close-3').click();
 
