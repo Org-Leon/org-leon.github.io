@@ -1,9 +1,10 @@
-import { isSupabaseConfigured, signUp, signIn, signOut, getSession, saveState, loadState, uploadPhoto, getPhotoUrl, deletePhoto, requestAccess, listPendingAccessRequests, approveAccessRequest, declineAccessRequest } from './supabase.js';
-import { readLocalState, writeLocalState, deleteLocalState, readLastUser, writeLastUser, addBackup, listBackups } from './offline-store.js';
+import { isSupabaseConfigured, signUp, signIn, signOut, getSession, saveState, loadState, uploadPhoto, getPhotoUrl, deletePhoto, requestAccess, listPendingAccessRequests, approveAccessRequest, declineAccessRequest, authErrorMessage, requestPasswordReset, updatePassword, verifyPassword, signOutEverywhere, onPasswordRecovery, deleteMyAccount } from './supabase.js';
+import { readLocalState, writeLocalState, deleteLocalState, readLastUser, writeLastUser, addBackup, listBackups, saveQueuedUpload, listQueuedUploads, deleteQueuedUpload, saveFotomappeFoto, listFotomappeFotos, deleteFotomappeFoto } from './offline-store.js';
 import { registerSW } from 'virtual:pwa-register';
 import iconFontUrl from './assets/material-symbols-rounded-subset.woff2?url';
 import { BerichtPdf, BRAND, CULTURE_COLORS, formatHa, formatPct } from './gesamtbericht.js';
 import { renderFlaechenuebersicht } from './flaechenuebersicht.js';
+import { WF_MODULE, createWarenfluss, openWarenfluss, initWarenflussUi, warenflussRowInfo } from './warenfluss.js';
 import { rankBackCameras, drawScaled, rotateCanvas, defaultQuad, detectDocumentQuad, QuadTracker, quadDistance, warpDocument, applyScanFilter, SCAN_FILTERS, targetSizeForQuad } from './scan-engine.js';
 // Icon-Font selbst NICHT über das npm-Paket eingebunden (5+ MB Variable-Font
 // mit allen ~3000 Icons) — stattdessen ein auf die tatsächlich genutzten
@@ -6872,6 +6873,7 @@ function setAuthMode(mode) {
   accountModeSwitch.hidden = false;
   accountAuthForm.hidden = false;
   accountRequestBlock.hidden = true;
+  document.getElementById('account-forgot-block').hidden = true;
   accountModeButtons.forEach(btn => {
     const active = btn.getAttribute('data-mode') === mode;
     btn.classList.toggle('active', active);
@@ -6881,8 +6883,12 @@ function setAuthMode(mode) {
   accountAuthHint.textContent = t.hint;
   accountBtnSubmit.textContent = t.submit;
   accountPasswordInput.autocomplete = t.autocomplete;
+  // Registrieren: Passwort wiederholen + Stärke; "Passwort vergessen" nur beim Anmelden.
+  document.getElementById('account-signup-extra').hidden = mode !== 'signup';
+  document.getElementById('account-forgot').hidden = mode !== 'signin';
   showAccountError('');
   updateDomainHint();
+  updatePasswordStrength();
 }
 
 accountModeButtons.forEach(btn => {
@@ -6910,19 +6916,41 @@ function showAccountError(msg) {
   accountAuthError.hidden = !msg;
 }
 
+// Ein Dialog, drei Zustände: nicht eingerichtet / abgemeldet (Anmelden,
+// Registrieren, Passwort vergessen, Zugang anfragen) / angemeldet (Konto-
+// Seite mit Reitern). Dazu der Sonderfall "neues Passwort festlegen" nach
+// dem Link aus der Passwort-vergessen-Mail.
 function renderAccountModal() {
+  const recovery = accountRecoveryMode;
   accountNotConfigured.hidden = isSupabaseConfigured;
-  accountAuthWrap.hidden = !isSupabaseConfigured || !!accountSession;
-  accountLoggedIn.hidden = !isSupabaseConfigured || !accountSession;
-  accountSyncStatus.textContent = '';
-  if (accountSession) document.getElementById('account-email-display').textContent = accountSession.user.email;
-
-  // "Admin" ist hier bewusst einfach über die vertraute Domain definiert —
-  // dieselbe Domain, die auch zur Sofort-Registrierung berechtigt (siehe
-  // isOekopEmail). Keine separate Rollen-Tabelle in diesem ersten Ausbauschritt.
-  const isAdmin = !!accountSession && isOekopEmail(accountSession.user.email);
-  accountAdminSection.hidden = !isAdmin;
-  if (isAdmin) refreshAdminRequests();
+  accountAuthWrap.hidden = !isSupabaseConfigured || !!accountSession || recovery;
+  accountLoggedIn.hidden = !isSupabaseConfigured || !accountSession || recovery;
+  document.getElementById('account-recovery-block').hidden = !recovery;
+  const badge = document.getElementById('account-head-badge');
+  const sub = document.getElementById('account-head-sub');
+  const title = document.getElementById('account-title');
+  if (recovery) {
+    title.innerHTML = 'Neues Passwort';
+    sub.textContent = 'Fast geschafft';
+    badge.innerHTML = '<span class="material-symbols-rounded icon">key</span>';
+    badge.classList.remove('is-avatar');
+  } else if (accountSession) {
+    title.textContent = kontoProfil.name || accountSession.user.email;
+    sub.textContent = kontoProfil.name ? accountSession.user.email : 'FeldFolio+ Konto';
+    badge.textContent = kontoInitialen();
+    badge.classList.add('is-avatar');
+    const isAdmin = isOekopEmail(accountSession.user.email);
+    document.getElementById('account-tab-admin').hidden = !isAdmin;
+    accountAdminSection.hidden = !isAdmin;
+    if (!isAdmin && accountTab === 'admin') accountTab = 'profil';
+    setAccountTab(accountTab);
+    if (isAdmin) refreshAdminRequests();
+  } else {
+    title.innerHTML = 'FeldFolio<span class="account-plus">+</span>';
+    sub.textContent = 'Dein Konto für Cloud & Kontrolle';
+    badge.innerHTML = '<span class="material-symbols-rounded icon">account_circle</span>';
+    badge.classList.remove('is-avatar');
+  }
 }
 
 function showAdminError(msg) {
@@ -7014,14 +7042,29 @@ function updateAccountButton() {
   // zuletzt angemeldeten Nutzer gestartet (accountSession.offline) bleibt er
   // sichtbar: dann zeigt er "offline"/"noch nicht hochgeladen" an.
   document.getElementById('btn-sync').hidden = !accountSession;
+  accountBtn.setAttribute('aria-haspopup', accountSession ? 'menu' : 'dialog');
+  if (!accountSession) closeAccountMenu();
+  renderAccountMenu();
   updateSaveStatus();
 }
 
-function openAccountModal() { setAuthMode('signin'); renderAccountModal(); accountModal.hidden = false; }
+function openAccountModal(tab) {
+  closeAccountMenu();
+  if (tab) accountTab = tab;
+  if (!accountSession) setAuthMode('signin');
+  renderAccountModal();
+  accountModal.hidden = false;
+  if (!accountSession && !accountRecoveryMode && !MOBILE_LAYOUT_QUERY.matches) setTimeout(() => accountEmailInput.focus(), 0);
+}
 function closeAccountModal() { accountModal.hidden = true; }
 
-accountBtn.addEventListener('click', openAccountModal);
-['account-modal-close-1', 'account-modal-close-2', 'account-modal-close-3'].forEach(id => {
+// Abgemeldet: Anmelde-Dialog. Angemeldet: kleines Konto-Menü.
+accountBtn.addEventListener('click', (e) => {
+  if (!accountSession) { openAccountModal(); return; }
+  e.stopPropagation();
+  if (document.getElementById('account-menu').hidden) openAccountMenu(); else closeAccountMenu();
+});
+['account-modal-close-1', 'account-modal-close-2', 'account-modal-close-3', 'account-modal-close-x'].forEach(id => {
   document.getElementById(id).addEventListener('click', closeAccountModal);
 });
 accountModal.addEventListener('click', (e) => { if (e.target === accountModal) closeAccountModal(); });
@@ -7110,27 +7153,28 @@ if (!import.meta.env.DEV && 'serviceWorker' in navigator) {
 accountAuthForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   showAccountError('');
-  const email = document.getElementById('account-email').value.trim();
+  const email = accountEmailInput.value.trim();
   const password = accountPasswordInput.value;
+  if (!email || !email.includes('@')) { showAccountError('Bitte eine gültige E-Mail-Adresse eingeben.'); accountEmailInput.focus(); return; }
+  if (!password) { showAccountError('Bitte das Passwort eingeben.'); accountPasswordInput.focus(); return; }
+  if (authMode === 'signup') {
+    if (password.length < 8) { showAccountError('Das Passwort braucht mindestens 8 Zeichen.'); return; }
+    if (password !== document.getElementById('account-password2').value) { showAccountError('Die beiden Passwörter stimmen nicht überein.'); return; }
+  }
+  setButtonBusy(accountBtnSubmit, true, authMode === 'signup' ? 'Registriere …' : 'Melde an …');
   try {
-    if (authMode === 'signup') {
-      const data = await signUp(email, password);
-      if (data.session) {
-        accountSession = data.session;
-        updateAccountButton();
-        renderAccountModal();
-        startUserState(accountSession.user);
-        refreshAutoSyncTimer();
-      } else {
-        showAccountError('Registrierung erfolgreich — bitte E-Mail bestätigen und dann anmelden.');
-      }
-    } else {
-      const data = await signIn(email, password);
+    const data = authMode === 'signup' ? await signUp(email, password) : await signIn(email, password);
+    if (data.session) {
       accountSession = data.session;
+      accountTab = 'profil';
       updateAccountButton();
-      renderAccountModal();
       startUserState(accountSession.user);
       refreshAutoSyncTimer();
+      accountPasswordInput.value = '';
+      document.getElementById('account-password2').value = '';
+      closeAccountModal();
+    } else {
+      showAccountError('Registrierung erfolgreich — bitte E-Mail bestätigen und dann anmelden.');
     }
   } catch (err) {
     // Registrierung für eine noch nicht freigeschaltete Nicht-oekop.de-Adresse
@@ -7140,8 +7184,10 @@ accountAuthForm.addEventListener('submit', async (e) => {
     if (authMode === 'signup' && !isOekopEmail(email)) {
       openRequestBlock(email);
     } else {
-      showAccountError(err.message || (authMode === 'signup' ? 'Registrierung fehlgeschlagen.' : 'Anmeldung fehlgeschlagen.'));
+      showAccountError(authErrorMessage(err, authMode === 'signup' ? 'Registrierung fehlgeschlagen.' : 'Anmeldung fehlgeschlagen.'));
     }
+  } finally {
+    setButtonBusy(accountBtnSubmit, false, AUTH_MODE_TEXT[authMode].submit);
   }
 });
 
@@ -7180,25 +7226,529 @@ accountRequestSubmitBtn.addEventListener('click', async () => {
   }
 });
 
-document.getElementById('account-btn-signout').addEventListener('click', async () => {
+document.getElementById('account-btn-signout').addEventListener('click', () => openSignoutDialog());
+
+// ---------- FeldFolio+ Konto: Seite, Menü, Sicherheit ----------
+let accountRecoveryMode = false;
+let accountTab = 'profil';
+const accountMenu = document.getElementById('account-menu');
+
+function kontoInitialen() {
+  const name = (kontoProfil.name || '').trim();
+  if (name) {
+    const parts = name.split(/\s+/).filter(Boolean);
+    return ((parts[0] || '')[0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+  }
+  const email = accountSession ? accountSession.user.email : '';
+  return (email[0] || '?').toUpperCase();
+}
+// Button während einer Server-Anfrage sperren (kein Doppel-Tippen) + Text.
+function setButtonBusy(btn, busy, label) {
+  btn.disabled = busy;
+  btn.classList.toggle('is-busy', busy);
+  if (label) btn.textContent = label;
+}
+function setAccountStatus(id, text, tone = '') {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text;
+  el.classList.toggle('modal-error', tone === 'error');
+  el.classList.toggle('is-ok', tone === 'ok');
+}
+
+// ---- Passwort anzeigen, Feststelltaste, Stärke ----
+document.querySelectorAll('[data-pw-toggle]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const input = document.getElementById(btn.dataset.pwToggle);
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    btn.querySelector('.icon').textContent = show ? 'visibility_off' : 'visibility';
+    btn.setAttribute('aria-label', show ? 'Passwort verbergen' : 'Passwort anzeigen');
+    btn.title = btn.getAttribute('aria-label');
+  });
+});
+function capsWatch(e) {
+  if (typeof e.getModifierState !== 'function') return;
+  document.getElementById('account-caps').hidden = !e.getModifierState('CapsLock');
+}
+accountPasswordInput.addEventListener('keydown', capsWatch);
+accountPasswordInput.addEventListener('keyup', capsWatch);
+accountPasswordInput.addEventListener('blur', () => { document.getElementById('account-caps').hidden = true; });
+function passwordScore(pw) {
+  let s = 0;
+  if (pw.length >= 8) s++;
+  if (pw.length >= 12) s++;
+  if (/[a-z]/.test(pw) && /[A-Z]/.test(pw)) s++;
+  if (/\d/.test(pw)) s++;
+  if (/[^A-Za-z0-9]/.test(pw)) s++;
+  return Math.min(4, s);
+}
+function updatePasswordStrength() {
+  const box = document.getElementById('account-strength');
+  if (!box) return;
+  const pw = accountPasswordInput.value;
+  const score = pw ? passwordScore(pw) : 0;
+  const labels = ['', 'Schwach', 'Geht so', 'Gut', 'Stark'];
+  box.dataset.score = String(score);
+  box.querySelector('.account-strength-text').textContent = pw
+    ? (pw.length < 8 ? 'Mindestens 8 Zeichen' : labels[score])
+    : 'Mindestens 8 Zeichen, gerne mit Zahlen und Sonderzeichen';
+}
+accountPasswordInput.addEventListener('input', updatePasswordStrength);
+
+// ---- Passwort vergessen ----
+document.getElementById('account-forgot').addEventListener('click', () => {
+  accountModeSwitch.hidden = true;
+  accountAuthForm.hidden = true;
+  document.getElementById('account-forgot-block').hidden = false;
+  const input = document.getElementById('account-forgot-email');
+  input.value = accountEmailInput.value.trim();
+  setAccountStatus('account-forgot-status', '');
+  input.focus();
+});
+document.getElementById('account-forgot-back').addEventListener('click', () => setAuthMode('signin'));
+document.getElementById('account-forgot-send').addEventListener('click', async () => {
+  const btn = document.getElementById('account-forgot-send');
+  const email = document.getElementById('account-forgot-email').value.trim();
+  if (!email.includes('@')) { setAccountStatus('account-forgot-status', 'Bitte eine gültige E-Mail-Adresse eingeben.', 'error'); return; }
+  setButtonBusy(btn, true, 'Sende …');
+  try {
+    await requestPasswordReset(email);
+    // Bewusst neutral — verrät nicht, ob es zu der Adresse ein Konto gibt.
+    setAccountStatus('account-forgot-status', 'Falls es zu dieser Adresse ein Konto gibt, ist der Link unterwegs. Bitte auch im Spam-Ordner nachsehen.', 'ok');
+  } catch (err) {
+    setAccountStatus('account-forgot-status', authErrorMessage(err, 'Link konnte nicht gesendet werden.'), 'error');
+  } finally {
+    setButtonBusy(btn, false, 'Link senden');
+  }
+});
+// Link aus der Mail geöffnet: Supabase meldet PASSWORD_RECOVERY.
+function startPasswordRecovery() {
+  accountRecoveryMode = true;
+  ['account-recovery-password', 'account-recovery-password2'].forEach(id => { document.getElementById(id).value = ''; });
+  setAccountStatus('account-recovery-status', '');
+  openAccountModal();
+}
+onPasswordRecovery(startPasswordRecovery);
+if (import.meta.env.DEV) {
+  window.__ffTestKonto = {
+    startRecovery: () => startPasswordRecovery(),
+    profil: () => ({ ...kontoProfil }),
+    addBackup: (reason) => addBackup(currentUserId(), reason, structuredClone(offlineRec.full))
+  };
+}
+document.getElementById('account-recovery-save').addEventListener('click', async () => {
+  const btn = document.getElementById('account-recovery-save');
+  const pw = document.getElementById('account-recovery-password').value;
+  const pw2 = document.getElementById('account-recovery-password2').value;
+  if (pw.length < 8) { setAccountStatus('account-recovery-status', 'Das Passwort braucht mindestens 8 Zeichen.', 'error'); return; }
+  if (pw !== pw2) { setAccountStatus('account-recovery-status', 'Die beiden Passwörter stimmen nicht überein.', 'error'); return; }
+  setButtonBusy(btn, true, 'Speichere …');
+  try {
+    await updatePassword(pw);
+    accountRecoveryMode = false;
+    const session = await getSession().catch(() => null);
+    if (session && (!accountSession || accountSession.user.id !== session.user.id)) {
+      accountSession = session;
+      updateAccountButton();
+      startUserState(session.user);
+      refreshAutoSyncTimer();
+    }
+    // Token aus der Adresszeile entfernen.
+    if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+    closeAccountModal();
+    showToast('Neues Passwort gespeichert.');
+  } catch (err) {
+    setAccountStatus('account-recovery-status', authErrorMessage(err, 'Passwort konnte nicht gespeichert werden.'), 'error');
+  } finally {
+    setButtonBusy(btn, false, 'Passwort speichern');
+  }
+});
+
+// ---- Reiter der Konto-Seite ----
+function setAccountTab(tab) {
+  accountTab = tab;
+  document.querySelectorAll('#account-tabs [data-account-tab]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.accountTab === tab)));
+  document.querySelectorAll('[data-account-panel]').forEach(p => { p.hidden = p.dataset.accountPanel !== tab; });
+  if (tab === 'profil') fillProfilForm();
+  if (tab === 'sync') { renderAccountSyncPanel(); renderAccountBackups(); }
+  if (tab === 'sicherheit') resetSecurityForms();
+}
+document.querySelectorAll('#account-tabs [data-account-tab]').forEach(b => b.addEventListener('click', () => setAccountTab(b.dataset.accountTab)));
+
+// ---- Profil ----
+const profilPad = document.getElementById('profil-signatur-pad');
+let profilSignaturDraft = null;
+function fillProfilForm() {
+  document.getElementById('profil-name').value = kontoProfil.name || '';
+  document.getElementById('profil-telefon').value = kontoProfil.telefon || '';
+  document.getElementById('profil-kontrollstelle').value = kontoProfil.kontrollstelle || '';
+  document.getElementById('profil-kuerzel').value = kontoProfil.kuerzel || '';
+  profilSignaturDraft = kontoProfil.signatur || null;
+  drawSignatureOnCanvas(profilPad, profilSignaturDraft);
+  setAccountStatus('profil-status', '');
+}
+function drawSignatureOnCanvas(canvas, dataUrl) {
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!dataUrl) return;
+  const img = new Image();
+  img.onload = () => ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  img.src = dataUrl;
+}
+(function setupProfilPad() {
+  const ctx = profilPad.getContext('2d');
+  let drawing = false, lastX = 0, lastY = 0;
+  const pos = (e) => {
+    const r = profilPad.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * (profilPad.width / r.width), y: (e.clientY - r.top) * (profilPad.height / r.height) };
+  };
+  profilPad.addEventListener('pointerdown', (e) => {
+    drawing = true;
+    const p = pos(e); lastX = p.x; lastY = p.y;
+    try { profilPad.setPointerCapture(e.pointerId); } catch {}
+  });
+  profilPad.addEventListener('pointermove', (e) => {
+    if (!drawing) return;
+    const p = pos(e);
+    ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(lastX, lastY); ctx.lineTo(p.x, p.y); ctx.stroke();
+    lastX = p.x; lastY = p.y;
+  });
+  const end = () => { if (!drawing) return; drawing = false; profilSignaturDraft = profilPad.toDataURL('image/png'); };
+  profilPad.addEventListener('pointerup', end);
+  profilPad.addEventListener('pointercancel', end);
+})();
+document.getElementById('profil-signatur-clear').addEventListener('click', () => {
+  profilSignaturDraft = null;
+  drawSignatureOnCanvas(profilPad, null);
+});
+document.getElementById('profil-save').addEventListener('click', async () => {
+  kontoProfil = normalizeKontoProfil({
+    name: document.getElementById('profil-name').value,
+    telefon: document.getElementById('profil-telefon').value,
+    kontrollstelle: document.getElementById('profil-kontrollstelle').value,
+    kuerzel: document.getElementById('profil-kuerzel').value,
+    signatur: profilSignaturDraft
+  });
+  renderKontoProfilViews();
+  renderAccountModal();
+  try { await persistLocalState(); } catch {}
+  setAccountStatus('profil-status', 'Gespeichert' + (navigator.onLine ? ' — wird mit der Cloud abgeglichen.' : ' — auf dem Gerät, Abgleich folgt mit Internet.'), 'ok');
+  if (navigator.onLine) syncWithCloud();
+});
+// Alles, was Profil-Daten anzeigt (Kopfzeile, Menü).
+function renderKontoProfilViews() {
+  renderAccountMenu();
+}
+
+// ---- Sicherheit: Passwort ändern, überall abmelden, Konto löschen ----
+function resetSecurityForms() {
+  ['pw-current', 'pw-new', 'pw-new2', 'delete-password', 'delete-confirm'].forEach(id => { document.getElementById(id).value = ''; });
+  setAccountStatus('pw-status', '');
+  setAccountStatus('signout-everywhere-status', '');
+  setAccountStatus('delete-status', '');
+  document.getElementById('account-delete-block').hidden = true;
+  document.getElementById('account-delete-open').hidden = false;
+  document.getElementById('account-delete-confirm').disabled = true;
+}
+document.getElementById('pw-change').addEventListener('click', async () => {
+  const btn = document.getElementById('pw-change');
+  const current = document.getElementById('pw-current').value;
+  const pw = document.getElementById('pw-new').value;
+  const pw2 = document.getElementById('pw-new2').value;
+  if (!current) { setAccountStatus('pw-status', 'Bitte das aktuelle Passwort eingeben.', 'error'); return; }
+  if (pw.length < 8) { setAccountStatus('pw-status', 'Das neue Passwort braucht mindestens 8 Zeichen.', 'error'); return; }
+  if (pw !== pw2) { setAccountStatus('pw-status', 'Die beiden neuen Passwörter stimmen nicht überein.', 'error'); return; }
+  setButtonBusy(btn, true, 'Ändere …');
+  try {
+    await verifyPassword(accountSession.user.email, current);
+  } catch (err) {
+    setAccountStatus('pw-status', /invalid login/i.test(String(err && err.message)) ? 'Das aktuelle Passwort stimmt nicht.' : authErrorMessage(err), 'error');
+    setButtonBusy(btn, false, 'Passwort ändern');
+    return;
+  }
+  try {
+    await updatePassword(pw);
+    resetSecurityForms();
+    setAccountStatus('pw-status', 'Passwort geändert.', 'ok');
+  } catch (err) {
+    setAccountStatus('pw-status', authErrorMessage(err, 'Passwort konnte nicht geändert werden.'), 'error');
+  } finally {
+    setButtonBusy(btn, false, 'Passwort ändern');
+  }
+});
+document.getElementById('account-signout-everywhere').addEventListener('click', async () => {
+  if (!confirm('Auf allen Geräten abmelden — auch auf diesem? Deine Daten auf diesem Gerät bleiben gespeichert.')) return;
+  const btn = document.getElementById('account-signout-everywhere');
+  btn.disabled = true;
+  try {
+    await signOutEverywhere();
+    await performSignOut({ wipe: false, serverDone: true });
+    showToast('Auf allen Geräten abgemeldet.');
+  } catch (err) {
+    setAccountStatus('signout-everywhere-status', authErrorMessage(err, 'Abmelden fehlgeschlagen.'), 'error');
+  } finally {
+    btn.disabled = false;
+  }
+});
+document.getElementById('account-delete-open').addEventListener('click', () => {
+  document.getElementById('account-delete-block').hidden = false;
+  document.getElementById('account-delete-open').hidden = true;
+  document.getElementById('delete-password').focus();
+});
+document.getElementById('account-delete-cancel').addEventListener('click', resetSecurityForms);
+document.getElementById('delete-confirm').addEventListener('input', (e) => {
+  document.getElementById('account-delete-confirm').disabled = e.target.value.trim().toUpperCase() !== 'LÖSCHEN';
+});
+document.getElementById('account-delete-confirm').addEventListener('click', async () => {
+  const btn = document.getElementById('account-delete-confirm');
+  const pw = document.getElementById('delete-password').value;
+  if (!pw) { setAccountStatus('delete-status', 'Bitte zur Bestätigung dein Passwort eingeben.', 'error'); return; }
+  setButtonBusy(btn, true, 'Lösche …');
+  try {
+    await verifyPassword(accountSession.user.email, pw);
+  } catch (err) {
+    setAccountStatus('delete-status', /invalid login/i.test(String(err && err.message)) ? 'Das Passwort stimmt nicht.' : authErrorMessage(err), 'error');
+    setButtonBusy(btn, false, 'Endgültig löschen');
+    return;
+  }
+  try {
+    await deleteMyAccount();
+    await performSignOut({ wipe: true, serverDone: true });
+    showToast('Dein Konto wurde gelöscht.');
+  } catch (err) {
+    setAccountStatus('delete-status', authErrorMessage(err, 'Konto konnte nicht gelöscht werden.'), 'error');
+    setButtonBusy(btn, false, 'Endgültig löschen');
+  }
+});
+
+// ---- Sync & Gerät ----
+// Zustand des Abgleichs in Worten (Konto-Seite und Konto-Menü).
+function accountSyncInfo() {
+  if (!accountSession) return { tone: 'off', title: 'Nicht angemeldet', text: '' };
+  let uploads = [];
+  try { uploads = myUploads(); } catch {}
+  const offline = !navigator.onLine || syncState === 'offline' || !!accountSession.offline;
+  const time = lastSyncedAt ? lastSyncedAt.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '';
+  if (syncState === 'syncing') return { tone: 'busy', title: 'Synchronisiere …', text: '' };
+  if (offline) return { tone: 'warn', title: 'Offline', text: 'Alles ist auf diesem Gerät gespeichert, der Abgleich folgt mit Internet.' };
+  if (syncState === 'error') return { tone: 'warn', title: 'Abgleich fehlgeschlagen', text: syncErrorMessage || '' };
+  if (hasPendingLocalChanges() || uploads.length) {
+    return { tone: 'warn', title: 'Nicht synchron', text: uploads.length ? `${uploads.length} ${uploads.length === 1 ? 'Datei wartet' : 'Dateien warten'} auf den Upload.` : 'Änderungen werden gleich hochgeladen.' };
+  }
+  if (!autoSyncEnabled) return { tone: 'warn', title: 'Auto-Sync aus', text: 'Änderungen nur per „Jetzt synchronisieren".' };
+  return { tone: 'ok', title: 'Gespeichert', text: time ? `Zuletzt abgeglichen um ${time} Uhr.` : 'Mit der Cloud abgeglichen.' };
+}
+function renderAccountSyncPanel() {
+  const info = accountSyncInfo();
+  const dot = document.getElementById('account-sync-dot');
+  if (!dot) return;
+  dot.dataset.tone = info.tone;
+  document.getElementById('account-sync-title').textContent = info.title;
+  accountSyncStatus.textContent = info.text;
+  let uploads = [];
+  try { uploads = myUploads(); } catch {}
+  document.getElementById('account-uploads-line').textContent = uploads.length
+    ? `Upload-Warteschlange: ${uploads.length} ${uploads.length === 1 ? 'Datei' : 'Dateien'} (Fotos/Dokumente) noch nicht hochgeladen.`
+    : '';
+  document.getElementById('account-sync-now').disabled = syncState === 'syncing' || !accountSession || !!accountSession.offline;
+}
+async function syncNowFromUi() {
+  if (!accountSession) return;
+  try { retryFailedUploads(); } catch {}
+  const result = await syncWithCloud();
+  renderAccountSyncPanel();
+  renderAccountMenu();
+  if (result === 'synced') showToast('Synchronisiert.');
+  else if (result === 'offline') showToast('Offline — Abgleich folgt, sobald Internet da ist.');
+  else if (result === 'error') showToast('Abgleich fehlgeschlagen: ' + (syncErrorMessage || 'unbekannter Fehler'));
+}
+document.getElementById('account-sync-now').addEventListener('click', syncNowFromUi);
+
+async function renderAccountBackups() {
+  const list = document.getElementById('account-backups-list');
   const userId = currentUserId();
-  // Beim Abmelden wird der lokale Stand dieses Nutzers gelöscht (fremde
-  // Geräte!) — noch nicht hochgeladene Änderungen vorher möglichst retten.
-  if (hasPendingLocalChanges() && navigator.onLine) await syncWithCloud();
-  if (hasPendingLocalChanges() &&
-      !confirm('Es gibt Änderungen, die noch nicht in der Cloud gespeichert sind (z.B. offline erfasst). Beim Abmelden gehen sie auf diesem Gerät verloren. Trotzdem abmelden?')) return;
-  try { await signOut(); } catch {}
+  let backups = [];
+  try { backups = userId ? await listBackups(userId) : []; } catch {}
+  if (!backups.length) { list.innerHTML = '<p class="empty-hint">Keine Sicherungen vorhanden.</p>'; return; }
+  list.innerHTML = backups.slice().reverse().map(b => {
+    const d = new Date(b.createdAt);
+    return `<div class="account-backup-row">
+      <span class="material-symbols-rounded icon" aria-hidden="true">history</span>
+      <span class="account-backup-text"><strong>${escapeHtml(b.reason || 'Sicherung')}</strong><small>${d.toLocaleDateString('de-DE')} ${d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</small></span>
+      <button type="button" class="betrieb-btn" data-restore-backup="${b.id}">Wiederherstellen</button>
+    </div>`;
+  }).join('');
+  list.querySelectorAll('[data-restore-backup]').forEach(btn => btn.addEventListener('click', () => {
+    const backup = backups.find(x => String(x.id) === btn.dataset.restoreBackup);
+    if (backup) restoreBackup(backup);
+  }));
+}
+// Sicherung zurückholen: aktueller Stand wird vorher selbst gesichert, die
+// Sicherung wird dann als lokale Änderung behandelt und hochgeladen.
+async function restoreBackup(backup) {
+  if (!offlineRec) return;
+  const when = new Date(backup.createdAt).toLocaleString('de-DE');
+  if (!confirm(`Sicherung vom ${when} wiederherstellen? Der aktuelle Stand wird vorher ebenfalls gesichert.`)) return;
+  const userId = currentUserId();
+  try { await persistLocalState(); } catch {}
+  try { await addBackup(userId, 'Stand vor dem Wiederherstellen', structuredClone(offlineRec.full)); } catch {}
+  const full = migrateFullStateShape(structuredClone(backup.full));
+  full.terminkalenderEvents = full.terminkalenderEvents || [];
+  full.manualBetriebe = full.manualBetriebe || [];
+  full.profil = full.profil || {};
+  offlineRec.full = full;
+  restoreFromOfflineRecord();
+  offlineRec.gen++;
+  Object.keys(full.workspaces).forEach(k => { offlineRec.dirtyGen[k] = offlineRec.gen; });
+  offlineRec.sharedDirtyGen = offlineRec.gen;
+  try { await writeLocalState(userId, offlineRec); } catch {}
+  updateSyncIndicator();
+  renderAccountBackups();
+  showToast('Sicherung wiederhergestellt.');
+  if (navigator.onLine) syncWithCloud();
+}
+
+// ---- Konto-Menü (Kopfzeile) ----
+function renderAccountMenu() {
+  if (!accountMenu) return;
+  if (!accountSession) return;
+  const email = accountSession.user.email;
+  document.getElementById('account-menu-avatar').textContent = kontoInitialen();
+  document.getElementById('account-menu-name').textContent = kontoProfil.name || email;
+  document.getElementById('account-menu-email').textContent = kontoProfil.name ? email : 'FeldFolio+ Konto';
+  const info = accountSyncInfo();
+  const sync = document.getElementById('account-menu-sync');
+  sync.dataset.tone = info.tone;
+  document.getElementById('account-menu-sync-text').textContent = info.title + (info.tone === 'ok' && lastSyncedAt ? ' · ' + lastSyncedAt.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '');
+  document.getElementById('account-menu-admin').hidden = !isOekopEmail(email);
+  document.getElementById('account-menu-sync-now').disabled = syncState === 'syncing' || !!accountSession.offline;
+}
+function openAccountMenu() {
+  renderAccountMenu();
+  accountMenu.hidden = false;
+  accountBtn.setAttribute('aria-expanded', 'true');
+  if (isOekopEmail(accountSession.user.email)) refreshAdminCount();
+  (accountMenu.querySelector('.account-menu-item:not([disabled])') || accountMenu).focus?.();
+}
+function closeAccountMenu() {
+  if (!accountMenu || accountMenu.hidden) return;
+  accountMenu.hidden = true;
+  accountBtn.setAttribute('aria-expanded', 'false');
+}
+document.addEventListener('click', (e) => {
+  if (!accountMenu.hidden && !e.target.closest('#account-menu') && !e.target.closest('#btn-account')) closeAccountMenu();
+});
+document.addEventListener('keydown', (e) => {
+  if (accountMenu.hidden) return;
+  if (e.key === 'Escape') { closeAccountMenu(); accountBtn.focus(); return; }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    const items = [...accountMenu.querySelectorAll('.account-menu-item:not([hidden]):not([disabled])')];
+    const i = items.indexOf(document.activeElement);
+    e.preventDefault();
+    items[(i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
+  }
+});
+document.getElementById('account-menu-sync-now').addEventListener('click', () => { closeAccountMenu(); syncNowFromUi(); });
+document.getElementById('account-menu-settings').addEventListener('click', () => openAccountModal('profil'));
+document.getElementById('account-menu-admin').addEventListener('click', () => openAccountModal('admin'));
+document.getElementById('account-menu-signout').addEventListener('click', () => { closeAccountMenu(); openSignoutDialog(); });
+async function refreshAdminCount() {
+  let n = 0;
+  try { n = (await listPendingAccessRequests()).length; } catch {}
+  ['account-menu-admin-count', 'account-admin-count'].forEach(id => {
+    const el = document.getElementById(id);
+    el.textContent = n;
+    el.hidden = !n;
+  });
+}
+
+// ---- Abmelden (mit Wahl: Daten auf dem Gerät behalten oder löschen) ----
+const signoutOverlay = document.getElementById('signout-overlay');
+function openSignoutDialog() {
+  if (!accountSession) return;
+  closeAccountModal();
+  document.getElementById('signout-sub').textContent = accountSession.user.email;
+  document.getElementById('signout-wipe').checked = true;
+  updateSignoutWarning();
+  signoutOverlay.hidden = false;
+}
+function updateSignoutWarning() {
+  const wipe = document.getElementById('signout-wipe').checked;
+  let uploads = [];
+  try { uploads = myUploads(); } catch {}
+  const pending = hasPendingLocalChanges();
+  const warn = document.getElementById('signout-warning');
+  const parts = [];
+  if (pending) parts.push('Änderungen, die noch nicht in der Cloud sind');
+  if (uploads.length) parts.push(`${uploads.length} noch nicht hochgeladene ${uploads.length === 1 ? 'Datei' : 'Dateien'}`);
+  warn.hidden = !(wipe && parts.length);
+  warn.textContent = parts.length ? `Achtung: ${parts.join(' und ')} — beim Löschen der Gerätedaten gehen sie verloren${navigator.onLine ? ' (es wird vorher noch versucht, abzugleichen)' : ''}.` : '';
+}
+document.getElementById('signout-wipe').addEventListener('change', updateSignoutWarning);
+document.getElementById('signout-cancel').addEventListener('click', () => { signoutOverlay.hidden = true; });
+signoutOverlay.addEventListener('click', (e) => { if (e.target === signoutOverlay) signoutOverlay.hidden = true; });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !signoutOverlay.hidden) signoutOverlay.hidden = true; });
+document.getElementById('signout-confirm').addEventListener('click', async () => {
+  const btn = document.getElementById('signout-confirm');
+  btn.disabled = true;
+  try {
+    await performSignOut({ wipe: document.getElementById('signout-wipe').checked });
+  } finally {
+    btn.disabled = false;
+    signoutOverlay.hidden = true;
+  }
+});
+async function performSignOut({ wipe = true, serverDone = false } = {}) {
+  const userId = currentUserId();
+  // Noch nicht hochgeladene Änderungen vorher möglichst retten.
+  if (!serverDone && hasPendingLocalChanges() && navigator.onLine) { try { await syncWithCloud(); } catch {} }
+  if (!serverDone) { try { await signOut(); } catch {} }
   if (userId) {
-    try { await deleteLocalState(userId); await writeLastUser(null); } catch {}
+    // Nie automatisch wieder als dieser Nutzer starten (auch nicht offline).
+    try { await writeLastUser(null); } catch {}
+    if (wipe) {
+      try { await deleteLocalState(userId); } catch {}
+      try { for (const r of await listQueuedUploads(userId)) await deleteQueuedUpload(r.id); } catch {}
+      try { for (const r of await listFotomappeFotos(userId)) await deleteFotomappeFoto(r.id); } catch {}
+      try { await caches.delete(DOC_CACHE); } catch {}
+    }
+    try { for (let i = uploadQueue.length - 1; i >= 0; i--) if (uploadQueue[i].userId === userId) uploadQueue.splice(i, 1); } catch {}
   }
   offlineRec = null;
   persistCache = { key: null, ws: null, shared: null };
   syncState = 'idle';
   accountSession = null;
+  accountRecoveryMode = false;
+  // Cloud-Daten des Kontos nicht weiter anzeigen.
+  kontoProfil = {};
+  terminkalenderEvents = [];
+  manualBetriebe = [];
+  closeKontrollmappe();
+  try { updateBetriebPin(); } catch {}
   updateAccountButton();
   closeAccountModal();
   refreshAutoSyncTimer();
-});
+  renderTerminkalenderSummary();
+  if (document.body.dataset.view === 'kontrolle') openKontrolle();
+}
+
+// Kleine Rückmeldung unten (z. B. "Synchronisiert.").
+function showToast(text) {
+  let el = document.getElementById('ff-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'ff-toast';
+    el.className = 'ff-toast';
+    el.setAttribute('role', 'status');
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+  el.classList.add('is-visible');
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove('is-visible'), 2600);
+}
 
 // ---------- FeldFolio Plus: Automatische Cloud-Synchronisation ----------
 // Speichert den aktuellen Arbeitsstand periodisch im Hintergrund über
@@ -7400,6 +7950,20 @@ function clearWorkspace() {
   clearAllStallplaene();
 }
 
+// ---- Konto-Profil (FeldFolio+) ----
+// Name, Telefon, Kontrollstelle/Kürzel und eine gespeicherte Unterschrift —
+// Teil des geteilten Arbeitsstands (wie Termine/Betriebsliste): offline
+// verfügbar und über die Cloud auf allen Geräten. Name wird in Protokollen
+// vorbelegt, die Unterschrift lässt sich dort per Knopfdruck einsetzen.
+let kontoProfil = {};
+function normalizeKontoProfil(p) {
+  const src = p && typeof p === 'object' ? p : {};
+  const out = {};
+  ['name', 'telefon', 'kontrollstelle', 'kuerzel'].forEach(k => { if (typeof src[k] === 'string' && src[k].trim()) out[k] = src[k].trim(); });
+  if (typeof src.signatur === 'string' && src.signatur.startsWith('data:image/')) out.signatur = src.signatur;
+  return out;
+}
+
 // terminkalenderEvents/manualBetriebe gelten immer betriebsübergreifend,
 // werden also unabhängig vom aktuellen Workspace wiederhergestellt.
 function restoreSharedState(full) {
@@ -7414,6 +7978,8 @@ function restoreSharedState(full) {
     renderTerminkalenderGrid();
   }
   manualBetriebe = Array.isArray(full.manualBetriebe) ? full.manualBetriebe : [];
+  kontoProfil = normalizeKontoProfil(full.profil);
+  if (typeof renderKontoProfilViews === 'function') renderKontoProfilViews();
 }
 
 // Explizites Speichern (Notizen, Termine, Betriebsliste, …): immer zuerst
@@ -7503,7 +8069,7 @@ function currentUserId() {
   return accountSession && accountSession.user ? accountSession.user.id : null;
 }
 function emptyFullState() {
-  return { workspaces: {}, terminkalenderEvents: [], manualBetriebe: [] };
+  return { workspaces: {}, terminkalenderEvents: [], manualBetriebe: [], profil: {} };
 }
 function newOfflineRecord(user) {
   return { full: emptyFullState(), base: null, baseUpdatedAt: null, gen: 0, dirtyGen: {}, sharedDirtyGen: 0, zuordnung: null, user };
@@ -7513,7 +8079,8 @@ function serializeSharedState() {
     terminkalenderEvents: terminkalenderEvents.map(e => ({
       ...e, date: e.date.toISOString(), dateEnd: e.dateEnd ? e.dateEnd.toISOString() : null
     })),
-    manualBetriebe: manualBetriebe.slice()
+    manualBetriebe: manualBetriebe.slice(),
+    profil: { ...kontoProfil }
   };
 }
 // Ein leerer Workspace (alle Listen leer) zählt wie ein fehlender — sonst
@@ -7523,7 +8090,7 @@ function workspaceKeyJson(ws) {
   return JSON.stringify(ws);
 }
 function sharedKeyJson(full) {
-  return JSON.stringify({ t: (full && full.terminkalenderEvents) || [], m: (full && full.manualBetriebe) || [] });
+  return JSON.stringify({ t: (full && full.terminkalenderEvents) || [], m: (full && full.manualBetriebe) || [], p: (full && full.profil) || {} });
 }
 // Vergleich Cloud <-> lokale Basis unabhängig von der Schlüssel-Reihenfolge:
 // Supabase speichert den Stand als Postgres-jsonb, und jsonb sortiert die
@@ -7544,8 +8111,8 @@ function sameWorkspace(a, b) {
   return canonicalJson(a) === canonicalJson(b);
 }
 function sameShared(a, b) {
-  return canonicalJson({ t: (a && a.terminkalenderEvents) || [], m: (a && a.manualBetriebe) || [] }) ===
-    canonicalJson({ t: (b && b.terminkalenderEvents) || [], m: (b && b.manualBetriebe) || [] });
+  return canonicalJson({ t: (a && a.terminkalenderEvents) || [], m: (a && a.manualBetriebe) || [], p: (a && a.profil) || {} }) ===
+    canonicalJson({ t: (b && b.terminkalenderEvents) || [], m: (b && b.manualBetriebe) || [], p: (b && b.profil) || {} });
 }
 function hasPendingLocalChanges() {
   return !!offlineRec && (Object.keys(offlineRec.dirtyGen).length > 0 || offlineRec.sharedDirtyGen > 0);
@@ -7569,6 +8136,7 @@ function rebaselineLocalState() {
   if (persistCache.ws !== 'EMPTY' || offlineRec.full.workspaces[currentWorkspaceKey]) offlineRec.full.workspaces[currentWorkspaceKey] = ws;
   offlineRec.full.terminkalenderEvents = shared.terminkalenderEvents;
   offlineRec.full.manualBetriebe = shared.manualBetriebe;
+  offlineRec.full.profil = shared.profil;
 }
 
 // Schreibt den aktuellen Stand lokal weg, falls sich etwas geändert hat —
@@ -7598,6 +8166,7 @@ async function persistLocalState() {
     rec.gen++;
     rec.full.terminkalenderEvents = shared.terminkalenderEvents;
     rec.full.manualBetriebe = shared.manualBetriebe;
+    rec.full.profil = shared.profil;
     rec.sharedDirtyGen = rec.gen;
     persistCache.shared = sharedJson;
     changed = true;
@@ -7657,6 +8226,7 @@ async function runCloudSync() {
   const cloud = migrateFullStateShape(row && row.data ? row.data : {});
   cloud.terminkalenderEvents = cloud.terminkalenderEvents || [];
   cloud.manualBetriebe = cloud.manualBetriebe || [];
+  cloud.profil = cloud.profil || {};
   const base = rec.base;
   const dirtyKeys = Object.keys(rec.dirtyGen);
   const sharedDirty = rec.sharedDirtyGen > 0;
@@ -7682,6 +8252,7 @@ async function runCloudSync() {
   if (pushShared) {
     merged.terminkalenderEvents = rec.full.terminkalenderEvents;
     merged.manualBetriebe = rec.full.manualBetriebe;
+    merged.profil = rec.full.profil || {};
   }
 
   let updatedAt = row ? row.updated_at : null;
@@ -7717,6 +8288,7 @@ async function runCloudSync() {
     if (!rec.sharedDirtyGen && (sharedConflict && !keepMine)) {
       rec.full.terminkalenderEvents = merged.terminkalenderEvents;
       rec.full.manualBetriebe = merged.manualBetriebe;
+      rec.full.profil = merged.profil;
     }
   }
   if (!sharedDirty && !sameShared(merged, base || rec.full)) {
@@ -7724,6 +8296,7 @@ async function runCloudSync() {
     // Betrieb: Basis nicht vorziehen (siehe oben).
     newBase.terminkalenderEvents = base ? base.terminkalenderEvents : rec.full.terminkalenderEvents;
     newBase.manualBetriebe = base ? base.manualBetriebe : rec.full.manualBetriebe;
+    newBase.profil = base ? base.profil : rec.full.profil;
   }
   rec.base = newBase;
   rec.baseUpdatedAt = updatedAt;
@@ -7805,6 +8378,7 @@ function updateSyncIndicator() {
   btnSync.setAttribute('aria-label', title);
   document.body.classList.toggle('is-offline', !navigator.onLine);
   updateSaveStatus();
+  try { renderAccountSyncPanel(); renderAccountMenu(); } catch { /* Modulstart */ }
 }
 
 // Speicherstatus in der Kopfzeile — nur eindeutige Zustände aus dem
@@ -7814,6 +8388,24 @@ function updateSyncIndicator() {
 function updateSaveStatus() {
   const el = document.getElementById('save-status');
   if (!el) return;
+  // Laufende Datei-Uploads (Warteschlange) haben Vorrang — sie sollen immer
+  // sichtbar sein, auch ohne Auto-Sync. (try: wird schon beim Modulstart
+  // aufgerufen, bevor die Warteschlange existiert.)
+  let uploads = [];
+  try { uploads = myUploads(); } catch {}
+  el.classList.toggle('is-uploading', !!(accountSession && uploads.length));
+  if (accountSession && uploads.length) {
+    const n = uploads.length;
+    const offlineNow = !navigator.onLine;
+    el.hidden = false;
+    el.classList.toggle('is-unsynced', offlineNow || uploads.some(r => r.status === 'error'));
+    document.getElementById('save-status-text').textContent = offlineNow
+      ? `${n} ${n === 1 ? 'Upload wartet' : 'Uploads warten'}`
+      : `Lädt hoch · ${n}`;
+    el.title = uploadSummaryText(uploads);
+    el.setAttribute('aria-label', el.title);
+    return;
+  }
   if (!accountSession || !autoSyncEnabled || syncState === 'syncing') { el.hidden = true; return; }
   const offline = !navigator.onLine || syncState === 'offline' || !!accountSession.offline;
   const unsynced = hasPendingLocalChanges() || offline || syncState === 'error';
@@ -7855,6 +8447,7 @@ async function startUserState(user) {
     rebaselineLocalState();
   }
   updateSyncIndicator();
+  resumeUploadQueue();
   if (accountSession && !accountSession.offline && navigator.onLine) await initialCloudLoad(!rec);
 }
 
@@ -8891,7 +9484,7 @@ function tkGroupChipsHtml(group, max = 99) {
 }
 
 function tkHasTerminData(ev) {
-  return (ev.attachments || []).length || (ev.notiz || '').trim() ||
+  return (ev.attachments || []).length || (ev.notiz || '').trim() || (ev.warenfluss || []).length ||
     Object.keys(TK_FORMULARE).some(k => (ev[tkFormularDef(k).listKey] || []).length);
 }
 function tkMinuteOfDay(ev) { return ev.date.getHours() * 60 + ev.date.getMinutes(); }
@@ -8961,6 +9554,7 @@ function tkAbsorbGroupData(group) {
       p.notiz = [p.notiz, m.notiz].filter(s => (s || '').trim()).join('\n\n');
       m.notiz = '';
     }
+    if ((m.warenfluss || []).length) { p.warenfluss = [...(p.warenfluss || []), ...m.warenfluss]; m.warenfluss = []; }
   });
 }
 function tkGroupIsZugeordnet(group) {
@@ -9117,8 +9711,8 @@ function renderTerminkalenderDetail(ev) {
     </div>`;
   }).join('');
 
-  const protokollCount = Object.keys(TK_FORMULARE).reduce((n, k) => n + (ev[tkFormularDef(k).listKey] || []).length, 0);
-  const dokCount = (ev.attachments || []).length;
+  const protokollCount = Object.keys(TK_FORMULARE).reduce((n, k) => n + (ev[tkFormularDef(k).listKey] || []).length, 0) + (ev.warenfluss || []).length;
+  const dokCount = (ev.attachments || []).length + uploadsForGroup(ev.id).length;
   const tabs = [
     ['ueberblick', 'Überblick', ''],
     ['protokolle', 'Protokolle', protokollCount],
@@ -9174,10 +9768,12 @@ function renderTerminkalenderDetail(ev) {
       </section>
       <section class="km-panel" data-km-panel="protokolle"${tab === 'protokolle' ? '' : ' hidden'}>
         ${formularSectionsHtml(ev)}
+        ${warenflussSectionHtml(ev)}
       </section>
       <section class="km-panel" data-km-panel="dokumente"${tab === 'dokumente' ? '' : ' hidden'}>
         <div class="tk-attachments">
           <div class="tk-attachments-head">Fotos &amp; Dateien</div>
+          <div class="tk-attachments-grid tk-upload-queue" id="tk-upload-queue" hidden></div>
           <div class="tk-attachments-grid" id="tk-attachments-grid"></div>
           <div class="tk-attachments-actions">
             <label class="tk-attachment-btn tk-attachment-btn-primary">
@@ -9185,11 +9781,14 @@ function renderTerminkalenderDetail(ev) {
               <span class="material-symbols-rounded icon">photo_camera</span> Foto aufnehmen
             </label>
             <label class="tk-attachment-btn">
-              <input type="file" id="tk-file-add-input" hidden>
+              <input type="file" id="tk-file-add-input" multiple hidden>
               <span class="material-symbols-rounded icon">attach_file</span> Datei hinzufügen
             </label>
             <button type="button" class="tk-attachment-btn" id="tk-scan-btn">
               <span class="material-symbols-rounded icon">document_scanner</span> Dokument scannen
+            </button>
+            <button type="button" class="tk-attachment-btn" id="tk-fotomappe-btn">
+              <span class="material-symbols-rounded icon">photo_library</span> Fotomappe (mehrere Fotos → 1 PDF)
             </button>
           </div>
           <p class="modal-hint" id="tk-attachment-status"></p>
@@ -9214,6 +9813,8 @@ function renderTerminkalenderDetail(ev) {
   document.getElementById('tk-file-add-input').addEventListener('change', (e) => handleTerminkalenderFileAdd(ev, e));
   document.getElementById('tk-betrieb-assign-btn').addEventListener('click', () => toggleTerminkalenderZuordnung(ev));
   document.getElementById('tk-scan-btn').addEventListener('click', () => openScanModal(ev));
+  document.getElementById('tk-fotomappe-btn').addEventListener('click', () => openFotomappe(ev));
+  renderUploadQueueTiles(group.id);
   // Verschieben per Datumsfeld — Drag&Drop der Karten geht auf Touch nicht.
   document.getElementById('tk-move-date').addEventListener('change', (e) => {
     const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(e.target.value);
@@ -9228,6 +9829,7 @@ function renderTerminkalenderDetail(ev) {
   notiz.addEventListener('input', () => { ev.notiz = notiz.value; });
   notiz.addEventListener('change', () => { persistLocalState().catch(() => {}); renderKontrolleUebersicht(); });
   wireFormularSections(ev);
+  wireWarenflussSection(ev);
 }
 
 // Ordnet den Termin direkt aus der Kalenderansicht heraus als aktiven Betrieb
@@ -9264,64 +9866,846 @@ async function renderTerminkalenderAttachments(ev) {
   const grid = document.getElementById('tk-attachments-grid');
   if (!grid) return;
   const attachments = ev.attachments || [];
-  if (!attachments.length) { grid.innerHTML = '<p class="empty-hint">Noch keine Anhänge.</p>'; return; }
+  if (!attachments.length) { grid.innerHTML = uploadsForGroup(ev.id).length ? '' : '<p class="empty-hint">Noch keine Anhänge.</p>'; return; }
   grid.innerHTML = attachments.map(() => '<div class="tk-attachment tk-attachment-loading"></div>').join('');
   const urls = await Promise.all(attachments.map(a => getPhotoUrl(a.path, a.name).catch(() => null)));
-  grid.innerHTML = attachments.map((a, i) => {
+  grid.innerHTML = attachmentTilesHtml(attachments, urls);
+  // Antippen öffnet den Dokumenten-/Fotoviewer (auch ohne Vorschaubild —
+  // der Viewer lädt die Datei selbst bzw. aus dem Gerätespeicher).
+  grid.querySelectorAll('[data-dv-index]').forEach(btn => {
+    btn.addEventListener('click', () => openTerminViewer(ev, Number(btn.dataset.dvIndex), urls));
+  });
+  grid.querySelectorAll('.tk-attachment-remove').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const a = attachments.find(x => x.path === btn.getAttribute('data-path'));
+      if (a && !confirm(`„${a.name}" wirklich löschen?`)) return;
+      removeTerminkalenderAttachment(ev.id, btn.getAttribute('data-path'));
+    });
+  });
+}
+
+// Kacheln für Anhänge (Termin, Protokoll-Anlagen): Bild als Vorschau, PDF/
+// sonstige als Symbol + Name; ganze Kachel öffnet den Viewer.
+function attachmentTilesHtml(list, urls) {
+  return list.map((a, i) => {
     const url = urls[i];
-    if (!url) return `<div class="tk-attachment tk-attachment-error" title="${escapeHtml(a.name)} konnte nicht geladen werden"><span class="material-symbols-rounded icon">warning</span></div>`;
     const isImage = (a.type || '').startsWith('image/');
-    const inner = isImage
+    const isPdf = a.type === 'application/pdf' || /.pdf$/i.test(a.name || '');
+    const inner = isImage && url
       ? `<img src="${url}" alt="${escapeHtml(a.name)}">`
-      : `<span class="tk-attachment-icon material-symbols-rounded icon">description</span><span class="tk-attachment-name">${escapeHtml(a.name)}</span>`;
-    return `<div class="tk-attachment">
-      <a href="${url}" target="_blank" rel="noopener" class="tk-attachment-link" title="${escapeHtml(a.name)}">${inner}</a>
-      <button type="button" class="tk-attachment-remove" data-path="${escapeHtml(a.path)}" title="Entfernen"><span class="material-symbols-rounded icon">close</span></button>
+      : `<span class="tk-attachment-icon material-symbols-rounded icon">${isPdf ? 'picture_as_pdf' : isImage ? 'photo_camera' : 'description'}</span><span class="tk-attachment-name">${escapeHtml(a.name)}</span>`;
+    return `<div class="tk-attachment${url ? '' : ' tk-attachment-nopreview'}">
+      <button type="button" class="tk-attachment-link" data-dv-index="${i}" title="${escapeHtml(a.name)} — ansehen" aria-label="${escapeHtml(a.name)} ansehen">${inner}</button>
+      <button type="button" class="tk-attachment-remove" data-path="${escapeHtml(a.path)}" title="Entfernen" aria-label="${escapeHtml(a.name)} entfernen"><span class="material-symbols-rounded icon">close</span></button>
     </div>`;
   }).join('');
-  grid.querySelectorAll('.tk-attachment-remove').forEach(btn => {
-    btn.addEventListener('click', () => removeTerminkalenderAttachment(ev.id, btn.getAttribute('data-path')));
-  });
 }
 
 // Gemeinsame Upload-/Benennungs-/ev.attachments-Logik — genutzt sowohl von
 // den beiden Datei-Input-Feldern (via handleTerminkalenderFileAdd) als auch
 // direkt vom Dokumentenscanner (siehe weiter unten), der sein fertiges PDF
 // als File-Objekt übergibt, ohne den Umweg über ein <input>-Change-Event.
+// ---- Upload-Warteschlange (Fotos/Dateien/Scans/Protokolle an Terminen) ----
+// Vorher lief jeder Upload nur im Arbeitsspeicher: Öffnete man für das
+// nächste Foto die Kamera, wurde der Browser angehalten bzw. (Android, wenig
+// Speicher) neu geladen — der laufende Upload brach still ab, und die
+// Fehlermeldung wurde vom nächsten Foto überschrieben. Jetzt wird jede Datei
+// sofort lokal gesichert (IndexedDB, offline-store.js), der Reihe nach
+// hochgeladen und bei Fehlern/ohne Netz automatisch erneut versucht — auch
+// nach einem Neustart der App. Status je Datei im Reiter "Dokumente", Summe
+// im Speicherstatus der Kopfzeile.
+const uploadQueue = []; // { id, userId, evId, name, fileName, type, size, blob, status, error, attempts, createdAt }
+let uploadWorkerRunning = false;
+let uploadRetryTimer = null;
+const uploadPreviewUrls = new Map();
+const UPLOAD_TIMEOUT_MS = (size) => 60000 + Math.round(size / 1024) * 40; // ~25 KB/s Minimum
+
+function uploadArtName(ev, file, artOverride) {
+  const isImage = (file.type || '').startsWith('image/');
+  const isPdf = file.type === 'application/pdf';
+  const ext = (file.name.split('.').pop() || (isImage ? 'jpg' : isPdf ? 'pdf' : 'dat')).toLowerCase();
+  // Termine kennen Betrieb und Datum selbst (Jahr_Betrieb_Art, siehe
+  // zuordnungFileName); artOverride für eigene Namen (Protokolle, Fotomappe).
+  const art = artOverride || (isImage ? 'Foto Termin' : isPdf ? 'Scan Termin' : 'Datei Termin');
+  return `${ev.date.getFullYear()}_${sanitizeFileNamePart(ev.kunde)}_${art}.${ext}`;
+}
+
+// Datei in die Warteschlange — kehrt zurück, sobald sie lokal gesichert ist.
 async function uploadTerminkalenderAttachment(ev, file, artOverride) {
-  if (!file) return;
-  try {
-    const path = await uploadPhoto(file);
-    // Termine kennen ihren Betrieb (Kunde) und ihr Datum bereits selbst — die
-    // Jahr_Betrieb_Art-Benennung braucht hier also keine globale Zuordnung
-    // (siehe zuordnungFileName), sondern wird direkt aus dem Termin abgeleitet.
-    // artOverride erlaubt Aufrufern mit eigener Namenskonvention (siehe
-    // exportProbenprotokollPdf) einen aussagekräftigeren Wert als die drei
-    // generischen Standardfälle.
-    const isImage = (file.type || '').startsWith('image/');
-    const isPdf = file.type === 'application/pdf';
-    const ext = (file.name.split('.').pop() || (isImage ? 'jpg' : isPdf ? 'pdf' : 'dat')).toLowerCase();
-    const art = artOverride || (isImage ? 'Foto Termin' : isPdf ? 'Scan Termin' : 'Datei Termin');
-    const name = `${ev.date.getFullYear()}_${sanitizeFileNamePart(ev.kunde)}_${art}.${ext}`;
-    ev.attachments = ev.attachments || [];
-    ev.attachments.push({ path, name, size: file.size, type: file.type || '' });
-    renderTerminkalenderGrid();
-    if (terminkalenderSelectedId === ev.id) {
-      renderTerminkalenderDetail(ev);
-      const statusEl = document.getElementById('tk-attachment-status');
-      if (statusEl) statusEl.textContent = 'Hochgeladen — nicht vergessen zu speichern.';
-    }
-  } catch (err) {
-    const statusEl = document.getElementById('tk-attachment-status');
-    if (statusEl) statusEl.textContent = 'Fehler: ' + (err.message || 'Datei konnte nicht hochgeladen werden.');
-  }
+  if (!file) return null;
+  const rec = {
+    id: 'up-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+    userId: currentUserId(),
+    evId: ev.id,
+    name: uploadArtName(ev, file, artOverride),
+    fileName: file.name || 'datei',
+    type: file.type || '',
+    size: file.size,
+    blob: file,
+    status: 'pending',
+    error: '',
+    attempts: 0,
+    createdAt: Date.now()
+  };
+  uploadQueue.push(rec);
+  try { await saveQueuedUpload(rec); } catch { /* kein IndexedDB: dann nur im Speicher */ }
+  renderTerminkalenderGrid();
+  refreshUploadViews();
+  runUploadQueue();
+  return rec.id;
 }
 
 function handleTerminkalenderFileAdd(ev, e) {
   const input = e.target;
-  const file = input.files[0];
+  const files = [...input.files];
   input.value = '';
-  uploadTerminkalenderAttachment(ev, file);
+  files.forEach(file => uploadTerminkalenderAttachment(ev, file));
+}
+
+function uploadsForGroup(evId) {
+  const group = tkGroupFor(evId);
+  const ids = new Set(group ? group.members.map(m => m.id) : [evId]);
+  return uploadQueue.filter(r => ids.has(r.evId) && r.userId === currentUserId());
+}
+function myUploads() { return uploadQueue.filter(r => r.userId === currentUserId()); }
+
+function withTimeout(promise, ms) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('Zeitüberschreitung — die Verbindung ist zu langsam.')), ms);
+    promise.then(v => { clearTimeout(t); resolve(v); }, e => { clearTimeout(t); reject(e); });
+  });
+}
+
+async function runUploadQueue() {
+  if (uploadWorkerRunning) return;
+  uploadWorkerRunning = true;
+  try {
+    for (;;) {
+      const rec = myUploads().find(r => r.status === 'pending');
+      if (!rec) break;
+      if (!navigator.onLine) { scheduleUploadRetry(); break; }
+      rec.status = 'uploading';
+      rec.error = '';
+      refreshUploadViews(rec.evId);
+      try {
+        const file = new File([rec.blob], rec.fileName, { type: rec.type });
+        const path = await withTimeout(uploadPhoto(file), UPLOAD_TIMEOUT_MS(rec.size));
+        // Termin kann inzwischen gebündelt sein — Anhänge liegen am Haupt-Auftrag.
+        const group = tkGroupFor(rec.evId);
+        const target = group ? group.primary : terminkalenderEvents.find(e => e.id === rec.evId);
+        if (target) {
+          target.attachments = target.attachments || [];
+          target.attachments.push({ path, name: rec.name, size: rec.size, type: rec.type });
+        }
+        removeQueuedUpload(rec);
+        try { await persistLocalState(); } catch {}
+        renderTerminkalenderGrid();
+        if (target && tkGroupFor(target.id)?.id === terminkalenderSelectedId) renderTerminkalenderAttachments(target);
+        refreshUploadViews(rec.evId);
+      } catch (err) {
+        rec.attempts += 1;
+        rec.status = 'error';
+        rec.error = err.message || 'Hochladen fehlgeschlagen.';
+        try { await saveQueuedUpload({ ...rec, status: 'error' }); } catch {}
+        refreshUploadViews(rec.evId);
+        scheduleUploadRetry(rec.attempts);
+        if (!navigator.onLine) break;
+      }
+    }
+  } finally {
+    uploadWorkerRunning = false;
+  }
+}
+// Fehlgeschlagene Uploads nach kurzer Pause erneut versuchen (5 s, 10 s, …
+// höchstens 60 s), sofort wenn das Netz zurückkommt oder die App wieder
+// sichtbar wird.
+function scheduleUploadRetry(attempts = 1) {
+  clearTimeout(uploadRetryTimer);
+  uploadRetryTimer = setTimeout(retryFailedUploads, Math.min(60000, 5000 * 2 ** Math.max(0, attempts - 1)));
+}
+function retryFailedUploads() {
+  myUploads().forEach(r => { if (r.status === 'error') r.status = 'pending'; });
+  runUploadQueue();
+}
+function removeQueuedUpload(rec) {
+  const i = uploadQueue.indexOf(rec);
+  if (i >= 0) uploadQueue.splice(i, 1);
+  const url = uploadPreviewUrls.get(rec.id);
+  if (url) { URL.revokeObjectURL(url); uploadPreviewUrls.delete(rec.id); }
+  deleteQueuedUpload(rec.id).catch(() => {});
+}
+async function cancelQueuedUpload(id) {
+  const rec = uploadQueue.find(r => r.id === id);
+  if (!rec || rec.status === 'uploading') return;
+  if (!confirm(`„${rec.name}" wurde noch nicht hochgeladen. Wirklich verwerfen?`)) return;
+  removeQueuedUpload(rec);
+  renderTerminkalenderGrid();
+  refreshUploadViews();
+}
+// Gesicherte, noch nicht hochgeladene Dateien nach dem Start/der Anmeldung
+// wieder aufnehmen.
+async function resumeUploadQueue() {
+  const userId = currentUserId();
+  if (!userId) return;
+  let stored = [];
+  try { stored = await listQueuedUploads(userId); } catch {}
+  stored.forEach(rec => {
+    if (uploadQueue.some(r => r.id === rec.id)) return;
+    uploadQueue.push({ ...rec, status: 'pending', error: '' });
+  });
+  refreshUploadViews();
+  runUploadQueue();
+}
+window.addEventListener('online', retryFailedUploads);
+window.addEventListener('offline', () => refreshUploadViews());
+document.addEventListener('visibilitychange', () => { if (!document.hidden) retryFailedUploads(); });
+
+function uploadStatusLabel(rec) {
+  if (rec.status === 'uploading') return 'Wird hochgeladen …';
+  if (!navigator.onLine) return 'Wartet auf Internet';
+  if (rec.status === 'error') return 'Fehlgeschlagen — neuer Versuch folgt';
+  return 'In der Warteschlange';
+}
+// Kurzform für das Schild auf der kleinen Kachel.
+function uploadStatusShort(rec) {
+  if (rec.status === 'uploading') return 'Lädt …';
+  if (!navigator.onLine) return 'Offline';
+  if (rec.status === 'error') return 'Fehler';
+  return 'Wartet';
+}
+function uploadSummaryText(list) {
+  if (!list.length) return '';
+  const offline = !navigator.onLine;
+  const n = list.length;
+  const what = n === 1 ? '1 Datei' : `${n} Dateien`;
+  if (offline) return `Keine Internetverbindung — ${what} sicher auf dem Gerät gespeichert, wird hochgeladen, sobald wieder Netz da ist.`;
+  const failed = list.filter(r => r.status === 'error');
+  if (failed.length && failed.length === n) return `${what} noch nicht hochgeladen (${failed[0].error}) — wird automatisch erneut versucht.`;
+  return `${what} ${n === 1 ? 'wird' : 'werden'} hochgeladen — du kannst weiter fotografieren.`;
+}
+
+// Alle Stellen, die den Upload-Zustand zeigen: Kacheln + Hinweis im Reiter
+// "Dokumente", Zähler am Reiter, Speicherstatus in der Kopfzeile.
+function refreshUploadViews() {
+  updateSaveStatus();
+  const mappe = document.getElementById('kontrollmappe');
+  if (!mappe || mappe.hidden || !terminkalenderSelectedId) return;
+  renderUploadQueueTiles(terminkalenderSelectedId);
+}
+function renderUploadQueueTiles(groupId) {
+  const wrap = document.getElementById('tk-upload-queue');
+  if (!wrap) return;
+  const list = uploadsForGroup(groupId);
+  const statusEl = document.getElementById('tk-attachment-status');
+  if (statusEl && (list.length || statusEl.dataset.fromQueue)) {
+    statusEl.textContent = uploadSummaryText(list);
+    statusEl.dataset.fromQueue = list.length ? '1' : '';
+    statusEl.classList.toggle('is-offline', list.length > 0 && !navigator.onLine);
+  }
+  const tabBtn = document.querySelector('#kontrollmappe [data-km-tab="dokumente"]');
+  const group = tkGroupFor(groupId);
+  const total = (group ? group.primary.attachments || [] : []).length + list.length;
+  if (tabBtn) {
+    let countEl = tabBtn.querySelector('.km-tab-count');
+    if (!countEl && total) { countEl = document.createElement('span'); countEl.className = 'km-tab-count'; tabBtn.appendChild(countEl); }
+    if (countEl) { if (total) countEl.textContent = total; else countEl.remove(); }
+  }
+  wrap.hidden = !list.length;
+  const emptyHint = document.querySelector('#tk-attachments-grid > .empty-hint');
+  if (emptyHint) emptyHint.hidden = list.length > 0;
+  wrap.innerHTML = list.map(rec => {
+    let url = uploadPreviewUrls.get(rec.id);
+    if (!url && (rec.type || '').startsWith('image/')) { url = URL.createObjectURL(rec.blob); uploadPreviewUrls.set(rec.id, url); }
+    const inner = url
+      ? `<img src="${url}" alt="">`
+      : `<span class="material-symbols-rounded icon tk-attachment-icon" aria-hidden="true">description</span><span class="tk-attachment-name">${escapeHtml(rec.name)}</span>`;
+    const state = rec.status === 'uploading' ? 'is-uploading' : (!navigator.onLine ? 'is-waiting' : rec.status === 'error' ? 'is-error' : 'is-queued');
+    const icon = rec.status === 'uploading' ? 'cloud_upload' : (!navigator.onLine ? 'cloud_off' : rec.status === 'error' ? 'refresh' : 'schedule');
+    return `<div class="tk-attachment tk-upload ${state}" data-upload-id="${escapeHtml(rec.id)}" title="${escapeHtml(rec.name + ' — ' + uploadStatusLabel(rec) + (rec.error ? ': ' + rec.error : ''))}">
+      <div class="tk-attachment-link">${inner}</div>
+      <span class="tk-upload-badge"><span class="material-symbols-rounded icon" aria-hidden="true">${icon}</span><span>${escapeHtml(uploadStatusShort(rec))}</span></span>
+      ${rec.status === 'uploading' ? '<span class="tk-upload-bar" aria-hidden="true"></span>' : ''}
+      ${rec.status !== 'uploading' ? `<button type="button" class="tk-attachment-remove" data-cancel-upload="${escapeHtml(rec.id)}" title="Verwerfen" aria-label="Upload verwerfen"><span class="material-symbols-rounded icon">close</span></button>` : ''}
+    </div>`;
+  }).join('');
+  wrap.querySelectorAll('[data-cancel-upload]').forEach(b => b.addEventListener('click', () => cancelQueuedUpload(b.dataset.cancelUpload)));
+  wrap.querySelectorAll('.tk-upload').forEach((t, i) => t.addEventListener('click', (e) => {
+    if (e.target.closest('[data-cancel-upload]')) return;
+    if (t.classList.contains('is-error')) { retryFailedUploads(); return; }
+    const g = tkGroupFor(groupId);
+    if (g) openTerminViewer(g.primary, (g.primary.attachments || []).length + i);
+  }));
+}
+
+// ---- Fotomappe: mehrere Fotos -> eine PDF am Termin ----
+// Fotos werden beim Hinzufügen verkleinert (lange Seite max. 1800 px, JPEG)
+// und sofort lokal gesichert — ein Neuladen des Tabs beim Kamerawechsel
+// verliert nichts, der Entwurf ist beim nächsten Öffnen wieder da. "PDF
+// erstellen" baut die Mappe (1, 2 oder 4 Fotos je A4-Seite, mit Kopfzeile und
+// Bildunterschrift) und gibt sie an die Upload-Warteschlange.
+const FOTOMAPPE_MAX_SIDE = 1800;
+const FOTOMAPPE_PER_KEY = 'feldfolio-fotomappe-per-page';
+const fotomappeOverlay = document.getElementById('fotomappe-modal-overlay');
+let fotomappeEv = null;
+let fotomappeFotos = []; // { id, userId, evId, blob, width, height, takenAt, order }
+const fotomappeUrls = new Map();
+let fotomappePerPage = 1;
+try { fotomappePerPage = Number(localStorage.getItem(FOTOMAPPE_PER_KEY)) || 1; } catch {}
+let fotomappeBusy = false;
+
+async function fotomappeCompress(file) {
+  let source;
+  try { source = await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch {
+    source = await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('Bild konnte nicht gelesen werden.'));
+      img.src = URL.createObjectURL(file);
+    });
+  }
+  const w0 = source.width, h0 = source.height;
+  const scale = Math.min(1, FOTOMAPPE_MAX_SIDE / Math.max(w0, h0));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(w0 * scale));
+  canvas.height = Math.max(1, Math.round(h0 * scale));
+  const g = canvas.getContext('2d');
+  g.fillStyle = '#fff';
+  g.fillRect(0, 0, canvas.width, canvas.height);
+  g.drawImage(source, 0, 0, canvas.width, canvas.height);
+  if (source.close) source.close();
+  const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.82));
+  return { blob, width: canvas.width, height: canvas.height };
+}
+
+async function openFotomappe(ev) {
+  const group = tkGroupFor(ev.id);
+  fotomappeEv = group ? group.primary : ev;
+  const ids = new Set(group ? group.members.map(m => m.id) : [ev.id]);
+  let stored = [];
+  try { stored = await listFotomappeFotos(currentUserId()); } catch {}
+  fotomappeFotos = stored.filter(f => ids.has(f.evId)).sort((a, b) => a.order - b.order);
+  document.getElementById('fotomappe-sub').textContent = `${fotomappeEv.kunde} · ${tkFmtDate(fotomappeEv.date)} — mehrere Fotos als eine PDF-Datei`;
+  document.getElementById('fotomappe-titel').value = '';
+  setFotomappeStatus('Die Fotos bleiben auf dem Gerät gespeichert, bis die Mappe erstellt ist — auch bei schlechtem Empfang.');
+  applyFotomappeLayout();
+  renderFotomappe();
+  fotomappeOverlay.hidden = false;
+}
+function closeFotomappe() {
+  fotomappeOverlay.hidden = true;
+  fotomappeUrls.forEach(url => URL.revokeObjectURL(url));
+  fotomappeUrls.clear();
+}
+function setFotomappeStatus(text, isError = false) {
+  const el = document.getElementById('fotomappe-status');
+  el.textContent = text;
+  el.classList.toggle('modal-error', isError);
+}
+function applyFotomappeLayout() {
+  document.querySelectorAll('#fotomappe-layout [data-per]').forEach(b => b.setAttribute('aria-checked', String(Number(b.dataset.per) === fotomappePerPage)));
+}
+function renderFotomappe() {
+  const grid = document.getElementById('fotomappe-grid');
+  if (!fotomappeFotos.length) {
+    grid.innerHTML = '<div class="fotomappe-empty"><span class="material-symbols-rounded icon" aria-hidden="true">photo_library</span><p>Noch keine Fotos — nimm sie nacheinander auf oder wähle mehrere aus der Galerie.</p></div>';
+  } else {
+    grid.innerHTML = fotomappeFotos.map((f, i) => {
+      let url = fotomappeUrls.get(f.id);
+      if (!url) { url = URL.createObjectURL(f.blob); fotomappeUrls.set(f.id, url); }
+      return `<div class="fotomappe-item" data-id="${escapeHtml(f.id)}">
+        <img src="${url}" alt="Foto ${i + 1}">
+        <span class="fotomappe-nr">${i + 1}</span>
+        ${i > 0 ? `<button type="button" class="fotomappe-move" data-move="${escapeHtml(f.id)}" title="Nach vorne" aria-label="Foto ${i + 1} nach vorne"><span class="material-symbols-rounded icon" aria-hidden="true">arrow_back</span></button>` : ''}
+        <button type="button" class="tk-attachment-remove" data-remove="${escapeHtml(f.id)}" title="Entfernen" aria-label="Foto ${i + 1} entfernen"><span class="material-symbols-rounded icon">close</span></button>
+      </div>`;
+    }).join('');
+  }
+  const n = fotomappeFotos.length;
+  const btn = document.getElementById('fotomappe-create');
+  btn.disabled = !n || fotomappeBusy;
+  const pages = Math.ceil(n / fotomappePerPage);
+  document.getElementById('fotomappe-create-label').textContent = n
+    ? `PDF erstellen (${n} ${n === 1 ? 'Foto' : 'Fotos'}, ${pages} ${pages === 1 ? 'Seite' : 'Seiten'})`
+    : 'PDF erstellen';
+}
+async function addFotomappeFiles(files) {
+  if (!fotomappeEv || !files.length) return;
+  setFotomappeStatus(`Bereite ${files.length === 1 ? 'Foto' : files.length + ' Fotos'} vor …`);
+  let base = Date.now();
+  for (const file of files) {
+    try {
+      const { blob, width, height } = await fotomappeCompress(file);
+      const rec = {
+        id: 'fm-' + base.toString(36) + Math.random().toString(36).slice(2, 7),
+        userId: currentUserId(), evId: fotomappeEv.id, blob, width, height,
+        takenAt: file.lastModified || Date.now(), order: base++
+      };
+      fotomappeFotos.push(rec);
+      try { await saveFotomappeFoto(rec); } catch {}
+      renderFotomappe();
+    } catch (err) {
+      setFotomappeStatus('Fehler: ' + (err.message || 'Foto konnte nicht übernommen werden.'), true);
+      return;
+    }
+  }
+  setFotomappeStatus(`${fotomappeFotos.length} ${fotomappeFotos.length === 1 ? 'Foto' : 'Fotos'} auf dem Gerät gespeichert.`);
+}
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(blob);
+  });
+}
+async function buildFotomappePdf(ev, fotos, perPage, titel) {
+  const doc = new window.jspdf.jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4', compress: true });
+  const W = 210, H = 297, M = 12, top = 24, bottom = H - 14;
+  const cols = perPage === 4 ? 2 : 1;
+  const rows = perPage === 1 ? 1 : 2;
+  const gap = 6, caption = 6;
+  const cellW = (W - 2 * M - (cols - 1) * gap) / cols;
+  const cellH = (bottom - top - (rows - 1) * gap) / rows;
+  const pages = Math.ceil(fotos.length / perPage);
+  const heading = ['Fotomappe', titel].filter(Boolean).join(' · ');
+  for (let p = 0; p < pages; p++) {
+    if (p > 0) doc.addPage();
+    doc.setFillColor(96, 126, 96); doc.rect(0, 0, W, 2.2, 'F');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(12.5); doc.setTextColor(43, 51, 40);
+    doc.text(heading, M, 12);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(107, 117, 102);
+    doc.text(`${ev.kunde} · Termin ${tkFmtDate(ev.date)}`, M, 17.5);
+    doc.setDrawColor(213, 221, 203); doc.setLineWidth(0.3); doc.line(M, 20.5, W - M, 20.5);
+    for (let k = 0; k < perPage; k++) {
+      const idx = p * perPage + k;
+      const f = fotos[idx];
+      if (!f) break;
+      const cx = M + (k % cols) * (cellW + gap);
+      const cy = top + Math.floor(k / cols) * (cellH + gap);
+      const boxH = cellH - caption;
+      const s = Math.min(cellW / f.width, boxH / f.height);
+      const w = f.width * s, h = f.height * s;
+      doc.addImage(await blobToDataUrl(f.blob), 'JPEG', cx + (cellW - w) / 2, cy + (boxH - h) / 2, w, h, undefined, 'FAST');
+      const when = new Date(f.takenAt);
+      doc.setFontSize(7.5); doc.setTextColor(107, 117, 102);
+      doc.text(`Foto ${idx + 1} · ${when.toLocaleDateString('de-DE')} ${when.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}`, cx + cellW / 2, cy + cellH - 1.5, { align: 'center' });
+    }
+    doc.setFontSize(7); doc.setTextColor(107, 117, 102);
+    doc.text(`Seite ${p + 1} von ${pages}`, W - M, H - 7, { align: 'right' });
+  }
+  return doc.output('blob');
+}
+async function createFotomappe() {
+  if (!fotomappeEv || !fotomappeFotos.length || fotomappeBusy) return;
+  fotomappeBusy = true;
+  renderFotomappe();
+  setFotomappeStatus('Erstelle PDF …');
+  try {
+    const titel = document.getElementById('fotomappe-titel').value.trim();
+    const blob = await buildFotomappePdf(fotomappeEv, fotomappeFotos, fotomappePerPage, titel);
+    const art = 'Fotomappe' + (titel ? ' ' + titel : '');
+    await uploadTerminkalenderAttachment(fotomappeEv, new File([blob], 'fotomappe.pdf', { type: 'application/pdf' }), art);
+    // Erst nach dem lokalen Sichern der PDF (Warteschlange) die Einzelfotos löschen.
+    for (const f of fotomappeFotos) { try { await deleteFotomappeFoto(f.id); } catch {} }
+    fotomappeFotos = [];
+    closeFotomappe();
+  } catch (err) {
+    setFotomappeStatus('Fehler: ' + (err.message || 'PDF konnte nicht erstellt werden.'), true);
+  } finally {
+    fotomappeBusy = false;
+    if (!fotomappeOverlay.hidden) renderFotomappe();
+  }
+}
+document.getElementById('fotomappe-capture').addEventListener('change', (e) => { const files = [...e.target.files]; e.target.value = ''; addFotomappeFiles(files); });
+document.getElementById('fotomappe-pick').addEventListener('change', (e) => { const files = [...e.target.files]; e.target.value = ''; addFotomappeFiles(files); });
+document.getElementById('fotomappe-grid').addEventListener('click', async (e) => {
+  const rm = e.target.closest('[data-remove]');
+  if (rm) {
+    const id = rm.dataset.remove;
+    fotomappeFotos = fotomappeFotos.filter(f => f.id !== id);
+    const url = fotomappeUrls.get(id);
+    if (url) { URL.revokeObjectURL(url); fotomappeUrls.delete(id); }
+    try { await deleteFotomappeFoto(id); } catch {}
+    renderFotomappe();
+    return;
+  }
+  const mv = e.target.closest('[data-move]');
+  if (mv) {
+    const i = fotomappeFotos.findIndex(f => f.id === mv.dataset.move);
+    if (i > 0) {
+      [fotomappeFotos[i - 1], fotomappeFotos[i]] = [fotomappeFotos[i], fotomappeFotos[i - 1]];
+      const [a, b] = [fotomappeFotos[i - 1], fotomappeFotos[i]];
+      [a.order, b.order] = [b.order, a.order];
+      try { await saveFotomappeFoto(a); await saveFotomappeFoto(b); } catch {}
+      renderFotomappe();
+    }
+  }
+});
+document.querySelectorAll('#fotomappe-layout [data-per]').forEach(btn => btn.addEventListener('click', () => {
+  fotomappePerPage = Number(btn.dataset.per);
+  try { localStorage.setItem(FOTOMAPPE_PER_KEY, String(fotomappePerPage)); } catch {}
+  applyFotomappeLayout();
+  renderFotomappe();
+}));
+document.getElementById('fotomappe-create').addEventListener('click', createFotomappe);
+document.getElementById('fotomappe-close').addEventListener('click', closeFotomappe);
+document.getElementById('fotomappe-discard').addEventListener('click', async () => {
+  if (fotomappeFotos.length && !confirm(`${fotomappeFotos.length} ${fotomappeFotos.length === 1 ? 'Foto' : 'Fotos'} verwerfen?`)) return;
+  for (const f of fotomappeFotos) { try { await deleteFotomappeFoto(f.id); } catch {} }
+  fotomappeFotos = [];
+  closeFotomappe();
+});
+fotomappeOverlay.addEventListener('click', (e) => { if (e.target === fotomappeOverlay) closeFotomappe(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !fotomappeOverlay.hidden) closeFotomappe(); });
+
+// Dev-only Testhaken: Upload-Warteschlange einsehen.
+if (import.meta.env.DEV) {
+  window.__ffTestUploads = {
+    list: () => uploadQueue.map(r => ({ id: r.id, evId: r.evId, name: r.name, status: r.status, error: r.error })),
+    stored: () => listQueuedUploads(currentUserId()).then(l => l.map(r => ({ id: r.id, name: r.name }))),
+    resume: () => resumeUploadQueue(),
+    clearMemory: () => { uploadQueue.splice(0); },
+    retry: () => retryFailedUploads()
+  };
+}
+
+// ---------- Dokumenten- und Fotoviewer ----------
+// Öffnet Anhänge in der App statt in einem neuen Browser-Tab:
+//   Fotos  -> Zoom (Zwei-Finger, Doppeltipp, Mausrad, +/−), Verschieben,
+//             Drehen; Wischen links/rechts blättert
+//   PDFs   -> alle Seiten untereinander (pdf.js vom CDN, erst beim ersten
+//             PDF geladen), Zoom per +/−, Seitenanzeige
+//   Sonst  -> Hinweis + Herunterladen
+// Einmal geladene Dateien landen im Cache Storage — im Stall ohne Empfang
+// lassen sie sich danach wieder ansehen. Noch nicht hochgeladene Dateien
+// (Upload-Warteschlange) werden direkt aus dem lokalen Blob angezeigt.
+//
+// openDocViewer(items, index, { onDelete }) mit items:
+//   { name, type, size?, path? (Storage), blob? (lokal), thumb?, note? }
+const PDFJS_BASE = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
+const DOC_CACHE = 'feldfolio-dokumente-v1';
+const dvEl = document.getElementById('docviewer');
+const dvContent = document.getElementById('dv-content');
+const dv = {
+  items: [], index: 0, onDelete: null, objUrl: null, blob: null, kind: null, token: 0,
+  scale: 1, tx: 0, ty: 0, rot: 0, pdfZoom: 1, pdfDoc: null, returnFocus: null
+};
+
+function docCacheKey(path) { return 'https://feldfolio.local/dokument/' + encodeURIComponent(path); }
+async function loadDocBlob(item) {
+  if (item.blob) return item.blob;
+  if (!item.path) throw new Error('Datei nicht verfügbar.');
+  let cache = null;
+  try { cache = await caches.open(DOC_CACHE); } catch {}
+  if (cache) {
+    const hit = await cache.match(docCacheKey(item.path)).catch(() => null);
+    if (hit) return hit.blob();
+  }
+  if (!navigator.onLine) throw new Error('Keine Internetverbindung — diese Datei wurde auf diesem Gerät noch nicht geöffnet.');
+  const url = await getPhotoUrl(item.path);
+  if (!url) throw new Error('Datei konnte nicht geladen werden.');
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Datei konnte nicht geladen werden (${res.status}).`);
+  const blob = await res.blob();
+  if (cache) cache.put(docCacheKey(item.path), new Response(blob, { headers: { 'Content-Type': item.type || blob.type || 'application/octet-stream' } })).catch(() => {});
+  return blob;
+}
+function docKind(item, blob) {
+  const type = (item.type || (blob && blob.type) || '').toLowerCase();
+  const name = (item.name || '').toLowerCase();
+  if (type.startsWith('image/') || /\.(jpe?g|png|gif|webp|heic|bmp)$/.test(name)) return 'image';
+  if (type === 'application/pdf' || name.endsWith('.pdf')) return 'pdf';
+  return 'other';
+}
+function formatBytes(n) {
+  if (!Number.isFinite(n) || n <= 0) return '';
+  if (n < 1024 * 1024) return Math.max(1, Math.round(n / 1024)) + ' KB';
+  return (n / 1024 / 1024).toLocaleString('de-DE', { maximumFractionDigits: 1 }) + ' MB';
+}
+
+function openDocViewer(items, index = 0, opts = {}) {
+  if (!items.length) return;
+  dv.items = items.slice();
+  dv.index = Math.max(0, Math.min(index, items.length - 1));
+  dv.onDelete = opts.onDelete || null;
+  dv.returnFocus = document.activeElement;
+  dvEl.hidden = false;
+  document.body.classList.add('docviewer-open');
+  renderDocThumbs();
+  showDocAt(dv.index);
+  document.getElementById('dv-close').focus();
+}
+function closeDocViewer() {
+  if (dvEl.hidden) return;
+  dv.token++;
+  dvEl.hidden = true;
+  document.body.classList.remove('docviewer-open');
+  releaseDocResources();
+  dvContent.innerHTML = '';
+  dv.returnFocus?.focus?.();
+}
+function releaseDocResources() {
+  if (dv.objUrl) { URL.revokeObjectURL(dv.objUrl); dv.objUrl = null; }
+  if (dv.pdfDoc) { dv.pdfDoc.destroy().catch?.(() => {}); dv.pdfDoc = null; }
+  dv.blob = null;
+}
+function renderDocThumbs() {
+  const wrap = document.getElementById('dv-thumbs');
+  document.getElementById('dv-bottom').hidden = dv.items.length < 2;
+  wrap.innerHTML = dv.items.map((it, i) => {
+    const kind = docKind(it);
+    const inner = it.thumb && kind === 'image'
+      ? `<img src="${it.thumb}" alt="">`
+      : `<span class="material-symbols-rounded icon" aria-hidden="true">${kind === 'pdf' ? 'picture_as_pdf' : kind === 'image' ? 'photo_camera' : 'description'}</span>`;
+    return `<button type="button" class="dv-thumb${i === dv.index ? ' active' : ''}" role="tab" aria-selected="${i === dv.index}" data-dv-thumb="${i}" title="${escapeHtml(it.name)}">${inner}</button>`;
+  }).join('');
+}
+function updateDocChrome() {
+  const it = dv.items[dv.index];
+  const n = dv.items.length;
+  document.getElementById('dv-name').textContent = it.name;
+  const meta = [n > 1 ? `${dv.index + 1} / ${n}` : '', formatBytes(it.size || (dv.blob && dv.blob.size)), it.note || ''].filter(Boolean).join(' · ');
+  document.getElementById('dv-meta').textContent = meta;
+  document.getElementById('dv-prev').hidden = n < 2;
+  document.getElementById('dv-next').hidden = n < 2;
+  const zoomable = dv.kind === 'image' || dv.kind === 'pdf';
+  document.getElementById('dv-zoom-in').hidden = !zoomable;
+  document.getElementById('dv-zoom-out').hidden = !zoomable;
+  document.getElementById('dv-rotate').hidden = !zoomable;
+  document.getElementById('dv-delete').hidden = !dv.onDelete;
+  const dl = document.getElementById('dv-download');
+  dl.hidden = !dv.objUrl;
+  if (dv.objUrl) { dl.href = dv.objUrl; dl.download = it.name; } else { dl.removeAttribute('href'); }
+  document.getElementById('dv-open').hidden = !dv.objUrl;
+  document.querySelectorAll('#dv-thumbs .dv-thumb').forEach((b, i) => {
+    b.classList.toggle('active', i === dv.index);
+    b.setAttribute('aria-selected', String(i === dv.index));
+    if (i === dv.index) b.scrollIntoView({ block: 'nearest', inline: 'center' });
+  });
+}
+
+async function showDocAt(index) {
+  const token = ++dv.token;
+  dv.index = (index + dv.items.length) % dv.items.length;
+  releaseDocResources();
+  dv.kind = null; dv.scale = 1; dv.tx = 0; dv.ty = 0; dv.rot = 0; dv.pdfZoom = 1;
+  document.getElementById('dv-page').hidden = true;
+  const it = dv.items[dv.index];
+  dvContent.innerHTML = '<div class="dv-loading"><span class="dv-spinner" aria-hidden="true"></span><span>Lädt …</span></div>';
+  updateDocChrome();
+  let blob;
+  try {
+    blob = await loadDocBlob(it);
+  } catch (err) {
+    if (token !== dv.token) return;
+    dvContent.innerHTML = `<div class="dv-message"><span class="material-symbols-rounded icon" aria-hidden="true">${navigator.onLine ? 'warning' : 'cloud_off'}</span><p>${escapeHtml(err.message || 'Datei konnte nicht geladen werden.')}</p></div>`;
+    return;
+  }
+  if (token !== dv.token) return;
+  dv.blob = blob;
+  dv.objUrl = URL.createObjectURL(blob);
+  dv.kind = docKind(it, blob);
+  updateDocChrome();
+  if (dv.kind === 'image') {
+    dvContent.innerHTML = `<div class="dv-image-wrap"><img id="dv-img" src="${dv.objUrl}" alt="${escapeHtml(it.name)}" draggable="false"></div>`;
+    applyDocImageTransform();
+  } else if (dv.kind === 'pdf') {
+    dvContent.innerHTML = '<div class="dv-pdf" id="dv-pdf"><div class="dv-loading"><span class="dv-spinner" aria-hidden="true"></span><span>PDF wird geöffnet …</span></div></div>';
+    try {
+      await ensurePdfJs();
+      if (token !== dv.token) return;
+      dv.pdfDoc = await window.pdfjsLib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise;
+      if (token !== dv.token) return;
+      await renderDocPdf(token);
+    } catch (err) {
+      if (token !== dv.token) return;
+      dvContent.innerHTML = `<div class="dv-message"><span class="material-symbols-rounded icon" aria-hidden="true">picture_as_pdf</span><p>Vorschau nicht möglich${navigator.onLine ? '' : ' (ohne Internet beim ersten Mal)'} — über „Herunterladen" bzw. „In neuem Tab öffnen" ansehen.</p></div>`;
+    }
+  } else {
+    dvContent.innerHTML = `<div class="dv-message"><span class="material-symbols-rounded icon" aria-hidden="true">description</span><p>Für diesen Dateityp gibt es keine Vorschau.</p><a class="betrieb-btn primary" href="${dv.objUrl}" download="${escapeHtml(it.name)}"><span class="material-symbols-rounded icon" aria-hidden="true">download</span>Herunterladen</a></div>`;
+  }
+}
+
+let pdfJsPromise = null;
+function ensurePdfJs() {
+  if (window.pdfjsLib) return Promise.resolve();
+  if (!pdfJsPromise) {
+    pdfJsPromise = loadScript(PDFJS_BASE + 'pdf.min.js').then(() => {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_BASE + 'pdf.worker.min.js';
+    });
+    pdfJsPromise.catch(() => { pdfJsPromise = null; });
+  }
+  return pdfJsPromise;
+}
+async function renderDocPdf(token) {
+  const host = document.getElementById('dv-pdf');
+  if (!host || !dv.pdfDoc) return;
+  const keepRatio = host.scrollHeight ? host.scrollTop / host.scrollHeight : 0;
+  host.innerHTML = '';
+  // Seitenbreite: Bildschirm, aber höchstens wie ein gut lesbares Blatt (Zoom geht weiter).
+  const avail = Math.max(200, Math.min(host.clientWidth - 24, 920));
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  for (let i = 1; i <= dv.pdfDoc.numPages; i++) {
+    if (token !== dv.token) return;
+    const page = await dv.pdfDoc.getPage(i);
+    const base = page.getViewport({ scale: 1, rotation: dv.rot });
+    const scale = Math.min(avail / base.width, 2.2) * dv.pdfZoom;
+    const vp = page.getViewport({ scale: scale * dpr, rotation: dv.rot });
+    const canvas = document.createElement('canvas');
+    canvas.className = 'dv-pdf-page';
+    canvas.dataset.page = i;
+    canvas.width = Math.floor(vp.width);
+    canvas.height = Math.floor(vp.height);
+    canvas.style.width = Math.floor(vp.width / dpr) + 'px';
+    canvas.style.height = Math.floor(vp.height / dpr) + 'px';
+    host.appendChild(canvas);
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+    if (i === 1 && keepRatio) host.scrollTop = keepRatio * host.scrollHeight;
+  }
+  updateDocPageLabel();
+  host.onscroll = updateDocPageLabel;
+}
+function updateDocPageLabel() {
+  const host = document.getElementById('dv-pdf');
+  const label = document.getElementById('dv-page');
+  if (!host || !dv.pdfDoc) { label.hidden = true; return; }
+  const pages = [...host.querySelectorAll('.dv-pdf-page')];
+  const mid = host.scrollTop + host.clientHeight / 2;
+  let current = 1;
+  pages.forEach(c => { if (c.offsetTop <= mid) current = Number(c.dataset.page); });
+  label.textContent = `Seite ${current} von ${dv.pdfDoc.numPages}`;
+  label.hidden = false;
+}
+
+// ---- Foto: Zoom / Verschieben / Drehen / Wischen ----
+function applyDocImageTransform() {
+  const img = document.getElementById('dv-img');
+  if (!img) return;
+  img.style.transform = `translate(${dv.tx}px, ${dv.ty}px) scale(${dv.scale}) rotate(${dv.rot}deg)`;
+  img.classList.toggle('is-zoomed', dv.scale > 1.01);
+}
+function zoomDoc(factor) {
+  if (dv.kind === 'image') {
+    dv.scale = Math.min(6, Math.max(1, dv.scale * factor));
+    if (dv.scale === 1) { dv.tx = 0; dv.ty = 0; }
+    applyDocImageTransform();
+  } else if (dv.kind === 'pdf') {
+    dv.pdfZoom = Math.min(4, Math.max(0.5, dv.pdfZoom * factor));
+    renderDocPdf(dv.token);
+  }
+}
+function rotateDoc() {
+  dv.rot = (dv.rot + 90) % 360;
+  if (dv.kind === 'image') applyDocImageTransform();
+  else if (dv.kind === 'pdf') renderDocPdf(dv.token);
+}
+const dvPointers = new Map();
+let dvGesture = null;
+dvContent.addEventListener('pointerdown', (e) => {
+  if (dv.kind !== 'image') return;
+  try { dvContent.setPointerCapture(e.pointerId); } catch { /* nicht aktiver Pointer */ }
+  dvPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  const pts = [...dvPointers.values()];
+  if (pts.length === 2) {
+    dvGesture = { type: 'pinch', dist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y), scale: dv.scale };
+  } else if (pts.length === 1) {
+    dvGesture = { type: dv.scale > 1.01 ? 'pan' : 'swipe', x: e.clientX, y: e.clientY, tx: dv.tx, ty: dv.ty, t: Date.now() };
+  }
+});
+dvContent.addEventListener('pointermove', (e) => {
+  if (!dvPointers.has(e.pointerId) || !dvGesture) return;
+  dvPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  const pts = [...dvPointers.values()];
+  if (dvGesture.type === 'pinch' && pts.length === 2) {
+    const d = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+    dv.scale = Math.min(6, Math.max(1, dvGesture.scale * d / dvGesture.dist));
+    if (dv.scale === 1) { dv.tx = 0; dv.ty = 0; }
+    applyDocImageTransform();
+  } else if (dvGesture.type === 'pan') {
+    dv.tx = dvGesture.tx + (e.clientX - dvGesture.x);
+    dv.ty = dvGesture.ty + (e.clientY - dvGesture.y);
+    applyDocImageTransform();
+  }
+});
+function endDocPointer(e) {
+  if (!dvPointers.has(e.pointerId)) return;
+  dvPointers.delete(e.pointerId);
+  if (dvGesture && dvGesture.type === 'swipe' && dvPointers.size === 0) {
+    const dx = e.clientX - dvGesture.x, dy = e.clientY - dvGesture.y;
+    if (Math.abs(dx) > 60 && Math.abs(dy) < 80 && Date.now() - dvGesture.t < 800 && dv.items.length > 1) showDocAt(dv.index + (dx < 0 ? 1 : -1));
+  }
+  if (dvPointers.size === 0) dvGesture = null;
+  else if (dvPointers.size === 1 && dvGesture?.type === 'pinch') {
+    const p = [...dvPointers.values()][0];
+    dvGesture = { type: 'pan', x: p.x, y: p.y, tx: dv.tx, ty: dv.ty, t: Date.now() };
+  }
+}
+dvContent.addEventListener('pointerup', endDocPointer);
+dvContent.addEventListener('pointercancel', endDocPointer);
+dvContent.addEventListener('dblclick', () => {
+  if (dv.kind !== 'image') return;
+  if (dv.scale > 1.01) { dv.scale = 1; dv.tx = 0; dv.ty = 0; } else dv.scale = 2.5;
+  applyDocImageTransform();
+});
+dvContent.addEventListener('wheel', (e) => {
+  if (dv.kind === 'image') { e.preventDefault(); zoomDoc(e.deltaY < 0 ? 1.15 : 1 / 1.15); }
+  else if (dv.kind === 'pdf' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); zoomDoc(e.deltaY < 0 ? 1.15 : 1 / 1.15); }
+}, { passive: false });
+
+document.getElementById('dv-close').addEventListener('click', closeDocViewer);
+document.getElementById('dv-prev').addEventListener('click', () => showDocAt(dv.index - 1));
+document.getElementById('dv-next').addEventListener('click', () => showDocAt(dv.index + 1));
+document.getElementById('dv-zoom-in').addEventListener('click', () => zoomDoc(1.25));
+document.getElementById('dv-zoom-out').addEventListener('click', () => zoomDoc(1 / 1.25));
+document.getElementById('dv-rotate').addEventListener('click', rotateDoc);
+document.getElementById('dv-open').addEventListener('click', () => { if (dv.objUrl) window.open(dv.objUrl, '_blank', 'noopener'); });
+document.getElementById('dv-delete').addEventListener('click', async () => {
+  const it = dv.items[dv.index];
+  if (!dv.onDelete || !it) return;
+  const removed = await dv.onDelete(it);
+  if (removed === false) return;
+  dv.items.splice(dv.index, 1);
+  if (!dv.items.length) { closeDocViewer(); return; }
+  renderDocThumbs();
+  showDocAt(Math.min(dv.index, dv.items.length - 1));
+});
+document.getElementById('dv-thumbs').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-dv-thumb]');
+  if (b) showDocAt(Number(b.dataset.dvThumb));
+});
+document.addEventListener('keydown', (e) => {
+  if (dvEl.hidden) return;
+  if (e.key === 'Escape') { e.stopImmediatePropagation(); closeDocViewer(); }
+  else if (e.key === 'ArrowLeft' && dv.items.length > 1) showDocAt(dv.index - 1);
+  else if (e.key === 'ArrowRight' && dv.items.length > 1) showDocAt(dv.index + 1);
+  else if (e.key === '+' || e.key === '=') zoomDoc(1.25);
+  else if (e.key === '-') zoomDoc(1 / 1.25);
+  else if (e.key === 'r' || e.key === 'R') rotateDoc();
+}, true);
+window.addEventListener('resize', () => { if (!dvEl.hidden && dv.kind === 'pdf') renderDocPdf(dv.token); });
+
+// Anhänge eines Termins (inkl. noch nicht hochgeladener) für den Viewer.
+function terminViewerItems(ev, thumbs = []) {
+  const uploaded = (ev.attachments || []).map((a, i) => ({ name: a.name, type: a.type, size: a.size, path: a.path, thumb: thumbs[i] || null }));
+  const queued = uploadsForGroup(ev.id).map(r => ({
+    name: r.name, type: r.type, size: r.size, blob: r.blob, uploadId: r.id,
+    thumb: uploadPreviewUrls.get(r.id) || null, note: 'noch nicht hochgeladen'
+  }));
+  return [...uploaded, ...queued];
+}
+function openTerminViewer(ev, index, thumbs) {
+  openDocViewer(terminViewerItems(ev, thumbs), index, {
+    onDelete: async (item) => {
+      if (item.uploadId) {
+        const before = uploadQueue.length;
+        await cancelQueuedUpload(item.uploadId);
+        return uploadQueue.length < before;
+      }
+      if (!confirm(`„${item.name}" wirklich löschen?`)) return false;
+      await removeTerminkalenderAttachment(ev.id, item.path);
+      return !(ev.attachments || []).some(a => a.path === item.path);
+    }
+  });
 }
 
 async function removeTerminkalenderAttachment(id, path) {
@@ -10200,6 +11584,7 @@ function renderTerminkalenderGrid() {
       const marks = [];
       if (g.lat != null) marks.push('<span class="material-symbols-rounded icon" title="Ort bekannt">location_on</span>');
       if (g.members.some(m => (m.attachments || []).length)) marks.push('<span class="material-symbols-rounded icon" title="Dokumente">attach_file</span>');
+      if (uploadsForGroup(g.id).length) marks.push('<span class="material-symbols-rounded icon tk-card-uploading" title="Dateien werden hochgeladen">cloud_upload</span>');
       if (g.members.some(m => Object.keys(TK_FORMULARE).some(k => (m[tkFormularDef(k).listKey] || []).length))) marks.push('<span class="material-symbols-rounded icon" title="Protokolle">description</span>');
       if (tkGroupIsZugeordnet(g)) marks.push('<span class="material-symbols-rounded icon" title="Als Betrieb zugeordnet">business</span>');
       const statusClass = g.urgent ? 'tk-card-urgent' : g.bestaetigt ? 'tk-card-ok' : 'tk-card-warn';
@@ -10247,6 +11632,8 @@ function renderTerminkalenderGrid() {
   if (tkMapVisible) renderTerminkalenderMapPins(tkGroupEvents(weekEvents).filter(g => g.lat != null));
   // Übersicht/Zähler hängen an denselben Daten — mit aktualisieren.
   renderKontrolleUebersicht();
+  // Betriebs-Pin auf der Karte (Lage kommt aus den Terminen).
+  try { updateBetriebPin(); } catch { /* Modulstart */ }
 }
 
 function gotoWeek(delta) {
@@ -10448,6 +11835,80 @@ function setActiveZuordnung(z) {
   if (typeof terminkalenderSelectedId !== 'undefined' && terminkalenderSelectedId) {
     const selectedEv = terminkalenderEvents.find(e => e.id === terminkalenderSelectedId);
     if (selectedEv) renderTerminkalenderDetail(selectedEv);
+  }
+}
+
+// ---- Betrieb als Pin auf der Karte ----
+// Ist ein Betrieb gewählt, markiert ein Pin seine Hofstelle auf der Karte
+// (alle Kartenfunktionen teilen dieselbe Karte). Ort: der zugeordnete
+// Termin bzw. ein Termin dieses Betriebs mit bekannter Lage; fehlt sie, wird
+// die Adresse einmal nachgeschlagen (Nominatim, wie beim Termin-Import) und
+// am Termin gespeichert. Manuell angelegte Betriebe ohne Termin haben keine
+// Adresse — dann gibt es keinen Pin.
+let betriebPinMarker = null;
+let betriebPinKey = null;
+const betriebPinGeocodeTried = new Set();
+
+function betriebPinEvent(z) {
+  const same = terminkalenderEvents.filter(e => e.kunde === z.betrieb);
+  const termin = z.terminId ? terminkalenderEvents.find(e => e.id === z.terminId) : null;
+  const ordered = [termin, ...same].filter(Boolean);
+  return ordered.find(e => e.lat != null && e.lng != null) || ordered.find(e => e.address) || null;
+}
+async function geocodeBetriebPin(ev) {
+  if (!ev.address || betriebPinGeocodeTried.has(ev.id) || !navigator.onLine) return;
+  betriebPinGeocodeTried.add(ev.id);
+  try {
+    const res = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(ev.address));
+    const data = await res.json();
+    if (data && data[0]) {
+      ev.lat = parseFloat(data[0].lat);
+      ev.lng = parseFloat(data[0].lon);
+      ev.geocodeStatus = 'ok';
+      updateBetriebPin();
+    } else {
+      ev.geocodeStatus = 'failed';
+    }
+  } catch { /* ohne Netz: später erneut beim nächsten Wechsel */ betriebPinGeocodeTried.delete(ev.id); }
+}
+function betriebPinPopupHtml(z, ev) {
+  const route = eventRouteUrl(ev);
+  const termin = z.terminId ? z.terminLabel : '';
+  return `<div class="betrieb-pin-popup">
+    <strong>${escapeHtml(z.betrieb)}</strong>
+    ${ev.address ? `<span>${escapeHtml(ev.address)}</span>` : ''}
+    ${termin ? `<span class="betrieb-pin-termin">Termin: ${escapeHtml(termin)}</span>` : ''}
+    ${route ? `<a href="${route}" target="_blank" rel="noopener"><span class="material-symbols-rounded icon" aria-hidden="true">directions</span>Route</a>` : ''}
+  </div>`;
+}
+function updateBetriebPin() {
+  const z = activeZuordnung;
+  const ev = z ? betriebPinEvent(z) : null;
+  if (!z || !ev || ev.lat == null || ev.lng == null) {
+    if (betriebPinMarker) { map.removeLayer(betriebPinMarker); betriebPinMarker = null; }
+    if (z && ev && ev.lat == null) geocodeBetriebPin(ev);
+    if (!z) betriebPinKey = null;
+    return;
+  }
+  const icon = L.divIcon({
+    className: 'betrieb-pin',
+    html: `<span class="betrieb-pin-head"><span>${escapeHtml(betriebInitial(z.betrieb))}</span></span><span class="betrieb-pin-label">${escapeHtml(z.betrieb)}</span>`,
+    iconSize: [36, 46],
+    iconAnchor: [18, 46],
+    popupAnchor: [0, -44]
+  });
+  if (!betriebPinMarker) {
+    betriebPinMarker = L.marker([ev.lat, ev.lng], { icon, zIndexOffset: 1000, keyboard: true, title: z.betrieb, alt: `Betrieb ${z.betrieb}` }).addTo(map);
+  } else {
+    betriebPinMarker.setLatLng([ev.lat, ev.lng]);
+    betriebPinMarker.setIcon(icon);
+  }
+  betriebPinMarker.bindPopup(betriebPinPopupHtml(z, ev), { className: 'betrieb-pin-popup-wrap' });
+  // Neu gewählter Betrieb: ist die Karte (noch) leer, gleich dorthin.
+  const key = z.betrieb + '|' + (z.terminId || '');
+  if (key !== betriebPinKey) {
+    betriebPinKey = key;
+    if (!featureIndex.length) map.setView([ev.lat, ev.lng], Math.max(map.getZoom(), 14));
   }
 }
 
@@ -13955,7 +15416,7 @@ const TK_FORMULARE = {
     anlagenSection: 'Anlagen',
     signatureHint: 'Keine Rechtsberatung — bitte im Zweifel das amtliche Formular gegenprüfen.',
     signatures: [
-      { key: 'signatureProbenehmer', label: 'Unterschrift des Probenehmers', canvasId: 'pp-sig-probenehmer', box: PROBENPROTOKOLL_SIGNATURE_BOXES.signatureProbenehmer },
+      { key: 'signatureProbenehmer', label: 'Unterschrift des Probenehmers', canvasId: 'pp-sig-probenehmer', box: PROBENPROTOKOLL_SIGNATURE_BOXES.signatureProbenehmer, own: true },
       { key: 'signatureBetriebsinhaber', label: 'Unterschrift des Betriebsinhabers', fullLabel: 'Unterschrift des Betriebsinhabers oder seines Stellvertreters', canvasId: 'pp-sig-betriebsinhaber', box: PROBENPROTOKOLL_SIGNATURE_BOXES.signatureBetriebsinhaber }
     ],
     prefill(ev, values) {
@@ -13966,7 +15427,8 @@ const TK_FORMULARE = {
       values['PLZ  Ort'] = [ev.plz, ev.ort].filter(Boolean).join(' ');
       values['Kundennummer'] = ev.kundennummer || '';
       values['DatumZeitpunkt und Ort der Probenahme'] = new Date().toLocaleDateString('de-DE');
-      values['Probenehmer Name'] = rememberedName;
+      // Profil (FeldFolio+ Konto) hat Vorrang vor dem zuletzt getippten Namen.
+      values['Probenehmer Name'] = kontoProfil.name || rememberedName;
     },
     onInput(p, name, value) {
       if (name === 'Probenehmer Name') {
@@ -13994,7 +15456,7 @@ const TK_FORMULARE = {
     anlagenSection: 'Anlagen',
     signatureHint: 'Unterschrift erscheint auf der Linie „Datum, Unterschrift Kontrolleur / Kontrollstelle“ der Anfrage. Den Teil „Ergebnis der Prüfung“ füllt die angefragte Kontrollstelle aus.',
     signatures: [
-      { key: 'signatureKontrolleur', label: 'Unterschrift Kontrolleur / Kontrollstelle', canvasId: 'cc-sig-kontrolleur', box: CROSSCHECK_SIGNATURE_BOX }
+      { key: 'signatureKontrolleur', label: 'Unterschrift Kontrolleur / Kontrollstelle', canvasId: 'cc-sig-kontrolleur', box: CROSSCHECK_SIGNATURE_BOX, own: true }
     ],
     fontSize: crossCheckFontSize,
     prefill(ev, values) {
@@ -14097,6 +15559,74 @@ function formularSectionHtml(ev, kind) {
         </button>
       </div>
     </div>`;
+}
+
+// ---- Warenflussprüfungen am Termin (Logik/Oberfläche: src/warenfluss.js) ----
+function warenflussSectionHtml(ev) {
+  const list = ev.warenfluss || [];
+  const rows = list.slice().sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).map(chk => {
+    const info = warenflussRowInfo(chk);
+    const s = info.summary;
+    const badge = s.bad ? `<span class="wf-status is-bad"><span class="wf-dot"></span>${s.bad} auffällig</span>`
+      : s.warn ? `<span class="wf-status is-warn"><span class="wf-dot"></span>${s.warn} prüfen</span>`
+        : s.ok ? `<span class="wf-status is-ok"><span class="wf-dot"></span>plausibel</span>` : '<span class="wf-status">noch leer</span>';
+    return `<div class="probenprotokoll-row wf-list-row">
+      <button type="button" class="probenprotokoll-row-main" data-wf-open="${escapeHtml(chk.id)}">
+        <span class="probenprotokoll-row-title"><span class="material-symbols-rounded icon wf-list-icon" aria-hidden="true">${info.icon}</span>${escapeHtml(info.titel)}</span>
+        <span class="probenprotokoll-row-sub">Zeitraum ${escapeHtml(info.zeitraum || '–')} · ${badge}</span>
+      </button>
+    </div>`;
+  }).join('');
+  return `<div class="tk-attachments" id="tk-warenfluss">
+    <div class="tk-attachments-head">Warenflussprüfungen</div>
+    <div id="tk-warenfluss-list">${rows || '<p class="empty-hint">Noch keine Warenflussprüfung.</p>'}</div>
+    <div class="tk-attachments-actions">
+      <button type="button" class="tk-attachment-btn tk-attachment-btn-primary" id="tk-warenfluss-new" aria-expanded="false">
+        <span class="material-symbols-rounded icon">balance</span> Neue Warenflussprüfung
+      </button>
+    </div>
+    <div class="wf-module-picker" id="tk-warenfluss-picker" hidden>
+      ${Object.entries(WF_MODULE).map(([key, mod]) => `<button type="button" class="wf-module-btn" data-wf-new="${key}">
+        <span class="material-symbols-rounded icon" aria-hidden="true">${mod.icon}</span>
+        <span><strong>${escapeHtml(mod.label)}</strong><small>${escapeHtml(mod.sub)}</small></span>
+      </button>`).join('')}
+    </div>
+  </div>`;
+}
+function wireWarenflussSection(ev) {
+  initWarenflussUi();
+  const newBtn = document.getElementById('tk-warenfluss-new');
+  const picker = document.getElementById('tk-warenfluss-picker');
+  if (!newBtn) return;
+  newBtn.addEventListener('click', () => {
+    picker.hidden = !picker.hidden;
+    newBtn.setAttribute('aria-expanded', String(!picker.hidden));
+  });
+  picker.querySelectorAll('[data-wf-new]').forEach(btn => btn.addEventListener('click', () => {
+    const chk = createWarenfluss(btn.dataset.wfNew);
+    ev.warenfluss = ev.warenfluss || [];
+    ev.warenfluss.push(chk);
+    openWarenflussFor(ev, chk);
+  }));
+  document.querySelectorAll('#tk-warenfluss-list [data-wf-open]').forEach(btn => btn.addEventListener('click', () => {
+    const chk = (ev.warenfluss || []).find(c => c.id === btn.dataset.wfOpen);
+    if (chk) openWarenflussFor(ev, chk);
+  }));
+}
+function openWarenflussFor(ev, chk) {
+  openWarenfluss(chk, {
+    ctx: { betrieb: ev.kunde, datum: tkFmtDate(ev.date), kontrolleur: kontoProfil.name || '' },
+    onChange: () => { /* Speicherung über den regulären lokalen Abgleich (persistLocalState) */ },
+    onDelete: (c) => {
+      ev.warenfluss = (ev.warenfluss || []).filter(x => x.id !== c.id);
+      persistLocalState().catch(() => {});
+      if (terminkalenderSelectedId) renderTerminkalenderDetail(ev);
+    },
+    onClose: () => {
+      persistLocalState().catch(() => {});
+      if (terminkalenderSelectedId) renderTerminkalenderDetail(ev);
+    }
+  });
 }
 
 function formularSectionsHtml(ev) {
@@ -14273,18 +15803,13 @@ async function renderProbenprotokollAnlagenGrid(p) {
   if (!files.length) { grid.innerHTML = '<p class="empty-hint">Keine Anlagen-Dateien.</p>'; return; }
   grid.innerHTML = files.map(() => '<div class="tk-attachment tk-attachment-loading"></div>').join('');
   const urls = await Promise.all(files.map(a => getPhotoUrl(a.path, a.name).catch(() => null)));
-  grid.innerHTML = files.map((a, i) => {
-    const url = urls[i];
-    if (!url) return `<div class="tk-attachment tk-attachment-error" title="${escapeHtml(a.name)} konnte nicht geladen werden"><span class="material-symbols-rounded icon">warning</span></div>`;
-    const isImage = (a.type || '').startsWith('image/');
-    const inner = isImage
-      ? `<img src="${url}" alt="${escapeHtml(a.name)}">`
-      : `<span class="tk-attachment-icon material-symbols-rounded icon">description</span><span class="tk-attachment-name">${escapeHtml(a.name)}</span>`;
-    return `<div class="tk-attachment">
-      <a href="${url}" target="_blank" rel="noopener" class="tk-attachment-link" title="${escapeHtml(a.name)}">${inner}</a>
-      <button type="button" class="tk-attachment-remove" data-path="${escapeHtml(a.path)}" title="Entfernen"><span class="material-symbols-rounded icon">close</span></button>
-    </div>`;
-  }).join('');
+  grid.innerHTML = attachmentTilesHtml(files, urls);
+  grid.querySelectorAll('[data-dv-index]').forEach(btn => {
+    btn.addEventListener('click', () => openDocViewer(
+      files.map((a, i) => ({ name: a.name, type: a.type, size: a.size, path: a.path, thumb: urls[i] })),
+      Number(btn.dataset.dvIndex)
+    ));
+  });
   grid.querySelectorAll('.tk-attachment-remove').forEach(btn => {
     btn.addEventListener('click', () => removeProbenprotokollAnlage(p, btn.getAttribute('data-path')));
   });
@@ -14355,9 +15880,14 @@ function renderProbenprotokollForm() {
         <div class="pp-signature-block">
           <span class="compare-label">${escapeHtml(s.fullLabel || s.label)} <span class="pp-required" title="Pflichtfeld">*</span></span>
           <canvas class="pp-signature-pad" id="${s.canvasId}" width="480" height="140"></canvas>
-          <button type="button" class="pp-signature-clear" data-sig="${s.key}">
-            <span class="material-symbols-rounded icon">refresh</span> Löschen
-          </button>
+          <div class="pp-signature-actions">
+            ${s.own && kontoProfil.signatur ? `<button type="button" class="pp-signature-own" data-sig-own="${s.key}" title="Unterschrift aus deinem Profil (FeldFolio+ Konto)">
+              <span class="material-symbols-rounded icon">draw</span> Meine Unterschrift einsetzen
+            </button>` : ''}
+            <button type="button" class="pp-signature-clear" data-sig="${s.key}">
+              <span class="material-symbols-rounded icon">refresh</span> Löschen
+            </button>
+          </div>
         </div>`).join('')}
       </div>
     </fieldset>`;
@@ -14449,6 +15979,16 @@ function setupSignaturePad(canvasId, protokoll, key) {
     img.src = protokoll[key];
   }
 
+  // Gespeicherte Unterschrift aus dem Profil per Knopfdruck einsetzen.
+  const ownBtn = document.querySelector(`.pp-signature-own[data-sig-own="${key}"]`);
+  if (ownBtn) {
+    ownBtn.addEventListener('click', () => {
+      if (!kontoProfil.signatur) return;
+      protokoll[key] = kontoProfil.signatur;
+      drawSignatureOnCanvas(canvas, kontoProfil.signatur);
+      refreshProbenprotokollValidation(protokoll);
+    });
+  }
   const clearBtn = document.querySelector(`.pp-signature-clear[data-sig="${key}"]`);
   if (clearBtn) {
     clearBtn.addEventListener('click', () => {

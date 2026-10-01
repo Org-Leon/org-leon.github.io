@@ -21,6 +21,8 @@ const STATE_TABLE = 'feldfolio_state';
 const PHOTO_BUCKET = 'feldfolio-photos';
 
 export async function signUp(email, password) {
+  // Dev-only Testhaken (Konto-Tests ohne echten Server), wie __ffTestUploadPhotoOverride.
+  if (import.meta.env.DEV && window.__ffTestAuth && window.__ffTestAuth.signUp) return window.__ffTestAuth.signUp(email, password);
   if (!supabase) throw new Error('Cloud-Konto ist nicht konfiguriert.');
   const { data, error } = await supabase.auth.signUp({ email, password });
   if (error) throw error;
@@ -28,6 +30,7 @@ export async function signUp(email, password) {
 }
 
 export async function signIn(email, password) {
+  if (import.meta.env.DEV && window.__ffTestAuth && window.__ffTestAuth.signIn) return window.__ffTestAuth.signIn(email, password);
   if (!supabase) throw new Error('Cloud-Konto ist nicht konfiguriert.');
   const { data, error } = await supabase.auth.signInWithPassword({ email, password });
   if (error) throw error;
@@ -35,6 +38,7 @@ export async function signIn(email, password) {
 }
 
 export async function signOut() {
+  if (import.meta.env.DEV && window.__ffTestAuth && window.__ffTestAuth.signOut) return window.__ffTestAuth.signOut();
   if (!supabase) return;
   await supabase.auth.signOut();
 }
@@ -137,6 +141,10 @@ export async function uploadPhoto(file) {
 // "Speichern unter" verwendet — z.B. das Jahr_Betrieb_Art-Namensschema, auch
 // wenn der Storage-Pfad selbst weiterhin eine UUID ist.
 export async function getPhotoUrl(path, downloadName) {
+  // Dev-only Testhaken analog __ffTestUploadPhotoOverride (Dokumentenviewer-Tests).
+  if (import.meta.env.DEV && window.__ffTestPhotoUrlOverride) {
+    return window.__ffTestPhotoUrlOverride(path, downloadName);
+  }
   if (!supabase) return null;
   assertOnline();
   const { data, error } = await supabase.storage.from(PHOTO_BUCKET)
@@ -200,4 +208,88 @@ export async function declineAccessRequest(id) {
     .update({ status: 'declined' })
     .eq('id', id);
   if (error) throw error;
+}
+
+// ---------- Konto: Passwort, Abmelden überall, Konto löschen ----------
+
+// Verständliche deutsche Meldungen statt der englischen Supabase-Texte.
+export function authErrorMessage(err, fallback = 'Das hat nicht geklappt.') {
+  const msg = String((err && (err.message || err.error_description)) || err || '');
+  if (/invalid login credentials/i.test(msg)) return 'E-Mail oder Passwort stimmen nicht.';
+  if (/email not confirmed/i.test(msg)) return 'Die E-Mail-Adresse ist noch nicht bestätigt — bitte den Link in der Bestätigungs-Mail öffnen.';
+  if (/user already registered|already been registered/i.test(msg)) return 'Für diese E-Mail-Adresse gibt es bereits ein Konto — bitte anmelden.';
+  if (/password should be at least|weak password|password is too short/i.test(msg)) return 'Das Passwort ist zu kurz oder zu einfach (mindestens 8 Zeichen).';
+  if (/same password|different from the old/i.test(msg)) return 'Das neue Passwort muss sich vom bisherigen unterscheiden.';
+  if (/rate limit|too many requests|security purposes/i.test(msg)) return 'Zu viele Versuche — bitte kurz warten und es dann erneut probieren.';
+  if (/unable to validate email|invalid email|email address .* is invalid/i.test(msg)) return 'Bitte eine gültige E-Mail-Adresse eingeben.';
+  if (/failed to fetch|networkerror|load failed/i.test(msg)) return 'Keine Verbindung zum Server — bitte Internet prüfen.';
+  if (/could not find the function|function .* does not exist|PGRST202/i.test(msg)) return 'Diese Funktion ist auf dem Server noch nicht eingerichtet (siehe supabase/konto-loeschen.sql).';
+  return msg || fallback;
+}
+
+// Link zum Zurücksetzen per E-Mail. Die Adresse der App muss in Supabase
+// unter Authentication → URL Configuration → Redirect URLs erlaubt sein.
+export async function requestPasswordReset(email) {
+  if (import.meta.env.DEV && window.__ffTestAuth && window.__ffTestAuth.requestPasswordReset) return window.__ffTestAuth.requestPasswordReset(email);
+  if (!supabase) throw new Error('Cloud-Konto ist nicht konfiguriert.');
+  const redirectTo = window.location.origin + window.location.pathname;
+  const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo });
+  if (error) throw error;
+}
+
+export async function updatePassword(newPassword) {
+  if (import.meta.env.DEV && window.__ffTestAuth && window.__ffTestAuth.updatePassword) return window.__ffTestAuth.updatePassword(newPassword);
+  if (!supabase) throw new Error('Cloud-Konto ist nicht konfiguriert.');
+  assertOnline();
+  const { error } = await supabase.auth.updateUser({ password: newPassword });
+  if (error) throw error;
+}
+
+// Prüft das aktuelle Passwort (vor dem Ändern bzw. Konto löschen).
+export async function verifyPassword(email, password) {
+  if (import.meta.env.DEV && window.__ffTestAuth && window.__ffTestAuth.verifyPassword) return window.__ffTestAuth.verifyPassword(email, password);
+  if (!supabase) throw new Error('Cloud-Konto ist nicht konfiguriert.');
+  assertOnline();
+  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error) throw error;
+}
+
+// Beendet die Anmeldung auf allen Geräten (alle Refresh-Tokens ungültig).
+export async function signOutEverywhere() {
+  if (import.meta.env.DEV && window.__ffTestAuth && window.__ffTestAuth.signOutEverywhere) return window.__ffTestAuth.signOutEverywhere();
+  if (!supabase) return;
+  assertOnline();
+  const { error } = await supabase.auth.signOut({ scope: 'global' });
+  if (error) throw error;
+}
+
+// "Passwort vergessen"-Link geöffnet -> App soll "Neues Passwort" zeigen.
+export function onPasswordRecovery(callback) {
+  if (!supabase) return;
+  supabase.auth.onAuthStateChange((event, session) => {
+    if (event === 'PASSWORD_RECOVERY') callback(session);
+  });
+}
+
+// Konto löschen: zuerst alle eigenen Dateien im Speicher (Storage-API —
+// Zeilen in storage.objects direkt zu löschen ließe die Dateien liegen),
+// dann per RPC Arbeitsstand + Nutzer (Server-Funktion, siehe
+// supabase/konto-loeschen.sql).
+export async function deleteMyAccount() {
+  if (import.meta.env.DEV && window.__ffTestAuth && window.__ffTestAuth.deleteMyAccount) return window.__ffTestAuth.deleteMyAccount();
+  if (!supabase) throw new Error('Cloud-Konto ist nicht konfiguriert.');
+  assertOnline();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Nicht angemeldet.');
+  for (;;) {
+    const { data: files, error } = await supabase.storage.from(PHOTO_BUCKET).list(user.id, { limit: 100 });
+    if (error) throw error;
+    if (!files || !files.length) break;
+    const { error: rmError } = await supabase.storage.from(PHOTO_BUCKET).remove(files.map(f => `${user.id}/${f.name}`));
+    if (rmError) throw rmError;
+    if (files.length < 100) break;
+  }
+  const { error } = await supabase.rpc('delete_my_account');
+  if (error) throw error;
+  await supabase.auth.signOut().catch(() => {});
 }

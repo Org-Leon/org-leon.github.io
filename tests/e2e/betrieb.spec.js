@@ -132,7 +132,7 @@ test.describe('Betrieb wählen am Handy', () => {
     await loginWithCloud(page);
     await addTermine(page);
     await openDialog(page);
-    const box = await page.locator('.betrieb-card').boundingBox();
+    const box = await page.locator('#betrieb-modal-overlay .betrieb-card').boundingBox();
     expect(Math.round(box.width)).toBe(390);
     expect(Math.round(box.y + box.height)).toBe(844);
     // Suchfeld ist am Handy nicht automatisch fokussiert (Tastatur).
