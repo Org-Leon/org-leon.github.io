@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { gotoTab } from './helpers.js';
+import { gotoKontrolleKalender, openFirstTermin } from './helpers.js';
 
 // Cross Check (FB.09.06.10) — gleiches Formular-System wie das
 // Probenahmeprotokoll (TK_FORMULARE in main.js): hängt am Termin, füllt die
@@ -10,9 +10,9 @@ const FAKE_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1
 async function openTerminWithEvent(page, overrides = {}) {
   await page.goto('/');
   await page.evaluate(() => window.__ffTestTk.loginFake());
-  await gotoTab(page, 'Terminkalender');
+  await gotoKontrolleKalender(page);
   const id = await page.evaluate((o) => window.__ffTestTk.addEvent(o), overrides);
-  await page.locator('.tk-card').first().click();
+  await openFirstTermin(page, 'protokolle');
   await page.evaluate(() => {
     let counter = 0;
     window.__uploads = [];
@@ -44,7 +44,7 @@ async function fillRequired(page, eventId) {
   }, { evId: eventId, png: FAKE_PNG });
 }
 
-test.describe('Cross Check (Terminkalender)', () => {
+test.describe('Cross Check (Kontrolle)', () => {
   test('Vorlage ist leer und hat alle erwarteten Formularfelder', async ({ page }) => {
     await page.goto('/');
     const result = await page.evaluate(async () => {

@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { gotoTab } from './helpers.js';
+import { gotoKontrolleKalender, openFirstTermin } from './helpers.js';
 
 // Probenahmeprotokolle hängen an einem konkreten Termin (main.js,
 // ev.probenprotokolle) — Login fälschen + Testtermin anlegen + auswählen,
@@ -9,9 +9,9 @@ import { gotoTab } from './helpers.js';
 async function openTerminWithEvent(page, overrides = {}) {
   await page.goto('/');
   await page.evaluate(() => window.__ffTestTk.loginFake());
-  await gotoTab(page, 'Terminkalender');
+  await gotoKontrolleKalender(page);
   const id = await page.evaluate((o) => window.__ffTestTk.addEvent(o), overrides);
-  await page.locator('.tk-card').first().click();
+  await openFirstTermin(page, 'protokolle');
   await page.evaluate(() => {
     let counter = 0;
     window.__ffTestUploadPhotoOverride = async (file) => {
@@ -49,7 +49,7 @@ async function fillRequired(page, eventId, { skipErklaerungen = false } = {}) {
   }, { evId: eventId, png: FAKE_PNG, skip: skipErklaerungen });
 }
 
-test.describe('Probenahmeprotokoll (Terminkalender)', () => {
+test.describe('Probenahmeprotokoll (Kontrolle)', () => {
   // Die Vorlage stammte ursprünglich aus einem ausgefüllten Beispiel — sie
   // darf keine Unterschriften, Kreuz-Markierungen oder Beispielwerte mehr
   // enthalten, sonst tauchen sie in jedem Export wieder auf.

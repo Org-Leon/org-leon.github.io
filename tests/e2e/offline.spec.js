@@ -1,53 +1,12 @@
 import { test, expect } from '@playwright/test';
+import { setupCloud, loginWithCloud, TEST_USER as USER, gotoKontrolleKalender, openFirstTermin } from './helpers.js';
 
 // Offline-Betrieb (siehe "Offline-Betrieb" in main.js, offline-store.js):
 // Cloud per window.__ffTestCloud gestubbt (supabase.js), Netz per
 // context.setOffline() umgeschaltet. Der Dev-Server hat keinen Service
 // Worker — ein echtes Neuladen ohne Netz wird daher über den Testhaken
 // boot() nachgestellt (selber Ablauf wie beim Seitenaufruf).
-const USER = { id: 'test-user', email: 'test@example.com' };
 const NO_BETRIEB = '__kein_betrieb__';
-
-async function setupCloud(page, initialData) {
-  await page.evaluate(({ data }) => {
-    let tick = 0;
-    // Wie Postgres-jsonb (Supabase): Objekt-Schlüssel werden beim Speichern
-    // umsortiert (kürzere zuerst, dann alphabetisch) — die Reihenfolge der
-    // gespeicherten Daten ist also NICHT die, in der sie geschrieben wurden.
-    const jsonb = (v) => {
-      if (Array.isArray(v)) return v.map(jsonb);
-      if (v && typeof v === 'object') {
-        const out = {};
-        Object.keys(v).sort((a, b) => a.length - b.length || (a < b ? -1 : a > b ? 1 : 0)).forEach(k => { out[k] = jsonb(v[k]); });
-        return out;
-      }
-      return v;
-    };
-    window.__ffTestCloud = {
-      row: data ? { data: jsonb(data), updated_at: 't0' } : null,
-      saves: 0,
-      async load() { return this.row ? JSON.parse(JSON.stringify(this.row)) : null; },
-      async save(d) {
-        this.saves += 1;
-        this.row = { data: jsonb(JSON.parse(JSON.stringify(d))), updated_at: 't' + (++tick) };
-        return this.row.updated_at;
-      },
-      // Simuliert eine Änderung von einem anderen Gerät.
-      setRemote(mutator) {
-        const d = JSON.parse(JSON.stringify(this.row.data));
-        mutator(d);
-        this.row = { data: jsonb(d), updated_at: 'remote-' + (++tick) };
-      }
-    };
-  }, { data: initialData });
-}
-
-async function login(page) {
-  await page.evaluate(async (user) => {
-    window.__ffTestTk.loginFake(user.email);
-    await window.__ffTestOffline.start(user);
-  }, USER);
-}
 
 const outline = [{ x: 0, y: 0 }, { x: 6, y: 0 }, { x: 6, y: 4 }, { x: 0, y: 4 }];
 function planWith(name) {
@@ -61,7 +20,7 @@ test.describe('Offline-Betrieb', () => {
 
   test('Offline erfasster Stallplan übersteht einen Neustart ohne Netz', async ({ page, context }) => {
     await setupCloud(page, { workspaces: {} });
-    await login(page);
+    await loginWithCloud(page);
     await context.setOffline(true);
     await page.evaluate(() => {
       window.__ffTestStallplaner.createPlan({ name: 'Offline-Stall' });
@@ -83,7 +42,7 @@ test.describe('Offline-Betrieb', () => {
 
   test('Offline-Änderungen werden hochgeladen, sobald wieder Netz da ist', async ({ page, context }) => {
     await setupCloud(page, { workspaces: {} });
-    await login(page);
+    await loginWithCloud(page);
     await context.setOffline(true);
     await page.evaluate(() => {
       window.__ffTestStallplaner.createPlan({ name: 'Stall Nord' });
@@ -92,6 +51,10 @@ test.describe('Offline-Betrieb', () => {
     expect(await page.evaluate(() => window.__ffTestOffline.sync())).toBe('offline');
     expect(await page.evaluate(() => window.__ffTestCloud.saves)).toBe(0);
     await expect(page.locator('#btn-sync')).toHaveClass(/has-pending/);
+    // Speicherstatus in der Kopfzeile
+    await expect(page.locator('#save-status')).toBeVisible();
+    await expect(page.locator('#save-status')).toHaveClass(/is-unsynced/);
+    await expect(page.locator('#save-status-text')).toHaveText('Nicht synchron');
 
     await context.setOffline(false); // löst das 'online'-Event aus
     await expect.poll(() => page.evaluate(() => window.__ffTestCloud.saves)).toBe(1);
@@ -99,11 +62,13 @@ test.describe('Offline-Betrieb', () => {
     expect(cloudPlans.map(p => p.name)).toEqual(['Stall Nord']);
     await expect.poll(() => page.evaluate(() => window.__ffTestOffline.pending())).toBe(false);
     await expect(page.locator('#btn-sync')).not.toHaveClass(/has-pending/);
+    await expect(page.locator('#save-status-text')).toHaveText('Gespeichert');
+    await expect(page.locator('#save-status')).not.toHaveClass(/is-unsynced/);
   });
 
   test('Mehrfach hintereinander speichern auf EINEM Gerät löst keine Konfliktfrage aus', async ({ page }) => {
     await setupCloud(page, { workspaces: { [NO_BETRIEB]: { stallplaene: [planWith('Start')] } } });
-    await login(page);
+    await loginWithCloud(page);
     for (const name of ['Erster', 'Zweiter', 'Dritter']) {
       await page.evaluate((n) => {
         window.__ffTestStallplaner.createPlan({ name: n });
@@ -121,7 +86,7 @@ test.describe('Offline-Betrieb', () => {
 
   test('Derselbe Betrieb auch anderswo geändert: Konfliktfrage, "Meine behalten" gewinnt, Sicherung bleibt', async ({ page }) => {
     await setupCloud(page, { workspaces: { [NO_BETRIEB]: { stallplaene: [planWith('Alt')] } } });
-    await login(page);
+    await loginWithCloud(page);
     await page.evaluate(() => {
       window.__ffTestStallplaner.createPlan({ name: 'Meiner' });
       window.__ffTestStallplaner.setOutline([{ x: 0, y: 0 }, { x: 3, y: 0 }, { x: 3, y: 3 }, { x: 0, y: 3 }]);
@@ -144,7 +109,7 @@ test.describe('Offline-Betrieb', () => {
 
   test('"Anderen Stand übernehmen" ersetzt den offenen Betrieb durch den Cloud-Stand', async ({ page }) => {
     await setupCloud(page, { workspaces: { [NO_BETRIEB]: { stallplaene: [planWith('Alt')] } } });
-    await login(page);
+    await loginWithCloud(page);
     await page.evaluate(() => {
       window.__ffTestStallplaner.createPlan({ name: 'Meiner' });
     });
@@ -159,7 +124,7 @@ test.describe('Offline-Betrieb', () => {
 
   test('Anderer Betrieb anderswo geändert: kein Konflikt, beide Änderungen bleiben erhalten', async ({ page }) => {
     await setupCloud(page, { workspaces: { [NO_BETRIEB]: {}, 'Hof B': { stallplaene: [planWith('B')] } } });
-    await login(page);
+    await loginWithCloud(page);
     await page.evaluate(() => { window.__ffTestStallplaner.createPlan({ name: 'Hier' }); });
     await page.evaluate(() => window.__ffTestCloud.setRemote(d => { d.workspaces['Hof B'].stallplaene[0].name = 'B neu'; }));
     expect(await page.evaluate(() => window.__ffTestOffline.sync())).toBe('synced');
@@ -174,7 +139,7 @@ test.describe('Offline-Betrieb', () => {
 
   test('Betrieb wechseln funktioniert offline und merkt sich den Betrieb für den nächsten Start', async ({ page, context }) => {
     await setupCloud(page, { workspaces: { [NO_BETRIEB]: {}, 'Hof B': { stallplaene: [planWith('Stall von Hof B')] } } });
-    await login(page);
+    await loginWithCloud(page);
     await context.setOffline(true);
     await page.evaluate(() => window.__ffTestOffline.switchTo('Hof B'));
     expect(await page.evaluate(() => window.__ffTestOffline.currentWorkspaceKey())).toBe('Hof B');
@@ -190,13 +155,16 @@ test.describe('Offline-Betrieb', () => {
     const plan = await page.evaluate(() => window.__ffTestStallplaner.getActivePlan());
     expect(plan.compartments.map(c => c.name)).toEqual(['Bucht offline']);
     await expect(page.locator('#btn-betrieb-label')).toContainText('Hof B');
+    // Betriebs-Chip: Avatar mit Initiale
+    await expect(page.locator('#btn-betrieb .betrieb-avatar')).toHaveText('H');
+    await expect(page.locator('#btn-betrieb')).toHaveAttribute('aria-label', /Hof B/);
   });
 
   test('Datei-Upload ohne Netz meldet verständlich, dass es nur online geht', async ({ page, context }) => {
     await page.evaluate(() => window.__ffTestTk.loginFake());
-    await page.locator('.segment-btn', { hasText: 'Terminkalender' }).click();
+    await gotoKontrolleKalender(page);
     await page.evaluate(() => window.__ffTestTk.addEvent());
-    await page.locator('.tk-card').first().click();
+    await openFirstTermin(page, 'dokumente');
     await context.setOffline(true);
     await page.setInputFiles('#tk-file-add-input', { name: 'foto.jpg', mimeType: 'image/jpeg', buffer: Buffer.from('x') });
     await expect(page.locator('#tk-attachment-status')).toContainText('Keine Internetverbindung');

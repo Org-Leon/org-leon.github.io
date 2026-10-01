@@ -15,6 +15,15 @@ import { rankBackCameras, drawScaled, rotateCanvas, defaultQuad, detectDocumentQ
 // Die eigentliche Anwendung des gespeicherten Themes passiert schon synchron
 // im <head> (index.html), damit beim Neuladen nichts falsch aufblitzt — hier
 // nur noch der Umschalt-Klick.
+// Der Button zeigt das Symbol des Modus, zu dem umgeschaltet wird (Sonne im
+// Dunkelmodus, Mond im Hellmodus, per CSS) — Beschriftung passend dazu.
+function updateThemeToggleLabel() {
+  const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+  const label = isLight ? 'Zum Dunkelmodus wechseln' : 'Zum Hellmodus wechseln';
+  const btn = document.getElementById('theme-toggle');
+  btn.setAttribute('aria-label', label);
+  btn.title = label;
+}
 document.getElementById('theme-toggle').addEventListener('click', () => {
   const isLight = document.documentElement.getAttribute('data-theme') === 'light';
   if (isLight) {
@@ -24,7 +33,9 @@ document.getElementById('theme-toggle').addEventListener('click', () => {
     document.documentElement.setAttribute('data-theme', 'light');
     localStorage.setItem('oekoviewer-theme', 'light');
   }
+  updateThemeToggleLabel();
 });
+updateThemeToggleLabel();
 
 // ---------- Mobile: Sidebar als Einschub ----------
 // Ab der Media-Query-Breite in style.css wird #sidebar per CSS zu einem
@@ -36,7 +47,24 @@ document.getElementById('theme-toggle').addEventListener('click', () => {
 function closeMobileSidebar() { document.body.classList.remove('sidebar-open'); }
 function toggleMobileSidebar() { document.body.classList.toggle('sidebar-open'); }
 document.getElementById('btn-sidebar-toggle').addEventListener('click', toggleMobileSidebar);
-document.getElementById('btn-current-view').addEventListener('click', toggleMobileSidebar);
+// Anzeige der aktuellen Funktion in der Kopfzeile: am Handy (Schublade) ein
+// Button, der die Schublade mit der Funktionsliste öffnet; auf breiten
+// Bildschirmen stehen die Funktionen direkt in der Sidebar — dort reine
+// Anzeige, nicht fokussierbar.
+const MOBILE_LAYOUT_QUERY = window.matchMedia('(max-width: 860px)');
+const btnCurrentView = document.getElementById('btn-current-view');
+function updateCurrentViewButtonMode() {
+  const mobile = MOBILE_LAYOUT_QUERY.matches;
+  btnCurrentView.tabIndex = mobile ? 0 : -1;
+  if (mobile) btnCurrentView.removeAttribute('aria-disabled');
+  else btnCurrentView.setAttribute('aria-disabled', 'true');
+  // Desktop: kein aria-label, damit der Funktionsname selbst vorgelesen wird.
+  if (mobile) btnCurrentView.setAttribute('aria-label', 'Funktion wechseln');
+  else btnCurrentView.removeAttribute('aria-label');
+}
+MOBILE_LAYOUT_QUERY.addEventListener('change', updateCurrentViewButtonMode);
+updateCurrentViewButtonMode();
+btnCurrentView.addEventListener('click', () => { if (MOBILE_LAYOUT_QUERY.matches) toggleMobileSidebar(); });
 // Am Handy steckt der Hell/Dunkel-Schalter in der Schublade (Kopfzeile zu eng).
 document.getElementById('btn-theme-mobile').addEventListener('click', () => document.getElementById('theme-toggle').click());
 document.getElementById('sidebar-backdrop').addEventListener('click', closeMobileSidebar);
@@ -2560,7 +2588,7 @@ const SEGMENT_CAPTIONS = {
   obstbaum: 'Obstbäume auf der Karte erfassen',
   bienenflug: 'Bienenstöcke mit 3-km-Flugradius markieren',
   hofplan: 'Gebäude auf dem Luftbild einzeichnen',
-  terminkalender: 'Termine aus Excel importieren und planen',
+  kontrolle: 'Termine, Protokolle und Dokumente deiner Kontrollen',
   stallplaner: 'Stall vermessen, in Abteile teilen, Öko-VO prüfen'
 };
 
@@ -2568,7 +2596,7 @@ const SEGMENT_CAPTIONS = {
 // in der Schublade versteckt — ohne Titel wüsste man nicht, wo man ist).
 const SEGMENT_TITLES = {
   viewer: 'Karte', uebersicht: 'Flächenübersicht', compare: 'Jahresvergleich', zeichner: 'Flächenzeichner', obstbaum: 'Obstbaumkataster',
-  bienenflug: 'Bienenflugkarte', hofplan: 'Hofplan', terminkalender: 'Terminkalender', stallplaner: 'Stallplaner'
+  bienenflug: 'Bienenflugkarte', hofplan: 'Hofplan', kontrolle: 'Kontrolle', stallplaner: 'Stallplaner'
 };
 
 function setActiveSegment(target) {
@@ -2609,6 +2637,8 @@ function setActiveSegment(target) {
   document.body.dataset.view = target; // für funktionsabhängiges Seitenleisten-Layout (style.css)
   applyLayerSectionState();
   document.getElementById('current-view-title').textContent = SEGMENT_TITLES[target] || 'Karte';
+  const activeSegIcon = document.querySelector(`#view-switcher .segment-btn[data-view="${target}"] .icon`);
+  document.getElementById('current-view-icon').textContent = activeSegIcon ? activeSegIcon.textContent : 'map';
   // Nach dem Wechsel (armedTool wird unten ggf. neu gesetzt) aktualisieren.
   setTimeout(updateMapPlaceChip, 0);
   // "Auf Inhalt zoomen" fittet auf layers/featureIndex — im Jahresvergleich
@@ -2627,24 +2657,24 @@ function setActiveSegment(target) {
   else if (target === 'stallplaner') initStallplaner();
   if (target === 'stallplaner') requestStallplanerWakeLock(); else releaseStallplanerWakeLock();
 
-  // Terminkalender hat eine eigene, zweite Leaflet-Karteninstanz statt der
-  // geteilten Parzellen-Karte, Stallplaner hat gar keine Karte (eigenes
-  // SVG) — #map-wrap schließt sich mit beiden aus statt wie die anderen
-  // Funktionen nur Layer auf derselben Karte umzuschalten.
-  document.getElementById('map-wrap').hidden = target === 'terminkalender' || target === 'stallplaner' || target === 'uebersicht';
+  // Die Kontrolle hat eine eigene Ansicht (Kalender mit eigener, zweiter
+  // Leaflet-Karte), Stallplaner gar keine Karte (eigenes SVG) — #map-wrap
+  // schließt sich mit beiden aus statt wie die anderen Funktionen nur Layer
+  // auf derselben Karte umzuschalten.
+  document.getElementById('map-wrap').hidden = target === 'kontrolle' || target === 'stallplaner' || target === 'uebersicht';
   document.getElementById('uebersicht-view').hidden = target !== 'uebersicht';
   if (target === 'uebersicht') openFlaechenuebersicht({ animate: true });
-  const tkView = document.getElementById('terminkalender-view');
-  tkView.hidden = target !== 'terminkalender';
+  document.getElementById('kontrolle-view').hidden = target !== 'kontrolle';
+  if (target !== 'kontrolle') closeKontrollmappe();
   document.getElementById('stallplaner-view').hidden = target !== 'stallplaner';
   // Shapefile-/GeoJSON-Upload und die geteilte Ebenenliste ergeben in
   // Terminkalender/Stallplaner keinen Sinn (andere Datenwelt, keine geteilte
   // Karte) — dort ausgeblendet statt immer sichtbar wie in den anderen
   // Funktionen.
-  document.getElementById('dropzone').hidden = target === 'terminkalender' || target === 'stallplaner';
-  document.getElementById('layer-section').hidden = target === 'terminkalender' || target === 'stallplaner';
-  if (target === 'terminkalender') {
-    openTerminkalender();
+  document.getElementById('dropzone').hidden = target === 'kontrolle' || target === 'stallplaner';
+  document.getElementById('layer-section').hidden = target === 'kontrolle' || target === 'stallplaner';
+  if (target === 'kontrolle') {
+    openKontrolle();
     // Dokumentenscanner sitzt im Terminkalender: OpenCV fürs Offline-Scannen vorhalten.
     prefetchScanLibsForOffline();
   }
@@ -6304,6 +6334,137 @@ function showFlaecheOnMap(id) {
   if (entry.leafletLayer.getBounds) map.fitBounds(entry.leafletLayer.getBounds(), { padding: [60, 60], maxZoom: 17 });
   highlightFeature(entry);
 }
+// ---------- Flächensuche (Kopfzeile) ----------
+// Durchsucht die geladenen Schläge (Shapefiles + gezeichnete Flächen) nach
+// Schlagnummer, Name und FLIK; ein Treffer springt wie ein Klick in der
+// Flächentabelle zur Fläche (selectFeatureFromTable). Aus Ansichten ohne
+// Karte (Übersicht, Terminkalender, Stallplaner) geht es vorher zur Karte.
+// Strg+K fokussiert die Suche; unter 900 px öffnet die Lupe das Feld über
+// der Leiste (body.topbar-search-open).
+const MAP_VIEWS = new Set(['viewer', 'compare', 'zeichner', 'obstbaum', 'bienenflug', 'hofplan']);
+const TOPBAR_SEARCH_LIMIT = 8;
+const topbarSearch = document.getElementById('topbar-search');
+const topbarSearchResults = document.getElementById('topbar-search-results');
+let topbarSearchHits = [];
+let topbarSearchActive = -1;
+
+function normalizeSearchText(str) {
+  return String(str || '').toLocaleLowerCase('de-DE').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+function findTopbarSearchHits(query) {
+  const q = normalizeSearchText(query).trim();
+  if (!q) return [];
+  const hits = [];
+  featureIndex.forEach(e => {
+    if (e.isTeilflaechen) return;
+    const fields = [e.nummer, e.featName, e.flaechenId].map(normalizeSearchText);
+    // Rang: exakte Nummer/FLIK zuerst, dann Anfang, dann irgendwo enthalten.
+    let rank = -1;
+    if (fields[0] === q || fields[2] === q) rank = 0;
+    else if (fields.some(v => v.startsWith(q))) rank = 1;
+    else if (fields.some(v => v.includes(q))) rank = 2;
+    if (rank >= 0) hits.push({ entry: e, rank });
+  });
+  hits.sort((a, b) => a.rank - b.rank ||
+    String(a.entry.nummer || '').localeCompare(String(b.entry.nummer || ''), undefined, { numeric: true }));
+  return hits.slice(0, TOPBAR_SEARCH_LIMIT).map(h => h.entry);
+}
+function setTopbarSearchActive(i) {
+  topbarSearchActive = i;
+  topbarSearchResults.querySelectorAll('.topbar-search-item').forEach((li, j) => {
+    li.classList.toggle('active', j === i);
+    li.setAttribute('aria-selected', String(j === i));
+  });
+  const active = topbarSearchResults.querySelector('.topbar-search-item.active');
+  if (active) { topbarSearch.setAttribute('aria-activedescendant', active.id); active.scrollIntoView({ block: 'nearest' }); }
+  else topbarSearch.removeAttribute('aria-activedescendant');
+}
+function closeTopbarSearchResults() {
+  topbarSearchResults.hidden = true;
+  topbarSearch.setAttribute('aria-expanded', 'false');
+  topbarSearch.removeAttribute('aria-activedescendant');
+}
+function renderTopbarSearchResults() {
+  const query = topbarSearch.value;
+  topbarSearchHits = findTopbarSearchHits(query);
+  topbarSearchResults.innerHTML = '';
+  if (!query.trim()) { closeTopbarSearchResults(); return; }
+  if (!topbarSearchHits.length) {
+    const li = document.createElement('li');
+    li.className = 'topbar-search-empty';
+    li.textContent = featureIndex.length ? 'Keine Fläche gefunden.' : 'Noch keine Flächen geladen.';
+    topbarSearchResults.appendChild(li);
+  }
+  topbarSearchHits.forEach((e, i) => {
+    const li = document.createElement('li');
+    li.className = 'topbar-search-item';
+    li.id = 'topbar-search-hit-' + i;
+    li.setAttribute('role', 'option');
+    const title = document.createElement('span');
+    title.textContent = [e.nummer ? 'Schlag ' + e.nummer : '', e.featName].filter(Boolean).join(' · ') || 'Fläche';
+    const meta = document.createElement('small');
+    meta.textContent = [e.flaechenId ? 'FLIK ' + e.flaechenId : '', e.kultur, e.layerName].filter(Boolean).join(' · ');
+    li.append(title, meta);
+    // mousedown statt click: sonst schließt das blur des Feldes die Liste,
+    // bevor der Klick ankommt.
+    li.addEventListener('mousedown', (ev) => { ev.preventDefault(); jumpToSearchHit(e); });
+    topbarSearchResults.appendChild(li);
+  });
+  topbarSearchResults.hidden = false;
+  topbarSearch.setAttribute('aria-expanded', 'true');
+  setTopbarSearchActive(topbarSearchHits.length ? 0 : -1);
+}
+function jumpToSearchHit(entry) {
+  if (!MAP_VIEWS.has(document.body.dataset.view)) {
+    setActiveSegment('viewer');
+    map.invalidateSize();
+  }
+  selectFeatureFromTable(featureIndex.indexOf(entry));
+  topbarSearch.value = '';
+  closeTopbarSearchResults();
+  closeTopbarSearchOverlay();
+  topbarSearch.blur();
+}
+function openTopbarSearchOverlay() {
+  document.body.classList.add('topbar-search-open');
+  topbarSearch.focus();
+}
+function closeTopbarSearchOverlay() {
+  document.body.classList.remove('topbar-search-open');
+}
+topbarSearch.addEventListener('input', renderTopbarSearchResults);
+topbarSearch.addEventListener('focus', () => { if (topbarSearch.value.trim()) renderTopbarSearchResults(); });
+topbarSearch.addEventListener('blur', () => setTimeout(closeTopbarSearchResults, 120));
+topbarSearch.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    if (!topbarSearchHits.length) return;
+    e.preventDefault();
+    const n = topbarSearchHits.length;
+    setTopbarSearchActive((topbarSearchActive + (e.key === 'ArrowDown' ? 1 : -1) + n) % n);
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    const hit = topbarSearchHits[topbarSearchActive];
+    if (hit) jumpToSearchHit(hit);
+  } else if (e.key === 'Escape') {
+    e.stopPropagation();
+    if (topbarSearch.value) { topbarSearch.value = ''; closeTopbarSearchResults(); }
+    else { closeTopbarSearchOverlay(); topbarSearch.blur(); }
+  }
+});
+document.getElementById('btn-topbar-search').addEventListener('click', openTopbarSearchOverlay);
+document.getElementById('btn-topbar-search-back').addEventListener('click', () => {
+  topbarSearch.value = '';
+  closeTopbarSearchResults();
+  closeTopbarSearchOverlay();
+});
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    if (window.matchMedia('(max-width: 899px)').matches) openTopbarSearchOverlay();
+    else { topbarSearch.focus(); topbarSearch.select(); }
+  }
+});
+
 document.querySelectorAll('#uebersicht-view [data-goto]').forEach(btn => {
   btn.addEventListener('click', () => setActiveSegment(btn.getAttribute('data-goto')));
 });
@@ -6832,10 +6993,12 @@ function updateAccountButton() {
   if (accountSession) {
     label.textContent = accountSession.user.email;
     accountBtn.title = 'FeldFolio+ Konto: ' + accountSession.user.email;
+    accountBtn.setAttribute('aria-label', 'Konto: angemeldet als ' + accountSession.user.email);
     accountBtn.classList.add('logged-in');
   } else {
     label.textContent = 'Anmelden';
     accountBtn.title = 'Anmelden (FeldFolio+ Konto)';
+    accountBtn.setAttribute('aria-label', 'Konto: anmelden');
     accountBtn.classList.remove('logged-in');
   }
   // Das "+" in der Wortmarke (FeldFolio+) markiert die Cloud-Funktionen, die
@@ -6845,12 +7008,13 @@ function updateAccountButton() {
   // Hinweis (siehe #terminkalender-not-logged-in) — der eigene, groß
   // abgesetzte Umschalter-Button lenkt in der normalen (nicht angemeldeten)
   // Ansicht nur unnötig ab und erscheint daher erst nach der Anmeldung.
-  document.getElementById('terminkalender-switcher').hidden = !accountSession;
+  document.getElementById('kontrolle-switcher').hidden = !accountSession;
   // Cloud-Sync gibt es nur mit Konto — ohne Anmeldung ist der Schalter
-  // wirkungslos und nimmt in der Kopfzeile nur Platz weg. Offline mit dem
+  // (im Konto-Dialog) wirkungslos. Offline mit dem
   // zuletzt angemeldeten Nutzer gestartet (accountSession.offline) bleibt er
   // sichtbar: dann zeigt er "offline"/"noch nicht hochgeladen" an.
   document.getElementById('btn-sync').hidden = !accountSession;
+  updateSaveStatus();
 }
 
 function openAccountModal() { setAuthMode('signin'); renderAccountModal(); accountModal.hidden = false; }
@@ -6914,11 +7078,13 @@ document.getElementById('install-ios-overlay').addEventListener('click', (e) => 
 updateInstallButton();
 
 // App-Verknüpfungen (Manifest "shortcuts", langes Drücken aufs App-Symbol)
-// öffnen direkt eine Funktion: ?view=stallplaner / ?view=terminkalender.
+// öffnen direkt eine Funktion: ?view=stallplaner / ?view=kontrolle (das
+// frühere ?view=terminkalender öffnet die Kontrolle im Kalender).
 // Erst nach dem vollständigen Laden des Moduls — setActiveSegment() greift
 // auf Zustand zu, der weiter unten in dieser Datei erst angelegt wird.
 setTimeout(() => {
-  const startView = new URLSearchParams(location.search).get('view');
+  let startView = new URLSearchParams(location.search).get('view');
+  if (startView === 'terminkalender') { kontrolleTab = 'kalender'; startView = 'kontrolle'; }
   if (startView && SEGMENT_TITLES[startView] && startView !== 'viewer') setActiveSegment(startView);
 }, 0);
 
@@ -7638,6 +7804,29 @@ function updateSyncIndicator() {
   btnSync.title = title;
   btnSync.setAttribute('aria-label', title);
   document.body.classList.toggle('is-offline', !navigator.onLine);
+  updateSaveStatus();
+}
+
+// Speicherstatus in der Kopfzeile — nur eindeutige Zustände aus dem
+// Cloud-Abgleich: "Gespeichert" (angemeldet, Auto-Sync an, nichts offen, kein
+// Fehler) oder "Nicht synchron" (offene Änderungen, Fehler oder offline).
+// Abgemeldet, Auto-Sync aus oder während eines laufenden Syncs: ausgeblendet.
+function updateSaveStatus() {
+  const el = document.getElementById('save-status');
+  if (!el) return;
+  if (!accountSession || !autoSyncEnabled || syncState === 'syncing') { el.hidden = true; return; }
+  const offline = !navigator.onLine || syncState === 'offline' || !!accountSession.offline;
+  const unsynced = hasPendingLocalChanges() || offline || syncState === 'error';
+  el.hidden = false;
+  el.classList.toggle('is-unsynced', unsynced);
+  const text = unsynced ? 'Nicht synchron' : 'Gespeichert';
+  document.getElementById('save-status-text').textContent = text;
+  el.title = unsynced
+    ? (offline ? 'Nicht synchron — offline, Änderungen sind auf diesem Gerät gespeichert.'
+      : syncState === 'error' ? 'Nicht synchron — Synchronisation fehlgeschlagen.'
+        : 'Nicht synchron — Änderungen werden gleich hochgeladen.')
+    : 'Gespeichert' + (lastSyncedAt ? ' — zuletzt synchronisiert um ' + lastSyncedAt.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '');
+  el.setAttribute('aria-label', el.title);
 }
 
 // Lädt den lokalen Stand in die Oberfläche — funktioniert ohne Netz.
@@ -8509,7 +8698,6 @@ function renderTerminkalenderContactRows(ev) {
 const terminkalenderNotLoggedIn = document.getElementById('terminkalender-not-logged-in');
 const terminkalenderControls = document.getElementById('terminkalender-controls');
 const terminkalenderLoginGate = document.getElementById('terminkalender-login-gate');
-const terminkalenderMainView = document.getElementById('terminkalender-main');
 const terminkalenderStatusEl = document.getElementById('terminkalender-status');
 const terminkalenderSummaryEl = document.getElementById('terminkalender-summary');
 
@@ -8524,26 +8712,345 @@ function renderTerminkalenderSummary() {
   const withAddress = terminkalenderEvents.filter(e => e.address).length;
   const geocoded = terminkalenderEvents.filter(e => e.lat != null).length;
   const unbestaetigt = terminkalenderEvents.filter(e => !e.bestaetigt).length;
+  const termine = tkAllGroups().length;
+  const auftraege = terminkalenderEvents.length;
   terminkalenderSummaryEl.textContent =
-    `${terminkalenderEvents.length} Termine geladen, davon ${withAddress} mit Adresse, ${geocoded} geokodiert, ${unbestaetigt} unbestätigt.`;
+    `${termine} Termine (${auftraege} ${auftraege === 1 ? 'Auftrag' : 'Aufträge'}) geladen, davon ${withAddress} mit Adresse, ${geocoded} geokodiert, ${unbestaetigt} unbestätigt.`;
 }
 
-// Öffnet den Terminkalender-Tab: prüft Login, initialisiert die zweite Karte
-// erst jetzt (Leaflet braucht einen sichtbaren Container mit echter Größe),
-// stößt danach ein invalidateSize() an, da die Karte beim init evtl. noch
-// unsichtbar war.
-function openTerminkalender() {
+// ---------- Kontrolle ----------
+// Funktion "Kontrolle" mit Unterfunktionen als Reiter (Übersicht, Kalender —
+// weitere folgen: Eintrag in KONTROLLE_TABS + Panel in index.html). Die
+// Termin-Daten heißen intern weiter terminkalenderEvents (Cloud-Format
+// unverändert). Ein Termin öffnet die Kontrollmappe (siehe
+// renderTerminkalenderDetail).
+const KONTROLLE_TABS = { uebersicht: 'kontrolle-uebersicht', kalender: 'terminkalender-main' };
+let kontrolleTab = 'uebersicht';
+const TK_MODE_KEY = 'feldfolio-tk-mode';
+const TK_MAP_KEY = 'feldfolio-tk-map';
+let tkMode = 'woche';
+let tkMapVisible = false;
+try {
+  if (localStorage.getItem(TK_MODE_KEY) === 'liste') tkMode = 'liste';
+  tkMapVisible = localStorage.getItem(TK_MAP_KEY) === '1';
+} catch {}
+
+// Öffnet die Kontrolle: prüft Login und zeigt den zuletzt gewählten Reiter.
+function openKontrolle() {
   const loggedIn = isSupabaseConfigured && !!accountSession;
   terminkalenderNotLoggedIn.hidden = loggedIn;
   terminkalenderControls.hidden = !loggedIn;
   terminkalenderLoginGate.hidden = loggedIn;
-  terminkalenderMainView.hidden = !loggedIn;
+  document.getElementById('kontrolle-main').hidden = !loggedIn;
   if (!loggedIn) return;
-  initTerminkalenderMap();
+  document.getElementById('ko-header-date').textContent =
+    new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
   renderTerminkalenderSummary();
-  renderTerminkalenderGrid();
-  requestAnimationFrame(() => terminkalenderMap && terminkalenderMap.invalidateSize());
+  setKontrolleTab(kontrolleTab);
 }
+
+function setKontrolleTab(tab) {
+  if (!KONTROLLE_TABS[tab]) tab = 'uebersicht';
+  kontrolleTab = tab;
+  Object.entries(KONTROLLE_TABS).forEach(([key, panelId]) => {
+    document.getElementById(panelId).hidden = key !== tab;
+  });
+  document.querySelectorAll('#kontrolle-tabs [data-ko-tab]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.koTab === tab)));
+  document.querySelectorAll('#kontrolle-subnav [data-ko-tab]').forEach(b => {
+    b.classList.toggle('active', b.dataset.koTab === tab);
+    if (b.dataset.koTab === tab) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+  });
+  if (tab === 'kalender') {
+    applyTkMapVisibility();
+    renderTerminkalenderGrid();
+  } else {
+    renderKontrolleUebersicht();
+  }
+}
+document.querySelectorAll('#kontrolle-tabs [data-ko-tab], #kontrolle-subnav [data-ko-tab], #kontrolle-uebersicht [data-ko-tab]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    setKontrolleTab(btn.dataset.koTab);
+    closeMobileSidebar();
+  });
+});
+document.getElementById('kontrolle-btn-login').addEventListener('click', () => openAccountModal());
+
+// Kalender: Woche (Spalten) oder Liste (Tage untereinander, am Handy immer).
+function applyTkMode() {
+  document.getElementById('terminkalender-grid').classList.toggle('tk-list', tkMode === 'liste');
+  document.querySelectorAll('#tk-mode [data-mode]').forEach(b => b.setAttribute('aria-checked', String(b.dataset.mode === tkMode)));
+}
+document.querySelectorAll('#tk-mode [data-mode]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    tkMode = btn.dataset.mode;
+    try { localStorage.setItem(TK_MODE_KEY, tkMode); } catch {}
+    applyTkMode();
+  });
+});
+applyTkMode();
+
+// Kalender: Karte mit den Terminorten nur auf Wunsch (Platz für die Woche).
+function applyTkMapVisibility() {
+  document.getElementById('terminkalender-side').hidden = !tkMapVisible;
+  const btn = document.getElementById('tk-map-toggle');
+  btn.setAttribute('aria-pressed', String(tkMapVisible));
+  btn.classList.toggle('active', tkMapVisible);
+  if (tkMapVisible) {
+    initTerminkalenderMap();
+    requestAnimationFrame(() => {
+      if (!terminkalenderMap) return;
+      terminkalenderMap.invalidateSize();
+      renderTerminkalenderMapPins(tkGroupEvents(eventsForVisibleWeek()).filter(g => g.lat != null));
+    });
+  }
+}
+document.getElementById('tk-map-toggle').addEventListener('click', () => {
+  tkMapVisible = !tkMapVisible;
+  try { localStorage.setItem(TK_MAP_KEY, tkMapVisible ? '1' : '0'); } catch {}
+  applyTkMapVisibility();
+});
+
+// ---- Übersicht ----
+function tkDayStart(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
+function tkAddDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+function tkTimeLabel(ev) {
+  return ev.hasTime ? ev.date.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : 'ganztägig';
+}
+function tkDayLabel(d) {
+  const today = tkDayStart(new Date());
+  const diff = Math.round((tkDayStart(d) - today) / 86400000);
+  const base = d.toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
+  if (diff === 0) return 'Heute · ' + base;
+  if (diff === 1) return 'Morgen · ' + base;
+  return base;
+}
+function tkSortByDate(a, b) {
+  if (a.date.toDateString() === b.date.toDateString() && a.hasTime !== b.hasTime) return a.hasTime ? -1 : 1;
+  return a.date - b.date;
+}
+// ---- Termine = gebündelte Aufträge ----
+// Das Portal liefert je Auftrag (AO-Nummer) eine eigene Zeile — beim selben
+// Betrieb, selben Tag und selber Uhrzeit sind das aber EIN Termin mit
+// mehreren Aufträgen (Verbandskontrollen wie Demeter/Bioland, Probenahmen,
+// CC-Anfragen …). Gespeichert bleibt weiter ein Eintrag je Auftrag (Import,
+// .ics-Uhrzeiten und Cloud-Abgleich laufen unverändert über die AO-Nummer);
+// gebündelt wird nur für die Anzeige. Fotos/Protokolle/Notizen des Termins
+// liegen am Haupt-Auftrag (primary), siehe tkAbsorbGroupData().
+
+// Bio-Verbände: Name als farbiges Schild (keine Logos — geschützte Marken).
+// Farben angelehnt an die Verbandsfarben, hier zentral anpassbar.
+const TK_VERBAENDE = [
+  { key: 'demeter', label: 'Demeter', re: /demeter/i, bg: '#E07B00', fg: '#FFFFFF' },
+  { key: 'bioland', label: 'Bioland', re: /bioland/i, bg: '#00843D', fg: '#FFFFFF' },
+  { key: 'naturland', label: 'Naturland', re: /naturland/i, bg: '#1B7A6E', fg: '#FFFFFF' },
+  { key: 'biokreis', label: 'Biokreis', re: /biokreis/i, bg: '#1F5FA8', fg: '#FFFFFF' },
+  { key: 'gaea', label: 'Gäa', re: /g(ä|ae)a\b/i, bg: '#C8102E', fg: '#FFFFFF' },
+  { key: 'biopark', label: 'Biopark', re: /biopark/i, bg: '#6E9F1E', fg: '#FFFFFF' },
+  { key: 'ecovin', label: 'Ecovin', re: /ecovin/i, bg: '#7B2C3B', fg: '#FFFFFF' },
+  { key: 'ecoland', label: 'Ecoland', re: /ecoland/i, bg: '#4F6B2F', fg: '#FFFFFF' },
+  { key: 'oekohoefe', label: 'Verbund Ökohöfe', re: /(ö|oe)koh(ö|oe)fe/i, bg: '#8A6D3B', fg: '#FFFFFF' }
+];
+// Weitere Auftragsarten (neutrales Schild mit Symbol).
+const TK_AUFTRAG_ARTEN = [
+  { key: 'probe', label: 'Probenahme', icon: 'science', test: t => /probe?n?(ent)?nahme|probenentnahme|probeentnahme|\bproben?\b/i.test(t.replace(/stichprobe/gi, '')) },
+  { key: 'cc', label: 'CC-Anfrage', icon: 'compare_arrows', test: t => /\bcc\b|cross[\s-]?check/i.test(t) }
+];
+
+function tkAuftragText(ev) {
+  return [ev.auditart, ev.dienstleistungen, ev.format].filter(Boolean).join(' ');
+}
+function tkClassifyAuftrag(ev) {
+  const text = tkAuftragText(ev);
+  return {
+    verbaende: TK_VERBAENDE.filter(v => v.re.test(text)),
+    arten: TK_AUFTRAG_ARTEN.filter(a => a.test(text))
+  };
+}
+function tkChipHtml(item) {
+  if (item.bg) {
+    return `<span class="tk-chip tk-chip-verband" data-verband="${item.key}" style="--chip-bg:${item.bg};--chip-fg:${item.fg}">${escapeHtml(item.label)}</span>`;
+  }
+  return `<span class="tk-chip tk-chip-art" data-art="${item.key}"><span class="material-symbols-rounded icon" aria-hidden="true">${item.icon}</span>${escapeHtml(item.label)}</span>`;
+}
+// Alle Schilder eines Termins (Verbände zuerst, doppelte nur einmal).
+function tkGroupChipItems(group) {
+  const seen = new Set();
+  const items = [];
+  group.members.forEach(ev => {
+    const c = tkClassifyAuftrag(ev);
+    [...c.verbaende, ...c.arten].forEach(it => { if (!seen.has(it.key)) { seen.add(it.key); items.push(it); } });
+  });
+  return items.sort((a, b) => (b.bg ? 1 : 0) - (a.bg ? 1 : 0));
+}
+function tkGroupChipsHtml(group, max = 99) {
+  const items = tkGroupChipItems(group);
+  if (!items.length) return '';
+  const shown = items.slice(0, max).map(tkChipHtml).join('');
+  const more = items.length > max ? `<span class="tk-chip tk-chip-more">+${items.length - max}</span>` : '';
+  return `<span class="tk-chips">${shown}${more}</span>`;
+}
+
+function tkHasTerminData(ev) {
+  return (ev.attachments || []).length || (ev.notiz || '').trim() ||
+    Object.keys(TK_FORMULARE).some(k => (ev[tkFormularDef(k).listKey] || []).length);
+}
+function tkMinuteOfDay(ev) { return ev.date.getHours() * 60 + ev.date.getMinutes(); }
+
+function tkMakeGroup(members) {
+  // Haupt-Auftrag: der mit schon vorhandenen Unterlagen (bleibt so stabil),
+  // sonst der Grund-Auftrag ohne Verband/Sonderart, sonst der erste.
+  const score = ev => {
+    if (tkHasTerminData(ev)) return 0;
+    const c = tkClassifyAuftrag(ev);
+    return (c.verbaende.length || c.arten.length) ? 2 : 1;
+  };
+  const sorted = members.slice().sort((a, b) => score(a) - score(b) || String(a.id).localeCompare(String(b.id)));
+  const primary = sorted[0];
+  const timed = members.find(e => e.hasTime);
+  const dateSource = timed || primary;
+  const withCoords = members.find(e => e.lat != null);
+  return {
+    id: primary.id,
+    primary,
+    members: sorted,
+    kunde: primary.kunde,
+    date: dateSource.date,
+    dateEnd: dateSource.dateEnd || null,
+    hasTime: !!timed,
+    bestaetigt: members.every(e => e.bestaetigt),
+    urgent: members.some(e => (e.prioritaet && e.prioritaet !== 'Normal') || e.unangemeldet),
+    lat: withCoords ? withCoords.lat : null,
+    lng: withCoords ? withCoords.lng : null
+  };
+}
+// Gleicher Betrieb + gleicher Tag; unterschiedliche Uhrzeiten bleiben
+// getrennte Termine (Aufträge ohne Uhrzeit schließen sich dann zusammen).
+function tkGroupEvents(events) {
+  const buckets = new Map();
+  events.forEach(e => {
+    const key = e.kunde.trim().toLocaleLowerCase('de-DE') + '|' + e.date.toDateString();
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(e);
+  });
+  const groups = [];
+  buckets.forEach(list => {
+    const times = [...new Set(list.filter(e => e.hasTime).map(tkMinuteOfDay))];
+    if (times.length <= 1) { groups.push(tkMakeGroup(list)); return; }
+    times.forEach(t => groups.push(tkMakeGroup(list.filter(e => e.hasTime && tkMinuteOfDay(e) === t))));
+    const untimed = list.filter(e => !e.hasTime);
+    if (untimed.length) groups.push(tkMakeGroup(untimed));
+  });
+  return groups.sort(tkSortByDate);
+}
+function tkAllGroups() { return tkGroupEvents(terminkalenderEvents); }
+function tkGroupFor(id) {
+  return tkAllGroups().find(g => g.members.some(m => m.id === id)) || null;
+}
+// Unterlagen einzelner Aufträge (z. B. aus der Zeit vor dem Bündeln) am
+// Haupt-Auftrag zusammenführen — nichts geht verloren, alles an einer Stelle.
+function tkAbsorbGroupData(group) {
+  const p = group.primary;
+  group.members.forEach(m => {
+    if (m === p) return;
+    if ((m.attachments || []).length) { p.attachments = [...(p.attachments || []), ...m.attachments]; m.attachments = []; }
+    Object.keys(TK_FORMULARE).forEach(k => {
+      const key = tkFormularDef(k).listKey;
+      if ((m[key] || []).length) { p[key] = [...(p[key] || []), ...m[key]]; m[key] = []; }
+    });
+    if ((m.notiz || '').trim()) {
+      p.notiz = [p.notiz, m.notiz].filter(s => (s || '').trim()).join('\n\n');
+      m.notiz = '';
+    }
+  });
+}
+function tkGroupIsZugeordnet(group) {
+  return !!(activeZuordnung && group.members.some(m => m.id === activeZuordnung.terminId));
+}
+
+function kontrolleWeekGroups() {
+  const start = getMondayOfWeek(new Date());
+  const end = tkAddDays(start, 7);
+  return tkGroupEvents(terminkalenderEvents.filter(e => e.date >= start && e.date < end));
+}
+function updateKontrolleCounts() {
+  const el = document.getElementById('ko-subnav-count-woche');
+  const n = kontrolleWeekGroups().length;
+  el.textContent = n;
+  el.hidden = !n;
+}
+function tkEventActionsHtml(ev) {
+  const actions = [];
+  if (ev.address || ev.lat != null) {
+    actions.push(`<a class="ko-icon-btn" href="${eventRouteUrl(ev)}" target="_blank" rel="noopener" title="Route" aria-label="Route zu ${escapeHtml(ev.kunde)}"><span class="material-symbols-rounded icon" aria-hidden="true">directions</span></a>`);
+  }
+  const tel = ev.mobil || ev.telefon;
+  if (tel) {
+    actions.push(`<a class="ko-icon-btn" href="tel:${escapeHtml(telHref(tel))}" title="Anrufen: ${escapeHtml(tel)}" aria-label="${escapeHtml(ev.kunde)} anrufen"><span class="material-symbols-rounded icon" aria-hidden="true">call</span></a>`);
+  }
+  return actions.join('');
+}
+
+function renderKontrolleUebersicht() {
+  updateKontrolleCounts();
+  if (document.getElementById('kontrolle-uebersicht').hidden) return;
+  const today = tkDayStart(new Date());
+  const tomorrow = tkAddDays(today, 1);
+  const in7 = tkAddDays(today, 7);
+  const upcoming = tkGroupEvents(terminkalenderEvents.filter(e => e.date >= today && e.date < in7));
+  const todayCount = upcoming.filter(g => g.date < tomorrow).length;
+  const weekGroups = kontrolleWeekGroups();
+  const weekAuftraege = weekGroups.reduce((n, g) => n + g.members.length, 0);
+
+  const kpi = (icon, value, label) => `<div class="ko-kpi">
+      <span class="material-symbols-rounded icon" aria-hidden="true">${icon}</span>
+      <span class="ko-kpi-value">${value}</span>
+      <span class="ko-kpi-label">${label}</span>
+    </div>`;
+  document.getElementById('ko-kpis').innerHTML =
+    kpi('today', todayCount, 'Termine heute') +
+    kpi('calendar_month', weekGroups.length, 'Termine diese Woche') +
+    kpi('assignment', weekAuftraege, 'Aufträge diese Woche');
+
+  const agendaEl = document.getElementById('ko-agenda');
+  if (!terminkalenderEvents.length) {
+    agendaEl.innerHTML = `<div class="ko-empty">
+        <span class="material-symbols-rounded icon" aria-hidden="true">upload_file</span>
+        <p><strong>Noch keine Termine</strong><br>Lade die Termine als Excel aus dem Portal.</p>
+        <button type="button" class="betrieb-btn primary" id="ko-btn-import">Termine importieren</button>
+      </div>`;
+    document.getElementById('ko-btn-import').addEventListener('click', () => document.getElementById('terminkalender-file-input').click());
+  } else if (!upcoming.length) {
+    agendaEl.innerHTML = '<div class="ko-empty ko-empty-small"><span class="material-symbols-rounded icon" aria-hidden="true">event_available</span><p>Keine Termine in den nächsten 7 Tagen.</p></div>';
+  } else {
+    let html = '';
+    let lastDay = '';
+    upcoming.forEach(g => {
+      const dayKey = g.date.toDateString();
+      if (dayKey !== lastDay) {
+        html += `<div class="ko-day-label">${escapeHtml(tkDayLabel(g.date))}</div>`;
+        lastDay = dayKey;
+      }
+      const ev = g.primary;
+      const count = g.members.length > 1 ? `<span class="tk-auftrag-count">${g.members.length} Aufträge</span>` : '';
+      html += `<div class="ko-agenda-row${g.urgent ? ' is-warn' : ''}">
+        <button type="button" class="ko-agenda-main" data-open-termin="${escapeHtml(g.id)}">
+          <span class="ko-agenda-time">${tkTimeLabel(g)}</span>
+          <span class="ko-agenda-text">
+            <span class="ko-agenda-title">${escapeHtml(g.kunde)}${count}</span>
+            <span class="ko-agenda-sub">${escapeHtml([ev.auditart, ev.ort].filter(Boolean).join(' · '))}</span>
+            ${tkGroupChipsHtml(g)}
+          </span>
+        </button>
+        <span class="ko-agenda-actions">${tkEventActionsHtml(ev)}</span>
+      </div>`;
+    });
+    agendaEl.innerHTML = html;
+  }
+}
+document.getElementById('kontrolle-uebersicht').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-open-termin]');
+  if (btn) openKontrollmappe(btn.dataset.openTermin, btn.dataset.openTab || 'ueberblick');
+});
 
 function initTerminkalenderMap() {
   if (terminkalenderInitDone) return;
@@ -8571,56 +9078,138 @@ function renderTerminkalenderMapPins(eventsWithCoords) {
 
 function renderTerminkalenderDetail(ev) {
   const el = document.getElementById('terminkalender-detail');
-  if (!ev) { el.innerHTML = '<p class="empty-hint">Termin anklicken, um Details zu sehen.</p>'; return; }
-  let dateStr = ev.date.toLocaleDateString('de-DE', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' });
-  if (ev.hasTime) {
-    dateStr += ', ' + ev.date.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
-    if (ev.dateEnd) dateStr += ' – ' + ev.dateEnd.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+  const panel = document.getElementById('kontrollmappe');
+  if (!ev) { closeKontrollmappe(); return; }
+  // Die Mappe zeigt immer den ganzen Termin (alle Aufträge), ev ist danach
+  // dessen Haupt-Auftrag — dort liegen Fotos/Protokolle/Notizen.
+  const group = tkGroupFor(ev.id) || tkMakeGroup([ev]);
+  ev = group.primary;
+  panel.hidden = false;
+  document.getElementById('kontrollmappe-backdrop').hidden = false;
+
+  let dateStr = group.date.toLocaleDateString('de-DE', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' });
+  if (group.hasTime) {
+    dateStr += ', ' + group.date.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+    if (group.dateEnd) dateStr += ' – ' + group.dateEnd.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
   }
-  const badges = [`<span class="tk-badge ${ev.bestaetigt ? 'tk-badge-ok' : 'tk-badge-warn'}">${ev.bestaetigt ? 'Bestätigt' : 'Unbestätigt'}</span>`];
-  if (ev.prioritaet && ev.prioritaet !== 'Normal') badges.push(`<span class="tk-badge tk-badge-warn">${escapeHtml(ev.prioritaet)}</span>`);
-  if (ev.unangemeldet) badges.push('<span class="tk-badge tk-badge-warn">Unangemeldet</span>');
-  const isActiveZuordnung = activeZuordnung && activeZuordnung.terminId === ev.id;
+  const badges = [`<span class="tk-badge ${group.bestaetigt ? 'tk-badge-ok' : 'tk-badge-warn'}">${group.bestaetigt ? 'Bestätigt' : 'Unbestätigt'}</span>`];
+  [...new Set(group.members.map(m => m.prioritaet).filter(p => p && p !== 'Normal'))]
+    .forEach(p => badges.push(`<span class="tk-badge tk-badge-warn">${escapeHtml(p)}</span>`));
+  if (group.members.some(m => m.unangemeldet)) badges.push('<span class="tk-badge tk-badge-warn">Unangemeldet</span>');
+  const isActiveZuordnung = tkGroupIsZugeordnet(group);
+  const month = group.date.toLocaleDateString('de-DE', { month: 'short' }).replace('.', '');
+
+  // Aufträge dieses Termins: je Auftrag Art (Auditart), Verbände/Sonderarten
+  // als Schilder, AO-Nummer, Format/Dienstleistungen, Bestätigung.
+  const auftraegeHtml = group.members.map(m => {
+    const c = tkClassifyAuftrag(m);
+    const color = c.verbaende.length ? c.verbaende[0].bg : '';
+    const meta = [m.id && /^AO-/.test(m.id) ? m.id : '', m.format, m.dienstleistungen].filter(Boolean).join(' · ');
+    // Sonderart-Schild weglassen, wenn der Auftrag ohnehin so heißt ("Probenahme").
+    const chips = [...c.verbaende, ...c.arten.filter(a => !(m.auditart || '').toLowerCase().includes(a.label.toLowerCase()))];
+    return `<div class="km-auftrag"${color ? ` style="--auftrag-color:${color}"` : ''}>
+      <div class="km-auftrag-top">
+        <strong>${escapeHtml(m.auditart || 'Auftrag')}</strong>
+        <span class="tk-badge ${m.bestaetigt ? 'tk-badge-ok' : 'tk-badge-warn'}">${m.bestaetigt ? 'Bestätigt' : 'Unbestätigt'}</span>
+      </div>
+      ${chips.length ? `<span class="tk-chips">${chips.map(tkChipHtml).join('')}</span>` : ''}
+      ${meta ? `<div class="km-auftrag-meta">${escapeHtml(meta)}</div>` : ''}
+    </div>`;
+  }).join('');
+
+  const protokollCount = Object.keys(TK_FORMULARE).reduce((n, k) => n + (ev[tkFormularDef(k).listKey] || []).length, 0);
+  const dokCount = (ev.attachments || []).length;
+  const tabs = [
+    ['ueberblick', 'Überblick', ''],
+    ['protokolle', 'Protokolle', protokollCount],
+    ['dokumente', 'Dokumente', dokCount],
+    ['notizen', 'Notizen', ev.notiz ? '•' : '']
+  ];
+  const tab = tabs.some(t => t[0] === kontrollmappeTab) ? kontrollmappeTab : 'ueberblick';
+  const tel = ev.mobil || ev.telefon;
+
   el.innerHTML = `
-    <h3>${escapeHtml(ev.kunde)}</h3>
-    <p class="tk-detail-time">${dateStr}</p>
-    <div class="tk-badges">${badges.join('')}</div>
-    <label class="tk-move-row">
-      <span>Termin verschieben auf</span>
-      <input type="date" id="tk-move-date" value="${tkDateInputValue(ev.date)}">
-    </label>
-    <div class="tk-betrieb-assign">
-      <button type="button" class="tk-betrieb-assign-btn${isActiveZuordnung ? ' active' : ''}" id="tk-betrieb-assign-btn">
-        ${isActiveZuordnung
-          ? '<span class="material-symbols-rounded icon">check</span> Betrieb zugeordnet'
-          : '<span class="material-symbols-rounded icon">business</span> Als Betrieb zuordnen'}
-      </button>
-      <p class="modal-hint" id="tk-betrieb-assign-status"></p>
-    </div>
-    <p class="tk-detail-desc"><strong>${escapeHtml(ev.auditart)}</strong>${ev.format ? ' · ' + escapeHtml(ev.format) : ''}</p>
-    ${renderTerminkalenderContactRows(ev)}
-    ${ev.hinweis ? `<p class="tk-detail-desc">${escapeHtml(ev.hinweis).replace(/\n/g, '<br>')}</p>` : ''}
-    <div class="tk-attachments">
-      <div class="tk-attachments-head">Fotos &amp; Dateien</div>
-      <div class="tk-attachments-grid" id="tk-attachments-grid"></div>
-      <div class="tk-attachments-actions">
-        <label class="tk-attachment-btn tk-attachment-btn-primary">
-          <input type="file" id="tk-photo-capture-input" accept="image/*" capture="environment" hidden>
-          <span class="material-symbols-rounded icon">photo_camera</span> Foto aufnehmen
-        </label>
-        <label class="tk-attachment-btn">
-          <input type="file" id="tk-file-add-input" hidden>
-          <span class="material-symbols-rounded icon">attach_file</span> Datei hinzufügen
-        </label>
-        <button type="button" class="tk-attachment-btn" id="tk-scan-btn">
-          <span class="material-symbols-rounded icon">document_scanner</span> Dokument scannen
+    <div class="km-head">
+      <div class="km-head-top">
+        <span class="betrieb-date-badge km-date" aria-hidden="true"><b>${group.date.getDate()}</b>${escapeHtml(month)}</span>
+        <div class="km-title">
+          <h3>${escapeHtml(ev.kunde)}</h3>
+          <p class="tk-detail-time">${dateStr}</p>
+          ${tkGroupChipsHtml(group)}
+        </div>
+        <button type="button" id="kontrollmappe-close" class="ko-icon-btn" aria-label="Kontrollmappe schließen" title="Schließen">
+          <span class="material-symbols-rounded icon" aria-hidden="true">close</span>
         </button>
       </div>
-      <p class="modal-hint" id="tk-attachment-status"></p>
+      <div class="tk-badges">${badges.join('')}</div>
+      <div class="km-actions">
+        ${(ev.address || ev.lat != null) ? `<a class="betrieb-btn" href="${eventRouteUrl(ev)}" target="_blank" rel="noopener"><span class="material-symbols-rounded icon" aria-hidden="true">directions</span>Route</a>` : ''}
+        ${tel ? `<a class="betrieb-btn" href="tel:${escapeHtml(telHref(tel))}"><span class="material-symbols-rounded icon" aria-hidden="true">call</span>Anrufen</a>` : ''}
+        <button type="button" class="betrieb-btn tk-betrieb-assign-btn${isActiveZuordnung ? ' active' : ''}" id="tk-betrieb-assign-btn">
+          ${isActiveZuordnung
+            ? '<span class="material-symbols-rounded icon" aria-hidden="true">check</span>Betrieb zugeordnet'
+            : '<span class="material-symbols-rounded icon" aria-hidden="true">business</span>Als Betrieb zuordnen'}
+        </button>
+      </div>
+      <p class="modal-hint" id="tk-betrieb-assign-status"></p>
+      <div class="ff-seg km-tabs" role="tablist" aria-label="Kontrollmappe">
+        ${tabs.map(([key, label, count]) => `<button type="button" role="tab" data-km-tab="${key}" aria-selected="${key === tab}">${label}${count !== '' && count !== 0 ? `<span class="km-tab-count">${count}</span>` : ''}</button>`).join('')}
+      </div>
     </div>
-    ${formularSectionsHtml(ev)}
+    <div class="km-body">
+      <section class="km-panel" data-km-panel="ueberblick"${tab === 'ueberblick' ? '' : ' hidden'}>
+        <div class="km-section">
+          <h4>${group.members.length > 1 ? `Aufträge (${group.members.length})` : 'Auftrag'}</h4>
+          <div class="km-auftraege">${auftraegeHtml}</div>
+          <label class="tk-move-row">
+            <span>Termin verschieben auf</span>
+            <input type="date" id="tk-move-date" value="${tkDateInputValue(group.date)}">
+          </label>
+        </div>
+        <div class="km-section">
+          <h4>Kontakt</h4>
+          ${renderTerminkalenderContactRows(ev)}
+        </div>
+        ${ev.hinweis ? `<div class="km-section"><h4>Hinweis</h4><p class="tk-detail-desc">${escapeHtml(ev.hinweis).replace(/\n/g, '<br>')}</p></div>` : ''}
+      </section>
+      <section class="km-panel" data-km-panel="protokolle"${tab === 'protokolle' ? '' : ' hidden'}>
+        ${formularSectionsHtml(ev)}
+      </section>
+      <section class="km-panel" data-km-panel="dokumente"${tab === 'dokumente' ? '' : ' hidden'}>
+        <div class="tk-attachments">
+          <div class="tk-attachments-head">Fotos &amp; Dateien</div>
+          <div class="tk-attachments-grid" id="tk-attachments-grid"></div>
+          <div class="tk-attachments-actions">
+            <label class="tk-attachment-btn tk-attachment-btn-primary">
+              <input type="file" id="tk-photo-capture-input" accept="image/*" capture="environment" hidden>
+              <span class="material-symbols-rounded icon">photo_camera</span> Foto aufnehmen
+            </label>
+            <label class="tk-attachment-btn">
+              <input type="file" id="tk-file-add-input" hidden>
+              <span class="material-symbols-rounded icon">attach_file</span> Datei hinzufügen
+            </label>
+            <button type="button" class="tk-attachment-btn" id="tk-scan-btn">
+              <span class="material-symbols-rounded icon">document_scanner</span> Dokument scannen
+            </button>
+          </div>
+          <p class="modal-hint" id="tk-attachment-status"></p>
+        </div>
+      </section>
+      <section class="km-panel" data-km-panel="notizen"${tab === 'notizen' ? '' : ' hidden'}>
+        <label class="km-notiz-label" for="tk-notiz">Notizen zur Kontrolle</label>
+        <textarea id="tk-notiz" class="km-notiz" rows="8" placeholder="z. B. Beobachtungen vor Ort, offene Fragen, Absprachen …">${escapeHtml(ev.notiz || '')}</textarea>
+        <p class="modal-hint">Wird mit dem Termin gespeichert (lokal und beim nächsten Abgleich in der Cloud).</p>
+      </section>
+    </div>
   `;
+  kontrollmappeTab = tab;
   renderTerminkalenderAttachments(ev);
+  document.getElementById('kontrollmappe-close').addEventListener('click', closeKontrollmappe);
+  el.querySelectorAll('[data-km-tab]').forEach(btn => btn.addEventListener('click', () => {
+    kontrollmappeTab = btn.dataset.kmTab;
+    el.querySelectorAll('[data-km-tab]').forEach(b => b.setAttribute('aria-selected', String(b === btn)));
+    el.querySelectorAll('[data-km-panel]').forEach(p => { p.hidden = p.dataset.kmPanel !== kontrollmappeTab; });
+  }));
   document.getElementById('tk-photo-capture-input').addEventListener('change', (e) => handleTerminkalenderFileAdd(ev, e));
   document.getElementById('tk-file-add-input').addEventListener('change', (e) => handleTerminkalenderFileAdd(ev, e));
   document.getElementById('tk-betrieb-assign-btn').addEventListener('click', () => toggleTerminkalenderZuordnung(ev));
@@ -8633,6 +9222,11 @@ function renderTerminkalenderDetail(ev) {
     terminkalenderWeekStart = getMondayOfWeek(target);
     moveTerminkalenderEvent(ev.id, target);
   });
+  // Notizen: bei jeder Eingabe am Termin merken, beim Verlassen lokal sichern
+  // (Cloud-Abgleich wie bei allen Termin-Änderungen über den Offline-Abgleich).
+  const notiz = document.getElementById('tk-notiz');
+  notiz.addEventListener('input', () => { ev.notiz = notiz.value; });
+  notiz.addEventListener('change', () => { persistLocalState().catch(() => {}); renderKontrolleUebersicht(); });
   wireFormularSections(ev);
 }
 
@@ -8645,7 +9239,7 @@ async function toggleTerminkalenderZuordnung(ev) {
   if (betriebSwitchInProgress) return;
   const btn = document.getElementById('tk-betrieb-assign-btn');
   const statusEl = document.getElementById('tk-betrieb-assign-status');
-  const currentlyActive = activeZuordnung && activeZuordnung.terminId === ev.id;
+  const currentlyActive = tkGroupIsZugeordnet(tkGroupFor(ev.id) || tkMakeGroup([ev]));
   if (btn) btn.disabled = true;
   if (statusEl) statusEl.textContent = currentlyActive ? 'Entferne Zuordnung …' : 'Ordne zu …';
   try {
@@ -9505,12 +10099,41 @@ if (import.meta.env.DEV) {
 }
 
 function selectTerminkalenderEvent(id) {
-  terminkalenderSelectedId = id;
-  const ev = terminkalenderEvents.find(e => e.id === id);
-  document.querySelectorAll('.tk-card').forEach(el => el.classList.toggle('selected', el.getAttribute('data-id') === id));
-  renderTerminkalenderDetail(ev);
-  if (ev && ev.lat != null && terminkalenderMap) terminkalenderMap.setView([ev.lat, ev.lng], 15);
+  openKontrollmappe(id);
 }
+
+// ---- Kontrollmappe (ein Termin) ----
+// Seitenpanel über der Kontroll-Ansicht (am Handy Vollbild) mit festem Kopf
+// (Betrieb, Datum, Status, Route/Anrufen/Betrieb zuordnen) und Reitern
+// Überblick · Protokolle · Dokumente · Notizen.
+let kontrollmappeTab = 'ueberblick';
+// id darf die eines beliebigen Auftrags des Termins sein.
+function openKontrollmappe(id, tab) {
+  const group = tkGroupFor(id);
+  if (!group) return;
+  tkAbsorbGroupData(group);
+  if (group.id !== terminkalenderSelectedId) kontrollmappeTab = 'ueberblick';
+  if (tab) kontrollmappeTab = tab;
+  terminkalenderSelectedId = group.id;
+  document.querySelectorAll('.tk-card').forEach(el => el.classList.toggle('selected', el.getAttribute('data-id') === group.id));
+  renderTerminkalenderDetail(group.primary);
+  if (group.lat != null && terminkalenderMap && tkMapVisible) terminkalenderMap.setView([group.lat, group.lng], 15);
+}
+function closeKontrollmappe() {
+  const panel = document.getElementById('kontrollmappe');
+  if (!panel || panel.hidden) return;
+  panel.hidden = true;
+  document.getElementById('kontrollmappe-backdrop').hidden = true;
+  terminkalenderSelectedId = null;
+  document.querySelectorAll('.tk-card.selected').forEach(el => el.classList.remove('selected'));
+}
+document.getElementById('kontrollmappe-backdrop').addEventListener('click', closeKontrollmappe);
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || document.getElementById('kontrollmappe').hidden) return;
+  // Offene Dialoge (Protokoll, Scanner, …) zuerst schließen lassen.
+  if (document.querySelector('.modal-overlay:not([hidden]), .scan-overlay:not([hidden])')) return;
+  closeKontrollmappe();
+});
 
 const TK_WEEKDAY_LABELS = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
 
@@ -9525,16 +10148,19 @@ function eventsForVisibleWeek() {
 // ändert sich), reine Datumstermine bleiben weiterhin ohne Uhrzeit. Rein
 // lokale Änderung, wie bei allen anderen Terminkalender-Bearbeitungen erst mit
 // "In Cloud speichern" dauerhaft.
+// Verschiebt den ganzen Termin, also alle seine Aufträge gemeinsam.
 function moveTerminkalenderEvent(id, targetDate) {
-  const ev = terminkalenderEvents.find(e => e.id === id);
-  if (!ev) return;
-  if (ev.date.toDateString() === targetDate.toDateString()) return;
-  const durationMs = ev.dateEnd ? ev.dateEnd - ev.date : null;
-  const newDate = new Date(targetDate);
-  newDate.setHours(ev.date.getHours(), ev.date.getMinutes(), ev.date.getSeconds(), 0);
-  ev.date = newDate;
-  if (durationMs != null) ev.dateEnd = new Date(newDate.getTime() + durationMs);
-  if (ev.id === terminkalenderSelectedId) renderTerminkalenderDetail(ev);
+  const group = tkGroupFor(id);
+  if (!group) return;
+  if (group.date.toDateString() === targetDate.toDateString()) return;
+  group.members.forEach(ev => {
+    const durationMs = ev.dateEnd ? ev.dateEnd - ev.date : null;
+    const newDate = new Date(targetDate);
+    newDate.setHours(ev.date.getHours(), ev.date.getMinutes(), ev.date.getSeconds(), 0);
+    ev.date = newDate;
+    if (durationMs != null) ev.dateEnd = new Date(newDate.getTime() + durationMs);
+  });
+  if (group.id === terminkalenderSelectedId) renderTerminkalenderDetail(group.primary);
   renderTerminkalenderGrid();
   setTerminkalenderStatus('Termin verschoben — nicht vergessen zu speichern.');
 }
@@ -9557,44 +10183,50 @@ function renderTerminkalenderGrid() {
   for (let d = 0; d < 7; d++) {
     const dayDate = new Date(terminkalenderWeekStart);
     dayDate.setDate(dayDate.getDate() + d);
-    const dayEvents = weekEvents
-      .filter(e => e.date.toDateString() === dayDate.toDateString())
+    // Ein Termin = alle Aufträge desselben Betriebs zur selben Zeit.
+    const dayGroups = tkGroupEvents(weekEvents.filter(e => e.date.toDateString() === dayDate.toDateString()))
       .sort((a, b) => {
         if (a.hasTime && b.hasTime) return a.date - b.date;
         if (a.hasTime !== b.hasTime) return a.hasTime ? -1 : 1; // Termine mit Uhrzeit zuerst
         return a.kunde.localeCompare(b.kunde, 'de');
       });
 
-    const cardsHtml = dayEvents.map(e => {
-      const selected = e.id === terminkalenderSelectedId ? ' selected' : '';
-      const pin = e.lat != null ? ' <span class="material-symbols-rounded icon">location_on</span>' : '';
-      const clip = (e.attachments && e.attachments.length) ? ' <span class="material-symbols-rounded icon">attach_file</span>' : '';
-      const betriebMark = (activeZuordnung && activeZuordnung.terminId === e.id) ? ' <span class="material-symbols-rounded icon">business</span>' : '';
-      const statusClass = e.bestaetigt ? 'tk-card-ok' : 'tk-card-warn';
-      const timePrefix = e.hasTime ? e.date.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) + ' · ' : '';
-      return `<div class="tk-card ${statusClass}${selected}" data-id="${escapeHtml(e.id)}" title="${escapeHtml(e.kunde)}" draggable="true">
-        <div class="tk-card-title">${escapeHtml(e.kunde)}</div>
-        <div class="tk-card-sub">${timePrefix}${escapeHtml(e.auditart)}${pin}${clip}${betriebMark}</div>
+    // Karte: Uhrzeit oben, Betrieb (darf umbrechen), Auditart, darunter die
+    // Aufträge als Schilder (Verbände farbig); Symbole für Ort/Anhänge/
+    // Protokolle/zugeordneten Betrieb; farbiger Streifen links = Status.
+    const cardsHtml = dayGroups.map(g => {
+      const e = g.primary;
+      const selected = g.id === terminkalenderSelectedId ? ' selected' : '';
+      const marks = [];
+      if (g.lat != null) marks.push('<span class="material-symbols-rounded icon" title="Ort bekannt">location_on</span>');
+      if (g.members.some(m => (m.attachments || []).length)) marks.push('<span class="material-symbols-rounded icon" title="Dokumente">attach_file</span>');
+      if (g.members.some(m => Object.keys(TK_FORMULARE).some(k => (m[tkFormularDef(k).listKey] || []).length))) marks.push('<span class="material-symbols-rounded icon" title="Protokolle">description</span>');
+      if (tkGroupIsZugeordnet(g)) marks.push('<span class="material-symbols-rounded icon" title="Als Betrieb zugeordnet">business</span>');
+      const statusClass = g.urgent ? 'tk-card-urgent' : g.bestaetigt ? 'tk-card-ok' : 'tk-card-warn';
+      const multi = g.members.length > 1;
+      const count = multi ? `<span class="tk-auftrag-count">${g.members.length} Aufträge</span>` : '';
+      return `<div class="tk-card ${statusClass}${selected}${multi ? ' tk-card-multi' : ''}" data-id="${escapeHtml(g.id)}" title="${escapeHtml(g.kunde)}" draggable="true" tabindex="0" role="button">
+        <div class="tk-card-time">${tkTimeLabel(g)}${marks.length ? `<span class="tk-card-marks">${marks.join('')}</span>` : ''}</div>
+        <div class="tk-card-title">${escapeHtml(g.kunde)}</div>
+        <div class="tk-card-sub">${escapeHtml(e.auditart)}${count}</div>
+        ${tkGroupChipsHtml(g, 4)}
       </div>`;
     }).join('');
 
-    const countBadge = dayEvents.length ? ` <span class="tk-day-count">${dayEvents.length}</span>` : '';
-    html += `<div class="tk-day-col">
-      <div class="tk-day-head">${TK_WEEKDAY_LABELS[d]} ${dayDate.getDate()}.${dayDate.getMonth() + 1}.${countBadge}</div>
-      <div class="tk-day-body" data-date="${dayDate.toISOString()}">${cardsHtml || '<p class="tk-day-empty">–</p>'}</div>
+    const isToday = dayDate.toDateString() === new Date().toDateString();
+    const countBadge = dayGroups.length ? ` <span class="tk-day-count">${dayGroups.length}</span>` : '';
+    html += `<div class="tk-day-col${isToday ? ' is-today' : ''}">
+      <div class="tk-day-head"><span class="tk-day-name">${TK_WEEKDAY_LABELS[d]}</span> <span class="tk-day-date">${dayDate.getDate()}.${dayDate.getMonth() + 1}.</span>${countBadge}</div>
+      <div class="tk-day-body" data-date="${dayDate.toISOString()}">${cardsHtml || '<p class="tk-day-empty">Keine Termine</p>'}</div>
     </div>`;
   }
 
   const grid = document.getElementById('terminkalender-grid');
   grid.innerHTML = html;
   grid.querySelectorAll('.tk-card').forEach(el => {
-    el.addEventListener('click', () => {
-      selectTerminkalenderEvent(el.getAttribute('data-id'));
-      // Am Handy liegen die Details unter Liste und Karte — hinscrollen,
-      // sonst passiert beim Antippen scheinbar nichts.
-      if (window.matchMedia('(max-width: 860px)').matches) {
-        document.getElementById('terminkalender-detail').scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }
+    el.addEventListener('click', () => selectTerminkalenderEvent(el.getAttribute('data-id')));
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectTerminkalenderEvent(el.getAttribute('data-id')); }
     });
     el.addEventListener('dragstart', (e) => {
       e.dataTransfer.effectAllowed = 'move';
@@ -9612,7 +10244,9 @@ function renderTerminkalenderGrid() {
     });
   });
 
-  renderTerminkalenderMapPins(weekEvents.filter(e => e.lat != null));
+  if (tkMapVisible) renderTerminkalenderMapPins(tkGroupEvents(weekEvents).filter(g => g.lat != null));
+  // Übersicht/Zähler hängen an denselben Daten — mit aktualisieren.
+  renderKontrolleUebersicht();
 }
 
 function gotoWeek(delta) {
@@ -9729,6 +10363,32 @@ const betriebManualInput = document.getElementById('betrieb-manual-input');
 const betriebSwitchStatus = document.getElementById('betrieb-switch-status');
 let betriebSwitchInProgress = false;
 
+// Anfangsbuchstabe für die runden Betriebs-Avatare (Kopfzeile + Dialog).
+function betriebInitial(name) {
+  return (String(name || '').trim().match(/[\p{L}\p{N}]/u) || ['?'])[0].toLocaleUpperCase('de-DE');
+}
+function startOfToday() {
+  const d = new Date();
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+// Kurzinfo je Betrieb für die Liste: Anzahl Termine + nächster (oder
+// letzter) Termin aus dem Terminkalender.
+function betriebMetaText(name, isManual) {
+  const evs = terminkalenderEvents.filter(e => e.kunde === name);
+  if (!evs.length) return isManual ? 'Manuell angelegt' : 'Keine Termine';
+  const today = startOfToday();
+  const upcoming = evs.filter(e => e.date >= today).sort((a, b) => a.date - b.date)[0];
+  const last = evs.filter(e => e.date < today).sort((a, b) => b.date - a.date)[0];
+  const count = evs.length === 1 ? '1 Termin' : evs.length + ' Termine';
+  return upcoming ? `${count} · nächster ${tkFmtDate(upcoming.date)}` : `${count} · zuletzt ${tkFmtDate(last.date)}`;
+}
+
+// Statuszeile im Dialog (Wechsel läuft / Fehler).
+function setBetriebStatus(text, isError = false) {
+  betriebSwitchStatus.textContent = text;
+  betriebSwitchStatus.classList.toggle('is-error', isError);
+}
+
 function showBetriebError(msg) {
   betriebError.textContent = msg;
   betriebError.hidden = !msg;
@@ -9738,22 +10398,41 @@ function tkFmtDate(d) {
   return d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
 }
 
+// Betriebs-Chip: runder Avatar mit Initiale + Name + Pfeil; ohne Betrieb
+// das Betrieb-Symbol + "Betrieb wählen" (unter 600 px nur Avatar/Symbol).
 function updateBetriebButton() {
   btnBetrieb.classList.toggle('active', !!activeZuordnung);
-  btnBetriebLabel.innerHTML = activeZuordnung
-    ? `<span class="material-symbols-rounded icon">business</span> <span class="btn-betrieb-name">${escapeHtml(activeZuordnung.betrieb)}</span>`
-    : '<span class="material-symbols-rounded icon">business</span> <span class="btn-betrieb-name">Betrieb wählen</span>';
+  const caret = '<span class="material-symbols-rounded icon tabbar-caret betrieb-caret" aria-hidden="true">expand_more</span>';
+  if (activeZuordnung) {
+    const initial = betriebInitial(activeZuordnung.betrieb);
+    btnBetriebLabel.innerHTML = `<span class="betrieb-avatar" aria-hidden="true">${escapeHtml(initial)}</span><span class="btn-betrieb-name">${escapeHtml(activeZuordnung.betrieb)}</span>${caret}`;
+  } else {
+    btnBetriebLabel.innerHTML = `<span class="material-symbols-rounded icon betrieb-empty-icon" aria-hidden="true">business</span><span class="btn-betrieb-name">Betrieb wählen</span>${caret}`;
+  }
   btnBetrieb.title = activeZuordnung ? `Betrieb: ${activeZuordnung.betrieb} — antippen zum Wechseln` : 'Betrieb/Termin zuordnen';
+  btnBetrieb.setAttribute('aria-label', activeZuordnung ? `Betrieb: ${activeZuordnung.betrieb} (wechseln)` : 'Betrieb wählen');
 }
 
+// "Aktuell"-Karte oben im Dialog.
 function updateBetriebCurrentBox() {
+  const avatar = document.getElementById('betrieb-current-avatar');
+  document.getElementById('betrieb-current-card').classList.toggle('is-empty', !activeZuordnung);
   if (activeZuordnung) {
     betriebCurrent.hidden = false;
+    avatar.textContent = betriebInitial(activeZuordnung.betrieb);
+    document.getElementById('betrieb-current-name').textContent = activeZuordnung.betrieb;
+    document.getElementById('betrieb-current-sub').textContent = activeZuordnung.terminId
+      ? 'Termin: ' + activeZuordnung.terminLabel
+      : 'Ohne bestimmten Termin';
     betriebCurrentLabel.textContent = activeZuordnung.terminId
       ? `${activeZuordnung.betrieb} — ${activeZuordnung.terminLabel}`
       : activeZuordnung.betrieb;
   } else {
     betriebCurrent.hidden = true;
+    avatar.innerHTML = '<span class="material-symbols-rounded icon">business</span>';
+    document.getElementById('betrieb-current-name').textContent = 'Kein Betrieb';
+    document.getElementById('betrieb-current-sub').textContent = 'Wähle unten einen Betrieb oder Termin.';
+    betriebCurrentLabel.textContent = '';
   }
 }
 
@@ -9786,33 +10465,70 @@ function renderBetriebList() {
   const betriebe = getAllBetriebNamen().filter(n => !q || n.toLowerCase().includes(q));
   const manualSet = new Set(manualBetriebe);
   const showAssign = canAssignNoBetriebContent();
+  const activeName = activeZuordnung ? activeZuordnung.betrieb : null;
+  const activeTermin = activeZuordnung ? activeZuordnung.terminId : null;
+  const check = '<span class="material-symbols-rounded icon betrieb-row-check" aria-hidden="true">check</span>';
 
-  let html = '<div class="betrieb-list-group"><div class="betrieb-list-group-title">Betriebe</div>';
+  // Zeile = Auswahl-Button (Avatar/Datum + Text) plus ggf. Zuordnen/Entfernen
+  // daneben — keine verschachtelten Buttons, alles per Tastatur erreichbar.
+  let html = '';
   if (betriebe.length) {
-    html += betriebe.map(name => `
-      <div class="betrieb-row" data-action="select-betrieb" data-name="${escapeHtml(name)}">
-        <span class="betrieb-row-main">${escapeHtml(name)}</span>
+    html += '<div class="betrieb-list-group"><div class="betrieb-list-group-title">Betriebe</div>';
+    html += betriebe.map(name => {
+      const active = name === activeName;
+      return `
+      <div class="betrieb-row${active ? ' active' : ''}">
+        <button type="button" class="betrieb-row-select" data-action="select-betrieb" data-name="${escapeHtml(name)}"${active ? ' aria-current="true"' : ''}>
+          <span class="betrieb-row-avatar" aria-hidden="true">${escapeHtml(betriebInitial(name))}</span>
+          <span class="betrieb-row-text">
+            <span class="betrieb-row-main">${escapeHtml(name)}</span>
+            <span class="betrieb-row-sub">${escapeHtml(betriebMetaText(name, manualSet.has(name)))}</span>
+          </span>
+          ${active ? check : ''}
+        </button>
         ${showAssign ? `<button type="button" class="betrieb-row-assign" data-action="assign-betrieb" data-name="${escapeHtml(name)}" title="Inhalte ohne Betrieb diesem Betrieb zuordnen">Zuordnen</button>` : ''}
-        ${manualSet.has(name) ? `<button type="button" class="betrieb-row-remove" data-action="remove-manual" data-name="${escapeHtml(name)}" title="Manuell hinzugefügten Betrieb entfernen"><span class="material-symbols-rounded icon">close</span></button>` : ''}
-      </div>`).join('');
+        ${manualSet.has(name) ? `<button type="button" class="betrieb-row-remove" data-action="remove-manual" data-name="${escapeHtml(name)}" title="Manuell hinzugefügten Betrieb entfernen" aria-label="${escapeHtml(name)} entfernen"><span class="material-symbols-rounded icon" aria-hidden="true">close</span></button>` : ''}
+      </div>`;
+    }).join('');
+    html += '</div>';
+  } else if (q) {
+    html += '<div class="betrieb-list-empty">Kein Betrieb gefunden.</div>';
   } else {
-    html += '<div class="betrieb-list-empty">Keine Betriebe gefunden.</div>';
+    html += `<div class="betrieb-list-empty">
+      <span class="material-symbols-rounded icon" aria-hidden="true">business</span>
+      Noch keine Betriebe. Lege unten einen an oder importiere Termine im Terminkalender.
+    </div>`;
   }
-  html += '</div>';
 
-  if (q) {
-    const termine = terminkalenderEvents.filter(e => `${e.kunde} ${e.auditart} ${tkFmtDate(e.date)}`.toLowerCase().includes(q))
-      .sort((a, b) => a.date - b.date)
-      .slice(0, 30);
-    html += '<div class="betrieb-list-group"><div class="betrieb-list-group-title">Termine</div>';
+  // Termine: ohne Suche die nächsten anstehenden, mit Suche alle Treffer.
+  // Termine (gebündelte Aufträge, siehe tkGroupEvents): ohne Suche die
+  // nächsten anstehenden, mit Suche alle Treffer.
+  const termine = q
+    ? tkGroupEvents(terminkalenderEvents.filter(e => `${e.kunde} ${tkAuftragText(e)} ${tkFmtDate(e.date)}`.toLowerCase().includes(q))).slice(0, 30)
+    : tkGroupEvents(terminkalenderEvents.filter(e => e.date >= startOfToday())).slice(0, 5);
+  if (termine.length || q) {
+    html += `<div class="betrieb-list-group"><div class="betrieb-list-group-title">${q ? 'Termine' : 'Anstehende Termine'}</div>`;
     if (termine.length) {
-      html += termine.map(e => `
-        <div class="betrieb-row" data-action="select-termin" data-id="${escapeHtml(e.id)}">
-          <span class="betrieb-row-main">${escapeHtml(e.kunde)}<span class="betrieb-row-sub"> · ${tkFmtDate(e.date)} · ${escapeHtml(e.auditart)}</span></span>
+      html += termine.map(g => {
+        const e = g.primary;
+        const active = g.members.some(m => m.id === activeTermin);
+        const month = g.date.toLocaleDateString('de-DE', { month: 'short' }).replace('.', '');
+        const art = g.members.length > 1 ? `${g.members.length} Aufträge` : e.auditart;
+        return `
+        <div class="betrieb-row${active ? ' active' : ''}">
+          <button type="button" class="betrieb-row-select" data-action="select-termin" data-id="${escapeHtml(e.id)}"${active ? ' aria-current="true"' : ''}>
+            <span class="betrieb-date-badge" aria-hidden="true"><b>${g.date.getDate()}</b>${escapeHtml(month)}</span>
+            <span class="betrieb-row-text">
+              <span class="betrieb-row-main">${escapeHtml(g.kunde)}</span>
+              <span class="betrieb-row-sub">${tkFmtDate(g.date)}${art ? ' · ' + escapeHtml(art) : ''}</span>
+            </span>
+            ${active ? check : ''}
+          </button>
           ${showAssign ? `<button type="button" class="betrieb-row-assign" data-action="assign-termin" data-id="${escapeHtml(e.id)}" title="Inhalte ohne Betrieb diesem Betrieb zuordnen">Zuordnen</button>` : ''}
-        </div>`).join('');
+        </div>`;
+      }).join('');
     } else {
-      html += '<div class="betrieb-list-empty">Keine Termine gefunden.</div>';
+      html += '<div class="betrieb-list-empty">Kein Termin gefunden.</div>';
     }
     html += '</div>';
   }
@@ -9833,15 +10549,15 @@ async function applyZuordnungSelection(z) {
     return;
   }
   betriebSwitchInProgress = true;
-  betriebSwitchStatus.textContent = `Wechsle zu „${newKey === NO_BETRIEB_KEY ? 'kein Betrieb' : newKey}" …`;
+  setBetriebStatus(`Wechsle zu „${newKey === NO_BETRIEB_KEY ? 'kein Betrieb' : newKey}" …`);
   try {
     await switchWorkspace(currentWorkspaceKey, newKey);
     currentWorkspaceKey = newKey;
     setActiveZuordnung(z);
-    betriebSwitchStatus.textContent = '';
+    setBetriebStatus('');
     closeBetriebModal();
   } catch (err) {
-    betriebSwitchStatus.textContent = 'Fehler: ' + (err.message || 'Betrieb-Wechsel fehlgeschlagen.');
+    setBetriebStatus('Fehler: ' + (err.message || 'Betrieb-Wechsel fehlgeschlagen.'), true);
   } finally {
     betriebSwitchInProgress = false;
   }
@@ -9851,13 +10567,13 @@ async function applyZuordnungSelection(z) {
 // siehe assignNoBetriebContentTo() weiter oben.
 async function applyAssignSelection(z) {
   betriebSwitchInProgress = true;
-  betriebSwitchStatus.textContent = `Ordne Inhalte „${z.betrieb}" zu …`;
+  setBetriebStatus(`Ordne Inhalte „${z.betrieb}" zu …`);
   try {
     await assignNoBetriebContentTo(z);
-    betriebSwitchStatus.textContent = '';
+    setBetriebStatus('');
     closeBetriebModal();
   } catch (err) {
-    betriebSwitchStatus.textContent = 'Fehler: ' + (err.message || 'Zuordnen fehlgeschlagen.');
+    setBetriebStatus('Fehler: ' + (err.message || 'Zuordnen fehlgeschlagen.'), true);
   } finally {
     betriebSwitchInProgress = false;
   }
@@ -9898,6 +10614,13 @@ betriebListEl.addEventListener('click', async (e) => {
 });
 
 betriebSearch.addEventListener('input', renderBetriebList);
+// Enter im Suchfeld wählt den ersten Treffer.
+betriebSearch.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  const first = betriebListEl.querySelector('.betrieb-row-select');
+  if (first) first.click();
+});
 
 document.getElementById('betrieb-manual-add').addEventListener('click', async () => {
   const name = betriebManualInput.value.trim();
@@ -9923,7 +10646,8 @@ document.getElementById('betrieb-btn-clear').addEventListener('click', () => {
 
 function openBetriebModal() {
   showBetriebError('');
-  betriebSwitchStatus.textContent = '';
+  document.querySelector('#betrieb-modal-overlay .betrieb-info').open = false;
+  setBetriebStatus('');
   betriebSearch.value = '';
   const loggedIn = isSupabaseConfigured && !!accountSession;
   betriebNotConfigured.hidden = loggedIn;
@@ -9934,11 +10658,15 @@ function openBetriebModal() {
     renderBetriebList();
   }
   betriebModal.hidden = false;
+  // Am Desktop gleich lostippen können; am Handy würde die Tastatur die
+  // Liste verdecken.
+  if (loggedIn && !MOBILE_LAYOUT_QUERY.matches) betriebSearch.focus();
 }
 function closeBetriebModal() { betriebModal.hidden = true; }
 
 btnBetrieb.addEventListener('click', openBetriebModal);
-['betrieb-modal-close-1', 'betrieb-modal-close-2'].forEach(id => {
+document.getElementById('betrieb-btn-login').addEventListener('click', () => { closeBetriebModal(); openAccountModal(); });
+['betrieb-modal-close-1', 'betrieb-modal-close-2', 'betrieb-modal-close-x'].forEach(id => {
   document.getElementById(id).addEventListener('click', closeBetriebModal);
 });
 betriebModal.addEventListener('click', (e) => { if (e.target === betriebModal) closeBetriebModal(); });
