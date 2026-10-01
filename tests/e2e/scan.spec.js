@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { gotoTab } from './helpers.js';
+import { gotoKontrolleKalender, openFirstTermin } from './helpers.js';
 
 // Der Dokumentenscanner lädt OpenCV.js (~9 MB WASM) erst beim ersten Öffnen
 // nach (siehe ensureScanLibs() in main.js) und braucht eine virtuelle Kamera
@@ -50,7 +50,7 @@ async function openScannerOnTermin(page) {
   await expect(page.locator('#scan-modal-overlay')).toBeVisible();
 }
 
-test.describe('Dokumentenscanner (Terminkalender)', () => {
+test.describe('Dokumentenscanner (Kontrolle)', () => {
   test.describe.configure({ mode: 'serial' });
   test.setTimeout(90000);
 
@@ -59,9 +59,9 @@ test.describe('Dokumentenscanner (Terminkalender)', () => {
     await page.addInitScript(() => { try { localStorage.setItem('feldfolio-scan-auto', 'false'); } catch {} });
     await page.goto('/');
     await page.evaluate(() => window.__ffTestTk.loginFake());
-    await gotoTab(page, 'Terminkalender');
+    await gotoKontrolleKalender(page);
     await page.evaluate(() => window.__ffTestTk.addEvent());
-    await page.locator('.tk-card').first().click();
+    await openFirstTermin(page, 'dokumente');
     await page.evaluate(() => {
       window.__ffTestUploadPhotoOverride = async (file) => {
         window.__lastScanUpload = { name: file.name, type: file.type, size: file.size };

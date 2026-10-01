@@ -40,10 +40,10 @@ test.describe('Sidebar-Layout', () => {
   });
 });
 
-test.describe('Terminkalender-Umschalter', () => {
+test.describe('Kontrolle-Umschalter', () => {
   test('ist ohne Anmeldung in der normalen Ansicht ausgeblendet', async ({ page }) => {
     await page.goto('/');
-    await expect(page.locator('#terminkalender-switcher')).toBeHidden();
+    await expect(page.locator('#kontrolle-switcher')).toBeHidden();
   });
 });
 
@@ -97,17 +97,24 @@ test.describe('Werkzeugleisten-Sichtbarkeit', () => {
 });
 
 test.describe('Kopfzeile', () => {
-  test('Cloud-Sync-Schalter erscheint nur mit Anmeldung', async ({ page }) => {
+  // Der Auto-Sync-Schalter steht seit dem Top-Bar-Umbau im Konto-Dialog,
+  // in der Kopfzeile nur noch der Speicherstatus.
+  test('Cloud-Sync-Schalter erscheint nur mit Anmeldung (im Konto-Dialog)', async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('#btn-account')).toBeVisible();
-    await expect(page.locator('#btn-sync')).toBeHidden();
+    await expect(page.locator('#tabbar #btn-sync')).toHaveCount(0);
+    await expect(page.locator('#account-logged-in #btn-sync')).toHaveCount(1);
+    await expect(page.locator('#btn-sync')).toHaveAttribute('hidden', '');
 
     await page.evaluate(() => window.__ffTestTk.loginFake());
+    await expect(page.locator('#btn-sync')).not.toHaveAttribute('hidden', '');
+    await page.locator('#btn-account').click();
     await expect(page.locator('#btn-sync')).toBeVisible();
+    await page.locator('#account-modal-close-3').click();
 
     // Abmelden (derselbe Weg wie der Abmelden-Button: Session weg + Kopfzeile neu).
     await page.evaluate(() => window.__ffTestTk.logoutFake());
-    await expect(page.locator('#btn-sync')).toBeHidden();
+    await expect(page.locator('#btn-sync')).toHaveAttribute('hidden', '');
   });
 });
 
@@ -161,19 +168,19 @@ test.describe('Seitenleiste: einheitliches Schema', () => {
 });
 
 // Einheitliche Umschalter (style.css "Funktionswahl" / "Einheitlicher
-// An/Aus-Schalter"): Funktionskacheln mit Symbol, Terminkalender als
+// An/Aus-Schalter"): Funktionskacheln mit Symbol, Kontrolle als
 // normale Kachel nur mit Konto, An/Aus überall als Schiebeschalter.
 test.describe('Seitenleiste: einheitliche Umschalter', () => {
-  test('Funktionswahl: jede Kachel mit Symbol, Terminkalender nur mit Anmeldung', async ({ page }) => {
+  test('Funktionswahl: jede Kachel mit Symbol, Kontrolle nur mit Anmeldung', async ({ page }) => {
     await page.goto('/');
     const tiles = page.locator('#view-switcher .segment-btn');
     await expect(tiles.filter({ visible: true })).toHaveCount(8);
     expect(await page.locator('#view-switcher .segment-btn:visible .icon').count()).toBe(8);
-    await expect(page.locator('#terminkalender-switcher')).toBeHidden();
+    await expect(page.locator('#kontrolle-switcher')).toBeHidden();
     await page.evaluate(() => window.__ffTestTk.loginFake());
     await expect(tiles.filter({ visible: true })).toHaveCount(9);
-    await page.locator('#terminkalender-switcher').click();
-    await expect(page.locator('#terminkalender-switcher')).toHaveClass(/active/);
+    await page.locator('#kontrolle-switcher').click();
+    await expect(page.locator('#kontrolle-switcher')).toHaveClass(/active/);
     await expect(page.locator('#terminkalender-btn-save')).toHaveClass(/tool-btn/);
   });
 
@@ -200,18 +207,18 @@ test.describe('Seitenleiste: einheitliche Umschalter', () => {
   });
 });
 
-// Umsetzung der Vereinheitlichungs-Vorschläge: Terminkalender gesondert,
+// Umsetzung der Vereinheitlichungs-Vorschläge: Kontrolle gesondert,
 // einklappbare Ebenen mit Symbol-Aktionen, Segment-Umschalter überall,
 // Kurzhinweis nur bis zur ersten Nutzung.
 test.describe('Seitenleiste: Vereinheitlichung', () => {
-  test('Terminkalender steht gesondert als breite Kachel über den Werkzeugen', async ({ page }) => {
+  test('Kontrolle steht gesondert als breite Kachel über den Werkzeugen', async ({ page }) => {
     await page.goto('/');
     await page.evaluate(() => window.__ffTestTk.loginFake());
-    const tk = page.locator('#terminkalender-switcher');
+    const tk = page.locator('#kontrolle-switcher');
     await expect(tk).toBeVisible();
     await expect(tk).toHaveClass(/segment-btn-wide/);
     const first = await page.locator('#view-switcher .segment-btn').first().getAttribute('data-view');
-    expect(first).toBe('terminkalender');
+    expect(first).toBe('kontrolle');
     const [tkBox, karteBox, gridBox] = await Promise.all([
       tk.boundingBox(),
       page.locator('.segment-btn[data-view="viewer"]').boundingBox(),

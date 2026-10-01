@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 
 // Handy-Layout der übrigen App (≤ 860 px, Touch): Kopfzeile, Zeichnen auf der
-// Karte mit Fertig/Letzter Punkt, Setz-Chip, Terminkalender als Tagesliste,
+// Karte mit Fertig/Letzter Punkt, Setz-Chip, Kontrolle (Kalender als Tagesliste),
 // Web-App installieren. Eigener Viewport wie stallplaner-vorort.spec.js.
 test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
 
@@ -18,7 +18,7 @@ test.describe('Handy-Ansicht', () => {
     const [scrollW, clientW] = await tabbar.evaluate(el => [el.scrollWidth, el.clientWidth]);
     expect(scrollW).toBeLessThanOrEqual(clientW);
     await expect(page.locator('#current-view-title')).toHaveText('Karte');
-    // Noch kein Betrieb gewählt: unter 400 px nur das Symbol (Name per title).
+    // Unter 600 px zeigt der Betriebs-Chip nur Avatar bzw. Symbol.
     await expect(page.locator('#btn-betrieb')).toBeVisible();
     await expect(page.locator('#btn-betrieb .btn-betrieb-name')).toBeHidden();
     // Die E-Mail steht nicht mehr sichtbar im Konto-Button, nur im Tooltip.
@@ -70,10 +70,11 @@ test.describe('Handy-Ansicht', () => {
     await expect(page.locator('.fruit-btn.active')).toHaveCount(0);
   });
 
-  test('Terminkalender: Tagesliste ohne seitliches Scrollen, Termin per Datumsfeld verschieben', async ({ page }) => {
+  test('Kontrolle/Kalender: Tagesliste ohne seitliches Scrollen, Termin per Datumsfeld verschieben', async ({ page }) => {
     await page.goto('/');
     await page.evaluate(() => window.__ffTestTk.loginFake());
-    await openFunction(page, 'terminkalender');
+    await openFunction(page, 'kontrolle');
+    await page.locator('#kontrolle-tabs [data-ko-tab="kalender"]').tap();
     const id = await page.evaluate(() => window.__ffTestTk.addEvent({ kunde: 'Hof Mobil' }));
 
     const [scrollW, clientW] = await page.locator('#terminkalender-main')
@@ -98,7 +99,9 @@ test.describe('Handy-Ansicht', () => {
       return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     }, id);
     expect(moved).toBe(target);
-    // Die Liste springt in die Woche des neuen Datums.
+    // Kontrollmappe schließen: die Liste ist in die Woche des neuen Datums gesprungen.
+    await page.locator('#kontrollmappe-close').tap();
+    await expect(page.locator('#kontrollmappe')).toBeHidden();
     await expect(page.locator('.tk-card', { hasText: 'Hof Mobil' })).toBeVisible();
   });
 
@@ -159,14 +162,16 @@ test.describe('Handy-Ansicht, schmales Gerät (360 px)', () => {
           const b = document.getElementById('btn-betrieb');
           b.classList.add('active');
           b.querySelector('.btn-betrieb-name').textContent = 'Obsthof Huber GbR';
+          b.querySelector('.betrieb-empty-icon').outerHTML = '<span class="betrieb-avatar">O</span>';
         });
       }
-      for (const view of ['obstbaum', 'terminkalender', 'compare', 'hofplan']) {
+      for (const view of ['obstbaum', 'kontrolle', 'compare', 'hofplan']) {
         await openFunction(page, view);
         expect(await titleFits(), `${view}, Betrieb: ${withBetrieb}`).toBe(true);
       }
     }
-    // Bei kurzem Funktionsnamen ist der Betriebsname zu sehen.
-    await expect(page.locator('#btn-betrieb .btn-betrieb-name')).toBeVisible();
+    // Unter 600 px zeigt der Betriebs-Chip nur den Avatar (Name per aria-label/title).
+    await expect(page.locator('#btn-betrieb .btn-betrieb-name')).toBeHidden();
+    await expect(page.locator('#btn-betrieb .betrieb-avatar')).toBeVisible();
   });
 });

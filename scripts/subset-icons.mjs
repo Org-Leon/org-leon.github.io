@@ -17,23 +17,26 @@ import subsetFont from 'subset-font';
 
 const ICON_NAMES = [
   'account_circle', 'add', 'add_box', 'arrow_back', 'arrow_downward',
-  'arrow_forward', 'arrow_upward', 'attach_file', 'backspace',
-  'barcode_scanner', 'business', 'calendar_month', 'cameraswitch',
-  'category', 'check', 'chevron_right', 'close', 'cloud_off', 'cloud_upload',
-  'compare', 'compare_arrows', 'content_cut', 'crop', 'crop_free',
-  'crop_square', 'dark_mode', 'delete', 'description', 'document_scanner',
-  'donut_large', 'donut_small', 'door_front', 'download', 'drag_handle',
-  'drag_indicator', 'draw', 'eco', 'edit', 'egg', 'expand_less',
-  'expand_more', 'fact_check', 'fit_screen', 'flashlight_on',
-  'format_color_fill', 'format_color_reset', 'grass', 'grid_on', 'handyman',
-  'hive', 'home_work', 'info', 'install_mobile', 'ios_share', 'layers',
-  'light_mode', 'location_on', 'map', 'menu', 'more_horiz', 'my_location',
-  'open_in_new', 'park', 'pets', 'photo_camera', 'photo_library',
-  'picture_as_pdf', 'polyline', 'radio_button_checked', 'rectangle', 'redo',
-  'refresh', 'restaurant', 'rotate_right', 'route', 'search',
-  'space_dashboard', 'sticky_note_2', 'straighten', 'table_view',
-  'touch_app', 'undo', 'unfold_more', 'upload_file', 'view_week', 'warning',
-  'water_drop', 'window', 'zoom_in'
+  'arrow_forward', 'arrow_upward', 'assignment', 'attach_file', 'backspace',
+  'barcode_scanner', 'business', 'calendar_month', 'calendar_view_week',
+  'call', 'cameraswitch', 'category', 'check', 'chevron_left',
+  'chevron_right', 'close', 'cloud_off', 'cloud_upload', 'compare',
+  'compare_arrows', 'content_cut', 'crop', 'crop_free', 'crop_square',
+  'dark_mode', 'dashboard', 'delete', 'description', 'directions',
+  'document_scanner', 'donut_large', 'donut_small', 'door_front', 'download',
+  'drag_handle', 'drag_indicator', 'draw', 'eco', 'edit', 'edit_note', 'egg',
+  'event_busy', 'event_upcoming', 'expand_less', 'expand_more', 'fact_check',
+  'fit_screen', 'flashlight_on', 'folder_open', 'format_color_fill',
+  'format_color_reset', 'grass', 'grid_on', 'handyman', 'hive', 'home_work',
+  'info', 'install_mobile', 'ios_share', 'layers', 'light_mode',
+  'location_on', 'mail', 'map', 'menu', 'more_horiz', 'my_location',
+  'open_in_new', 'park', 'pending_actions', 'pets', 'photo_camera',
+  'photo_library', 'picture_as_pdf', 'polyline', 'radio_button_checked',
+  'rectangle', 'redo', 'refresh', 'restaurant', 'rotate_right', 'route',
+  'schedule', 'science', 'search', 'space_dashboard', 'sticky_note_2', 'straighten',
+  'table_view', 'task_alt', 'today', 'touch_app', 'undo', 'unfold_more',
+  'upload_file', 'view_agenda', 'view_week', 'warning', 'water_drop',
+  'window', 'zoom_in'
 ];
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
