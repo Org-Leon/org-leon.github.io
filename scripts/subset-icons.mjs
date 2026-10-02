@@ -16,7 +16,7 @@ import path from 'node:path';
 import subsetFont from 'subset-font';
 
 const ICON_NAMES = [
-  'account_circle', 'add', 'add_box', 'admin_panel_settings', 'arrow_back',
+  'account_circle', 'account_tree', 'add', 'add_box', 'admin_panel_settings', 'arrow_back',
   'arrow_downward', 'arrow_forward', 'arrow_upward', 'assignment',
   'attach_file', 'backspace', 'balance', 'barcode_scanner', 'business',
   'calendar_month', 'calendar_view_week', 'call', 'cameraswitch', 'category',
@@ -31,11 +31,11 @@ const ICON_NAMES = [
   'grid_on', 'handyman', 'history', 'hive', 'home_work', 'info',
   'install_mobile', 'ios_share', 'key', 'layers', 'light_mode',
   'location_on', 'logout', 'mail', 'manage_accounts', 'map', 'menu',
-  'more_horiz', 'my_location', 'open_in_new', 'park', 'pending_actions',
+  'more_horiz', 'my_location', 'open_in_full', 'open_in_new', 'park', 'pending_actions',
   'person', 'pets', 'photo_camera', 'photo_library', 'picture_as_pdf',
   'polyline', 'radio_button_checked', 'rectangle', 'redo', 'refresh',
-  'restaurant', 'rotate_right', 'route', 'schedule', 'science', 'search',
-  'shield', 'space_dashboard', 'sticky_note_2', 'straighten', 'sync',
+  'restaurant', 'rotate_right', 'route', 'schedule', 'screen_rotation', 'science', 'search',
+  'shield', 'space_dashboard', 'sticky_note_2', 'storefront', 'straighten', 'swap_horiz', 'sync',
   'table_view', 'task_alt', 'today', 'touch_app', 'undo', 'unfold_more',
   'upload_file', 'view_agenda', 'view_week', 'visibility', 'visibility_off',
   'warning', 'water_drop', 'window', 'zoom_in', 'zoom_out'

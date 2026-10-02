@@ -10,12 +10,17 @@ async function openNew(page, modul) {
   await gotoKontrolleKalender(page);
   await openFirstTermin(page, 'protokolle');
   await page.locator('#tk-warenfluss-new').click();
-  await expect(page.locator('.wf-module-btn')).toHaveCount(5);
+  await expect(page.locator('.wf-module-btn')).toHaveCount(6);
   await page.locator(`[data-wf-new="${modul}"]`).click();
   await expect(page.locator('#warenfluss-overlay')).toBeVisible();
   return id;
 }
 const sec = (page, key) => page.locator(`.wf-section[data-table="${key}"]`);
+const stage = (page, n) => page.locator('.wf-stage').nth(n - 1);
+const sf = (page, n, key) => stage(page, n).locator(`.wf-sfield[data-sfield="${key}"]`);
+async function fillStage(page, n, values) {
+  for (const [k, v] of Object.entries(values)) await sf(page, n, k).locator('input').fill(v);
+}
 const stored = (page, id) => page.evaluate((evId) => structuredClone(window.__ffTestTk.getEvent(evId).warenfluss || []), id);
 
 test.describe('Warenflussprüfung', () => {
@@ -70,6 +75,7 @@ test.describe('Warenflussprüfung', () => {
 
   test('Mengenbilanz: Soll-Endbestand, Differenz und Bilanz-Toleranz', async ({ page }) => {
     await openNew(page, 'pflanzenbau');
+    await page.locator('[data-wf-bilanz="on"]').click();
     const b = sec(page, 'bilanz');
     await b.locator('[data-field="produkt"]').first().fill('Winterweizen');
     for (const [f, v] of [['anfang', '35'], ['zugang', '540'], ['verkauf', '480'], ['sonst', '30'], ['ende', '62']]) {
@@ -91,9 +97,9 @@ test.describe('Warenflussprüfung', () => {
     const ta = page.locator('#wf-text');
     await expect(ta).toBeVisible();
     await expect(ta).toHaveValue(/Warenflussprüfung Pflanzenbau — Biohof Sonnental/);
-    await expect(ta).toHaveValue(/Winterweizen: 10 ha, angegebene Ernte 420 dt = 42 dt\/ha\. Referenz 41,2 dt\/ha \(LfL Bayern 2026\)\. Ergebnis: plausibel/);
+    await expect(ta).toHaveValue(/Winterweizen: 10 ha, Ernte 420 dt = 42 dt\/ha; Referenz 41,2 dt\/ha \(LfL Bayern 2026\) → plausibel/);
     await expect(ta).toHaveValue(/Grundlagen der Prüfung: Flächennachweis/);
-    await expect(ta).toHaveValue(/Erläuterung der Abweichungen durch den Betrieb: \[ \]/);
+    await expect(ta).toHaveValue(/Erläuterung des Betriebs: \[ \]/);
     // bearbeiten bleibt erhalten
     await ta.fill('Eigener Text');
     await page.locator('#wf-mode [data-mode="tabelle"]').click();
@@ -152,6 +158,239 @@ test.describe('Warenflussprüfung', () => {
     await expect(page.locator('#tk-warenfluss-list .wf-list-row')).toHaveCount(4);
     await expect(page.locator('#kontrollmappe [data-km-tab="protokolle"] .km-tab-count')).toHaveText('4');
     await expect(page.locator('#tk-warenfluss-list')).toContainText('Imkerei');
+  });
+
+  test('Prüftext entsteht automatisch aus der Berechnung und folgt jeder Änderung', async ({ page }) => {
+    await openNew(page, 'pflanzenbau');
+    const auto = page.locator('#wf-auto-text');
+    await expect(page.locator('#wf-auto')).toBeVisible();
+    await expect(auto).toContainText('[nicht geprüft / keine Angaben]');
+
+    const e = sec(page, 'ertrag');
+    await e.locator('select[data-field="kultur"]').first().selectOption('ackerbohne');
+    await e.locator('[data-field="flaeche"]').first().fill('6');
+    await e.locator('[data-field="ernte"]').first().fill('210');
+    // Zusammenfassung, Befund mit Richtung und Ursachen, Klärungspunkt, Ergebnis
+    await expect(auto).toContainText('Geprüft wurden 1 Kultur auf zusammen 6 ha');
+    await expect(auto.locator('.wf-auto-befund')).toContainText('Ackerbohne: Der Ertrag von 35 dt/ha liegt 79 % über dem Referenzwert (19,6 dt/ha, LfL Bayern 2026) — auffällig. Mögliche Ursachen: nicht deklarierter Zukauf');
+    await expect(auto.locator('.wf-auto-klaerung')).toContainText('1. Ackerbohne: Erläuterung des hohen Ertrags (35 dt/ha)');
+    await expect(auto).toContainText('Der Warenfluss ist auf Grundlage der vorgelegten Unterlagen nicht plausibel');
+    await expect(auto).toContainText('LfL Bayern – Deckungsbeiträge');
+
+    // Bilanz mit Mehrmenge -> eigener Befund
+    await page.locator('[data-wf-bilanz="on"]').click();
+    const b = sec(page, 'bilanz');
+    await b.locator('[data-field="produkt"]').first().fill('Ackerbohne');
+    for (const [k, v] of [['anfang', '0'], ['zugang', '210'], ['verkauf', '150'], ['ende', '80']]) await b.locator(`[data-field="${k}"]`).first().fill(v);
+    await expect(auto).toContainText('Der Inventurbestand liegt um 20 dt');
+    await expect(auto).toContainText('Herkunft der Mehrmenge von 20 dt mit Belegen nachweisen');
+
+    // Werte korrigiert -> Text wird plausibel, ohne Befunde
+    await e.locator('[data-field="ernte"]').first().fill('120');
+    await b.locator('[data-field="ende"]').first().fill('60');
+    await b.locator('[data-field="zugang"]').first().fill('120');
+    await b.locator('[data-field="verkauf"]').first().fill('60');
+    await expect(auto).toContainText('Der Warenfluss ist plausibel. Alle 2 geprüften Werte liegen innerhalb der Toleranzen');
+    await expect(auto.locator('.wf-auto-befund')).toHaveCount(0);
+  });
+
+  test('Freitext folgt automatisch, bis er bearbeitet wird — danach Hinweis bei Tabellenänderungen', async ({ page }) => {
+    await openNew(page, 'pflanzenbau');
+    const e = sec(page, 'ertrag');
+    await e.locator('select[data-field="kultur"]').first().selectOption('winterweizen');
+    await e.locator('[data-field="flaeche"]').first().fill('10');
+    await e.locator('[data-field="ernte"]').first().fill('420');
+    await page.locator('#wf-auto-edit').click();
+    const ta = page.locator('#wf-text');
+    await expect(ta).toBeFocused();
+    await expect(ta).toHaveValue(/42 dt\/ha/);
+    // unbearbeitet: Tabellenänderung kommt automatisch an
+    await page.locator('#wf-mode [data-mode="tabelle"]').click();
+    await e.locator('[data-field="ernte"]').first().fill('450');
+    await page.locator('#wf-mode [data-mode="text"]').click();
+    await expect(ta).toHaveValue(/45 dt\/ha/);
+    await expect(page.locator('#wf-text-stale')).toBeHidden();
+    // bearbeitet: bleibt stehen, Hinweis erscheint nach Tabellenänderung
+    await ta.fill('Mein eigener Bericht');
+    await page.locator('#wf-mode [data-mode="tabelle"]').click();
+    await e.locator('[data-field="ernte"]').first().fill('400');
+    await page.locator('#wf-mode [data-mode="text"]').click();
+    await expect(ta).toHaveValue('Mein eigener Bericht');
+    await expect(page.locator('#wf-text-stale')).toBeVisible();
+    page.once('dialog', d => d.accept());
+    await page.locator('#wf-text-stale-update').click();
+    await expect(ta).toHaveValue(/40 dt\/ha/);
+    await expect(page.locator('#wf-text-stale')).toBeHidden();
+  });
+
+  test('Verarbeitung: Branchen (Bäckerei, Kaffeerösterei, Brauerei …), enge Toleranz', async ({ page }) => {
+    await openNew(page, 'verarbeitung');
+    await expect(page.locator('#wf-tol-ertrag')).toHaveValue('5');
+    const a = sec(page, 'ausbeute');
+    const groups = await a.locator('select[data-field="prozess"] optgroup').evaluateAll(gs => gs.map(g => g.label));
+    for (const g of ['Mühle / Schälmühle', 'Bäckerei', 'Mälzerei / Brauerei', 'Kaffeerösterei', 'Molkerei / Käserei', 'Obst / Wein', 'Soja / Tofu', 'Metzgerei']) expect(groups).toContain(g);
+
+    await a.locator('select[data-field="prozess"]').first().selectOption('kaffee');
+    await expect(a.locator('.wf-src').first()).toHaveText('KaffeeWiki');
+    await a.locator('[data-field="einsatz"]').first().fill('1200');
+    await a.locator('[data-field="erzeugt"]').first().fill('1000');
+    await expect(a.locator('.wf-status').first()).toHaveClass(/is-ok/); // 0,833
+    await a.locator('[data-field="erzeugt"]').first().fill('1150');
+    await expect(a.locator('.wf-status').first()).toHaveClass(/is-bad/); // 0,958 — kaum Röstverlust
+    await expect(page.locator('#wf-auto-text')).toContainText('Nicht belegter (ggf. nicht ökologischer) Rohwarenzukauf ist auszuschließen');
+
+    await a.locator('[data-add-row]').click();
+    await a.locator('select[data-field="prozess"]').nth(1).selectOption('kleingebaeck');
+    await a.locator('[data-field="einsatz"]').nth(1).fill('2000');
+    await expect(a.locator('[data-calc="erwartet"]').nth(1)).toContainText('2.520');
+    await a.locator('[data-add-row]').click();
+    await a.locator('select[data-field="prozess"]').nth(2).selectOption('bier');
+    await a.locator('[data-field="einsatz"]').nth(2).fill('170');
+    await expect(a.locator('[data-calc="erwartet"]').nth(2)).toContainText('999,6');
+  });
+
+  test('Mengenbilanz ist optional: standardmäßig aus, ein-/ausblendbar, Werte bleiben erhalten', async ({ page }) => {
+    const id = await openNew(page, 'pflanzenbau');
+    await expect(sec(page, 'ertrag')).toBeVisible();
+    await expect(sec(page, 'bilanz')).toHaveCount(0);
+    await expect(page.locator('#wf-tol-bilanz-wrap')).toBeHidden();
+    const auto = page.locator('#wf-auto-text');
+    await expect(auto).not.toContainText('Mengenbilanz');
+    // Mängel-/Nachweis-Zeilen gibt es im Prüftext nicht mehr
+    await expect(auto).not.toContainText('Festgestellte Mängel');
+    await expect(auto).not.toContainText('Nachweise nachzureichen');
+
+    await page.locator('[data-wf-bilanz="on"]').click();
+    await expect(page.locator('#wf-tol-bilanz-wrap')).toBeVisible();
+    const b = sec(page, 'bilanz');
+    await b.locator('[data-field="produkt"]').first().fill('Weizen');
+    await b.locator('[data-field="zugang"]').first().fill('100');
+    await b.locator('[data-field="ende"]').first().fill('100');
+    await expect(auto).toContainText('Mengenbilanz (Warenfluss)');
+    await b.locator('[data-wf-bilanz="off"]').click();
+    await expect(sec(page, 'bilanz')).toHaveCount(0);
+    await expect(auto).not.toContainText('Mengenbilanz');
+    const list = await stored(page, id);
+    expect(list[0].mitBilanz).toBe(false);
+    expect(list[0].tables.bilanz[0]).toMatchObject({ produkt: 'Weizen', zugang: 100 });
+    // Handel: Bilanz ist dort Pflicht und nicht ausblendbar
+    await page.locator('#wf-done').click();
+    await page.locator('#tk-warenfluss-new').click();
+    await page.locator('[data-wf-new="handel"]').click();
+    await expect(sec(page, 'bilanz')).toBeVisible();
+    await expect(page.locator('[data-wf-bilanz]')).toHaveCount(0);
+  });
+
+  test('Warenflusskette: Erzeuger und Molkerei (Milch → Käse, Verzweigung Butter), Verbleib je Stufe', async ({ page }) => {
+    const id = await openNew(page, 'kette');
+    await expect(page.locator('#wf-title')).toHaveText('Warenflussprüfung · Warenflusskette');
+    await expect(page.locator('#wf-tol-ausbeute-wrap')).toBeVisible();
+    await expect(page.locator('#wf-tol-ausbeute')).toHaveValue('5');
+    await expect(page.locator('.wf-stage')).toHaveCount(2);
+
+    // Stufe 1: Milchkühe -> Milch
+    await stage(page, 1).locator('[data-field="refKey"]').selectOption('milchkuh');
+    await expect(stage(page, 1).locator('[data-sf="produkt"]')).toHaveValue('Milch');
+    await expect(sf(page, 1, 'refTyp').locator('input')).toHaveValue('7049');
+    await fillStage(page, 1, { basis: '50', erzeugt: '350000' });
+    await expect(sf(page, 1, 'status').locator('.wf-status')).toHaveClass(/is-ok/);
+
+    // Stufe 2: Milch -> Schnittkäse, Rohware aus Stufe 1
+    await expect(stage(page, 2).locator('[data-sf="quelleId"]')).toHaveValue(await stage(page, 1).getAttribute('data-stufe'));
+    await stage(page, 2).locator('[data-field="refKey"]').selectOption('schnittkaese');
+    await expect(stage(page, 2).locator('[data-sf="produkt"]')).toHaveValue('Schnittkäse');
+    await expect(stage(page, 2).locator('.wf-stage-warn')).toContainText('1 l Milch ≈ 1,03 kg');
+    await fillStage(page, 2, { basis: '340000', erzeugt: '34000', verkauf: '33000', ende: '1000' });
+    await expect(sf(page, 2, 'status').locator('.wf-status')).toHaveClass(/is-ok/);
+    await expect(sf(page, 2, 'bilanz').locator('.wf-status')).toHaveClass(/is-ok/);
+
+    // Verbleib Stufe 1: Einsatz der Molkerei zählt als Abgang "an Folgestufe(n)"
+    await expect(sf(page, 1, 'weiter')).toContainText('340.000');
+    await fillStage(page, 1, { verkauf: '8000', ende: '2000' });
+    await expect(sf(page, 1, 'diff')).toContainText('0');
+    await expect(sf(page, 1, 'bilanz').locator('.wf-status')).toHaveClass(/is-ok/);
+
+    // Flussbild
+    const flow = page.locator('#wf-flow');
+    await expect(flow.locator('.wf-flow-node')).toHaveCount(3);
+    await expect(flow).toContainText('Milch');
+    await expect(flow).toContainText('Schnittkäse');
+    await expect(flow).toContainText('Verkauf');
+
+    // Verzweigung: Stufe 3 Butter ebenfalls aus der Milch
+    await page.locator('[data-stufe-add]').click();
+    await expect(page.locator('.wf-stage')).toHaveCount(3);
+    await stage(page, 3).locator('[data-field="refKey"]').selectOption('butter');
+    await stage(page, 3).locator('[data-sf="quelleId"]').selectOption({ label: 'Stufe 1 (Milch)' });
+    await fillStage(page, 3, { basis: '20000' });
+    await expect(sf(page, 1, 'weiter')).toContainText('360.000');
+    await expect(sf(page, 1, 'bilanz').locator('.wf-status')).toHaveClass(/is-bad/); // Molkerei setzt 20.000 kg mehr ein als verfügbar (5,7 %)
+    await expect(flow).toContainText('aus Stufe 1');
+
+    const auto = page.locator('#wf-auto-text');
+    await expect(auto).toContainText('Warenfluss: Milch → Schnittkäse → Butter (aus Stufe 1) → Verkauf');
+    await expect(auto).toContainText('an Stufe 2 (Schnittkäse) und Stufe 3 (Butter) 360.000 kg');
+    await expect(auto.locator('.wf-auto-befund')).toContainText('Stufe 1 (Milch): Der Inventurbestand liegt um 20.000 kg (5,7 %) über dem rechnerischen Bestand');
+
+    const list = await stored(page, id);
+    expect(list[0].modul).toBe('kette');
+    expect(list[0].stufen.map(x => x.produkt)).toEqual(['Milch', 'Schnittkäse', 'Butter']);
+  });
+
+  test('Warenflusskette in einem Bereich: Karkassen (Zukauf) → Hühnerbrühe → Verkauf', async ({ page }) => {
+    await openNew(page, 'kette');
+    await stage(page, 1).locator('[data-sf="art"]').selectOption('ware');
+    await stage(page, 1).locator('[data-sf="produkt"]').fill('Karkassen');
+    await expect(stage(page, 1).locator('.wf-sfield[data-sfield="erzeugt"]')).toHaveCount(0);
+    await fillStage(page, 1, { zukauf: '1000', ende: '50' });
+
+    await stage(page, 2).locator('[data-field="refKey"]').selectOption('sonstige');
+    await stage(page, 2).locator('[data-sf="produkt"]').fill('Hühnerbrühe');
+    await stage(page, 2).locator('[data-sf="einheit"]').selectOption('l');
+    await expect(stage(page, 2).locator('[data-sf="quelleId"] option:checked')).toHaveText('Stufe 1 (Karkassen)');
+    await expect(stage(page, 2).locator('.wf-stage-warn')).toHaveCount(0);
+    // eigene Ausbeute (Rezeptur) als Referenz
+    await fillStage(page, 2, { basis: '950', refTyp: '2,5', erzeugt: '2300', verkauf: '2200', ende: '100' });
+    await expect(sf(page, 2, 'erwartet')).toContainText('2.375');
+    await expect(sf(page, 2, 'status').locator('.wf-status')).toHaveClass(/is-ok/); // 2,42 vs 2,5 = −3 %
+    await expect(sf(page, 1, 'bilanz').locator('.wf-status')).toHaveClass(/is-ok/);
+    await expect(sf(page, 2, 'bilanz').locator('.wf-status')).toHaveClass(/is-ok/);
+    await expect(page.locator('#wf-flow')).toContainText('Hühnerbrühe');
+    await expect(page.locator('#wf-flow .is-end')).toContainText('Hühnerbrühe 2.200 l');
+    const auto = page.locator('#wf-auto-text');
+    await expect(auto).toContainText('Warenfluss: Karkassen → Hühnerbrühe → Verkauf');
+    await expect(auto).toContainText('Der Warenfluss ist plausibel');
+
+    // weniger Einsatz in der Brühe -> bei den Karkassen bleibt ein Rest, der nicht in der Inventur steht
+    await fillStage(page, 2, { basis: '900' });
+    await expect(sf(page, 1, 'bilanz').locator('.wf-status')).toHaveClass(/is-bad/);
+    await expect(auto.locator('.wf-auto-befund')).toContainText('Stufe 1 (Karkassen): Gegenüber dem rechnerischen Bestand fehlen 50 kg');
+
+    // Mengenbilanz ausblenden: Zukauf-Stufe behält ihren Verbleib, Verarbeitung nicht
+    await page.locator('[data-wf-bilanz="off"]').click();
+    await expect(sf(page, 1, 'bilanz')).toHaveCount(1);
+    await expect(sf(page, 2, 'bilanz')).toHaveCount(0);
+    await expect(page.locator('[data-wf-bilanz="on"]')).toBeVisible();
+
+    // Stufe entfernen (mit Rückfrage)
+    page.once('dialog', d => d.accept());
+    await stage(page, 2).locator('[data-stufe-del]').click();
+    await expect(page.locator('.wf-stage')).toHaveCount(1);
+  });
+
+  test('Warenflussprüfung in der Liste löschen — nur nach Bestätigung', async ({ page }) => {
+    const id = await openNew(page, 'imkerei');
+    await page.locator('#wf-done').click();
+    const rows = page.locator('#tk-warenfluss-list .wf-list-row');
+    await expect(rows).toHaveCount(1);
+    page.once('dialog', d => { expect(d.message()).toContain('Imkerei'); d.dismiss(); });
+    await rows.first().locator('[data-wf-del]').click();
+    await expect(rows).toHaveCount(1);
+    page.once('dialog', d => d.accept());
+    await rows.first().locator('[data-wf-del]').click();
+    await expect(rows).toHaveCount(0);
+    await expect(page.locator('#tk-warenfluss-list')).toContainText('Noch keine Warenflussprüfung');
+    expect(await stored(page, id)).toHaveLength(0);
   });
 
   test('Prüfung wieder öffnen und löschen', async ({ page }) => {

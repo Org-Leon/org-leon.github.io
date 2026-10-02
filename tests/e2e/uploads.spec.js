@@ -68,6 +68,8 @@ test.describe('Upload-Warteschlange', () => {
     const id = await setup(page);
     await holdUploads(page, { failFirst: true });
     await page.setInputFiles('#tk-photo-capture-input', photo('wackelig.png'));
+    // Benennen-Dialog nach dem Foto: ohne Namen weiter
+    await page.locator('#docname-skip').click();
     const tile = page.locator('#tk-upload-queue .tk-upload');
     await expect(tile).toHaveClass(/is-error/);
     await expect(tile).toContainText('Fehler');

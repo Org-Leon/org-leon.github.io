@@ -210,6 +210,26 @@ const map = L.map('map', { zoomControl: true, attributionControl: true }).setVie
 // verarbeitet.
 if (import.meta.env.DEV) window.__ffTestMap = map;
 
+// Flächennamen erst ab dieser Zoomstufe — weiter herausgezoomt würden sie
+// sich überlagern; dann ist nur der Betriebspin zu sehen. Gesteuert über
+// eine Klasse am Kartencontainer (style.css .feature-label), Karten-Exporte
+// blenden die Namen per .ff-capture immer ein (captureMapElement).
+const FEATURE_LABEL_MIN_ZOOM = 15;
+function updateFeatureLabelVisibility() {
+  map.getContainer().classList.toggle('ff-labels-far', map.getZoom() < FEATURE_LABEL_MIN_ZOOM);
+}
+map.on('zoomend', updateFeatureLabelVisibility);
+updateFeatureLabelVisibility();
+async function captureMapElement(el, opts) {
+  el.classList.add('ff-capture');
+  try { return await html2canvas(el, opts); } finally { el.classList.remove('ff-capture'); }
+}
+// Beschriftung einer Fläche: Nummer (bzw. Kategorie) hervorgehoben, darunter der Name.
+function featureLabelHtml(top, name) {
+  const t = String(top ?? '').trim(), n = String(name ?? '').trim();
+  return (t ? `<b>${escapeHtml(t)}</b>` : '') + (n ? `<span>${escapeHtml(n)}</span>` : '');
+}
+
 // Alle Werkzeuge (Zeichnen, Baum setzen, Bienenstock setzen) teilen sich jetzt
 // denselben Karten-Klick-Event — armedTool sorgt dafür, dass immer nur genau
 // ein Werkzeug auf einen Kartenklick reagiert, statt dass sich mehrere
@@ -2019,8 +2039,8 @@ function buildFeatureEntry(feature, lyr, layerId, layerName, isTeilflaechen, col
     highlightFeature(entry);
     selectFeatureInTable(entry);
   });
-  const labelText = escapeHtml(entry.nummer) + (entry.featName ? '<br>' + escapeHtml(entry.featName) : '');
-  if (labelText.trim()) entry.labelAnchor = createLabelAnchorAt(center, labelText);
+  const labelText = featureLabelHtml(entry.nummer, entry.featName);
+  if (labelText) entry.labelAnchor = createLabelAnchorAt(center, labelText);
   // Leaflet.draw stattet jedes Polygon automatisch mit einer .editing-Instanz
   // aus (L.Edit.Poly), unabhängig davon, ob es gezeichnet, hochgeladen oder
   // aus der Cloud wiederhergestellt wurde — universell hier verdrahtet, damit
@@ -2148,8 +2168,7 @@ function updateDrawnParcelEntry(entry, { name, kultur }) {
   if (kultur !== undefined) { entry.kultur = kultur; entry.props.KULTURART = kultur; }
   if (entry.leafletLayer.feature) entry.leafletLayer.feature.properties = entry.props;
   if (entry.labelAnchor && entry.labelAnchor.setTooltipContent) {
-    const labelText = escapeHtml(entry.nummer) + (entry.featName ? '<br>' + escapeHtml(entry.featName) : '');
-    entry.labelAnchor.setTooltipContent(labelText);
+    entry.labelAnchor.setTooltipContent(featureLabelHtml(entry.nummer, entry.featName));
   }
   renderFeatureTable();
 }
@@ -3092,7 +3111,7 @@ function renderCompareMapLayers(records, fitView) {
   records.forEach(r => {
     const color = STATUS_COLORS[r.status];
     let mapLayer = null;
-    const labelText = escapeHtml(r.nummer) + (r.name ? '<br>' + escapeHtml(r.name) : '');
+    const labelText = featureLabelHtml(r.nummer, r.name);
 
     if (r.status === 'zugang' && r.featureB) {
       mapLayer = L.geoJSON(r.featureB, { style: { color, weight: 1.8, fillColor: color, fillOpacity: 0.35 } });
@@ -3158,7 +3177,7 @@ function renderSingleYearLayers(records, which, fitView) {
     const feat = r[featKey];
     if (!feat) return; // existiert in diesem Jahr nicht
     const color = STATUS_COLORS[r.status];
-    const labelText = escapeHtml(r.nummer) + (r.name ? '<br>' + escapeHtml(r.name) : '');
+    const labelText = featureLabelHtml(r.nummer, r.name);
     const mapLayer = L.geoJSON(feat, { style: { color, weight: 1.6, fillColor: color, fillOpacity: 0.3 } });
     mapLayer.bindPopup(compareRecordPopupHtml(r));
     mapLayer.addTo(compareGeoLayer);
@@ -3396,7 +3415,7 @@ async function captureParcelScreenshot(targetMap, satelliteLayer, mapElId, featu
       targetMap.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
     }
     await waitForTilesFullyLoaded(satelliteLayer, mapElId, 6000);
-    return await html2canvas(document.getElementById(mapElId), { useCORS: true, logging: false });
+    return await captureMapElement(document.getElementById(mapElId), { useCORS: true, logging: false });
   } finally {
     targetMap.removeLayer(highlightLayer);
   }
@@ -5105,7 +5124,7 @@ async function captureTreeClusterScreenshot(targetMap, satelliteLayer, mapElId, 
       targetMap.fitBounds(L.latLngBounds(treeLatLngs), { padding: [70, 70], maxZoom: 20 });
     }
     await waitForTilesFullyLoaded(satelliteLayer, mapElId, 6000);
-    return await html2canvas(document.getElementById(mapElId), { useCORS: true, logging: false });
+    return await captureMapElement(document.getElementById(mapElId), { useCORS: true, logging: false });
   } finally {
     if (highlightLayer) targetMap.removeLayer(highlightLayer);
   }
@@ -5195,7 +5214,7 @@ async function addObstbaumClusterPages(doc, clusters, pageW, pageH, margin, page
 
     let canvas;
     try {
-      canvas = await html2canvas(document.getElementById('map'), { useCORS: true, logging: false });
+      canvas = await captureMapElement(document.getElementById('map'), { useCORS: true, logging: false });
     } catch (err) {
       console.error('Kartenbild-Erfassung fehlgeschlagen für Gruppe', i + 1, err);
       showObstbaumError('Kartenbild konnte nicht erfasst werden (evtl. CORS-Einschränkung der Kachel-Quelle).');
@@ -5473,7 +5492,7 @@ function initBienenflugMap() {
 async function captureBeehiveScreenshot(entry) {
   map.fitBounds(entry.circle.getBounds(), { padding: [40, 40], maxZoom: 16 });
   await waitForTilesFullyLoaded(basemaps.satellite, 'map', 6000);
-  return await html2canvas(document.getElementById('map'), { useCORS: true, logging: false });
+  return await captureMapElement(document.getElementById('map'), { useCORS: true, logging: false });
 }
 
 function addBienenflugPage(doc, pageW, pageH, margin, canvas, entry) {
@@ -5608,7 +5627,7 @@ function showHofplanError(msg) {
 
 function hofplanLabelText(shape) {
   const typ = shape.kategorie || 'Gebäude';
-  return shape.name ? `${escapeHtml(typ)}<br>${escapeHtml(shape.name)}` : escapeHtml(typ);
+  return featureLabelHtml(typ, shape.name);
 }
 
 function updateHofplanShapeStyle(shape) {
@@ -6091,7 +6110,7 @@ async function captureHofplanScreenshot(targetMap, satelliteLayer, mapElId, feat
     const bounds = highlightLayer.getBounds();
     if (bounds.isValid()) targetMap.fitBounds(bounds, { padding: [60, 60], maxZoom: 20 });
     await waitForTilesFullyLoaded(satelliteLayer, mapElId, 6000);
-    return await html2canvas(document.getElementById(mapElId), { useCORS: true, logging: false });
+    return await captureMapElement(document.getElementById(mapElId), { useCORS: true, logging: false });
   } finally {
     targetMap.removeLayer(highlightLayer);
     labelLayers.forEach(l => targetMap.removeLayer(l));
@@ -6322,6 +6341,7 @@ function openFlaechenuebersicht({ animate = false } = {}) {
 // die Einblend-Animationen zu wiederholen.
 let flaechenuebersichtRefreshTimer = null;
 function refreshFlaechenuebersichtIfOpen() {
+  if (document.body.dataset.view === 'kontrolle') { clearTimeout(flaechenuebersichtRefreshTimer); flaechenuebersichtRefreshTimer = setTimeout(refreshKontrolleBetrieb, 50); return; }
   if (document.body.dataset.view !== 'uebersicht') return;
   clearTimeout(flaechenuebersichtRefreshTimer);
   flaechenuebersichtRefreshTimer = setTimeout(() => openFlaechenuebersicht({ animate: false }), 50);
@@ -7127,7 +7147,7 @@ updateInstallButton();
 // auf Zustand zu, der weiter unten in dieser Datei erst angelegt wird.
 setTimeout(() => {
   let startView = new URLSearchParams(location.search).get('view');
-  if (startView === 'terminkalender') { kontrolleTab = 'kalender'; startView = 'kontrolle'; }
+  if (startView === 'terminkalender') { kontrolleTab = 'kalender'; kontrolleTabChosen = true; startView = 'kontrolle'; }
   if (startView && SEGMENT_TITLES[startView] && startView !== 'viewer') setActiveSegment(startView);
 }, 0);
 
@@ -9317,8 +9337,11 @@ function renderTerminkalenderSummary() {
 // Termin-Daten heißen intern weiter terminkalenderEvents (Cloud-Format
 // unverändert). Ein Termin öffnet die Kontrollmappe (siehe
 // renderTerminkalenderDetail).
-const KONTROLLE_TABS = { uebersicht: 'kontrolle-uebersicht', kalender: 'terminkalender-main' };
+const KONTROLLE_TABS = { betrieb: 'kontrolle-betrieb', uebersicht: 'kontrolle-uebersicht', kalender: 'terminkalender-main' };
 let kontrolleTab = 'uebersicht';
+// Solange der Reiter nicht von Hand gewählt wurde: mit zugeordnetem Betrieb
+// startet die Kontrolle auf der Betriebsseite, sonst in der Übersicht.
+let kontrolleTabChosen = false;
 const TK_MODE_KEY = 'feldfolio-tk-mode';
 const TK_MAP_KEY = 'feldfolio-tk-map';
 let tkMode = 'woche';
@@ -9339,6 +9362,7 @@ function openKontrolle() {
   document.getElementById('ko-header-date').textContent =
     new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
   renderTerminkalenderSummary();
+  if (!kontrolleTabChosen) kontrolleTab = activeZuordnung ? 'betrieb' : 'uebersicht';
   setKontrolleTab(kontrolleTab);
 }
 
@@ -9356,12 +9380,16 @@ function setKontrolleTab(tab) {
   if (tab === 'kalender') {
     applyTkMapVisibility();
     renderTerminkalenderGrid();
+  } else if (tab === 'betrieb') {
+    updateKontrolleCounts();
+    renderKontrolleBetrieb();
   } else {
     renderKontrolleUebersicht();
   }
 }
 document.querySelectorAll('#kontrolle-tabs [data-ko-tab], #kontrolle-subnav [data-ko-tab], #kontrolle-uebersicht [data-ko-tab]').forEach(btn => {
   btn.addEventListener('click', () => {
+    kontrolleTabChosen = true;
     setKontrolleTab(btn.dataset.koTab);
     closeMobileSidebar();
   });
@@ -9586,6 +9614,7 @@ function tkEventActionsHtml(ev) {
 
 function renderKontrolleUebersicht() {
   updateKontrolleCounts();
+  refreshKontrolleBetrieb();
   if (document.getElementById('kontrolle-uebersicht').hidden) return;
   const today = tkDayStart(new Date());
   const tomorrow = tkAddDays(today, 1);
@@ -9644,6 +9673,330 @@ function renderKontrolleUebersicht() {
 document.getElementById('kontrolle-uebersicht').addEventListener('click', (e) => {
   const btn = e.target.closest('[data-open-termin]');
   if (btn) openKontrollmappe(btn.dataset.openTermin, btn.dataset.openTab || 'ueberblick');
+});
+
+// ---- Betrieb (Unterfunktion der Kontrolle) ----
+// Zentrale Seite für den zugeordneten Betrieb (Kopfzeilen-Chip bzw. „Als
+// Betrieb zuordnen" in der Kontrollmappe): Stammdaten/Kontakt, der aktuelle
+// Termin mit seinen Aufträgen, je Unterfunktion eine Kachel (Probenahme,
+// Cross Check, Warenfluss, Dokumente, Notizen) über ALLE Termine des
+// Betriebs, dazu Terminverlauf und Sprung in die Flächen-Werkzeuge. Neue
+// Protokolle entstehen am aktuellen Termin (dort liegen sie wie bisher).
+const kbKey = (s) => String(s || '').trim().toLocaleLowerCase('de-DE');
+function kbEvents(name) { return terminkalenderEvents.filter(e => kbKey(e.kunde) === kbKey(name)); }
+// Aktueller Termin: der zugeordnete, sonst der nächste ab heute, sonst der letzte.
+function kbCurrentGroup(groups) {
+  if (activeZuordnung && activeZuordnung.terminId) {
+    const g = groups.find(x => x.members.some(m => m.id === activeZuordnung.terminId));
+    if (g) return g;
+  }
+  const today = tkDayStart(new Date());
+  return groups.find(g => g.date >= today) || groups[groups.length - 1] || null;
+}
+function kbDate(iso) {
+  const d = iso ? new Date(iso) : null;
+  return d && !isNaN(d) ? tkFmtDate(d) : '';
+}
+function refreshKontrolleBetrieb() {
+  const panel = document.getElementById('kontrolle-betrieb');
+  if (panel && !panel.hidden && !document.getElementById('kontrolle-view').hidden) renderKontrolleBetrieb();
+}
+
+function renderKontrolleBetrieb() {
+  const root = document.getElementById('ko-betrieb');
+  if (!activeZuordnung) {
+    const today = tkDayStart(new Date());
+    const next = tkGroupEvents(terminkalenderEvents.filter(e => e.date >= today)).slice(0, 6);
+    root.innerHTML = `<div class="kb-empty">
+      <span class="kb-empty-icon material-symbols-rounded icon" aria-hidden="true">business</span>
+      <h3>Kein Betrieb zugeordnet</h3>
+      <p>Wähle den Betrieb, den du kontrollierst — hier siehst du dann Termin, Aufträge, Protokolle, Warenfluss und Dokumente auf einen Blick.</p>
+      <button type="button" class="betrieb-btn primary" data-kb-action="choose"><span class="material-symbols-rounded icon" aria-hidden="true">business</span>Betrieb wählen</button>
+      ${next.length ? `<div class="kb-picks"><div class="ko-day-label">Nächste Termine</div>${next.map(g => `<button type="button" class="kb-pick" data-kb-pick="${escapeHtml(g.id)}">
+          <span class="kb-pick-date">${escapeHtml(tkFmtDate(g.date))}</span>
+          <span class="kb-pick-name">${escapeHtml(g.kunde)}</span>
+          ${tkGroupChipsHtml(g, 3)}
+        </button>`).join('')}</div>` : ''}
+    </div>`;
+    return;
+  }
+
+  const name = activeZuordnung.betrieb;
+  const events = kbEvents(name);
+  const groups = tkGroupEvents(events);
+  const current = kbCurrentGroup(groups);
+  if (current) tkAbsorbGroupData(current);
+  const ev = current ? current.primary : null;
+  const kontakt = ev && (ev.address || ev.telefon || ev.mobil || ev.email) ? ev
+    : events.find(e => e.address || e.telefon || e.mobil || e.email) || ev;
+  const tel = kontakt && (kontakt.mobil || kontakt.telefon);
+  const allChips = (() => {
+    const seen = new Set(), items = [];
+    groups.forEach(g => tkGroupChipItems(g).forEach(it => { if (!seen.has(it.key)) { seen.add(it.key); items.push(it); } }));
+    return items.filter(it => it.bg);
+  })();
+  const kundennr = (events.find(e => e.kundennummer) || {}).kundennummer;
+  const ort = kontakt ? [kontakt.plz, kontakt.ort].filter(Boolean).join(' ') : '';
+
+  // Sammlungen über alle Termine des Betriebs (je Eintrag mit seinem Termin).
+  const collect = (key) => events.flatMap(e => (e[key] || []).map(item => ({ item, ev: e })))
+    .sort((a, b) => String(b.item.updatedAt || b.item.createdAt || '').localeCompare(String(a.item.updatedAt || a.item.createdAt || '')));
+  const formulare = Object.fromEntries(Object.keys(TK_FORMULARE).map(k => [k, collect(tkFormularDef(k).listKey)]));
+  const warenfluss = collect('warenfluss');
+  const dokumente = events.flatMap(e => (e.attachments || []).map(a => ({ a, ev: e })));
+  const pending = current ? uploadsForGroup(current.id).length : 0;
+
+  // Beauftragt laut Termin (Schilder der Aufträge) -> Kachel hervorheben.
+  const arten = new Set(current ? current.members.flatMap(m => tkClassifyAuftrag(m).arten.map(a => a.key)) : []);
+  const tileState = (beauftragt, count) => beauftragt ? (count ? { cls: 'is-done', text: 'beauftragt · erledigt' } : { cls: 'is-open', text: 'beauftragt · offen' }) : null;
+
+  const noTermin = !current;
+  const newBtn = (attrs, label) => noTermin ? '' : `<button type="button" class="kb-tile-new" ${attrs}><span class="material-symbols-rounded icon" aria-hidden="true">add</span>${label}</button>`;
+  const more = (n, tab) => n > 3 ? `<button type="button" class="ko-link-btn" data-kb-mappe="${tab}">Alle ${n} anzeigen</button>` : '';
+
+  const formularTile = (kind, icon, artKey) => {
+    const def = tkFormularDef(kind);
+    const list = formulare[kind];
+    const st = tileState(arten.has(artKey), list.filter(x => current && current.members.some(m => m.id === x.ev.id)).length);
+    const rows = list.slice(0, 3).map(({ item, ev: e }) => {
+      const complete = probenprotokollMissing(item, kind).length === 0;
+      return `<button type="button" class="kb-item" data-kb-formular="${kind}" data-ev="${escapeHtml(e.id)}" data-id="${escapeHtml(item.id)}">
+        <span class="kb-item-title">${escapeHtml(def.rowTitle(item))}</span>
+        <span class="kb-item-sub">${escapeHtml(def.rowDate(item) || tkFmtDate(e.date))} · <span class="${complete ? 'kb-ok' : 'kb-warn'}">${complete ? 'vollständig' : 'unvollständig'}</span></span>
+      </button>`;
+    }).join('');
+    return kbTileHtml({ key: kind, icon, title: def.listTitle, count: list.length, state: st,
+      body: rows || `<p class="kb-tile-empty">${escapeHtml(def.emptyText)}</p>`,
+      foot: newBtn(`data-kb-new="${kind}"`, def.newLabel) + more(list.length, 'protokolle') });
+  };
+
+  const wfRows = warenfluss.slice(0, 3).map(({ item, ev: e }) => {
+    const info = warenflussRowInfo(item);
+    const s = info.summary;
+    const badge = s.bad ? `<span class="kb-warn">${s.bad} auffällig</span>` : s.warn ? `<span class="kb-warn">${s.warn} prüfen</span>` : s.ok ? '<span class="kb-ok">plausibel</span>' : 'noch leer';
+    return `<button type="button" class="kb-item" data-kb-wf="${escapeHtml(item.id)}" data-ev="${escapeHtml(e.id)}">
+      <span class="kb-item-title"><span class="material-symbols-rounded icon" aria-hidden="true">${info.icon}</span>${escapeHtml(info.titel)}</span>
+      <span class="kb-item-sub">${escapeHtml(info.pfad ? info.pfad + ' · ' : '')}Zeitraum ${escapeHtml(info.zeitraum || '–')} · ${badge}</span>
+    </button>`;
+  }).join('');
+  const wfPicker = noTermin ? '' : `<div class="wf-module-picker kb-wf-picker" id="kb-wf-picker" hidden>
+      ${Object.entries(WF_MODULE).map(([key, mod]) => `<button type="button" class="wf-module-btn" data-kb-wf-new="${key}">
+        <span class="material-symbols-rounded icon" aria-hidden="true">${mod.icon}</span>
+        <span><strong>${escapeHtml(mod.label)}</strong><small>${escapeHtml(mod.sub)}</small></span>
+      </button>`).join('')}
+    </div>`;
+
+  const dokRows = dokumente.slice(-3).reverse().map(({ a, ev: e }) => {
+    const icon = (a.type || '').startsWith('image/') ? 'photo_camera' : /pdf$/i.test(a.type || a.name || '') ? 'picture_as_pdf' : 'description';
+    return `<button type="button" class="kb-item" data-kb-mappe="dokumente" data-ev="${escapeHtml(e.id)}">
+      <span class="kb-item-title" title="${escapeHtml(a.name || '')}"><span class="material-symbols-rounded icon" aria-hidden="true">${icon}</span><span class="kb-item-text">${escapeHtml(a.name || 'Datei')}</span></span>
+      <span class="kb-item-sub">Termin ${escapeHtml(tkFmtDate(e.date))}</span>
+    </button>`;
+  }).join('');
+
+  const notiz = ev && (ev.notiz || '').trim();
+  const tiles = [
+    formularTile('probenprotokoll', 'science', 'probe'),
+    formularTile('crosscheck', 'compare_arrows', 'cc'),
+    kbTileHtml({ key: 'warenfluss', icon: 'balance', title: 'Warenflussprüfungen', count: warenfluss.length,
+      body: (wfRows || '<p class="kb-tile-empty">Noch keine Warenflussprüfung.</p>') + wfPicker,
+      foot: newBtn('data-kb-action="wf-new" aria-expanded="false"', 'Neue Prüfung') + more(warenfluss.length, 'protokolle') }),
+    kbTileHtml({ key: 'dokumente', icon: 'folder_open', title: 'Fotos & Dokumente', count: dokumente.length,
+      state: pending ? { cls: 'is-open', text: `${pending} Upload${pending === 1 ? '' : 's'} läuft` } : null,
+      body: dokRows || '<p class="kb-tile-empty">Noch keine Fotos oder Dateien.</p>',
+      foot: noTermin ? '' : `<button type="button" class="kb-tile-new" data-kb-mappe="dokumente"><span class="material-symbols-rounded icon" aria-hidden="true">photo_camera</span>Foto / Datei hinzufügen</button>` }),
+    kbTileHtml({ key: 'notizen', icon: 'sticky_note_2', title: 'Notizen', count: notiz ? '•' : 0,
+      body: notiz ? `<p class="kb-notiz">${escapeHtml(notiz.length > 220 ? notiz.slice(0, 220) + ' …' : notiz)}</p>` : '<p class="kb-tile-empty">Noch keine Notiz zum aktuellen Termin.</p>',
+      foot: noTermin ? '' : `<button type="button" class="kb-tile-new" data-kb-mappe="notizen"><span class="material-symbols-rounded icon" aria-hidden="true">edit_note</span>${notiz ? 'Notiz bearbeiten' : 'Notiz schreiben'}</button>` })
+  ].join('');
+
+  // Aktueller Termin
+  let terminHtml;
+  if (current) {
+    const today = tkDayStart(new Date());
+    const label = activeZuordnung.terminId && current.members.some(m => m.id === activeZuordnung.terminId) ? 'Zugeordneter Termin'
+      : current.date >= today ? (tkDayStart(current.date).getTime() === today.getTime() ? 'Termin heute' : 'Nächster Termin') : 'Letzter Termin';
+    const month = current.date.toLocaleDateString('de-DE', { month: 'short' }).replace('.', '');
+    const auftraege = current.members.map(m => {
+      const c = tkClassifyAuftrag(m);
+      const chips = [...c.verbaende, ...c.arten.filter(a => !(m.auditart || '').toLowerCase().includes(a.label.toLowerCase()))];
+      return `<div class="km-auftrag"${c.verbaende.length ? ` style="--auftrag-color:${c.verbaende[0].bg}"` : ''}>
+        <div class="km-auftrag-top"><strong>${escapeHtml(m.auditart || 'Auftrag')}</strong><span class="tk-badge ${m.bestaetigt ? 'tk-badge-ok' : 'tk-badge-warn'}">${m.bestaetigt ? 'Bestätigt' : 'Unbestätigt'}</span></div>
+        ${chips.length ? `<span class="tk-chips">${chips.map(tkChipHtml).join('')}</span>` : ''}
+      </div>`;
+    }).join('');
+    terminHtml = `<section class="ko-card kb-termin">
+      <div class="ko-card-head">
+        <h3><span class="material-symbols-rounded icon" aria-hidden="true">event_upcoming</span>${label}</h3>
+        <button type="button" class="betrieb-btn primary kb-open-mappe" data-kb-mappe="ueberblick"><span class="material-symbols-rounded icon" aria-hidden="true">folder_open</span>Kontrollmappe öffnen</button>
+      </div>
+      <div class="kb-termin-row">
+        <span class="betrieb-date-badge km-date" aria-hidden="true"><b>${current.date.getDate()}</b>${escapeHtml(month)}</span>
+        <div class="kb-termin-text">
+          <strong>${escapeHtml(tkDayLabel(current.date))}</strong>
+          <span>${escapeHtml(tkTimeLabel(current))}${current.members.length > 1 ? ` · ${current.members.length} Aufträge` : ''}</span>
+        </div>
+      </div>
+      <div class="km-auftraege">${auftraege}</div>
+    </section>`;
+  } else {
+    terminHtml = `<section class="ko-card kb-termin"><div class="ko-empty ko-empty-small"><span class="material-symbols-rounded icon" aria-hidden="true">event_busy</span><p>Kein Termin für diesen Betrieb. Protokolle und Dokumente hängen an einem Termin — importiere die Termine oder wähle einen Betrieb mit Termin.</p></div></section>`;
+  }
+
+  // Terminverlauf (neueste zuerst; aktueller markiert)
+  const verlauf = groups.slice().sort((a, b) => b.date - a.date).map(g => {
+    const p = g.primary;
+    const counts = [
+      ...Object.keys(TK_FORMULARE).map(k => [tkFormularDef(k).icon, g.members.reduce((n, m) => n + (m[tkFormularDef(k).listKey] || []).length, 0), tkFormularDef(k).listTitle]),
+      ['balance', g.members.reduce((n, m) => n + (m.warenfluss || []).length, 0), 'Warenflussprüfungen'],
+      ['attach_file', g.members.reduce((n, m) => n + (m.attachments || []).length, 0), 'Dateien']
+    ].filter(c => c[1]).map(([icon, n, title]) => `<span class="kb-count" title="${escapeHtml(title)}"><span class="material-symbols-rounded icon" aria-hidden="true">${icon}</span>${n}</span>`).join('');
+    return `<button type="button" class="kb-hist-row${current && g.id === current.id ? ' is-current' : ''}" data-kb-termin="${escapeHtml(g.id)}">
+      <span class="kb-hist-date">${escapeHtml(tkFmtDate(g.date))}</span>
+      <span class="kb-hist-text"><span class="kb-hist-title">${escapeHtml(g.members.map(m => m.auditart).filter(Boolean).join(' · ') || 'Termin')}</span>${tkGroupChipsHtml(g, 4)}</span>
+      <span class="kb-hist-counts">${counts}</span>
+    </button>`;
+  }).join('');
+
+  root.innerHTML = `<div class="kb-wrap">
+    <section class="kb-hero">
+      <div class="kb-hero-top">
+        <span class="kb-avatar" aria-hidden="true">${escapeHtml(betriebInitial(name))}</span>
+        <div class="kb-hero-text">
+          <h3 id="kb-name">${escapeHtml(name)}</h3>
+          <p>${escapeHtml([kundennr ? 'Kd.-Nr. ' + kundennr : '', ort, `${groups.length} ${groups.length === 1 ? 'Termin' : 'Termine'}`].filter(Boolean).join(' · '))}</p>
+          ${allChips.length ? `<span class="tk-chips">${allChips.map(tkChipHtml).join('')}</span>` : ''}
+        </div>
+        <button type="button" class="betrieb-btn kb-switch" data-kb-action="choose"><span class="material-symbols-rounded icon" aria-hidden="true">swap_horiz</span><span>Wechseln</span></button>
+      </div>
+      <div class="kb-hero-actions">
+        ${kontakt && (kontakt.address || kontakt.lat != null) ? `<a class="betrieb-btn" href="${eventRouteUrl(kontakt)}" target="_blank" rel="noopener"><span class="material-symbols-rounded icon" aria-hidden="true">directions</span>Route</a>` : ''}
+        ${tel ? `<a class="betrieb-btn" href="tel:${escapeHtml(telHref(tel))}"><span class="material-symbols-rounded icon" aria-hidden="true">call</span>Anrufen</a>` : ''}
+        ${kontakt && kontakt.email ? `<a class="betrieb-btn" href="mailto:${escapeHtml(kontakt.email)}"><span class="material-symbols-rounded icon" aria-hidden="true">mail</span>E-Mail</a>` : ''}
+      </div>
+      ${kontakt ? `<details class="kb-contact"><summary>Kontaktdaten</summary>${renderTerminkalenderContactRows(kontakt)}</details>` : ''}
+      <div class="kb-links">
+        <span class="kb-links-label">Betriebsdaten</span>
+        <div class="kb-link-row">
+          ${[['uebersicht', 'donut_large', 'Flächenübersicht'], ['zeichner', 'draw', 'Flächenzeichner'], ['hofplan', 'home_work', 'Hofplan'], ['stallplaner', 'window', 'Stallplaner'], ['obstbaum', 'park', 'Obstbäume'], ['bienenflug', 'hive', 'Bienenflug']]
+            .map(([seg, icon, label]) => `<button type="button" class="kb-link" data-kb-segment="${seg}"><span class="material-symbols-rounded icon" aria-hidden="true">${icon}</span>${label}</button>`).join('')}
+        </div>
+      </div>
+    </section>
+    ${terminHtml}
+    ${kbFlaechenHtml()}
+    <div class="kb-section-label">Unterlagen der Kontrolle${current ? '' : ' (alle Termine)'}</div>
+    <div class="kb-tiles">${tiles}</div>
+    <section class="ko-card kb-history">
+      <div class="ko-card-head"><h3><span class="material-symbols-rounded icon" aria-hidden="true">history</span>Termine dieses Betriebs</h3></div>
+      ${verlauf || '<p class="kb-tile-empty">Keine Termine.</p>'}
+    </section>
+  </div>`;
+}
+// Flächenübersicht in Kurzform: Kennzahlen, Anteilsbalken der Kulturarten
+// und die größten Kulturen — dieselben Daten/Farben wie die Flächenübersicht
+// (collectGesamtFlaechen/summarizeGesamtKulturen, geladener Betriebs-Workspace).
+function kbFlaechenHtml() {
+  const { rows } = collectGesamtFlaechen();
+  const head = (extra = '') => `<div class="ko-card-head">
+      <h3><span class="material-symbols-rounded icon" aria-hidden="true">donut_large</span>Flächen</h3>
+      ${extra}
+    </div>`;
+  const toUebersicht = '<button type="button" class="ko-link-btn" data-kb-segment="uebersicht">Zur Flächenübersicht</button>';
+  if (!rows.length) {
+    return `<section class="ko-card kb-flaechen" id="kb-flaechen">${head()}
+      <div class="ko-empty ko-empty-small"><span class="material-symbols-rounded icon" aria-hidden="true">crop_square</span><p>Für diesen Betrieb sind noch keine Flächen geladen — Shapefile auf der Karte laden oder im Flächenzeichner zeichnen.</p></div>
+    </section>`;
+  }
+  const kulturen = summarizeGesamtKulturen(rows);
+  const total = rows.reduce((sum, r) => sum + r.ha, 0);
+  const haFmt = (n) => n.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const pctFmt = (n) => total ? (n / total * 100).toLocaleString('de-DE', { maximumFractionDigits: n / total < 0.1 ? 1 : 0 }) + ' %' : '0 %';
+  const named = kulturen.all.filter(k => k.label !== 'Ohne Angabe');
+  const top = kulturen.all.slice(0, 5);
+  const rest = kulturen.all.slice(5);
+  const restHa = rest.reduce((sum, k) => sum + k.value, 0);
+  const kpi = (value, unit, label) => `<div class="kb-fl-kpi"><span class="kb-fl-value">${value}${unit ? `<small>${unit}</small>` : ''}</span><span class="kb-fl-label">${label}</span></div>`;
+  return `<section class="ko-card kb-flaechen" id="kb-flaechen">${head(toUebersicht)}
+    <div class="kb-fl-kpis">
+      ${kpi(haFmt(total), 'ha', 'Gesamtfläche')}
+      ${kpi(rows.length, '', rows.length === 1 ? 'Fläche' : 'Flächen')}
+      ${kpi(named.length, '', named.length === 1 ? 'Kulturart' : 'Kulturarten')}
+    </div>
+    <div class="kb-fl-bar" role="img" aria-label="Flächenanteile nach Kulturart">${kulturen.all.map(k => `<span style="flex:${k.value || 0.0001} 1 0;background:${k.color}" title="${escapeHtml(k.label)}: ${haFmt(k.value)} ha"></span>`).join('')}</div>
+    <ul class="kb-fl-list">
+      ${top.map(k => `<li><span class="kb-fl-dot" style="background:${k.color}"></span><span class="kb-fl-name">${escapeHtml(k.label)}</span><span class="kb-fl-ha">${haFmt(k.value)} ha</span><span class="kb-fl-pct">${pctFmt(k.value)}</span></li>`).join('')}
+      ${rest.length ? `<li class="kb-fl-more"><span class="kb-fl-dot"></span><span class="kb-fl-name">${rest.length} weitere ${rest.length === 1 ? 'Kultur' : 'Kulturen'}</span><span class="kb-fl-ha">${haFmt(restHa)} ha</span><span class="kb-fl-pct">${pctFmt(restHa)}</span></li>` : ''}
+    </ul>
+  </section>`;
+}
+function kbTileHtml({ key, icon, title, count, state, body, foot }) {
+  return `<section class="kb-tile${state ? ' ' + state.cls : ''}" data-kb-tile="${key}">
+    <div class="kb-tile-head">
+      <span class="kb-tile-icon material-symbols-rounded icon" aria-hidden="true">${icon}</span>
+      <h4>${escapeHtml(title)}</h4>
+      ${count !== 0 && count !== '' ? `<span class="kb-tile-count">${count}</span>` : ''}
+    </div>
+    ${state ? `<span class="kb-tile-state">${escapeHtml(state.text)}</span>` : ''}
+    <div class="kb-tile-body">${body}</div>
+    ${foot ? `<div class="kb-tile-foot">${foot}</div>` : ''}
+  </section>`;
+}
+function kbCurrent() {
+  if (!activeZuordnung) return null;
+  const g = kbCurrentGroup(tkGroupEvents(kbEvents(activeZuordnung.betrieb)));
+  if (g) tkAbsorbGroupData(g);
+  return g;
+}
+document.getElementById('kontrolle-betrieb').addEventListener('click', async (e) => {
+  const t = e.target.closest('button, a');
+  if (!t) return;
+  const d = t.dataset;
+  if (d.kbAction === 'choose') { openBetriebModal(); return; }
+  if (d.kbPick) {
+    const g = tkGroupFor(d.kbPick);
+    if (!g) return;
+    const ev = g.primary;
+    await applyZuordnungSelection({ betrieb: ev.kunde, year: ev.date.getFullYear(), terminId: ev.id, terminLabel: `${tkFmtDate(ev.date)} · ${ev.auditart}` });
+    renderKontrolleBetrieb();
+    return;
+  }
+  if (d.kbSegment) { setActiveSegment(d.kbSegment); return; }
+  if (d.kbTermin) { openKontrollmappe(d.kbTermin, 'ueberblick'); return; }
+  if (d.kbMappe) {
+    const id = d.ev || (kbCurrent() || {}).id;
+    if (id) openKontrollmappe(id, d.kbMappe);
+    return;
+  }
+  if (d.kbFormular) { openFormular(d.kbFormular, d.ev, d.id); return; }
+  if (d.kbNew) {
+    const g = kbCurrent();
+    if (!g) return;
+    const p = createFormular(g.primary, d.kbNew);
+    openFormular(d.kbNew, g.primary.id, p.id);
+    return;
+  }
+  if (d.kbWf) {
+    const ev = terminkalenderEvents.find(x => x.id === d.ev);
+    const chk = ev && (ev.warenfluss || []).find(c => c.id === d.kbWf);
+    if (chk) { initWarenflussUi(); openWarenflussFor(ev, chk); }
+    return;
+  }
+  if (d.kbAction === 'wf-new') {
+    const picker = document.getElementById('kb-wf-picker');
+    picker.hidden = !picker.hidden;
+    t.setAttribute('aria-expanded', String(!picker.hidden));
+    return;
+  }
+  if (d.kbWfNew) {
+    const g = kbCurrent();
+    if (!g) return;
+    const chk = createWarenfluss(d.kbWfNew);
+    g.primary.warenfluss = g.primary.warenfluss || [];
+    g.primary.warenfluss.push(chk);
+    initWarenflussUi();
+    openWarenflussFor(g.primary, chk);
+  }
 });
 
 function initTerminkalenderMap() {
@@ -9809,7 +10162,7 @@ function renderTerminkalenderDetail(ev) {
     el.querySelectorAll('[data-km-tab]').forEach(b => b.setAttribute('aria-selected', String(b === btn)));
     el.querySelectorAll('[data-km-panel]').forEach(p => { p.hidden = p.dataset.kmPanel !== kontrollmappeTab; });
   }));
-  document.getElementById('tk-photo-capture-input').addEventListener('change', (e) => handleTerminkalenderFileAdd(ev, e));
+  document.getElementById('tk-photo-capture-input').addEventListener('change', (e) => handleTerminkalenderPhotoCapture(ev, e));
   document.getElementById('tk-file-add-input').addEventListener('change', (e) => handleTerminkalenderFileAdd(ev, e));
   document.getElementById('tk-betrieb-assign-btn').addEventListener('click', () => toggleTerminkalenderZuordnung(ev));
   document.getElementById('tk-scan-btn').addEventListener('click', () => openScanModal(ev));
@@ -9869,7 +10222,20 @@ async function renderTerminkalenderAttachments(ev) {
   if (!attachments.length) { grid.innerHTML = uploadsForGroup(ev.id).length ? '' : '<p class="empty-hint">Noch keine Anhänge.</p>'; return; }
   grid.innerHTML = attachments.map(() => '<div class="tk-attachment tk-attachment-loading"></div>').join('');
   const urls = await Promise.all(attachments.map(a => getPhotoUrl(a.path, a.name).catch(() => null)));
-  grid.innerHTML = attachmentTilesHtml(attachments, urls);
+  grid.innerHTML = attachmentTilesHtml(attachments, urls, { rename: true });
+  grid.querySelectorAll('.tk-attachment-rename').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const idx = attachments.findIndex(x => x.path === btn.getAttribute('data-path'));
+      const a = attachments[idx];
+      if (!a) return;
+      const isImage = (a.type || '').startsWith('image/');
+      const art = await askDocName({
+        title: 'Dokument umbenennen', value: docArtFromName(ev, a.name), ev, fileName: a.name, skipLabel: 'Abbrechen',
+        previewUrl: isImage ? urls[idx] : null, previewIcon: /pdf$/i.test(a.type || a.name || '') ? 'picture_as_pdf' : 'description'
+      });
+      if (art) renameAttachment(ev, a, art);
+    });
+  });
   // Antippen öffnet den Dokumenten-/Fotoviewer (auch ohne Vorschaubild —
   // der Viewer lädt die Datei selbst bzw. aus dem Gerätespeicher).
   grid.querySelectorAll('[data-dv-index]').forEach(btn => {
@@ -9886,7 +10252,7 @@ async function renderTerminkalenderAttachments(ev) {
 
 // Kacheln für Anhänge (Termin, Protokoll-Anlagen): Bild als Vorschau, PDF/
 // sonstige als Symbol + Name; ganze Kachel öffnet den Viewer.
-function attachmentTilesHtml(list, urls) {
+function attachmentTilesHtml(list, urls, { rename = false } = {}) {
   return list.map((a, i) => {
     const url = urls[i];
     const isImage = (a.type || '').startsWith('image/');
@@ -9897,6 +10263,7 @@ function attachmentTilesHtml(list, urls) {
     return `<div class="tk-attachment${url ? '' : ' tk-attachment-nopreview'}">
       <button type="button" class="tk-attachment-link" data-dv-index="${i}" title="${escapeHtml(a.name)} — ansehen" aria-label="${escapeHtml(a.name)} ansehen">${inner}</button>
       <button type="button" class="tk-attachment-remove" data-path="${escapeHtml(a.path)}" title="Entfernen" aria-label="${escapeHtml(a.name)} entfernen"><span class="material-symbols-rounded icon">close</span></button>
+      ${rename ? `<button type="button" class="tk-attachment-rename" data-path="${escapeHtml(a.path)}" title="Umbenennen" aria-label="${escapeHtml(a.name)} umbenennen"><span class="material-symbols-rounded icon">edit</span></button>` : ''}
     </div>`;
   }).join('');
 }
@@ -9955,6 +10322,116 @@ async function uploadTerminkalenderAttachment(ev, file, artOverride) {
   return rec.id;
 }
 
+// Foto aus der Kamera: sofort sichern/hochladen (wie bisher), danach
+// benennen — so geht bei schlechtem Empfang oder Abbruch nichts verloren.
+async function handleTerminkalenderPhotoCapture(ev, e) {
+  const files = [...e.target.files];
+  e.target.value = '';
+  for (const file of files) {
+    const recId = await uploadTerminkalenderAttachment(ev, file);
+    if (!recId) continue;
+    const url = URL.createObjectURL(file);
+    const art = await askDocName({ title: 'Foto benennen', sub: 'Das Foto ist schon gesichert — der Name kommt dazu.', previewUrl: url, ev, fileName: uploadArtName(ev, file) });
+    URL.revokeObjectURL(url);
+    if (art) renameTerminDoc(ev, recId, art);
+  }
+}
+
+// ---- Dokumente benennen (Foto, Scan, vorhandene Anhänge) ----
+// Name = Jahr_Betrieb_<Bezeichnung>.<Endung> (gleiches Schema wie bisher,
+// die Bezeichnung ersetzt "Foto Termin"/"Scan Termin"). Ein Dialog nach dem
+// anderen: kommt während des Benennens schon das nächste Foto, wartet es.
+const DOCNAME_VORSCHLAEGE = ['Lieferschein', 'Rechnung', 'Etikett', 'Zertifikat', 'Futtermittel', 'Saatgut', 'Lager', 'Stall', 'Auslauf', 'Bestandsregister', 'Reinigungsmittel', 'Schädlingsbekämpfung'];
+function docNamePrefix(ev) { return `${ev.date.getFullYear()}_${sanitizeFileNamePart(ev.kunde)}_`; }
+function docArtFromName(ev, name) {
+  const base = String(name || '').replace(/\.[^.]+$/, '');
+  return base.startsWith(docNamePrefix(ev)) ? base.slice(docNamePrefix(ev).length) : base;
+}
+function docNameWithArt(ev, oldName, art) {
+  const ext = (/\.([^.]+)$/.exec(oldName || '') || [])[1];
+  return docNamePrefix(ev) + sanitizeFileNamePart(art) + (ext ? '.' + ext : '');
+}
+let docNameChain = Promise.resolve();
+let docNameCurrent = null; // { resolve, updateFile }
+function askDocName(opts) {
+  const p = docNameChain.then(() => showDocNameDialog(opts));
+  docNameChain = p.catch(() => {});
+  return p;
+}
+function showDocNameDialog({ title, sub = '', previewUrl = null, previewIcon = 'description', value = '', ev, fileName = '', skipLabel = 'Ohne Namen' }) {
+  return new Promise(resolve => {
+    const overlay = document.getElementById('docname-overlay');
+    const input = document.getElementById('docname-input');
+    document.getElementById('docname-title').textContent = title;
+    document.getElementById('docname-sub').textContent = sub;
+    document.getElementById('docname-skip').textContent = skipLabel;
+    document.getElementById('docname-preview').innerHTML = previewUrl
+      ? `<img src="${previewUrl}" alt="Vorschau">`
+      : `<span class="material-symbols-rounded icon" aria-hidden="true">${previewIcon}</span>`;
+    document.getElementById('docname-chips').innerHTML = DOCNAME_VORSCHLAEGE
+      .map(v => `<button type="button" class="docname-chip" data-docname="${escapeHtml(v)}">${escapeHtml(v)}</button>`).join('');
+    input.value = value;
+    const updateFile = () => {
+      const art = input.value.trim();
+      document.getElementById('docname-file').textContent = 'Dateiname: ' + (art ? docNameWithArt(ev, fileName, art) : (fileName || '–'));
+    };
+    input.oninput = updateFile;
+    updateFile();
+    docNameCurrent = { resolve, updateFile };
+    overlay.hidden = false;
+    setTimeout(() => { input.focus(); input.select(); }, 30);
+  });
+}
+function closeDocNameDialog(result) {
+  if (!docNameCurrent) return;
+  const { resolve } = docNameCurrent;
+  docNameCurrent = null;
+  document.getElementById('docname-overlay').hidden = true;
+  resolve(result);
+}
+document.getElementById('docname-save').addEventListener('click', () => closeDocNameDialog(document.getElementById('docname-input').value.trim() || null));
+document.getElementById('docname-skip').addEventListener('click', () => closeDocNameDialog(null));
+document.getElementById('docname-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); document.getElementById('docname-save').click(); }
+});
+document.getElementById('docname-chips').addEventListener('click', (e) => {
+  const chip = e.target.closest('[data-docname]');
+  if (!chip || !docNameCurrent) return;
+  const input = document.getElementById('docname-input');
+  // Vorschlag als Anfang übernehmen — Details können direkt dahinter folgen.
+  input.value = chip.dataset.docname + ' ';
+  docNameCurrent.updateFile();
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && docNameCurrent) { e.stopImmediatePropagation(); closeDocNameDialog(null); }
+}, true);
+
+// Benennt eine Datei um — noch in der Warteschlange (Name wird beim
+// Hochladen übernommen) oder schon als Anhang am Termin (nur der angezeigte
+// Name/Downloadname ändert sich, der Speicherpfad bleibt).
+function renameTerminDoc(ev, uploadId, art) {
+  const rec = uploadQueue.find(r => r.id === uploadId);
+  if (rec) {
+    rec.name = docNameWithArt(ev, rec.name, art);
+    saveQueuedUpload(rec).catch(() => {});
+    refreshUploadViews(rec.evId);
+    return;
+  }
+  for (const e of terminkalenderEvents) {
+    const a = (e.attachments || []).find(x => x.uploadId === uploadId);
+    if (a) { renameAttachment(e, a, art); return; }
+  }
+}
+function renameAttachment(ev, a, art) {
+  a.name = docNameWithArt(ev, a.name, art);
+  persistLocalState().catch(() => {});
+  const group = tkGroupFor(ev.id);
+  if (group && group.id === terminkalenderSelectedId) renderTerminkalenderAttachments(group.primary);
+  refreshKontrolleBetrieb();
+}
+
 function handleTerminkalenderFileAdd(ev, e) {
   const input = e.target;
   const files = [...input.files];
@@ -9995,7 +10472,7 @@ async function runUploadQueue() {
         const target = group ? group.primary : terminkalenderEvents.find(e => e.id === rec.evId);
         if (target) {
           target.attachments = target.attachments || [];
-          target.attachments.push({ path, name: rec.name, size: rec.size, type: rec.type });
+          target.attachments.push({ path, name: rec.name, size: rec.size, type: rec.type, uploadId: rec.id });
         }
         removeQueuedUpload(rec);
         try { await persistLocalState(); } catch {}
@@ -11441,7 +11918,14 @@ document.getElementById('scan-btn-finish').addEventListener('click', async () =>
   const blob = buildPdfFromScanPages(pages);
   const ts = new Date().toISOString().slice(0, 10);
   const file = new File([blob], `Scan_${ts}.pdf`, { type: 'application/pdf' });
-  await uploadTerminkalenderAttachment(ev, file);
+  const recId = await uploadTerminkalenderAttachment(ev, file);
+  if (!recId) return;
+  const art = await askDocName({
+    title: 'Dokument benennen', ev, fileName: uploadArtName(ev, file),
+    sub: `Der Scan (${pages.length} ${pages.length === 1 ? 'Seite' : 'Seiten'}) ist schon gesichert — der Name kommt dazu.`,
+    previewUrl: pages[0] && pages[0].dataUrl
+  });
+  if (art) renameTerminDoc(ev, recId, art);
 });
 
 // Jede gescannte Seite wird eine A4-Seite in passender Ausrichtung. A4-
@@ -11510,6 +11994,7 @@ function closeKontrollmappe() {
   document.getElementById('kontrollmappe-backdrop').hidden = true;
   terminkalenderSelectedId = null;
   document.querySelectorAll('.tk-card.selected').forEach(el => el.classList.remove('selected'));
+  refreshKontrolleBetrieb();
 }
 document.getElementById('kontrollmappe-backdrop').addEventListener('click', closeKontrollmappe);
 document.addEventListener('keydown', (e) => {
@@ -11836,6 +12321,7 @@ function setActiveZuordnung(z) {
     const selectedEv = terminkalenderEvents.find(e => e.id === terminkalenderSelectedId);
     if (selectedEv) renderTerminkalenderDetail(selectedEv);
   }
+  if (typeof refreshKontrolleBetrieb === 'function') refreshKontrolleBetrieb();
 }
 
 // ---- Betrieb als Pin auf der Karte ----
@@ -11933,6 +12419,7 @@ function renderBetriebList() {
   // Zeile = Auswahl-Button (Avatar/Datum + Text) plus ggf. Zuordnen/Entfernen
   // daneben — keine verschachtelten Buttons, alles per Tastatur erreichbar.
   let html = '';
+  let termineHtml = '';
   if (betriebe.length) {
     html += '<div class="betrieb-list-group"><div class="betrieb-list-group-title">Betriebe</div>';
     html += betriebe.map(name => {
@@ -11968,9 +12455,9 @@ function renderBetriebList() {
     ? tkGroupEvents(terminkalenderEvents.filter(e => `${e.kunde} ${tkAuftragText(e)} ${tkFmtDate(e.date)}`.toLowerCase().includes(q))).slice(0, 30)
     : tkGroupEvents(terminkalenderEvents.filter(e => e.date >= startOfToday())).slice(0, 5);
   if (termine.length || q) {
-    html += `<div class="betrieb-list-group"><div class="betrieb-list-group-title">${q ? 'Termine' : 'Anstehende Termine'}</div>`;
+    termineHtml += `<div class="betrieb-list-group"><div class="betrieb-list-group-title">${q ? 'Termine' : 'Anstehende Termine'}</div>`;
     if (termine.length) {
-      html += termine.map(g => {
+      termineHtml += termine.map(g => {
         const e = g.primary;
         const active = g.members.some(m => m.id === activeTermin);
         const month = g.date.toLocaleDateString('de-DE', { month: 'short' }).replace('.', '');
@@ -11989,12 +12476,14 @@ function renderBetriebList() {
         </div>`;
       }).join('');
     } else {
-      html += '<div class="betrieb-list-empty">Kein Termin gefunden.</div>';
+      termineHtml += '<div class="betrieb-list-empty">Kein Termin gefunden.</div>';
     }
-    html += '</div>';
+    termineHtml += '</div>';
   }
 
-  betriebListEl.innerHTML = html;
+  // Ohne Suche stehen die anstehenden Termine oben, darunter alle Betriebe
+  // alphabetisch; bei einer Suche zuerst die passenden Betriebe.
+  betriebListEl.innerHTML = q ? html + termineHtml : termineHtml + html;
 }
 
 // Wechselt — falls nötig — den geladenen Ebenen/Baum/Bienenflug-Workspace auf
@@ -12079,7 +12568,8 @@ betriebSearch.addEventListener('input', renderBetriebList);
 betriebSearch.addEventListener('keydown', (e) => {
   if (e.key !== 'Enter') return;
   e.preventDefault();
-  const first = betriebListEl.querySelector('.betrieb-row-select');
+  // Erster Treffer = erster Betrieb (Termine stehen ohne Suche darüber).
+  const first = betriebListEl.querySelector('.betrieb-row-select[data-action="select-betrieb"]') || betriebListEl.querySelector('.betrieb-row-select');
   if (first) first.click();
 });
 
@@ -15527,6 +16017,7 @@ function deleteFormular(ev, kind, id) {
   ev[def.listKey] = ev[def.listKey].filter(x => x.id !== id);
   if (activeProbenprotokollKind === kind && activeProbenprotokollEventId === ev.id && activeProbenprotokollId === id) closeProbenprotokollModal();
   if (terminkalenderSelectedId === ev.id) renderTerminkalenderDetail(ev);
+  refreshKontrolleBetrieb();
 }
 
 // Rendert den Listen-Ausschnitt eines Formulars (Probenahmeprotokolle, Cross
@@ -15573,7 +16064,10 @@ function warenflussSectionHtml(ev) {
     return `<div class="probenprotokoll-row wf-list-row">
       <button type="button" class="probenprotokoll-row-main" data-wf-open="${escapeHtml(chk.id)}">
         <span class="probenprotokoll-row-title"><span class="material-symbols-rounded icon wf-list-icon" aria-hidden="true">${info.icon}</span>${escapeHtml(info.titel)}</span>
-        <span class="probenprotokoll-row-sub">Zeitraum ${escapeHtml(info.zeitraum || '–')} · ${badge}</span>
+        <span class="probenprotokoll-row-sub">${info.pfad ? `${escapeHtml(info.pfad)} · ` : ''}Zeitraum ${escapeHtml(info.zeitraum || '–')} · ${badge}</span>
+      </button>
+      <button type="button" class="probenprotokoll-row-delete" data-wf-del="${escapeHtml(chk.id)}" title="Warenflussprüfung löschen" aria-label="Warenflussprüfung ${escapeHtml(info.titel)} löschen">
+        <span class="material-symbols-rounded icon">delete</span>
       </button>
     </div>`;
   }).join('');
@@ -15612,6 +16106,15 @@ function wireWarenflussSection(ev) {
     const chk = (ev.warenfluss || []).find(c => c.id === btn.dataset.wfOpen);
     if (chk) openWarenflussFor(ev, chk);
   }));
+  document.querySelectorAll('#tk-warenfluss-list [data-wf-del]').forEach(btn => btn.addEventListener('click', () => {
+    const chk = (ev.warenfluss || []).find(c => c.id === btn.dataset.wfDel);
+    if (!chk) return;
+    const info = warenflussRowInfo(chk);
+    if (!confirm(`Warenflussprüfung „${info.titel}"${info.zeitraum ? ` (${info.zeitraum})` : ''} wirklich löschen? Das lässt sich nicht rückgängig machen.`)) return;
+    ev.warenfluss = ev.warenfluss.filter(x => x.id !== chk.id);
+    persistLocalState().catch(() => {});
+    renderTerminkalenderDetail(ev);
+  }));
 }
 function openWarenflussFor(ev, chk) {
   openWarenfluss(chk, {
@@ -15621,10 +16124,12 @@ function openWarenflussFor(ev, chk) {
       ev.warenfluss = (ev.warenfluss || []).filter(x => x.id !== c.id);
       persistLocalState().catch(() => {});
       if (terminkalenderSelectedId) renderTerminkalenderDetail(ev);
+      refreshKontrolleBetrieb();
     },
     onClose: () => {
       persistLocalState().catch(() => {});
       if (terminkalenderSelectedId) renderTerminkalenderDetail(ev);
+      refreshKontrolleBetrieb();
     }
   });
 }
@@ -15686,6 +16191,7 @@ function closeProbenprotokollModal() {
     const ev = terminkalenderEvents.find(e => e.id === evId);
     if (ev) renderTerminkalenderDetail(ev);
   }
+  refreshKontrolleBetrieb();
 }
 
 // Fehlende Pflichtangaben eines Formulars — { field } für Formularfelder,
@@ -15881,6 +16387,9 @@ function renderProbenprotokollForm() {
           <span class="compare-label">${escapeHtml(s.fullLabel || s.label)} <span class="pp-required" title="Pflichtfeld">*</span></span>
           <canvas class="pp-signature-pad" id="${s.canvasId}" width="480" height="140"></canvas>
           <div class="pp-signature-actions">
+            <button type="button" class="pp-signature-big" data-sig-big="${s.key}" title="Unterschriftenfeld groß öffnen">
+              <span class="material-symbols-rounded icon">open_in_full</span> Vergrößern
+            </button>
             ${s.own && kontoProfil.signatur ? `<button type="button" class="pp-signature-own" data-sig-own="${s.key}" title="Unterschrift aus deinem Profil (FeldFolio+ Konto)">
               <span class="material-symbols-rounded icon">draw</span> Meine Unterschrift einsetzen
             </button>` : ''}
@@ -15894,7 +16403,7 @@ function renderProbenprotokollForm() {
   document.getElementById('probenprotokoll-modal-form').innerHTML = sectionsHtml + signaturesHtml;
   wireProbenprotokollFormInputs(p, def);
   updateFormularDependencies(p);
-  def.signatures.forEach(s => setupSignaturePad(s.canvasId, p, s.key));
+  def.signatures.forEach(s => setupSignaturePad(s.canvasId, p, s.key, s));
   renderProbenprotokollAnlagenGrid(p);
   document.getElementById('pp-anlage-file-input').addEventListener('change', (e) => {
     const file = e.target.files[0];
@@ -15931,7 +16440,7 @@ function wireProbenprotokollFormInputs(p, def) {
 // keine Tinte). Pointer Capture direkt auf dem Canvas statt des sonst in
 // dieser App üblichen document-weiten Drag-Musters, da ein einzelner
 // durchgehender Strichzug gezeichnet wird, nicht ein einzelner Punkt verschoben.
-function setupSignaturePad(canvasId, protokoll, key) {
+function setupSignaturePad(canvasId, protokoll, key, sig = {}) {
   const canvas = document.getElementById(canvasId);
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
@@ -15989,6 +16498,21 @@ function setupSignaturePad(canvasId, protokoll, key) {
       refreshProbenprotokollValidation(protokoll);
     });
   }
+  // Großes Unterschriftenfeld (Popout) — Ergebnis ersetzt die Unterschrift.
+  const bigBtn = document.querySelector(`.pp-signature-big[data-sig-big="${key}"]`);
+  if (bigBtn) {
+    bigBtn.addEventListener('click', () => openSignaturePopout({
+      title: sig.fullLabel || sig.label || 'Unterschrift',
+      sub: protokoll.values && (protokoll.values['Name des Unternehmens'] || protokoll.values['Name']) || '',
+      dataUrl: protokoll[key],
+      own: !!(sig.own && kontoProfil.signatur),
+      onApply: (dataUrl) => {
+        protokoll[key] = dataUrl;
+        drawSignatureOnCanvas(canvas, dataUrl);
+        refreshProbenprotokollValidation(protokoll);
+      }
+    }));
+  }
   const clearBtn = document.querySelector(`.pp-signature-clear[data-sig="${key}"]`);
   if (clearBtn) {
     clearBtn.addEventListener('click', () => {
@@ -15998,6 +16522,83 @@ function setupSignaturePad(canvasId, protokoll, key) {
     });
   }
 }
+
+// ---- Unterschrift groß (Popout) ----
+// Bildschirmfüllendes Feld im selben Seitenverhältnis wie das kleine
+// (480 : 140 = Kasten im PDF), intern in doppelter Auflösung — die
+// Unterschrift wird dadurch schärfer und sitzt im PDF genauso
+// (drawSignatureFitted skaliert in den Kasten).
+let sigPopout = null; // { onApply, hasInk }
+const sigCanvas = document.getElementById('sigpad-canvas');
+(function setupSignaturePopoutInk() {
+  const ctx = sigCanvas.getContext('2d');
+  let drawing = false, lastX = 0, lastY = 0;
+  const pos = (e) => {
+    const r = sigCanvas.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * (sigCanvas.width / r.width), y: (e.clientY - r.top) * (sigCanvas.height / r.height) };
+  };
+  sigCanvas.addEventListener('pointerdown', (e) => {
+    if (!sigPopout) return;
+    drawing = true;
+    const p = pos(e);
+    lastX = p.x; lastY = p.y;
+    // Punkt auch bei einem kurzen Tippen (i-Punkt)
+    ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x + 0.1, p.y + 0.1); ctx.stroke();
+    try { sigCanvas.setPointerCapture(e.pointerId); } catch {}
+  });
+  sigCanvas.addEventListener('pointermove', (e) => {
+    if (!drawing) return;
+    const p = pos(e);
+    ctx.beginPath(); ctx.moveTo(lastX, lastY); ctx.lineTo(p.x, p.y); ctx.stroke();
+    lastX = p.x; lastY = p.y;
+  });
+  const end = () => {
+    if (!drawing) return;
+    drawing = false;
+    if (sigPopout) { sigPopout.hasInk = true; updateSignaturePopoutButtons(); }
+  };
+  sigCanvas.addEventListener('pointerup', end);
+  sigCanvas.addEventListener('pointercancel', end);
+})();
+function updateSignaturePopoutButtons() {
+  document.getElementById('sigpad-apply').disabled = !sigPopout;
+  document.getElementById('sigpad-empty').hidden = !!(sigPopout && sigPopout.hasInk);
+}
+function openSignaturePopout({ title, sub = '', dataUrl = null, own = false, onApply }) {
+  sigPopout = { onApply, hasInk: !!dataUrl };
+  document.getElementById('sigpad-title').textContent = title;
+  document.getElementById('sigpad-sub').textContent = sub;
+  document.getElementById('sigpad-own').hidden = !own;
+  drawSignatureOnCanvas(sigCanvas, dataUrl);
+  updateSignaturePopoutButtons();
+  document.getElementById('sigpad-overlay').hidden = false;
+}
+function closeSignaturePopout(apply) {
+  if (!sigPopout) return;
+  const s = sigPopout;
+  sigPopout = null;
+  document.getElementById('sigpad-overlay').hidden = true;
+  if (apply) s.onApply(s.hasInk ? sigCanvas.toDataURL('image/png') : null);
+}
+document.getElementById('sigpad-apply').addEventListener('click', () => closeSignaturePopout(true));
+document.getElementById('sigpad-cancel').addEventListener('click', () => closeSignaturePopout(false));
+document.getElementById('sigpad-close').addEventListener('click', () => closeSignaturePopout(false));
+document.getElementById('sigpad-clear').addEventListener('click', () => {
+  if (!sigPopout) return;
+  sigCanvas.getContext('2d').clearRect(0, 0, sigCanvas.width, sigCanvas.height);
+  sigPopout.hasInk = false;
+  updateSignaturePopoutButtons();
+});
+document.getElementById('sigpad-own').addEventListener('click', () => {
+  if (!sigPopout || !kontoProfil.signatur) return;
+  drawSignatureOnCanvas(sigCanvas, kontoProfil.signatur);
+  sigPopout.hasInk = true;
+  updateSignaturePopoutButtons();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && sigPopout) { e.stopImmediatePropagation(); closeSignaturePopout(false); }
+}, true);
 
 document.getElementById('probenprotokoll-modal-close').addEventListener('click', closeProbenprotokollModal);
 document.getElementById('probenprotokoll-modal-overlay').addEventListener('click', (e) => {

@@ -438,6 +438,10 @@
     </div>
     <div id="terminkalender-controls">
       <nav class="ko-subnav" id="kontrolle-subnav" aria-label="Kontrolle">
+        <button type="button" class="ko-subnav-btn" data-ko-tab="betrieb">
+          <span class="material-symbols-rounded icon" aria-hidden="true">business</span>
+          <span class="ko-subnav-label">Betrieb</span>
+        </button>
         <button type="button" class="ko-subnav-btn" data-ko-tab="uebersicht">
           <span class="material-symbols-rounded icon" aria-hidden="true">dashboard</span>
           <span class="ko-subnav-label">Übersicht</span>
@@ -716,10 +720,16 @@
         <p id="ko-header-date"></p>
       </div>
       <div class="ff-seg ko-tabs" id="kontrolle-tabs" role="tablist" aria-label="Kontrolle">
+        <button type="button" role="tab" data-ko-tab="betrieb" aria-selected="false"><span class="material-symbols-rounded icon" aria-hidden="true">business</span>Betrieb</button>
         <button type="button" role="tab" data-ko-tab="uebersicht" aria-selected="true"><span class="material-symbols-rounded icon" aria-hidden="true">dashboard</span>Übersicht</button>
         <button type="button" role="tab" data-ko-tab="kalender" aria-selected="false"><span class="material-symbols-rounded icon" aria-hidden="true">calendar_month</span>Kalender</button>
       </div>
     </header>
+
+    <!-- Betrieb: zentrale Seite des zugeordneten Betriebs (renderKontrolleBetrieb) -->
+    <section id="kontrolle-betrieb" class="ko-panel" role="tabpanel" aria-label="Betrieb" hidden>
+      <div class="ko-scroll" id="ko-betrieb"></div>
+    </section>
 
     <!-- Übersicht -->
     <section id="kontrolle-uebersicht" class="ko-panel" role="tabpanel" aria-label="Übersicht">
@@ -1473,6 +1483,58 @@
   </div>
 </div>
 
+<!-- Unterschrift groß (Popout aus den Protokollen) — openSignaturePopout() in main.js -->
+<div id="sigpad-overlay" class="modal-overlay" hidden>
+  <div class="sigpad-card" role="dialog" aria-modal="true" aria-labelledby="sigpad-title">
+    <div class="sigpad-head">
+      <div>
+        <h3 id="sigpad-title">Unterschrift</h3>
+        <p class="betrieb-head-sub" id="sigpad-sub"></p>
+      </div>
+      <button type="button" id="sigpad-close" class="betrieb-icon-btn" aria-label="Abbrechen" title="Abbrechen">
+        <span class="material-symbols-rounded icon" aria-hidden="true">close</span>
+      </button>
+    </div>
+    <p class="sigpad-rotate-hint"><span class="material-symbols-rounded icon" aria-hidden="true">screen_rotation</span>Für mehr Platz das Gerät quer halten</p>
+    <div class="sigpad-stage">
+      <canvas id="sigpad-canvas" width="960" height="280" aria-label="Hier unterschreiben"></canvas>
+      <div class="sigpad-line" aria-hidden="true"><span>×</span></div>
+      <span class="sigpad-empty" id="sigpad-empty" aria-hidden="true">Hier unterschreiben</span>
+    </div>
+    <div class="sigpad-actions">
+      <button type="button" id="sigpad-own" class="betrieb-btn" hidden><span class="material-symbols-rounded icon" aria-hidden="true">draw</span>Meine Unterschrift</button>
+      <button type="button" id="sigpad-clear" class="betrieb-btn"><span class="material-symbols-rounded icon" aria-hidden="true">refresh</span>Löschen</button>
+      <span class="sigpad-spacer"></span>
+      <button type="button" id="sigpad-cancel" class="betrieb-btn">Abbrechen</button>
+      <button type="button" id="sigpad-apply" class="betrieb-btn primary"><span class="material-symbols-rounded icon" aria-hidden="true">check</span>Übernehmen</button>
+    </div>
+  </div>
+</div>
+
+<!-- Dokument/Foto benennen (nach Foto aufnehmen, Scan, oder Umbenennen
+     eines Anhangs) — askDocName() in main.js -->
+<div id="docname-overlay" class="modal-overlay" hidden>
+  <div class="modal-card betrieb-card docname-card" role="dialog" aria-modal="true" aria-labelledby="docname-title">
+    <div class="betrieb-head">
+      <div>
+        <h3 id="docname-title">Foto benennen</h3>
+        <p class="betrieb-head-sub" id="docname-sub"></p>
+      </div>
+    </div>
+    <div class="account-body">
+      <div class="docname-preview" id="docname-preview"></div>
+      <label class="account-label" for="docname-input">Name</label>
+      <input type="text" id="docname-input" class="fotomappe-input" maxlength="80" autocomplete="off" enterkeyhint="done" placeholder="z. B. Lieferschein Futtermittel">
+      <div class="docname-chips" id="docname-chips" aria-label="Vorschläge"></div>
+      <p class="modal-hint docname-file" id="docname-file"></p>
+      <div class="account-actions">
+        <button type="button" id="docname-skip" class="betrieb-btn">Ohne Namen</button>
+        <button type="button" id="docname-save" class="betrieb-btn primary"><span class="material-symbols-rounded icon" aria-hidden="true">check</span>Speichern</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ---------- FeldFolio Plus: Notiz & Fotos an Fläche/Baum ---------- -->
 <div id="notes-modal-overlay" class="modal-overlay" hidden>
   <div class="modal-card">
@@ -1672,8 +1734,9 @@
     </div>
     <div class="wf-toolbar">
       <label class="wf-field"><span>Zeitraum / Wirtschaftsjahr</span><input type="text" id="wf-zeitraum" class="wf-input" placeholder="z. B. 2025 oder 01.07.2024–30.06.2025"></label>
-      <label class="wf-field wf-field-small"><span>Toleranz Referenz ±%</span><input type="text" id="wf-tol-ertrag" class="wf-input wf-num" inputmode="decimal"></label>
-      <label class="wf-field wf-field-small"><span>Toleranz Bilanz ±%</span><input type="text" id="wf-tol-bilanz" class="wf-input wf-num" inputmode="decimal"></label>
+      <label class="wf-field wf-field-small"><span id="wf-tol-ertrag-label">Toleranz Referenz ±%</span><input type="text" id="wf-tol-ertrag" class="wf-input wf-num" inputmode="decimal"></label>
+      <label class="wf-field wf-field-small" id="wf-tol-ausbeute-wrap" hidden><span>Toleranz Ausbeute ±%</span><input type="text" id="wf-tol-ausbeute" class="wf-input wf-num" inputmode="decimal"></label>
+      <label class="wf-field wf-field-small" id="wf-tol-bilanz-wrap"><span>Toleranz Bilanz ±%</span><input type="text" id="wf-tol-bilanz" class="wf-input wf-num" inputmode="decimal"></label>
       <div class="ff-seg wf-mode" id="wf-mode" role="radiogroup" aria-label="Darstellung">
         <button type="button" role="radio" data-mode="tabelle" aria-checked="true"><span class="material-symbols-rounded icon" aria-hidden="true">table_view</span>Tabelle</button>
         <button type="button" role="radio" data-mode="text" aria-checked="false"><span class="material-symbols-rounded icon" aria-hidden="true">description</span>Freitext</button>
@@ -1682,7 +1745,24 @@
     <div class="wf-summary" id="wf-summary" aria-live="polite"></div>
     <div class="wf-body">
       <div id="wf-tables"></div>
+      <!-- Prüftext: wird bei jeder Eingabe aus der Berechnung neu geschrieben. -->
+      <section id="wf-auto" class="wf-auto" aria-labelledby="wf-auto-title">
+        <div class="wf-section-head">
+          <h4 id="wf-auto-title"><span class="material-symbols-rounded icon" aria-hidden="true">description</span>Prüftext (automatisch aus der Berechnung)</h4>
+          <div class="wf-auto-actions">
+            <button type="button" id="wf-auto-copy" class="betrieb-btn"><span class="material-symbols-rounded icon" aria-hidden="true">content_copy</span>Kopieren</button>
+            <button type="button" id="wf-auto-edit" class="betrieb-btn"><span class="material-symbols-rounded icon" aria-hidden="true">edit</span>Im Freitext bearbeiten</button>
+          </div>
+        </div>
+        <p class="wf-hint">Wird bei jeder Eingabe neu geschrieben — inklusive Befunden, möglichen Ursachen und Klärungspunkten für den Betrieb.</p>
+        <div id="wf-auto-text" class="wf-auto-text" aria-live="polite"></div>
+      </section>
       <div id="wf-text-wrap" hidden>
+        <div class="wf-stale" id="wf-text-stale" role="status" hidden>
+          <span class="material-symbols-rounded icon" aria-hidden="true">info</span>
+          <span>Die Tabelle wurde nach deiner Bearbeitung geändert — der Text ist nicht mehr aktuell.</span>
+          <button type="button" id="wf-text-stale-update" class="betrieb-btn">Text aktualisieren</button>
+        </div>
         <p class="wf-hint" id="wf-text-status"></p>
         <textarea id="wf-text" class="wf-text" rows="22" aria-label="Freitext der Warenflussprüfung"></textarea>
         <div class="wf-text-actions">
