@@ -189,6 +189,8 @@ test.describe('Dokumentenscanner (Kontrolle)', () => {
 
     await page.locator('#scan-btn-finish').click();
     await expect(page.locator('#scan-modal-overlay')).toBeHidden();
+    // Upload läuft asynchron über die Warteschlange — warten, bis er erfolgt ist.
+    await expect.poll(() => page.evaluate(() => !!window.__lastScanUpload)).toBe(true);
     const upload = await page.evaluate(() => window.__lastScanUpload);
     expect(upload.type).toBe('application/pdf');
     // Filter-Wahl wird fürs nächste Mal gemerkt.
@@ -216,6 +218,8 @@ test.describe('Dokumentenscanner (Kontrolle)', () => {
     await expect(page.locator('.scan-thumb')).toHaveCount(2);
     await page.locator('#scan-btn-finish').click();
     await expect(page.locator('#scan-modal-overlay')).toBeHidden();
+    // Upload läuft asynchron über die Warteschlange — warten, bis er erfolgt ist.
+    await expect.poll(() => page.evaluate(() => !!window.__lastScanUpload)).toBe(true);
     const upload = await page.evaluate(() => window.__lastScanUpload);
     expect(upload.type).toBe('application/pdf');
     expect(upload.size).toBeGreaterThan(0);

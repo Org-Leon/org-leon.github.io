@@ -2214,6 +2214,7 @@ function renderLayerList() {
   document.getElementById('empty-hint').hidden = ids.length > 0;
   document.getElementById('layer-section-count').textContent = String(ids.length);
   refreshFlaechenuebersichtIfOpen();
+  if (typeof renderCompareLayerPick === 'function' && document.body.dataset.view === 'compare') renderCompareLayerPick();
   list.innerHTML = '';
   ids.forEach(id => {
     const l = layers[id];
@@ -2603,7 +2604,7 @@ function markToolHintDone(view) {
 const SEGMENT_CAPTIONS = {
   viewer: 'Shapefiles und GeoJSON auf der Karte ansehen',
   uebersicht: 'Flächen und Kulturen auf einen Blick',
-  compare: 'Zwei Jahre vergleichen: Zugänge, Abgänge, Änderungen',
+  compare: 'Mehrere Jahre vergleichen: Zugänge, Abgänge, Änderungen',
   zeichner: 'Eigene Flächen auf der Karte zeichnen',
   obstbaum: 'Obstbäume auf der Karte erfassen',
   bienenflug: 'Bienenstöcke mit 3-km-Flugradius markieren',
@@ -2672,7 +2673,7 @@ function setActiveSegment(target) {
   if (target === 'zeichner') initZeichnerMap();
   else if (target === 'obstbaum') initObstbaumMap();
   else if (target === 'bienenflug') { initBienenflugMap(); armedTool = 'place-hive'; }
-  else if (target === 'compare') refreshCompareJahrBOptions();
+  else if (target === 'compare') refreshCompareView();
   else if (target === 'hofplan') initHofplanMap();
   else if (target === 'stallplaner') initStallplaner();
   if (target === 'stallplaner') requestStallplanerWakeLock(); else releaseStallplanerWakeLock();
@@ -2711,23 +2712,33 @@ document.querySelectorAll('.segment-btn').forEach(btn => {
 });
 
 // ---------- Jahresvergleich ----------
+// Mehrere Jahre: je Jahr eine hinterlegte Shape-Datei (compareYears, gehört
+// zum Betrieb und wird mit ihm gespeichert, siehe serializeWorkspace). Zwei
+// davon werden verglichen (älteres → neueres); über der Karte gibt es je
+// hinterlegtem Jahr einen Knopf mit der Jahreszahl.
 let compareGeoLayer = null;
-let compareViewMode = 'diff'; // 'diff' | 'onlyA' | 'onlyB'
-let compareDataA = null; // { fc, fileName, layerName }
-let compareDataB = null;
+let compareYears = []; // { id, jahr, fileName, layerName, fc }
+let compareResult = null; // { a, b } — die verglichenen Jahre (a älter)
+let compareViewMode = 'diff'; // 'diff' | id eines Jahres
 let compareRecords = [];
-let compareHiddenLayerId = null; // Jahr-B-Quellebene, während der Vergleichsansicht ausgeblendet (sonst doppelte Darstellung)
+let compareHiddenLayerIds = []; // normale Kartenebenen, während der Jahresansicht ausgeblendet (sonst doppelte Darstellung)
 
-// Blendet die als Jahr B genutzte Ebene wieder ein, falls sie für die
-// Vergleichsansicht ausgeblendet wurde — beim Verlassen des Jahresvergleichs
-// oder vor einem neuen Vergleichslauf aufgerufen.
+// Normale Ebenen ausblenden, solange Vergleich/Jahresansicht auf der Karte liegt.
+function hideMapLayersForCompare() {
+  Object.keys(layers).forEach(id => {
+    const l = layers[id];
+    if (map.hasLayer(l.leafletLayer)) { map.removeLayer(l.leafletLayer); compareHiddenLayerIds.push(id); }
+  });
+}
+// Blendet die ausgeblendeten Ebenen wieder ein und entfernt die
+// Vergleichsdarstellung — beim Verlassen des Jahresvergleichs.
 function restoreCompareHiddenLayer() {
-  if (compareHiddenLayerId && layers[compareHiddenLayerId] && layers[compareHiddenLayerId].visible) {
-    layers[compareHiddenLayerId].leafletLayer.addTo(map);
-  }
-  compareHiddenLayerId = null;
+  compareHiddenLayerIds.forEach(id => { if (layers[id] && layers[id].visible) layers[id].leafletLayer.addTo(map); });
+  compareHiddenLayerIds = [];
   if (compareGeoLayer) { map.removeLayer(compareGeoLayer); compareGeoLayer = null; }
 }
+const compareYearById = (id) => compareYears.find(y => y.id === id) || null;
+const compareYearLabel = (y) => (y && y.jahr) || 'Jahr ?';
 
 const STATUS_COLORS = {
   zugang: '#6FBF73',
@@ -2743,13 +2754,12 @@ const STATUS_LABELS = {
 };
 
 
-document.querySelectorAll('.cvt-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.cvt-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    compareViewMode = btn.getAttribute('data-mode');
-    if (compareRecords.length) renderCompareMapLayers(compareRecords, false);
-  });
+document.getElementById('compare-view-toggle').addEventListener('click', (e) => {
+  const btn = e.target.closest('.cvt-btn');
+  if (!btn || btn.disabled) return;
+  compareViewMode = btn.getAttribute('data-mode');
+  renderCompareToggle();
+  showCompareView(false);
 });
 
 const compareTablePanel = initResizablePanel({
@@ -2809,87 +2819,168 @@ function extractJahrAusMetadaten(fc, fileName) {
   return null;
 }
 
-// Jahr B kommt jetzt aus dem geteilten Datenbestand (layers) statt aus einem
-// eigenen Upload — Kandidaten sind alle nicht-Teilflächen-Ebenen mit
-// Flächengeometrie. Bei mehreren geladenen Ebenen wählt eine kleine Auswahlliste,
-// Standardwert ist die zuletzt hinzugefügte (Objektschlüssel-Reihenfolge = Einfügereihenfolge).
-function getCompareJahrBCandidates() {
+// ---- Jahre hinterlegen ----
+function compareYearsSorted() {
+  return compareYears.slice().sort((a, b) => String(a.jahr || '9999').localeCompare(String(b.jahr || '9999')) || a.fileName.localeCompare(b.fileName));
+}
+function compareYearHa(fc) {
+  return (fc.features || []).reduce((s, f) => s + (parseHa(pickGroesse(f.properties || {})) || 0), 0);
+}
+// Standardauswahl: die beiden neuesten Jahre.
+function ensureCompareSelection() {
+  const sorted = compareYearsSorted().filter(y => y.jahr);
+  const selA = document.getElementById('compare-sel-a');
+  const selB = document.getElementById('compare-sel-b');
+  const valid = (v) => sorted.some(y => y.id === v);
+  if (!valid(selB.dataset.value)) selB.dataset.value = sorted.length ? sorted[sorted.length - 1].id : '';
+  if (!valid(selA.dataset.value) || selA.dataset.value === selB.dataset.value) {
+    const rest = sorted.filter(y => y.id !== selB.dataset.value);
+    selA.dataset.value = rest.length ? rest[rest.length - 1].id : '';
+  }
+}
+function renderCompareYears() {
+  ensureCompareSelection();
+  const list = document.getElementById('compare-years');
+  const sorted = compareYearsSorted();
+  list.innerHTML = sorted.length ? sorted.map(y => `<div class="cy-row${y.jahr ? '' : ' is-missing'}" data-cy="${y.id}">
+      <input class="cy-jahr" value="${escapeHtml(y.jahr || '')}" placeholder="Jahr" inputmode="numeric" maxlength="4" aria-label="Jahr für ${escapeHtml(y.fileName)}">
+      <span class="cy-text"><span class="cy-file" title="${escapeHtml(y.fileName)}">${escapeHtml(y.fileName)}</span>
+        <span class="cy-sub">${y.jahr ? '' : '<b>Jahr eintragen</b> · '}${(y.fc.features || []).length} Flächen · ${compareYearHa(y.fc).toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ha</span></span>
+      <button type="button" class="cy-del" data-cy-del="${y.id}" title="Jahr entfernen" aria-label="${escapeHtml(compareYearLabel(y))} entfernen"><span class="material-symbols-rounded icon" aria-hidden="true">delete</span></button>
+    </div>`).join('')
+    : '<p class="cy-empty">Noch keine Jahre hinterlegt.</p>';
+  const opts = (sel) => compareYearsSorted().filter(y => y.jahr).map(y => `<option value="${y.id}"${sel === y.id ? ' selected' : ''}>${escapeHtml(y.jahr)}</option>`).join('');
+  const selA = document.getElementById('compare-sel-a');
+  const selB = document.getElementById('compare-sel-b');
+  selA.innerHTML = opts(selA.dataset.value);
+  selB.innerHTML = opts(selB.dataset.value);
+  document.getElementById('compare-pair').hidden = compareYears.filter(y => y.jahr).length < 2;
+  updateCompareRunEnabled();
+  renderCompareLayerPick();
+  renderCompareToggle();
+}
+function updateCompareRunEnabled() {
+  const a = document.getElementById('compare-sel-a').dataset.value, b = document.getElementById('compare-sel-b').dataset.value;
+  document.getElementById('btn-compare-run').disabled = !(a && b && a !== b);
+}
+// Knöpfe über der Karte: "Vergleich" + je hinterlegtem Jahr die Jahreszahl.
+function renderCompareToggle() {
+  const toggle = document.getElementById('compare-view-toggle');
+  const years = compareYearsSorted().filter(y => y.jahr);
+  if (compareViewMode !== 'diff' && !compareYearById(compareViewMode)) compareViewMode = 'diff';
+  const diffLabel = compareResult ? `${compareResult.a.jahr} → ${compareResult.b.jahr}` : 'Vergleich';
+  toggle.innerHTML = `<button class="cvt-btn${compareViewMode === 'diff' ? ' active' : ''}" data-mode="diff"${compareResult ? '' : ' disabled title="Erst zwei Jahre vergleichen"'}>${escapeHtml(diffLabel)}</button>`
+    + years.map(y => `<button class="cvt-btn${compareViewMode === y.id ? ' active' : ''}" data-mode="${y.id}" title="Nur ${escapeHtml(y.jahr)} anzeigen">${escapeHtml(y.jahr)}</button>`).join('');
+}
+// Geladene Kartenebene als Jahr übernehmen (bisheriger Weg "Jahr B = Ebene").
+function getCompareLayerCandidates() {
   return Object.keys(layers)
     .filter(id => !layers[id].isTeilflaechen && (layers[id].geojson.features || []).some(f =>
       f.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon')))
     .map(id => ({ id, name: layers[id].name }));
 }
-
-function getSelectedJahrBLayerId() {
-  const candidates = getCompareJahrBCandidates();
-  if (!candidates.length) return null;
-  const select = document.getElementById('compare-jahrb-picker');
-  if (candidates.length === 1) return candidates[0].id;
-  return candidates.some(c => c.id === select.value) ? select.value : candidates[candidates.length - 1].id;
+function renderCompareLayerPick() {
+  const wrap = document.getElementById('compare-layer-pick');
+  const select = document.getElementById('compare-layer-select');
+  const candidates = getCompareLayerCandidates();
+  wrap.hidden = !candidates.length;
+  const prev = select.value;
+  select.innerHTML = candidates.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+  if (candidates.some(c => c.id === prev)) select.value = prev;
 }
-
-function updateCompareRunEnabled() {
-  document.getElementById('btn-compare-run').disabled = !(compareDataA && getSelectedJahrBLayerId());
-}
-
-// Aktualisiert die Jahr-B-Auswahlliste (nur sichtbar bei mehr als einer
-// Kandidaten-Ebene) — aufgerufen beim Wechsel in den Jahresvergleich sowie
-// jedes Mal, wenn sich der geteilte Datenbestand ändert (neue Ebene geladen/entfernt).
-function refreshCompareJahrBOptions() {
-  const candidates = getCompareJahrBCandidates();
-  const wrap = document.getElementById('compare-jahrb-picker-wrap');
-  const select = document.getElementById('compare-jahrb-picker');
-  wrap.hidden = candidates.length <= 1;
-  if (candidates.length > 1) {
-    const prevValue = select.value;
-    select.innerHTML = candidates.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
-    select.value = candidates.some(c => c.id === prevValue) ? prevValue : candidates[candidates.length - 1].id;
+function addCompareYear({ fc, fileName, layerName }) {
+  const jahr = extractJahrAusMetadaten(fc, fileName);
+  const existing = jahr && compareYears.find(y => y.jahr === jahr);
+  if (existing) {
+    if (!confirm(`Für ${jahr} ist schon „${existing.fileName}“ hinterlegt. Ersetzen?`)) return null;
+    compareYears = compareYears.filter(y => y !== existing);
+    if (compareResult && (compareResult.a === existing || compareResult.b === existing)) clearCompareResult();
   }
-  updateCompareYearButtons();
-  updateCompareRunEnabled();
+  const y = { id: 'cy-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), jahr: jahr || '', fileName, layerName, fc };
+  compareYears.push(y);
+  // Neues Jahr -> Auswahl wieder auf die beiden neuesten Jahre
+  document.getElementById('compare-sel-a').dataset.value = '';
+  document.getElementById('compare-sel-b').dataset.value = '';
+  renderCompareYears();
+  setCompareStatus(jahr ? `${jahr} hinterlegt (${fileName}).` : `${fileName}: kein Jahr erkannt — bitte eintragen.`);
+  persistLocalState().catch(() => {});
+  if (!jahr) setTimeout(() => document.querySelector(`.cy-row[data-cy="${y.id}"] .cy-jahr`)?.focus(), 0);
+  return y;
 }
-document.getElementById('compare-jahrb-picker').addEventListener('change', () => {
-  updateCompareYearButtons();
-  updateCompareRunEnabled();
-});
-
-function updateCompareYearButtons() {
-  const btnA = document.querySelector('.cvt-btn[data-mode="onlyA"]');
-  const btnB = document.querySelector('.cvt-btn[data-mode="onlyB"]');
-  if (btnA) btnA.textContent = (compareDataA && compareDataA.jahr) ? 'Nur ' + compareDataA.jahr : 'Nur Jahr A';
-  const jahrBLayerId = getSelectedJahrBLayerId();
-  const jahrB = jahrBLayerId ? extractJahrAusMetadaten(layers[jahrBLayerId].geojson, layers[jahrBLayerId].name) : null;
-  if (btnB) btnB.textContent = jahrB ? 'Nur ' + jahrB : 'Nur Jahr B';
-}
-
+function setCompareStatus(text) { document.getElementById('compare-status').textContent = text; }
 async function loadCompareFile(file) {
   try {
-    let results = await parseShapefileZip(file);
-    if (!results.length) {
-      showCompareError(file.name + ': Keine Shapefile-Bestandteile gefunden.');
-      return;
+    const ext = file.name.split('.').pop().toLowerCase();
+    let chosen;
+    if (ext === 'geojson' || ext === 'json') {
+      chosen = { fc: JSON.parse(await file.text()), name: file.name.replace(/\.\w+$/, '') };
+    } else {
+      let results = await parseShapefileZip(file);
+      if (!results.length) { showCompareError(file.name + ': Keine Shapefile-Bestandteile gefunden.'); return; }
+      results = mergeFeldstueckNutzung(results);
+      // Für den Vergleich zählt nur die Parzellen-Ebene — Teilflächen o.ä. werden ignoriert.
+      chosen = results.find(r => /parzelle/i.test(r.name)) || results.find(r => /feldst(ü|ue)ck/i.test(r.name));
+      if (!chosen) {
+        chosen = results[0];
+        showCompareError(file.name + ': Keine Ebene mit "Parzellen" im Namen gefunden — verwende stattdessen "' + chosen.name + '".');
+      }
     }
-    results = mergeFeldstueckNutzung(results);
-    // Für den Vergleich zählt nur die Parzellen-Ebene — Teilflächen o.ä. werden ignoriert.
-    let chosen = results.find(r => /parzelle/i.test(r.name)) || results.find(r => /feldst(ü|ue)ck/i.test(r.name));
-    if (!chosen) {
-      chosen = results[0];
-      showCompareError(file.name + ': Keine Ebene mit "Parzellen" im Namen gefunden — verwende stattdessen "' + chosen.name + '".');
-    }
-    compareDataA = { fc: chosen.fc, fileName: file.name, layerName: chosen.name, jahr: extractJahrAusMetadaten(chosen.fc, file.name) };
-    document.getElementById('compare-file-a-name').textContent = file.name;
-    document.getElementById('compare-drop-a').classList.add('filled');
-    updateCompareYearButtons();
-    updateCompareRunEnabled();
+    addCompareYear({ fc: chosen.fc, fileName: file.name, layerName: chosen.name });
   } catch (err) {
     console.error(err);
     showCompareError(file.name + ': Konnte Datei nicht lesen — ' + (err.message || 'unbekannter Fehler'));
   }
 }
-
-document.getElementById('compare-file-a').addEventListener('change', (e) => {
-  if (e.target.files[0]) loadCompareFile(e.target.files[0]);
+document.getElementById('compare-file-add').addEventListener('change', async (e) => {
+  for (const f of [...e.target.files]) await loadCompareFile(f);
+  e.target.value = '';
 });
+document.getElementById('compare-layer-add').addEventListener('click', () => {
+  const l = layers[document.getElementById('compare-layer-select').value];
+  if (l) addCompareYear({ fc: structuredClone(l.geojson), fileName: l.name, layerName: l.name });
+});
+document.getElementById('compare-years').addEventListener('click', (e) => {
+  const del = e.target.closest('[data-cy-del]');
+  if (!del) return;
+  const y = compareYearById(del.dataset.cyDel);
+  if (!y || !confirm(`${compareYearLabel(y)} („${y.fileName}“) aus dem Jahresvergleich entfernen?`)) return;
+  compareYears = compareYears.filter(x => x !== y);
+  if (compareResult && (compareResult.a === y || compareResult.b === y)) clearCompareResult();
+  if (compareViewMode === y.id) { compareViewMode = 'diff'; restoreCompareHiddenLayer(); }
+  renderCompareYears();
+  persistLocalState().catch(() => {});
+});
+document.getElementById('compare-years').addEventListener('change', (e) => {
+  const input = e.target.closest('.cy-jahr');
+  if (!input) return;
+  const y = compareYearById(input.closest('.cy-row').dataset.cy);
+  const v = input.value.trim();
+  if (!/^(19|20)\d{2}$/.test(v)) { setCompareStatus('Bitte ein Jahr wie 2024 eintragen.'); input.value = y.jahr; return; }
+  if (compareYears.some(x => x !== y && x.jahr === v)) { setCompareStatus(`${v} ist schon hinterlegt.`); input.value = y.jahr; return; }
+  y.jahr = v;
+  if (compareResult && (compareResult.a === y || compareResult.b === y)) runComparison();
+  renderCompareYears();
+  setCompareStatus('');
+  persistLocalState().catch(() => {});
+});
+['compare-sel-a', 'compare-sel-b'].forEach(id => document.getElementById(id).addEventListener('change', (e) => {
+  e.target.dataset.value = e.target.value;
+  updateCompareRunEnabled();
+  if (compareResult && !document.getElementById('btn-compare-run').disabled) runComparison();
+}));
+function clearCompareResult() {
+  compareResult = null;
+  compareRecords = [];
+  if (compareGeoLayer) { map.removeLayer(compareGeoLayer); compareGeoLayer = null; }
+  document.getElementById('compare-summary').classList.remove('show');
+  document.getElementById('compare-legend').classList.remove('show');
+  compareTablePanel.close();
+}
+// Beim Öffnen des Jahresvergleichs und nach Datenänderungen.
+function refreshCompareView() {
+  renderCompareYears();
+  if (document.body.dataset.view === 'compare' && (compareResult || compareViewMode !== 'diff')) showCompareView(false);
+}
 
 function parseHa(v) {
   if (v === null || v === undefined || v === '') return null;
@@ -2899,21 +2990,14 @@ function parseHa(v) {
 
 function runComparison() {
   markToolHintDone('compare');
-  const jahrBLayerId = getSelectedJahrBLayerId();
-  if (!compareDataA || !jahrBLayerId) return;
-
-  // Jahr B ist jetzt eine ganz normal geladene Ebene — sie bleibt gleichzeitig
-  // "normale Kartenebene" UND "Vergleichs-Eingabe"; damit sie nicht doppelt
-  // (einmal normal, einmal als farbige Status-Fläche) übereinander liegt, wird
-  // sie für die Dauer der Vergleichsansicht ausgeblendet (restoreCompareHiddenLayer()
-  // blendet sie beim Verlassen des Jahresvergleichs oder vor dem nächsten Lauf
-  // wieder ein).
-  restoreCompareHiddenLayer();
-  const jahrBLayer = layers[jahrBLayerId];
-  compareDataB = { fc: jahrBLayer.geojson, fileName: jahrBLayer.name, layerName: jahrBLayer.name, jahr: extractJahrAusMetadaten(jahrBLayer.geojson, jahrBLayer.name) };
-  updateCompareYearButtons();
-  map.removeLayer(jahrBLayer.leafletLayer);
-  compareHiddenLayerId = jahrBLayerId;
+  let A = compareYearById(document.getElementById('compare-sel-a').dataset.value);
+  let B = compareYearById(document.getElementById('compare-sel-b').dataset.value);
+  if (!A || !B || A === B) return;
+  // Immer älteres → neueres Jahr (Zugang/Abgang hängen an der Richtung).
+  if (String(A.jahr) > String(B.jahr)) [A, B] = [B, A];
+  compareResult = { a: A, b: B };
+  compareViewMode = 'diff';
+  const compareDataA = A, compareDataB = B;
 
   const compareCritGroesse = document.getElementById('crit-groesse').checked;
   const compareCritKultur = document.getElementById('crit-kultur').checked;
@@ -2974,8 +3058,46 @@ function runComparison() {
   compareRecords = records;
   renderCompareSummary(records);
   renderCompareTable(records);
-  renderCompareMapLayers(records);
+  renderCompareToggle();
+  updateCompareTableHeaders();
+  showCompareView(true);
   compareTablePanel.open();
+}
+
+// Aktuelle Ansicht (Vergleich oder einzelnes Jahr) auf die Karte bringen.
+function showCompareView(fitView) {
+  if (compareGeoLayer) map.removeLayer(compareGeoLayer);
+  compareGeoLayer = L.featureGroup().addTo(map);
+  if (!compareHiddenLayerIds.length) hideMapLayersForCompare();
+  if (compareViewMode === 'diff') {
+    if (compareRecords.length) renderCompareMapLayers(compareRecords, fitView);
+    return;
+  }
+  const y = compareYearById(compareViewMode);
+  if (!y) return;
+  if (compareResult && (compareResult.a === y || compareResult.b === y)) {
+    renderSingleYearLayers(compareRecords, compareResult.a === y ? 'onlyA' : 'onlyB', fitView);
+    return;
+  }
+  // Jahr außerhalb des Vergleichs: neutral darstellen.
+  (y.fc.features || []).forEach(f => {
+    if (!f.geometry) return;
+    const p = f.properties || {};
+    const nr = pickField(p, FIELD_CANDIDATES.nummer), name = pickField(p, FIELD_CANDIDATES.name);
+    const g = parseHa(pickGroesse(p));
+    const layer = L.geoJSON(f, { style: { color: '#5F7A93', weight: 1.4, fillColor: '#5F7A93', fillOpacity: 0.25 } });
+    layer.bindPopup('<b>' + escapeHtml(nr || '–') + '</b>' + (name ? ' – ' + escapeHtml(name) : '') + '<br>' +
+      'Jahr: ' + escapeHtml(y.jahr) + '<br>Größe: ' + (g !== null ? g.toFixed(2) + ' ha' : '–') + '<br>Kultur: ' + escapeHtml(pickField(p, FIELD_CANDIDATES.kultur) || '–'));
+    layer.addTo(compareGeoLayer);
+    addFeatureLabel(f, featureLabelHtml(nr, name), compareGeoLayer);
+  });
+  if (fitView !== false && compareGeoLayer.getLayers().length) map.fitBounds(compareGeoLayer.getBounds(), { padding: [30, 30] });
+}
+function updateCompareTableHeaders() {
+  const ja = compareResult ? compareResult.a.jahr : 'A', jb = compareResult ? compareResult.b.jahr : 'B';
+  document.getElementById('compare-th-a').textContent = 'Größe ' + ja;
+  document.getElementById('compare-th-b').textContent = 'Größe ' + jb;
+  document.getElementById('compare-th-kultur').textContent = `Kultur ${ja} → ${jb}`;
 }
 
 document.getElementById('btn-compare-run').addEventListener('click', runComparison);
@@ -3047,7 +3169,7 @@ function compareRecordPopupHtml(r) {
   const gBText = gB !== null ? gB.toFixed(2) + ' ha' : '–';
   return '<b>' + escapeHtml(r.nummer) + '</b>' + (r.name ? ' – ' + escapeHtml(r.name) : '') + '<br>' +
     'Status: ' + STATUS_LABELS[r.status] + '<br>' +
-    'Größe A: ' + gAText + ' · Größe B: ' + gBText + '<br>' +
+    'Größe ' + escapeHtml(compareResult ? compareResult.a.jahr : 'A') + ': ' + gAText + ' · Größe ' + escapeHtml(compareResult ? compareResult.b.jahr : 'B') + ': ' + gBText + '<br>' +
     'Kultur: ' + escapeHtml(r.kulturA || '–') + (r.kulturA !== r.kulturB ? ' → ' + escapeHtml(r.kulturB || '–') : '');
 }
 
@@ -3100,13 +3222,7 @@ function addFeatureLabel(feature, text, group) {
 
 function renderCompareMapLayers(records, fitView) {
   if (fitView === undefined) fitView = true;
-  if (compareGeoLayer) map.removeLayer(compareGeoLayer);
-  compareGeoLayer = L.featureGroup().addTo(map);
-
-  if (compareViewMode === 'onlyA' || compareViewMode === 'onlyB') {
-    renderSingleYearLayers(records, compareViewMode, fitView);
-    return;
-  }
+  if (!compareGeoLayer) compareGeoLayer = L.featureGroup().addTo(map);
 
   records.forEach(r => {
     const color = STATUS_COLORS[r.status];
@@ -3328,7 +3444,8 @@ function exportViewerTable(type) {
 
 function exportCompareTable(type) {
   if (!compareRecords.length) { showCompareError('Kein Vergleichsergebnis zum Exportieren — erst "Vergleichen" ausführen.'); return; }
-  const headers = ['Status', 'Nummer', 'Name', 'Größe A (ha)', 'Größe B (ha)', 'Δ ha', 'Kulturart A', 'Kulturart B'];
+  const ja = compareResult.a.jahr, jb = compareResult.b.jahr;
+  const headers = ['Status', 'Nummer', 'Name', `Größe ${ja} (ha)`, `Größe ${jb} (ha)`, 'Δ ha', `Kulturart ${ja}`, `Kulturart ${jb}`];
   const data = compareRecords.map(r => {
     const gA = parseHa(r.groesseA);
     const gB = parseHa(r.groesseB);
@@ -7869,7 +7986,8 @@ function serializeWorkspace() {
     obstbaumTrees: obstbaumTrees.map(t => ({ art: t.art, lat: t.latlng.lat, lng: t.latlng.lng, notes: t.notes, photos: t.photos })),
     bienenflugPoints: bienenflugPoints.map(p => ({ name: p.name, lat: p.latlng.lat, lng: p.latlng.lng })),
     hofplanShapes: hofplanShapes.map(s => ({ kategorie: s.kategorie, name: s.name, color: s.color, stallplanId: s.stallplanId || null, geometry: s.leafletLayer.toGeoJSON().geometry })),
-    stallplaene: stallplaene.map(p => structuredClone(p))
+    stallplaene: stallplaene.map(p => structuredClone(p)),
+    vergleichsjahre: compareYears.map(y => ({ jahr: y.jahr, fileName: y.fileName, layerName: y.layerName, fc: y.fc }))
   };
 }
 
@@ -7880,6 +7998,10 @@ function serializeWorkspace() {
 function restoreWorkspace(data) {
   if (!data) return;
   (data.layers || []).forEach(l => addLayer(l.name, l.geojson));
+  if ((data.vergleichsjahre || []).length) {
+    compareYears = data.vergleichsjahre.map((y, i) => ({ id: 'cy-r' + i + '-' + Date.now().toString(36), jahr: y.jahr || '', fileName: y.fileName || 'Datei', layerName: y.layerName || '', fc: y.fc }));
+    renderCompareYears();
+  }
   if ((data.obstbaumTrees || []).length) {
     initObstbaumMap();
     data.obstbaumTrees.forEach(t => {
@@ -7941,6 +8063,13 @@ function clearAllLayers() {
   shapeEditingEntryId = null;
   renderParcelList();
 }
+function clearAllCompareYears() {
+  restoreCompareHiddenLayer();
+  clearCompareResult();
+  compareYears = [];
+  compareViewMode = 'diff';
+  renderCompareYears();
+}
 function clearAllTrees() {
   while (obstbaumTrees.length) removeTree(obstbaumTrees[0].id);
 }
@@ -7963,6 +8092,7 @@ function clearAllStallplaene() {
   renderStallplan();
 }
 function clearWorkspace() {
+  clearAllCompareYears();
   clearAllLayers();
   clearAllTrees();
   clearAllBeehives();
@@ -8029,7 +8159,7 @@ async function switchWorkspace(oldKey, newKey) {
 // ein leeres serialisiertes Workspace-Objekt zu prüfen, da hier der gerade
 // sichtbare Stand gemeint ist, bevor er überhaupt gespeichert wurde.
 function currentWorkspaceHasContent() {
-  return !!(Object.keys(layers).length || obstbaumTrees.length || bienenflugPoints.length || hofplanShapes.length || stallplaene.length);
+  return !!(Object.keys(layers).length || obstbaumTrees.length || bienenflugPoints.length || hofplanShapes.length || stallplaene.length || compareYears.length);
 }
 
 // Hängt die vier Bestandslisten zweier serialisierter Workspaces aneinander
@@ -8042,7 +8172,8 @@ function mergeWorkspaces(target, moved) {
     obstbaumTrees: [...(target.obstbaumTrees || []), ...(moved.obstbaumTrees || [])],
     bienenflugPoints: [...(target.bienenflugPoints || []), ...(moved.bienenflugPoints || [])],
     hofplanShapes: [...(target.hofplanShapes || []), ...(moved.hofplanShapes || [])],
-    stallplaene: [...(target.stallplaene || []), ...(moved.stallplaene || [])]
+    stallplaene: [...(target.stallplaene || []), ...(moved.stallplaene || [])],
+    vergleichsjahre: [...(target.vergleichsjahre || []), ...(moved.vergleichsjahre || [])]
   };
 }
 
