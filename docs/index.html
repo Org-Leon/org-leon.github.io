@@ -39,8 +39,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
-  <script type="module" crossorigin src="./assets/index-BxL-SJJK.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-Cqvgvk49.css">
+  <script type="module" crossorigin src="./assets/index-B1y6Gv6u.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-N70QRm4E.css">
 <link rel="manifest" href="./manifest.webmanifest"></head>
 <body data-view="viewer">
 
@@ -218,17 +218,27 @@
 
   <div class="sidebar-section" data-view="compare">
     <div class="tool-main">
-      <div class="tool-hint"><span class="material-symbols-rounded icon">info</span><span>Älteres Jahr laden — verglichen wird mit der geladenen Ebene.</span></div>
+      <div class="tool-hint"><span class="material-symbols-rounded icon">info</span><span>Shape-Dateien der Jahre hinterlegen — dann zwei Jahre wählen und vergleichen.</span></div>
+      <!-- Hinterlegte Jahre (je Betrieb gespeichert, siehe compareYears in main.js) -->
       <div class="compare-upload">
-        <label class="compare-label">Jahr A (älter)</label>
-        <div class="dropzone-mini" id="compare-drop-a">
-          <span id="compare-file-a-name">.zip auswählen…</span>
-          <input type="file" id="compare-file-a" accept=".zip">
+        <label class="compare-label">Hinterlegte Jahre</label>
+        <div id="compare-years" class="cy-list"></div>
+        <div class="dropzone-mini" id="compare-drop-add">
+          <span>Jahr hinzufügen (.zip / .geojson)…</span>
+          <input type="file" id="compare-file-add" accept=".zip,.geojson,.json" multiple>
+        </div>
+        <div class="cy-layer-pick" id="compare-layer-pick" hidden>
+          <select id="compare-layer-select" aria-label="Geladene Ebene"></select>
+          <button type="button" id="compare-layer-add" class="cy-layer-btn" title="Geladene Kartenebene als Jahr hinterlegen"><span class="material-symbols-rounded icon" aria-hidden="true">add</span>Als Jahr</button>
         </div>
       </div>
-      <div class="compare-upload" id="compare-jahrb-picker-wrap" hidden>
-        <label class="compare-label">Jahr B (geladene Ebene)</label>
-        <select id="compare-jahrb-picker"></select>
+      <div class="compare-upload cy-pair" id="compare-pair" hidden>
+        <label class="compare-label">Vergleichen</label>
+        <div class="cy-pair-row">
+          <select id="compare-sel-a" aria-label="Älteres Jahr"></select>
+          <span class="material-symbols-rounded icon" aria-hidden="true">arrow_forward</span>
+          <select id="compare-sel-b" aria-label="Neueres Jahr"></select>
+        </div>
       </div>
       <button id="btn-compare-run" class="tool-btn primary" disabled><span class="material-symbols-rounded icon">compare_arrows</span>Vergleichen</button>
       <div id="compare-criteria">
@@ -243,7 +253,9 @@
       <details class="tool-tips">
         <summary>Tipps</summary>
         <ul id="compare-hint">
-          <li>Jahr B ist die Ebene, die unten unter „Ebenen“ geladen ist.</li>
+          <li>Die hinterlegten Jahre bleiben beim Betrieb gespeichert — beim nächsten Mal sind sie wieder da.</li>
+          <li>Über der Karte zeigt ein Tipp auf eine Jahreszahl nur dieses Jahr.</li>
+          <li>Eine geladene Kartenebene lässt sich mit „Als Jahr“ übernehmen.</li>
           <li>Teilflächen und sonstige Ebenen werden nicht verglichen.</li>
         </ul>
       </details>
@@ -577,9 +589,7 @@
     </button>
     <div class="topbar-extra" data-view="compare">
       <div id="compare-view-toggle" class="ff-seg">
-        <button class="cvt-btn active" data-mode="diff">Vergleich</button>
-        <button class="cvt-btn" data-mode="onlyA">Nur Jahr A</button>
-        <button class="cvt-btn" data-mode="onlyB">Nur Jahr B</button>
+        <button class="cvt-btn active" data-mode="diff" disabled>Vergleich</button>
       </div>
     </div>
   </div>
@@ -649,10 +659,10 @@
             <th>Status</th>
             <th>Nr.</th>
             <th>Name</th>
-            <th>Größe A</th>
-            <th>Größe B</th>
+            <th id="compare-th-a">Größe A</th>
+            <th id="compare-th-b">Größe B</th>
             <th>Δ ha</th>
-            <th>Kultur A → B</th>
+            <th id="compare-th-kultur">Kultur A → B</th>
           </tr>
         </thead>
         <tbody id="compare-table-body"></tbody>
@@ -1734,7 +1744,25 @@
       </button>
     </div>
     <div class="wf-toolbar">
-      <label class="wf-field"><span>Zeitraum / Wirtschaftsjahr</span><input type="text" id="wf-zeitraum" class="wf-input" placeholder="z. B. 2025 oder 01.07.2024–30.06.2025"></label>
+      <div class="wf-field wf-zeitraum-field">
+        <label for="wf-zeitraum">Zeitraum / Wirtschaftsjahr</label>
+        <div class="wf-zeitraum-row">
+          <input type="text" id="wf-zeitraum" class="wf-input" placeholder="z. B. 2025 oder 01.07.2024–30.06.2025">
+          <button type="button" id="wf-zeitraum-cal" class="wf-cal-btn" aria-label="Zeitraum im Kalender wählen" title="Zeitraum im Kalender wählen" aria-expanded="false" aria-controls="wf-zeitraum-pop">
+            <span class="material-symbols-rounded icon" aria-hidden="true">calendar_month</span>
+          </button>
+        </div>
+        <!-- Kalenderauswahl: Schnellwahl (Kalender-/Wirtschaftsjahr) oder Von/Bis -->
+        <div class="wf-zeitraum-pop" id="wf-zeitraum-pop" role="dialog" aria-label="Zeitraum wählen" hidden>
+          <div class="wf-zr-presets" id="wf-zr-presets"></div>
+          <div class="wf-zr-dates">
+            <label><span>Von</span><input type="date" id="wf-zr-von" class="wf-input"></label>
+            <label><span>Bis</span><input type="date" id="wf-zr-bis" class="wf-input"></label>
+          </div>
+          <p class="wf-hint wf-zr-hint" id="wf-zr-hint" hidden></p>
+          <div class="wf-zr-actions"><button type="button" id="wf-zr-done" class="betrieb-btn primary">Fertig</button></div>
+        </div>
+      </div>
       <label class="wf-field wf-field-small"><span id="wf-tol-ertrag-label">Toleranz Referenz ±%</span><input type="text" id="wf-tol-ertrag" class="wf-input wf-num" inputmode="decimal"></label>
       <label class="wf-field wf-field-small" id="wf-tol-ausbeute-wrap" hidden><span>Toleranz Ausbeute ±%</span><input type="text" id="wf-tol-ausbeute" class="wf-input wf-num" inputmode="decimal"></label>
       <label class="wf-field wf-field-small" id="wf-tol-bilanz-wrap"><span>Toleranz Bilanz ±%</span><input type="text" id="wf-tol-bilanz" class="wf-input wf-num" inputmode="decimal"></label>

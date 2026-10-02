@@ -1147,6 +1147,32 @@
     color: var(--muted);
     margin-bottom: 6px;
   }
+  /* Hinterlegte Jahre */
+  .cy-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+  .cy-row { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2); }
+  .cy-row.is-missing { border-color: #E8A33D; }
+  .cy-jahr { flex: 0 0 58px; width: 58px; height: 34px; box-sizing: border-box; padding: 0 6px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--accent); font: 700 14px var(--sans); text-align: center; }
+  .cy-jahr:focus { outline: none; border-color: var(--accent); }
+  .cy-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  .cy-file { font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cy-sub { font-size: 11px; color: var(--muted); }
+  .cy-sub b { color: #B7791F; font-weight: 600; }
+  .cy-del { flex: 0 0 auto; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border: none; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; }
+  .cy-del:hover { background: var(--panel); color: var(--warn); }
+  .cy-del .icon { font-size: 18px; }
+  .cy-empty { margin: 0 0 8px; font-size: 12px; color: var(--muted); }
+  .cy-layer-pick { display: flex; gap: 6px; margin-top: 8px; }
+  .cy-layer-pick select, .cy-pair-row select { flex: 1 1 auto; min-width: 0; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font: 12.5px var(--sans); padding: 8px 10px; cursor: pointer; }
+  .cy-layer-btn { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--accent); font: 600 12px var(--sans); cursor: pointer; white-space: nowrap; }
+  .cy-layer-btn:hover { border-color: var(--accent); }
+  .cy-layer-btn .icon { font-size: 16px; }
+  .cy-pair-row { display: flex; align-items: center; gap: 8px; }
+  .cy-pair-row .icon { font-size: 18px; color: var(--muted); }
+  .cy-pair-row select { font-weight: 600; }
+  #compare-view-toggle { max-width: min(520px, 60vw); overflow-x: auto; scrollbar-width: none; }
+  #compare-view-toggle::-webkit-scrollbar { display: none; }
+  #compare-view-toggle .cvt-btn { flex: 0 0 auto; }
+  #compare-view-toggle .cvt-btn:disabled { opacity: .5; cursor: default; }
   #compare-jahrb-picker {
     width: 100%;
     background: var(--panel-2);
@@ -3855,7 +3881,41 @@
   .wf-toolbar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 14px; padding: 0 20px 10px; }
   .wf-field { display: flex; flex-direction: column; gap: 4px; flex: 1 1 220px; }
   .wf-field-small { flex: 0 0 150px; }
-  .wf-field > span { font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  .wf-field > span, .wf-field > label { font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  /* Zeitraum: Textfeld + Kalender-Knopf mit Auswahlfeld */
+  .wf-zeitraum-field { position: relative; }
+  .wf-zeitraum-row { display: flex; gap: 6px; }
+  .wf-zeitraum-row .wf-input { flex: 1 1 auto; }
+  .wf-cal-btn {
+    flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+    width: 40px; height: 36px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--panel-2); color: var(--accent); cursor: pointer;
+  }
+  .wf-cal-btn:hover, .wf-cal-btn[aria-expanded="true"] { border-color: var(--accent); background: var(--accent-tint); }
+  .wf-cal-btn .icon { font-size: 20px; }
+  .wf-zeitraum-pop {
+    position: absolute; top: calc(100% + 6px); left: 0; z-index: 30;
+    width: min(360px, calc(100vw - 32px)); box-sizing: border-box;
+    padding: 12px; display: flex; flex-direction: column; gap: 10px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: 0 12px 32px rgba(0,0,0,.3);
+  }
+  .wf-zeitraum-pop[hidden] { display: none; }
+  .wf-zr-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+  .wf-zr-chip { min-height: 34px; padding: 0 12px; border: 1px solid var(--border); border-radius: 999px; background: var(--panel-2); color: var(--text); font: 600 12px var(--sans); cursor: pointer; }
+  .wf-zr-chip:hover { border-color: var(--accent); }
+  .wf-zr-chip[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-tint); color: var(--accent); }
+  .wf-zr-dates { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .wf-zr-dates label { display: flex; flex-direction: column; gap: 4px; }
+  .wf-zr-dates label > span { font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+  .wf-zr-hint { margin: 0; color: var(--warn); }
+  .wf-zr-hint[hidden] { display: none; }
+  .wf-zr-actions { display: flex; justify-content: flex-end; }
+  .wf-zr-actions .betrieb-btn { min-height: 36px; }
+  @media (hover: none) and (pointer: coarse) {
+    .wf-cal-btn { width: 44px; height: 44px; }
+    .wf-zr-chip { min-height: 40px; }
+  }
   .wf-mode { margin-left: auto; }
   .wf-mode > button { min-height: 38px; gap: 6px; }
   .wf-mode > button .icon { font-size: 18px; }
@@ -4631,8 +4691,8 @@
     #map-place-chip-done[hidden] { display: none; }
     #topbar .topbar-label { display: none; }
     #topbar .topbar-extra[data-view="compare"].active { order: -1; flex: 1 0 100%; display: flex; }
-    #compare-view-toggle { flex: 1; display: flex; }
-    #compare-view-toggle.ff-seg .cvt-btn { flex: 1; min-height: 38px; }
+    #compare-view-toggle { flex: 1; display: flex; max-width: none; }
+    #compare-view-toggle.ff-seg .cvt-btn { flex: 1 0 auto; min-height: 38px; }
     #basemap-seg { display: none; }
     #topbar #btn-basemap { display: inline-flex; }
 

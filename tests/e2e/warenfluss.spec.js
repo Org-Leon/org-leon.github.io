@@ -393,6 +393,54 @@ test.describe('Warenflussprüfung', () => {
     expect(await stored(page, id)).toHaveLength(0);
   });
 
+  test('Zeitraum per Kalender: Schnellwahl, Von/Bis, Text bleibt synchron', async ({ page }) => {
+    const id = await openNew(page, 'pflanzenbau');
+    const y = new Date().getFullYear();
+    const wj = `${y - 2}/${String(y - 1).slice(2)}`;
+    const txt = page.locator('#wf-zeitraum');
+    await expect(txt).toHaveValue(String(y - 1));
+    const pop = page.locator('#wf-zeitraum-pop');
+    await expect(pop).toBeHidden();
+    await page.locator('#wf-zeitraum-cal').click();
+    await expect(pop).toBeVisible();
+    // Vorbelegung aus dem Text (Vorjahr = ganzes Kalenderjahr)
+    await expect(page.locator('#wf-zr-von')).toHaveValue(`${y - 1}-01-01`);
+    await expect(page.locator('#wf-zr-bis')).toHaveValue(`${y - 1}-12-31`);
+    await expect(page.locator('.wf-zr-chip[aria-pressed="true"]')).toHaveText(`Kalenderjahr ${y - 1}`);
+
+    // Schnellwahl Wirtschaftsjahr
+    await page.locator('.wf-zr-chip', { hasText: `WJ ${y - 1}/` }).click();
+    await expect(txt).toHaveValue(`01.07.${y - 1}–30.06.${y}`);
+    await expect(page.locator('#wf-zr-von')).toHaveValue(`${y - 1}-07-01`);
+
+    // Von/Bis frei wählen
+    await page.locator('#wf-zr-von').fill(`${y - 1}-03-15`);
+    await page.locator('#wf-zr-bis').fill(`${y - 1}-10-31`);
+    await expect(txt).toHaveValue(`15.03.${y - 1}–31.10.${y - 1}`);
+    // Bis vor Von -> Hinweis, Text bleibt
+    await page.locator('#wf-zr-bis').fill(`${y - 1}-01-01`);
+    await expect(page.locator('#wf-zr-hint')).toBeVisible();
+    await expect(txt).toHaveValue(`15.03.${y - 1}–31.10.${y - 1}`);
+
+    // Escape schließt nur die Auswahl, die Prüfung bleibt offen
+    await page.keyboard.press('Escape');
+    await expect(pop).toBeHidden();
+    await expect(page.locator('#warenfluss-overlay')).toBeVisible();
+
+    // Text eintippen -> Kalender folgt
+    await txt.fill(wj);
+    await page.locator('#wf-zeitraum-cal').click();
+    await expect(page.locator('#wf-zr-von')).toHaveValue(`${y - 2}-07-01`);
+    await expect(page.locator('#wf-zr-bis')).toHaveValue(`${y - 1}-06-30`);
+    await page.locator('#wf-zr-done').click();
+    await expect(pop).toBeHidden();
+
+    // gespeichert und im Prüftext
+    const list = await stored(page, id);
+    expect(list[0]).toMatchObject({ zeitraum: wj, zeitraumVon: `${y - 2}-07-01`, zeitraumBis: `${y - 1}-06-30` });
+    await expect(page.locator('#wf-auto-text')).toContainText(`Zeitraum: ${wj}`);
+  });
+
   test('Prüfung wieder öffnen und löschen', async ({ page }) => {
     const id = await openNew(page, 'handel');
     await sec(page, 'bilanz').locator('[data-field="produkt"]').first().fill('Bio-Haferflocken');

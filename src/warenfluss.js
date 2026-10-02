@@ -648,6 +648,7 @@ export function openWarenfluss(chk, { ctx = {}, onChange = () => {}, onDelete = 
   el('wf-sub').textContent = [ctx.betrieb, ctx.datum].filter(Boolean).join(' · ');
   el('wf-icon').textContent = WF_MODULE[chk.modul].icon;
   el('wf-zeitraum').value = chk.zeitraum || '';
+  closeZeitraumPop();
   el('wf-tol-ertrag').value = fmtIn(chk.tolErtrag);
   el('wf-tol-bilanz').value = fmtIn(chk.tolBilanz);
   el('wf-tol-ausbeute').value = fmtIn(chk.tolAusbeute ?? 5);
@@ -1031,7 +1032,35 @@ export function initWarenflussUi() {
       renderTables();
     }
   });
-  el('wf-zeitraum').addEventListener('input', (e) => { if (state) { state.chk.zeitraum = e.target.value; touch(); } });
+  el('wf-zeitraum').addEventListener('input', (e) => {
+    if (!state) return;
+    state.chk.zeitraum = e.target.value;
+    const r = parseZeitraum(e.target.value);
+    state.chk.zeitraumVon = r ? r.von : null;
+    state.chk.zeitraumBis = r ? r.bis : null;
+    if (!el('wf-zeitraum-pop').hidden) syncZeitraumPop();
+    touch();
+  });
+  // Zeitraum per Kalender
+  el('wf-zeitraum-cal').addEventListener('click', () => (el('wf-zeitraum-pop').hidden ? openZeitraumPop() : closeZeitraumPop()));
+  el('wf-zr-done').addEventListener('click', closeZeitraumPop);
+  el('wf-zr-presets').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-von]');
+    if (b) setZeitraum(b.dataset.von, b.dataset.bis);
+  });
+  const onDate = () => {
+    const von = el('wf-zr-von').value, bis = el('wf-zr-bis').value;
+    const hint = el('wf-zr-hint');
+    if (von && bis && von > bis) { hint.textContent = '„Bis“ liegt vor „Von“.'; hint.hidden = false; return; }
+    hint.hidden = true;
+    if (von && bis) setZeitraum(von, bis);
+  };
+  el('wf-zr-von').addEventListener('change', onDate);
+  el('wf-zr-bis').addEventListener('change', onDate);
+  document.addEventListener('pointerdown', (e) => {
+    const pop = el('wf-zeitraum-pop');
+    if (!pop.hidden && !e.target.closest('.wf-zeitraum-field')) closeZeitraumPop();
+  });
   const tolInput = (id, key) => el(id).addEventListener('input', (e) => {
     if (!state) return;
     const v = num(e.target.value);
@@ -1096,8 +1125,76 @@ export function initWarenflussUi() {
     s.onDelete(s.chk);
   });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !el('warenfluss-overlay').hidden) { e.stopImmediatePropagation(); closeWarenfluss(); }
+    if (e.key !== 'Escape' || el('warenfluss-overlay').hidden) return;
+    e.stopImmediatePropagation();
+    // Escape schließt zuerst die Kalenderauswahl, dann die Prüfung.
+    if (!el('wf-zeitraum-pop').hidden) closeZeitraumPop(); else closeWarenfluss();
   }, true);
+}
+
+// ---- Zeitraum: Text <-> Von/Bis ----
+// "2025" = Kalenderjahr, "2024/25" = Wirtschaftsjahr (1.7.–30.6.),
+// "01.07.2024–30.06.2025" = freier Zeitraum. Ganze Kalenderjahre werden als
+// Jahreszahl geschrieben, alles andere als Datumsbereich.
+const isoOf = (y, m, d) => `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+const deDate = (iso) => { const [y, m, d] = iso.split('-'); return `${d}.${m}.${y}`; };
+export function parseZeitraum(text) {
+  const t = String(text || '').trim();
+  let m = /^(\d{4})$/.exec(t);
+  if (m) return { von: isoOf(+m[1], 1, 1), bis: isoOf(+m[1], 12, 31) };
+  m = /^(?:WJ\s*)?(\d{4})\s*\/\s*(\d{2}|\d{4})$/i.exec(t);
+  if (m) {
+    const y = +m[1];
+    return { von: isoOf(y, 7, 1), bis: isoOf(y + 1, 6, 30) };
+  }
+  m = /^(\d{1,2})\.(\d{1,2})\.(\d{4})\s*[–—-]\s*(\d{1,2})\.(\d{1,2})\.(\d{4})$/.exec(t);
+  if (m) return { von: isoOf(+m[3], +m[2], +m[1]), bis: isoOf(+m[6], +m[5], +m[4]) };
+  return null;
+}
+export function formatZeitraum(von, bis) {
+  const [vy, vm, vd] = von.split('-'), [by, bm, bd] = bis.split('-');
+  if (vy === by && vm === '01' && vd === '01' && bm === '12' && bd === '31') return vy;
+  return `${deDate(von)}–${deDate(bis)}`;
+}
+function zeitraumPresets() {
+  const y = new Date().getFullYear();
+  return [
+    { label: `Kalenderjahr ${y - 1}`, von: isoOf(y - 1, 1, 1), bis: isoOf(y - 1, 12, 31) },
+    { label: `Kalenderjahr ${y}`, von: isoOf(y, 1, 1), bis: isoOf(y, 12, 31) },
+    { label: `WJ ${y - 2}/${String(y - 1).slice(2)}`, von: isoOf(y - 2, 7, 1), bis: isoOf(y - 1, 6, 30) },
+    { label: `WJ ${y - 1}/${String(y).slice(2)}`, von: isoOf(y - 1, 7, 1), bis: isoOf(y, 6, 30) }
+  ];
+}
+function syncZeitraumPop() {
+  const r = state && (state.chk.zeitraumVon && state.chk.zeitraumBis
+    ? { von: state.chk.zeitraumVon, bis: state.chk.zeitraumBis }
+    : parseZeitraum(state.chk.zeitraum));
+  el('wf-zr-von').value = r ? r.von : '';
+  el('wf-zr-bis').value = r ? r.bis : '';
+  el('wf-zr-hint').hidden = true;
+  el('wf-zr-presets').innerHTML = zeitraumPresets().map(p => {
+    const on = r && r.von === p.von && r.bis === p.bis;
+    return `<button type="button" class="wf-zr-chip" data-von="${p.von}" data-bis="${p.bis}" aria-pressed="${on ? 'true' : 'false'}">${esc(p.label)}</button>`;
+  }).join('');
+}
+function openZeitraumPop() {
+  if (!state) return;
+  syncZeitraumPop();
+  el('wf-zeitraum-pop').hidden = false;
+  el('wf-zeitraum-cal').setAttribute('aria-expanded', 'true');
+}
+function closeZeitraumPop() {
+  el('wf-zeitraum-pop').hidden = true;
+  el('wf-zeitraum-cal').setAttribute('aria-expanded', 'false');
+}
+function setZeitraum(von, bis) {
+  if (!state) return;
+  state.chk.zeitraumVon = von;
+  state.chk.zeitraumBis = bis;
+  state.chk.zeitraum = formatZeitraum(von, bis);
+  el('wf-zeitraum').value = state.chk.zeitraum;
+  syncZeitraumPop();
+  touch();
 }
 
 // Für die Liste im Termin: kurze Beschreibung einer Prüfung.
