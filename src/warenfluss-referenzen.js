@@ -74,6 +74,46 @@ export const WF_QUELLEN = {
     titel: 'Faustzahlen Milchverarbeitung – je kg Produkt: Schnittkäse ca. 10 l, Hartkäse 13–15 l, Butter 20–25 l, Quark ca. 4 kg, Joghurt ca. 1 l, Sahne ca. 7 l Milch',
     url: 'https://milchland.de/wp-content/uploads/2020/08/M_Chart_8.pdf'
   },
+  kaffee: {
+    kurz: 'KaffeeWiki',
+    titel: 'KaffeeWiki – Kaffee rösten: Gewichtsverlust ("Einbrand") je nach Wassergehalt und Röstgrad 11–20 %',
+    url: 'https://www.kaffeewiki.de/wiki/Kaffee_r%C3%B6sten'
+  },
+  teigausbeute: {
+    kurz: 'Teigausbeute',
+    titel: 'Teigausbeute (TA) nach Gebäckart: Kleingebäck 155–160, Weizen-/Mischbrot 160–168, Roggenbrot 175–185, Vollkornbrot 175–190; Backverlust Kleingebäck ca. 20 %',
+    url: 'https://de.wikipedia.org/wiki/Teigausbeute'
+  },
+  brauerei: {
+    kurz: 'Braumagazin',
+    titel: 'Berechnungen in der Brauerei – Faustzahl ca. 17 kg Malz je 100 l Vollbier (12 °P), ca. 5,7–5,9 l Bier je kg Malz',
+    url: 'https://braumagazin.de/article/berechnungen-in-der-brauerei/'
+  },
+  maelzen: {
+    kurz: 'Mälzen',
+    titel: 'Mälzen – Mälzungsschwand 20–25 %, aus 100 kg Gerste ca. 78–80 kg Malz',
+    url: 'https://de.wikipedia.org/wiki/M%C3%A4lzen'
+  },
+  haferflocken: {
+    kurz: 'Haferflocken',
+    titel: 'Haferflocken – Ausbeute aus Rohhafer ca. 60 % (Kleinblatt) bis 61 % (Großblatt)',
+    url: 'https://de.wikipedia.org/wiki/Haferflocken'
+  },
+  wein: {
+    kurz: 'Weinherstellung',
+    titel: 'Weinherstellung – aus 100 kg Trauben ca. 70–75 l Most; ca. 66 l Weißwein bzw. 77 l Rotwein',
+    url: 'https://de.wikipedia.org/wiki/Weinherstellung'
+  },
+  tofu: {
+    kurz: 'oekolandbau.de',
+    titel: 'Ökolandbau.de – Tofu selber machen: aus 100 g Sojabohnen ca. 150–200 g Tofu (Faustregel 300 g → 400 g)',
+    url: 'https://www.oekolandbau.de/bio-im-alltag/bio-geniessen/bio-rezepte/zubereitung/tofu-selber-machen/'
+  },
+  fleisch: {
+    kurz: 'AGRIDEA / Metzgerhandwerk',
+    titel: 'Wertschöpfungskette Schweinefleisch – Zerlegung: Verkaufsgewicht ohne Knochen ca. 74–81 % des Schlachtgewichts (Zerlegungsabfall ca. 19 %)',
+    url: 'https://www.agridea.ch/fileadmin/AGRIDEA/Theme/Production_animales/Production_porcine_et_avicole/fiche_thematique_porc_D_2021.pdf'
+  },
   annahme: {
     kurz: 'Annahme',
     titel: 'Annahme ohne eigene Quelle — bitte mit Sorten-/Betriebsangaben abgleichen und ggf. überschreiben',
@@ -147,19 +187,34 @@ export const WF_IMKEREI = {
 };
 
 // ---- Verarbeitung: Ausbeute (Ausgabe je Einheit Rohware) ----
+// gruppe = Branche (Gliederung der Auswahlliste).
 export const WF_PROZESSE = [
-  { key: 'dinkel-entspelzen', label: 'Dinkel entspelzen (Vesen → Kern)', ein: 'kg Vesen', aus: 'kg Kern', typ: 0.65, min: 0.58, max: 0.70, quelle: 'dinkel' },
-  { key: 'mehl-405', label: 'Weizen → Mehl Type 405', ein: 'kg Getreide', aus: 'kg Mehl', typ: 0.48, min: 0.40, max: 0.56, quelle: 'mehl' },
-  { key: 'mehl-550', label: 'Weizen → Mehl Type 550', ein: 'kg Getreide', aus: 'kg Mehl', typ: 0.675, min: 0.64, max: 0.71, quelle: 'mehl' },
-  { key: 'mehl-1050', label: 'Weizen → Mehl Type 1050', ein: 'kg Getreide', aus: 'kg Mehl', typ: 0.835, min: 0.82, max: 0.85, quelle: 'mehl' },
-  { key: 'mehl-vollkorn', label: 'Getreide → Vollkornmehl', ein: 'kg Getreide', aus: 'kg Mehl', typ: 1.0, quelle: 'mehl' },
-  { key: 'apfelsaft', label: 'Äpfel → Saft', ein: 'kg Äpfel', aus: 'l Saft', typ: 0.68, min: 0.60, max: 0.80, quelle: 'saft' },
-  { key: 'rapsoel', label: 'Raps → Öl (Kaltpressung)', ein: 'kg Saat', aus: 'kg Öl', typ: 0.33, quelle: 'oel' },
-  { key: 'schnittkaese', label: 'Milch → Schnittkäse', ein: 'l Milch', aus: 'kg Käse', typ: 0.10, quelle: 'molkerei' },
-  { key: 'hartkaese', label: 'Milch → Hartkäse', ein: 'l Milch', aus: 'kg Käse', typ: 0.071, min: 1 / 15, max: 1 / 13, quelle: 'molkerei' },
-  { key: 'butter', label: 'Milch → Butter', ein: 'l Milch', aus: 'kg Butter', typ: 0.045, min: 1 / 25, max: 1 / 20, quelle: 'molkerei' },
-  { key: 'quark', label: 'Milch → Quark', ein: 'kg Milch', aus: 'kg Quark', typ: 0.25, quelle: 'molkerei' },
-  { key: 'joghurt', label: 'Milch → Joghurt', ein: 'l Milch', aus: 'kg Joghurt', typ: 1.0, quelle: 'molkerei' },
-  { key: 'sahne', label: 'Milch → Sahne', ein: 'l Milch', aus: 'kg Sahne', typ: 0.14, quelle: 'molkerei' },
-  { key: 'sonstige', label: 'Sonstiger Prozess', ein: 'Rohware', aus: 'Produkt', typ: null, quelle: 'annahme' }
+  { gruppe: 'Mühle / Schälmühle', key: 'dinkel-entspelzen', label: 'Dinkel entspelzen (Vesen → Kern)', ein: 'kg Vesen', aus: 'kg Kern', typ: 0.65, min: 0.58, max: 0.70, quelle: 'dinkel' },
+  { gruppe: 'Mühle / Schälmühle', key: 'mehl-405', label: 'Weizen → Mehl Type 405', ein: 'kg Getreide', aus: 'kg Mehl', typ: 0.48, min: 0.40, max: 0.56, quelle: 'mehl' },
+  { gruppe: 'Mühle / Schälmühle', key: 'mehl-550', label: 'Weizen → Mehl Type 550', ein: 'kg Getreide', aus: 'kg Mehl', typ: 0.675, min: 0.64, max: 0.71, quelle: 'mehl' },
+  { gruppe: 'Mühle / Schälmühle', key: 'mehl-1050', label: 'Weizen → Mehl Type 1050', ein: 'kg Getreide', aus: 'kg Mehl', typ: 0.835, min: 0.82, max: 0.85, quelle: 'mehl' },
+  { gruppe: 'Mühle / Schälmühle', key: 'mehl-vollkorn', label: 'Getreide → Vollkornmehl', ein: 'kg Getreide', aus: 'kg Mehl', typ: 1.0, quelle: 'mehl' },
+  { gruppe: 'Mühle / Schälmühle', key: 'haferflocken', label: 'Rohhafer → Haferflocken', ein: 'kg Rohhafer', aus: 'kg Flocken', typ: 0.605, min: 0.60, max: 0.61, quelle: 'haferflocken' },
+  { gruppe: 'Bäckerei', key: 'teig-weizen', label: 'Mehl → Teig (Weizen-/Mischbrot)', ein: 'kg Mehl', aus: 'kg Teig', typ: 1.64, min: 1.60, max: 1.68, quelle: 'teigausbeute' },
+  { gruppe: 'Bäckerei', key: 'teig-roggen', label: 'Mehl → Teig (Roggenbrot)', ein: 'kg Mehl', aus: 'kg Teig', typ: 1.80, min: 1.75, max: 1.85, quelle: 'teigausbeute' },
+  { gruppe: 'Bäckerei', key: 'teig-vollkorn', label: 'Mehl/Schrot → Teig (Vollkornbrot)', ein: 'kg Mehl', aus: 'kg Teig', typ: 1.82, min: 1.75, max: 1.90, quelle: 'teigausbeute' },
+  { gruppe: 'Bäckerei', key: 'kleingebaeck', label: 'Mehl → Brötchen/Kleingebäck', ein: 'kg Mehl', aus: 'kg Gebäck', typ: 1.26, min: 1.24, max: 1.28, quelle: 'teigausbeute', info: 'abgeleitet: TA 155–160 × (1 − 20 % Backverlust)' },
+  { gruppe: 'Bäckerei', key: 'teig-gebaeck', label: 'Teig → Kleingebäck (Backverlust)', ein: 'kg Teig', aus: 'kg Gebäck', typ: 0.80, quelle: 'teigausbeute' },
+  { gruppe: 'Mälzerei / Brauerei', key: 'maelzen', label: 'Gerste → Malz', ein: 'kg Gerste', aus: 'kg Malz', typ: 0.78, min: 0.75, max: 0.80, quelle: 'maelzen' },
+  { gruppe: 'Mälzerei / Brauerei', key: 'bier', label: 'Malz → Bier (Vollbier, 12 °P)', ein: 'kg Malz', aus: 'l Bier', typ: 5.88, min: 5.7, max: 5.9, quelle: 'brauerei' },
+  { gruppe: 'Kaffeerösterei', key: 'kaffee', label: 'Rohkaffee → Röstkaffee', ein: 'kg Rohkaffee', aus: 'kg Röstkaffee', typ: 0.85, min: 0.80, max: 0.89, quelle: 'kaffee', info: 'Gewichtsverlust 11–20 % je nach Röstgrad' },
+  { gruppe: 'Molkerei / Käserei', key: 'schnittkaese', label: 'Milch → Schnittkäse', ein: 'l Milch', aus: 'kg Käse', typ: 0.10, quelle: 'molkerei' },
+  { gruppe: 'Molkerei / Käserei', key: 'hartkaese', label: 'Milch → Hartkäse', ein: 'l Milch', aus: 'kg Käse', typ: 0.071, min: 1 / 15, max: 1 / 13, quelle: 'molkerei' },
+  { gruppe: 'Molkerei / Käserei', key: 'butter', label: 'Milch → Butter', ein: 'l Milch', aus: 'kg Butter', typ: 0.045, min: 1 / 25, max: 1 / 20, quelle: 'molkerei' },
+  { gruppe: 'Molkerei / Käserei', key: 'quark', label: 'Milch → Quark', ein: 'kg Milch', aus: 'kg Quark', typ: 0.25, quelle: 'molkerei' },
+  { gruppe: 'Molkerei / Käserei', key: 'joghurt', label: 'Milch → Joghurt', ein: 'l Milch', aus: 'kg Joghurt', typ: 1.0, quelle: 'molkerei' },
+  { gruppe: 'Molkerei / Käserei', key: 'sahne', label: 'Milch → Sahne', ein: 'l Milch', aus: 'kg Sahne', typ: 0.14, quelle: 'molkerei' },
+  { gruppe: 'Obst / Wein', key: 'apfelsaft', label: 'Äpfel → Saft', ein: 'kg Äpfel', aus: 'l Saft', typ: 0.68, min: 0.60, max: 0.80, quelle: 'saft' },
+  { gruppe: 'Obst / Wein', key: 'traubenmost', label: 'Trauben → Most', ein: 'kg Trauben', aus: 'l Most', typ: 0.725, min: 0.70, max: 0.75, quelle: 'wein' },
+  { gruppe: 'Obst / Wein', key: 'weisswein', label: 'Trauben → Weißwein', ein: 'kg Trauben', aus: 'l Wein', typ: 0.66, quelle: 'wein' },
+  { gruppe: 'Obst / Wein', key: 'rotwein', label: 'Trauben → Rotwein', ein: 'kg Trauben', aus: 'l Wein', typ: 0.77, quelle: 'wein' },
+  { gruppe: 'Ölmühle', key: 'rapsoel', label: 'Raps → Öl (Kaltpressung)', ein: 'kg Saat', aus: 'kg Öl', typ: 0.33, quelle: 'oel' },
+  { gruppe: 'Soja / Tofu', key: 'tofu', label: 'Sojabohnen → Tofu', ein: 'kg Sojabohnen', aus: 'kg Tofu', typ: 1.5, min: 1.33, max: 2.0, quelle: 'tofu' },
+  { gruppe: 'Metzgerei', key: 'zerlegung-schwein', label: 'Schweine-Schlachtkörper → Fleisch ohne Knochen', ein: 'kg Schlachtgewicht', aus: 'kg Fleisch', typ: 0.78, min: 0.74, max: 0.81, quelle: 'fleisch' },
+  { gruppe: 'Sonstige', key: 'sonstige', label: 'Sonstiger Prozess', ein: 'Rohware', aus: 'Produkt', typ: null, quelle: 'annahme' }
 ];

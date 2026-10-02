@@ -219,12 +219,23 @@ test.describe('Dokumentenscanner (Kontrolle)', () => {
     const upload = await page.evaluate(() => window.__lastScanUpload);
     expect(upload.type).toBe('application/pdf');
     expect(upload.size).toBeGreaterThan(0);
+    // Danach benennen: Dialog mit Vorschau der ersten Seite und Seitenzahl
+    const dlg = page.locator('#docname-overlay');
+    await expect(dlg).toBeVisible();
+    await expect(page.locator('#docname-title')).toHaveText('Dokument benennen');
+    await expect(page.locator('#docname-sub')).toContainText('2 Seiten');
+    await expect(page.locator('#docname-preview img')).toBeVisible();
+    await page.locator('#docname-input').fill('Lieferschein Futtermittel');
+    await expect(page.locator('#docname-file')).toContainText('_Lieferschein Futtermittel.pdf');
+    await page.locator('#docname-save').click();
+    await expect(dlg).toBeHidden();
     const attachments = await page.evaluate(() => {
       const ev = window.__ffTestTk.getEvent(document.querySelector('.tk-card.selected').getAttribute('data-id'));
       return ev.attachments;
     });
     expect(attachments).toHaveLength(1);
     expect(attachments[0].type).toBe('application/pdf');
+    expect(attachments[0].name).toMatch(/^\d{4}_.+_Lieferschein Futtermittel\.pdf$/);
   });
 
   test('„Neu“ im Zuschnitt verwirft die Aufnahme ohne sie zu übernehmen', async ({ page }) => {

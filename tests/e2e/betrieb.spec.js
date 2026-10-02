@@ -49,12 +49,16 @@ test.describe('Betrieb wählen', () => {
 
     const betriebe = page.locator('#betrieb-list .betrieb-row-select[data-action="select-betrieb"]');
     await expect(betriebe).toHaveCount(3);
+    // Betriebe alphabetisch.
+    await expect(betriebe.locator('.betrieb-row-main')).toHaveText(['Biohof Sonnental', 'Obsthof Huber GbR', 'Weingut Berger']);
     const huber = betriebe.filter({ hasText: 'Obsthof Huber GbR' });
     await expect(huber.locator('.betrieb-row-avatar')).toHaveText('O');
     await expect(huber.locator('.betrieb-row-sub')).toContainText('2 Termine · nächster');
     await expect(betriebe.filter({ hasText: 'Weingut Berger' }).locator('.betrieb-row-sub')).toContainText('zuletzt');
     // Ohne Suche nur anstehende Termine (nicht die vergangenen).
-    await expect(page.locator('.betrieb-list-group-title').nth(1)).toHaveText('Anstehende Termine');
+    // Ohne Suche stehen die anstehenden Termine ganz oben (nach Datum).
+    await expect(page.locator('.betrieb-list-group-title')).toHaveText(['Anstehende Termine', 'Betriebe']);
+    await expect(page.locator('[data-action="select-termin"] .betrieb-row-main')).toHaveText(['Obsthof Huber GbR', 'Biohof Sonnental']);
     await expect(page.locator('[data-action="select-termin"]')).toHaveCount(2);
 
     // Suche: Betriebe + alle passenden Termine (auch vergangene).
