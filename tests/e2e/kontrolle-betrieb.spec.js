@@ -54,9 +54,18 @@ test.describe('Kontrolle › Betrieb', () => {
     await expect(hero.locator('.kb-hero-actions a[href^="tel:"]')).toBeVisible();
     await expect(hero.locator('a', { hasText: 'Route' })).toHaveAttribute('href', /google\.com\/maps/);
 
-    const termin = page.locator('.kb-termin');
+    // Reihenfolge: Kopf, Betriebsfunktionen, Unterlagen, Flächen, Termine
+    const order = await page.locator('.kb-wrap > *').evaluateAll(els => els.map(e => e.className.split(' ').find(c => c.startsWith('kb-')) || e.id));
+    expect(order).toEqual(['kb-hero', 'kb-section-label', 'kb-fns', 'kb-section-label', 'kb-tiles', 'kb-flaechen', 'kb-history']);
+    await expect(page.locator('.kb-fn > span:last-child')).toHaveText(['Flächenübersicht', 'Fruchtfolge', 'Flächenzeichner', 'Hofplan', 'Stallplaner', 'Tierbestand', 'Obstbäume', 'Bienenflug']);
+
+    // Aktueller Termin: kompakter Block in "Termine dieses Betriebs", Aufträge als Schilder
+    const termin = page.locator('.kb-history .kb-termin');
     await expect(termin).toContainText('Nächster Termin');
-    await expect(termin.locator('.km-auftrag')).toHaveCount(3);
+    // Reihenfolge der Zusatzaufträge hängt an den (zufälligen) Test-IDs — nur den Inhalt prüfen
+    await expect(termin.locator('.kb-auftrag')).toHaveCount(3);
+    expect((await termin.locator('.kb-auftrag').allInnerTexts()).sort()).toEqual(['Bioland Verbandskontrolle', 'Jahreskontrolle', 'Probenahme']);
+    expect((await termin.boundingBox()).height).toBeLessThan(110);
 
     // Probenahme ist beauftragt, aber noch kein Protokoll -> offen
     await expect(tile(page, 'probenprotokoll')).toHaveClass(/is-open/);
@@ -64,11 +73,10 @@ test.describe('Kontrolle › Betrieb', () => {
     await expect(tile(page, 'crosscheck')).not.toHaveClass(/is-open|is-done/);
     await expect(page.locator('.kb-tile')).toHaveCount(5);
 
-    // Verlauf: beide Termine, neuester zuerst, aktueller markiert
+    // Weitere Termine darunter (ohne den aktuellen)
     const rows = page.locator('.kb-hist-row');
-    await expect(rows).toHaveCount(2);
-    await expect(rows.first()).toHaveClass(/is-current/);
-    await rows.nth(1).click();
+    await expect(rows).toHaveCount(1);
+    await rows.first().click();
     await expect(page.locator('#kontrollmappe')).toBeVisible();
     await expect(page.locator('#kontrollmappe [data-km-tab="ueberblick"]')).toHaveAttribute('aria-selected', 'true');
     await page.locator('#kontrollmappe-close').click();

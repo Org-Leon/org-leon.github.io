@@ -4,6 +4,7 @@ import { registerSW } from 'virtual:pwa-register';
 import iconFontUrl from './assets/material-symbols-rounded-subset.woff2?url';
 import { BerichtPdf, BRAND, CULTURE_COLORS, formatHa, formatHaExact, haExactFixed, formatPct } from './gesamtbericht.js';
 import { renderFlaechenuebersicht, countUp } from './flaechenuebersicht.js';
+import { parseHitPdf, computeTierbestand, tbFmtDate, tbAlterText, tbStatus, TB_ZUGANG_ARTEN, TB_ABGANG_ARTEN, TB_N_GRENZE } from './tierbestand.js';
 import { WF_MODULE, createWarenfluss, openWarenfluss, initWarenflussUi, warenflussRowInfo } from './warenfluss.js';
 import { rankBackCameras, drawScaled, rotateCanvas, defaultQuad, detectDocumentQuad, QuadTracker, quadDistance, warpDocument, applyScanFilter, SCAN_FILTERS, targetSizeForQuad } from './scan-engine.js';
 // Icon-Font selbst NICHT über das npm-Paket eingebunden (5+ MB Variable-Font
@@ -198,7 +199,8 @@ function renderBesichtigtSummary(elId, rows) {
   const fmtHa = n => n.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   el.innerHTML =
     `<span>Besichtigt: <strong>${stats.checkedCount} / ${stats.totalCount}</strong> Flächen (${pctCount} %)</span>` +
-    `<span><strong>${fmtHa(stats.checkedHa)} / ${fmtHa(stats.totalHa)}</strong> ha (${pctHa} %)</span>`;
+    `<span><strong>${fmtHa(stats.checkedHa)} / ${fmtHa(stats.totalHa)}</strong> ha (${pctHa} %)</span>` +
+    `<span class="besichtigt-bar" aria-hidden="true"><span style="width:${pctCount}%"></span></span>`;
 }
 
 const map = L.map('map', { zoomControl: true, attributionControl: true }).setView([51.16, 10.45], 6);
@@ -2333,14 +2335,45 @@ function getVisibleFeatureRows() {
     });
 }
 
+// Anbauplanung ist vorerst aus der Oberfläche genommen (Spalte in der
+// Flächentabelle). Dialog, Daten (entry.kulturplan) und Speicherung bleiben
+// erhalten — zum Wiedereinschalten auf true setzen.
+const ANBAUPLANUNG_AKTIV = false;
+const featureTableMobile = window.matchMedia('(max-width: 860px)');
+// Spalten der Flächentabelle. "Besichtigt" gibt es nur angemeldet
+// (body[data-auth], siehe updateAccountButton); am Handy steht es als erste,
+// fest stehende Spalte mit großem Haken, damit man es ohne seitliches
+// Scrollen sieht und trifft.
+function featureTableColumns() {
+  const loggedIn = document.body.dataset.auth === 'in';
+  const cols = ['nummer', 'name', 'flid', 'groesse', 'kultur', 'baeume'];
+  if (loggedIn && !featureTableMobile.matches) cols.push('besichtigt');
+  cols.push('notiz');
+  if (ANBAUPLANUNG_AKTIV) cols.push('kulturplan');
+  cols.push('route');
+  if (loggedIn && featureTableMobile.matches) cols.unshift('besichtigt');
+  return cols;
+}
+const FEATURE_TABLE_HEAD = {
+  nummer: 'Schlagnr. / Flächennr.', name: 'Flächenname', flid: 'Flächenidentifikator', groesse: 'Größe', kultur: 'Kulturart', baeume: 'Bäume',
+  besichtigt: 'Besichtigt',
+  notiz: 'Notiz', kulturplan: 'Anbauplanung', route: 'Route'
+};
+featureTableMobile.addEventListener('change', () => renderFeatureTable());
+
 function renderFeatureTable() {
   const tbody = document.getElementById('feature-table-body');
   const rows = getVisibleFeatureRows();
+  const cols = featureTableColumns();
+  const mitBesichtigt = cols.includes('besichtigt');
   document.getElementById('table-count').textContent = rows.length;
-  renderBesichtigtSummary('table-besichtigt-summary', rows);
+  document.getElementById('table-besichtigt-summary').hidden = !mitBesichtigt;
+  document.querySelector('#feature-table thead tr').innerHTML = cols.map(c => `<th${c === 'besichtigt' ? ' class="besichtigt-cell"' : ''}>${c === 'besichtigt' && cols[0] === c ? '<span class="material-symbols-rounded icon besichtigt-th-icon" title="Besichtigt" aria-label="Besichtigt">task_alt</span>' : FEATURE_TABLE_HEAD[c]}</th>`).join('');
+  document.getElementById('feature-table').classList.toggle('besichtigt-first', cols[0] === 'besichtigt');
+  if (mitBesichtigt) renderBesichtigtSummary('table-besichtigt-summary', rows);
 
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="10" style="color:var(--muted); padding:14px;">' +
+    tbody.innerHTML = '<tr><td colspan="' + cols.length + '" style="color:var(--muted); padding:14px;">' +
       (featureIndex.length ? 'Keine Flächen in dieser Ansicht (Teilflächen sind ausgeblendet).' : 'Noch keine Flächen geladen.') +
       '</td></tr>';
     return;
@@ -2359,18 +2392,19 @@ function renderFeatureTable() {
       : '<span style="color:var(--muted);">–</span>';
     const hasNotes = entry.notes || entry.photos.length;
     const hasKulturplan = entry.kulturplan.length > 0;
-    return `<tr data-idx="${entry.idx}">
-      <td>${escapeHtml(entry.nummer || '–')}</td>
-      <td>${escapeHtml(entry.featName || '–')}</td>
-      <td>${escapeHtml(entry.flaechenId || '–')}</td>
-      <td>${groesseText}</td>
-      <td>${escapeHtml(entry.kultur || '–')}</td>
-      <td>${treesCell}</td>
-      <td class="besichtigt-cell"><input type="checkbox" class="besichtigt-checkbox" ${entry.besichtigt ? 'checked' : ''} onclick="event.stopPropagation()"></td>
-      <td><button class="notes-btn${hasNotes ? ' has-notes' : ''}" data-action="notes" data-idx="${entry.idx}" onclick="event.stopPropagation()" title="Notiz &amp; Fotos"><span class="material-symbols-rounded icon">sticky_note_2</span></button></td>
-      <td><button class="notes-btn${hasKulturplan ? ' has-notes' : ''}" data-action="kulturplan" data-idx="${entry.idx}" onclick="event.stopPropagation()" title="Anbauplanung"><span class="material-symbols-rounded icon">eco</span></button></td>
-      <td>${routeCell}</td>
-    </tr>`;
+    const cells = {
+      nummer: `<td>${escapeHtml(entry.nummer || '–')}</td>`,
+      name: `<td>${escapeHtml(entry.featName || '–')}</td>`,
+      flid: `<td>${escapeHtml(entry.flaechenId || '–')}</td>`,
+      groesse: `<td class="groesse-cell">${groesseText}</td>`,
+      kultur: `<td>${escapeHtml(entry.kultur || '–')}</td>`,
+      baeume: `<td>${treesCell}</td>`,
+      besichtigt: `<td class="besichtigt-cell"><label class="besichtigt-toggle" onclick="event.stopPropagation()" title="Besichtigt"><input type="checkbox" class="besichtigt-checkbox" aria-label="Fläche ${escapeHtml(entry.nummer || '')} besichtigt" ${entry.besichtigt ? 'checked' : ''}><span class="besichtigt-mark material-symbols-rounded icon" aria-hidden="true">check</span></label></td>`,
+      notiz: `<td><button class="notes-btn${hasNotes ? ' has-notes' : ''}" data-action="notes" data-idx="${entry.idx}" onclick="event.stopPropagation()" title="Notiz &amp; Fotos"><span class="material-symbols-rounded icon">sticky_note_2</span></button></td>`,
+      kulturplan: `<td><button class="notes-btn${hasKulturplan ? ' has-notes' : ''}" data-action="kulturplan" data-idx="${entry.idx}" onclick="event.stopPropagation()" title="Anbauplanung"><span class="material-symbols-rounded icon">eco</span></button></td>`,
+      route: `<td>${routeCell}</td>`
+    };
+    return `<tr data-idx="${entry.idx}"${mitBesichtigt && entry.besichtigt ? ' class="is-besichtigt"' : ''}>${cols.map(c => cells[c]).join('')}</tr>`;
   }).join('');
 
   tbody.querySelectorAll('tr[data-idx]').forEach(tr => {
@@ -2380,6 +2414,7 @@ function renderFeatureTable() {
     cb.addEventListener('change', () => {
       const idx = parseInt(cb.closest('tr').getAttribute('data-idx'), 10);
       featureIndex[idx].besichtigt = cb.checked;
+      cb.closest('tr').classList.toggle('is-besichtigt', cb.checked);
       renderBesichtigtSummary('table-besichtigt-summary', getVisibleFeatureRows());
     });
   });
@@ -2610,14 +2645,15 @@ const SEGMENT_CAPTIONS = {
   bienenflug: 'Bienenstöcke mit 3-km-Flugradius markieren',
   hofplan: 'Gebäude auf dem Luftbild einzeichnen',
   kontrolle: 'Termine, Protokolle und Dokumente deiner Kontrollen',
-  stallplaner: 'Stall vermessen, in Abteile teilen, Öko-VO prüfen'
+  stallplaner: 'Stall vermessen, in Abteile teilen, Öko-VO prüfen',
+  tiere: 'HIT-Auszug: Bestand, Zu- und Abgänge, Stickstoff, Tierbesatz'
 };
 
 // Kurzer Funktionsname für die Handy-Kopfzeile (dort ist die Funktionsliste
 // in der Schublade versteckt — ohne Titel wüsste man nicht, wo man ist).
 const SEGMENT_TITLES = {
   viewer: 'Karte', uebersicht: 'Flächenübersicht', compare: 'Jahresvergleich', zeichner: 'Flächenzeichner', obstbaum: 'Obstbaumkataster',
-  bienenflug: 'Bienenflugkarte', hofplan: 'Hofplan', kontrolle: 'Kontrolle', stallplaner: 'Stallplaner'
+  bienenflug: 'Bienenflugkarte', hofplan: 'Hofplan', kontrolle: 'Kontrolle', stallplaner: 'Stallplaner', tiere: 'Tierbestand'
 };
 
 function setActiveSegment(target) {
@@ -2683,7 +2719,9 @@ function setActiveSegment(target) {
   // Leaflet-Karte), Stallplaner gar keine Karte (eigenes SVG) — #map-wrap
   // schließt sich mit beiden aus statt wie die anderen Funktionen nur Layer
   // auf derselben Karte umzuschalten.
-  document.getElementById('map-wrap').hidden = target === 'kontrolle' || target === 'stallplaner' || target === 'uebersicht';
+  document.getElementById('map-wrap').hidden = target === 'kontrolle' || target === 'stallplaner' || target === 'uebersicht' || target === 'tiere';
+  document.getElementById('tiere-view').hidden = target !== 'tiere';
+  if (target === 'tiere') renderTierbestand(true);
   document.getElementById('uebersicht-view').hidden = target !== 'uebersicht';
   if (target === 'uebersicht') openFlaechenuebersicht({ animate: true });
   document.getElementById('kontrolle-view').hidden = target !== 'kontrolle';
@@ -2730,6 +2768,9 @@ let ffOnlyHints = false;
 let ffKnownYears = '';
 let ffMapActive = false; // Karte nach Kultur eingefärbt
 let ueTab = 'flaechen'; // Reiter der Flächenübersicht
+// Tierbestand des Betriebs aus dem HIT-Auszug (siehe "Tierbestand" weiter unten):
+// { von, bis, tiere, kontrolle, importiertAm, lfHa, kuhNutzung } | null
+let tierbestandData = null;
 let compareHiddenLayerIds = []; // normale Kartenebenen, während der Jahresansicht ausgeblendet (sonst doppelte Darstellung)
 
 // Normale Ebenen ausblenden, solange Vergleich/Jahresansicht auf der Karte liegt.
@@ -7492,6 +7533,9 @@ function updateAccountButton() {
   // Das "+" in der Wortmarke (FeldFolio+) markiert die Cloud-Funktionen, die
   // erst nach der Anmeldung nutzbar sind — deshalb nur dann sichtbar.
   document.getElementById('brand-logo').classList.toggle('is-logged-in', !!accountSession);
+  // "Besichtigt" in der Flächentabelle gibt es nur angemeldet.
+  const auth = accountSession ? 'in' : 'out';
+  if (document.body.dataset.auth !== auth) { document.body.dataset.auth = auth; renderFeatureTable(); }
   // Der Terminkalender ist ohne Anmeldung ohnehin nur ein "bitte anmelden"-
   // Hinweis (siehe #terminkalender-not-logged-in) — der eigene, groß
   // abgesetzte Umschalter-Button lenkt in der normalen (nicht angemeldeten)
@@ -8310,7 +8354,9 @@ function serializeWorkspace() {
     bienenflugPoints: bienenflugPoints.map(p => ({ name: p.name, lat: p.latlng.lat, lng: p.latlng.lng })),
     hofplanShapes: hofplanShapes.map(s => ({ kategorie: s.kategorie, name: s.name, color: s.color, stallplanId: s.stallplanId || null, geometry: s.leafletLayer.toGeoJSON().geometry })),
     stallplaene: stallplaene.map(p => structuredClone(p)),
-    vergleichsjahre: compareYears.map(y => ({ jahr: y.jahr, fileName: y.fileName, layerName: y.layerName, fc: y.fc }))
+    vergleichsjahre: compareYears.map(y => ({ jahr: y.jahr, fileName: y.fileName, layerName: y.layerName, fc: y.fc })),
+    // als Liste (leer = kein Tierbestand), damit ein leerer Workspace leer bleibt
+    tierbestand: tierbestandData ? [structuredClone(tierbestandData)] : []
   };
 }
 
@@ -8321,6 +8367,10 @@ function serializeWorkspace() {
 function restoreWorkspace(data) {
   if (!data) return;
   (data.layers || []).forEach(l => addLayer(l.name, l.geojson));
+  if ((data.tierbestand || []).length) {
+    tierbestandData = structuredClone(data.tierbestand[0]);
+    refreshTierbestandIfOpen();
+  }
   if ((data.vergleichsjahre || []).length) {
     compareYears = data.vergleichsjahre.map((y, i) => ({ id: 'cy-r' + i + '-' + Date.now().toString(36), jahr: y.jahr || '', fileName: y.fileName || 'Datei', layerName: y.layerName || '', fc: y.fc }));
     renderCompareYears();
@@ -8415,6 +8465,8 @@ function clearAllStallplaene() {
   renderStallplan();
 }
 function clearWorkspace() {
+  tierbestandData = null;
+  refreshTierbestandIfOpen();
   clearAllCompareYears();
   clearAllLayers();
   clearAllTrees();
@@ -8482,7 +8534,7 @@ async function switchWorkspace(oldKey, newKey) {
 // ein leeres serialisiertes Workspace-Objekt zu prüfen, da hier der gerade
 // sichtbare Stand gemeint ist, bevor er überhaupt gespeichert wurde.
 function currentWorkspaceHasContent() {
-  return !!(Object.keys(layers).length || obstbaumTrees.length || bienenflugPoints.length || hofplanShapes.length || stallplaene.length || compareYears.length);
+  return !!(Object.keys(layers).length || obstbaumTrees.length || bienenflugPoints.length || hofplanShapes.length || stallplaene.length || compareYears.length || tierbestandData);
 }
 
 // Hängt die vier Bestandslisten zweier serialisierter Workspaces aneinander
@@ -8496,7 +8548,8 @@ function mergeWorkspaces(target, moved) {
     bienenflugPoints: [...(target.bienenflugPoints || []), ...(moved.bienenflugPoints || [])],
     hofplanShapes: [...(target.hofplanShapes || []), ...(moved.hofplanShapes || [])],
     stallplaene: [...(target.stallplaene || []), ...(moved.stallplaene || [])],
-    vergleichsjahre: [...(target.vergleichsjahre || []), ...(moved.vergleichsjahre || [])]
+    vergleichsjahre: [...(target.vergleichsjahre || []), ...(moved.vergleichsjahre || [])],
+    tierbestand: (target.tierbestand || []).length ? target.tierbestand : (moved.tierbestand || [])
   };
 }
 
@@ -10264,53 +10317,44 @@ function renderKontrolleBetrieb() {
       foot: noTermin ? '' : `<button type="button" class="kb-tile-new" data-kb-mappe="notizen"><span class="material-symbols-rounded icon" aria-hidden="true">edit_note</span>${notiz ? 'Notiz bearbeiten' : 'Notiz schreiben'}</button>` })
   ].join('');
 
-  // Aktueller Termin
-  let terminHtml;
+  // Termine dieses Betriebs: der aktuelle Termin kompakt oben (Datum,
+  // Aufträge als Schilder, Kontrollmappe), darunter die übrigen Termine.
+  const terminCounts = (g) => [
+    ...Object.keys(TK_FORMULARE).map(k => [tkFormularDef(k).icon, g.members.reduce((n, mm) => n + (mm[tkFormularDef(k).listKey] || []).length, 0), tkFormularDef(k).listTitle]),
+    ['balance', g.members.reduce((n, mm) => n + (mm.warenfluss || []).length, 0), 'Warenflussprüfungen'],
+    ['attach_file', g.members.reduce((n, mm) => n + (mm.attachments || []).length, 0), 'Dateien']
+  ].filter(c => c[1]).map(([icon, n, title]) => `<span class="kb-count" title="${escapeHtml(title)}"><span class="material-symbols-rounded icon" aria-hidden="true">${icon}</span>${n}</span>`).join('');
+  let currentHtml = '';
   if (current) {
     const today = tkDayStart(new Date());
-    const label = activeZuordnung.terminId && current.members.some(m => m.id === activeZuordnung.terminId) ? 'Zugeordneter Termin'
+    const label = activeZuordnung.terminId && current.members.some(mm => mm.id === activeZuordnung.terminId) ? 'Zugeordneter Termin'
       : current.date >= today ? (tkDayStart(current.date).getTime() === today.getTime() ? 'Termin heute' : 'Nächster Termin') : 'Letzter Termin';
     const month = current.date.toLocaleDateString('de-DE', { month: 'short' }).replace('.', '');
-    const auftraege = current.members.map(m => {
-      const c = tkClassifyAuftrag(m);
-      const chips = [...c.verbaende, ...c.arten.filter(a => !(m.auditart || '').toLowerCase().includes(a.label.toLowerCase()))];
-      return `<div class="km-auftrag"${c.verbaende.length ? ` style="--auftrag-color:${c.verbaende[0].bg}"` : ''}>
-        <div class="km-auftrag-top"><strong>${escapeHtml(m.auditart || 'Auftrag')}</strong><span class="tk-badge ${m.bestaetigt ? 'tk-badge-ok' : 'tk-badge-warn'}">${m.bestaetigt ? 'Bestätigt' : 'Unbestätigt'}</span></div>
-        ${chips.length ? `<span class="tk-chips">${chips.map(tkChipHtml).join('')}</span>` : ''}
-      </div>`;
-    }).join('');
-    terminHtml = `<section class="ko-card kb-termin">
-      <div class="ko-card-head">
-        <h3><span class="material-symbols-rounded icon" aria-hidden="true">event_upcoming</span>${label}</h3>
-        <button type="button" class="betrieb-btn primary kb-open-mappe" data-kb-mappe="ueberblick"><span class="material-symbols-rounded icon" aria-hidden="true">folder_open</span>Kontrollmappe öffnen</button>
+    const auftraege = current.members.map(mm => `<span class="kb-auftrag${mm.bestaetigt ? '' : ' is-open'}" title="${mm.bestaetigt ? 'Bestätigt' : 'Unbestätigt'}"><i aria-hidden="true"></i>${escapeHtml(mm.auditart || 'Auftrag')}</span>`).join('');
+    currentHtml = `<div class="kb-termin">
+      <span class="betrieb-date-badge km-date" aria-hidden="true"><b>${current.date.getDate()}</b>${escapeHtml(month)}</span>
+      <div class="kb-termin-text">
+        <span class="kb-termin-label">${label}</span>
+        <strong>${escapeHtml(tkDayLabel(current.date))} · ${escapeHtml(tkTimeLabel(current))}</strong>
+        <span class="kb-auftraege">${auftraege}${tkGroupChipItems(current).filter(it => it.bg).map(tkChipHtml).join('')}</span>
       </div>
-      <div class="kb-termin-row">
-        <span class="betrieb-date-badge km-date" aria-hidden="true"><b>${current.date.getDate()}</b>${escapeHtml(month)}</span>
-        <div class="kb-termin-text">
-          <strong>${escapeHtml(tkDayLabel(current.date))}</strong>
-          <span>${escapeHtml(tkTimeLabel(current))}${current.members.length > 1 ? ` · ${current.members.length} Aufträge` : ''}</span>
-        </div>
-      </div>
-      <div class="km-auftraege">${auftraege}</div>
-    </section>`;
-  } else {
-    terminHtml = `<section class="ko-card kb-termin"><div class="ko-empty ko-empty-small"><span class="material-symbols-rounded icon" aria-hidden="true">event_busy</span><p>Kein Termin für diesen Betrieb. Protokolle und Dokumente hängen an einem Termin — importiere die Termine oder wähle einen Betrieb mit Termin.</p></div></section>`;
+      <span class="kb-hist-counts">${terminCounts(current)}</span>
+      <button type="button" class="betrieb-btn primary kb-open-mappe" data-kb-mappe="ueberblick"><span class="material-symbols-rounded icon" aria-hidden="true">folder_open</span>Kontrollmappe öffnen</button>
+    </div>`;
   }
-
-  // Terminverlauf (neueste zuerst; aktueller markiert)
-  const verlauf = groups.slice().sort((a, b) => b.date - a.date).map(g => {
-    const p = g.primary;
-    const counts = [
-      ...Object.keys(TK_FORMULARE).map(k => [tkFormularDef(k).icon, g.members.reduce((n, m) => n + (m[tkFormularDef(k).listKey] || []).length, 0), tkFormularDef(k).listTitle]),
-      ['balance', g.members.reduce((n, m) => n + (m.warenfluss || []).length, 0), 'Warenflussprüfungen'],
-      ['attach_file', g.members.reduce((n, m) => n + (m.attachments || []).length, 0), 'Dateien']
-    ].filter(c => c[1]).map(([icon, n, title]) => `<span class="kb-count" title="${escapeHtml(title)}"><span class="material-symbols-rounded icon" aria-hidden="true">${icon}</span>${n}</span>`).join('');
-    return `<button type="button" class="kb-hist-row${current && g.id === current.id ? ' is-current' : ''}" data-kb-termin="${escapeHtml(g.id)}">
+  const weitere = groups.filter(g => !current || g.id !== current.id).sort((a, b) => b.date - a.date);
+  const verlauf = weitere.map(g => `<button type="button" class="kb-hist-row" data-kb-termin="${escapeHtml(g.id)}">
       <span class="kb-hist-date">${escapeHtml(tkFmtDate(g.date))}</span>
-      <span class="kb-hist-text"><span class="kb-hist-title">${escapeHtml(g.members.map(m => m.auditart).filter(Boolean).join(' · ') || 'Termin')}</span>${tkGroupChipsHtml(g, 4)}</span>
-      <span class="kb-hist-counts">${counts}</span>
-    </button>`;
-  }).join('');
+      <span class="kb-hist-text"><span class="kb-hist-title">${escapeHtml(g.members.map(mm => mm.auditart).filter(Boolean).join(' · ') || 'Termin')}</span>${tkGroupChipsHtml(g, 4)}</span>
+      <span class="kb-hist-counts">${terminCounts(g)}</span>
+    </button>`).join('');
+  const termineHtml = `<section class="ko-card kb-history">
+      <div class="ko-card-head"><h3><span class="material-symbols-rounded icon" aria-hidden="true">event_upcoming</span>Termine dieses Betriebs</h3></div>
+      ${current ? currentHtml : '<div class="ko-empty ko-empty-small"><span class="material-symbols-rounded icon" aria-hidden="true">event_busy</span><p>Kein Termin für diesen Betrieb. Protokolle und Dokumente hängen an einem Termin — importiere die Termine oder wähle einen Betrieb mit Termin.</p></div>'}
+      ${verlauf ? `<div class="kb-section-label kb-hist-label">Weitere Termine</div>${verlauf}` : ''}
+    </section>`;
+  const funktionen = [['uebersicht', 'donut_large', 'Flächenübersicht'], ['fruchtfolge', 'cycle', 'Fruchtfolge'], ['zeichner', 'draw', 'Flächenzeichner'], ['hofplan', 'home_work', 'Hofplan'], ['stallplaner', 'window', 'Stallplaner'], ['tiere', 'pets', 'Tierbestand'], ['obstbaum', 'park', 'Obstbäume'], ['bienenflug', 'hive', 'Bienenflug']]
+    .map(([seg, icon, label]) => `<button type="button" class="kb-fn" data-kb-segment="${seg}"><span class="material-symbols-rounded icon" aria-hidden="true">${icon}</span><span>${label}</span></button>`).join('');
 
   root.innerHTML = `<div class="kb-wrap">
     <section class="kb-hero">
@@ -10329,22 +10373,13 @@ function renderKontrolleBetrieb() {
         ${kontakt && kontakt.email ? `<a class="betrieb-btn" href="mailto:${escapeHtml(kontakt.email)}"><span class="material-symbols-rounded icon" aria-hidden="true">mail</span>E-Mail</a>` : ''}
       </div>
       ${kontakt ? `<details class="kb-contact"><summary>Kontaktdaten</summary>${renderTerminkalenderContactRows(kontakt)}</details>` : ''}
-      <div class="kb-links">
-        <span class="kb-links-label">Betriebsdaten</span>
-        <div class="kb-link-row">
-          ${[['uebersicht', 'donut_large', 'Flächenübersicht'], ['zeichner', 'draw', 'Flächenzeichner'], ['fruchtfolge', 'cycle', 'Fruchtfolge'], ['hofplan', 'home_work', 'Hofplan'], ['stallplaner', 'window', 'Stallplaner'], ['obstbaum', 'park', 'Obstbäume'], ['bienenflug', 'hive', 'Bienenflug']]
-            .map(([seg, icon, label]) => `<button type="button" class="kb-link" data-kb-segment="${seg}"><span class="material-symbols-rounded icon" aria-hidden="true">${icon}</span>${label}</button>`).join('')}
-        </div>
-      </div>
     </section>
-    ${terminHtml}
-    ${kbFlaechenHtml()}
+    <div class="kb-section-label">Betriebsfunktionen</div>
+    <div class="kb-fns">${funktionen}</div>
     <div class="kb-section-label">Unterlagen der Kontrolle${current ? '' : ' (alle Termine)'}</div>
     <div class="kb-tiles">${tiles}</div>
-    <section class="ko-card kb-history">
-      <div class="ko-card-head"><h3><span class="material-symbols-rounded icon" aria-hidden="true">history</span>Termine dieses Betriebs</h3></div>
-      ${verlauf || '<p class="kb-tile-empty">Keine Termine.</p>'}
-    </section>
+    ${kbFlaechenHtml()}
+    ${termineHtml}
   </div>`;
 }
 // Flächenübersicht in Kurzform: Kennzahlen, Anteilsbalken der Kulturarten
@@ -16507,6 +16542,331 @@ function formularSectionHtml(ev, kind) {
     </div>`;
 }
 
+// ---------- Tierbestand (HIT-Bestandsregister) ----------
+// Eigene Ansicht (#tiere-view): Auszug aus der HI-Tier-Datenbank laden,
+// Bestand/Zu-/Abgänge, Altersklassen, Stickstoffanfall und Tierbesatz,
+// Zuordnung zu Stallabteilen. Rechenlogik und Parser: src/tierbestand.js.
+// Daten je Betrieb (tierbestandData, siehe serializeWorkspace). Aus dem
+// Auszug werden nur Tierzeilen und Zeitraum übernommen — keine Kopfdaten
+// (Name, Anschrift, Telefon, Betriebsnummer).
+let tbFilter = 'bestand';
+let tbSearch = '';
+const tbNum = (n, d = 0) => (Number.isFinite(n) ? n : 0).toLocaleString('de-DE', { minimumFractionDigits: d, maximumFractionDigits: d });
+
+function tbFlaechenHa() {
+  const { rows } = collectGesamtFlaechen();
+  return rows.reduce((s, r) => s + r.ha, 0);
+}
+function tbResult() {
+  const d = tierbestandData;
+  const lfAuto = tbFlaechenHa();
+  const lf = d.lfHa != null ? d.lfHa : (lfAuto > 0 ? Math.round(lfAuto * 100) / 100 : null);
+  return { r: computeTierbestand(d, { kuhNutzung: d.kuhNutzung || 'mutterkuh', lfHa: lf }), lf, lfAuto };
+}
+function setTbStatus(text, isError = false) {
+  const el = document.getElementById('tb-status');
+  el.textContent = text;
+  el.classList.toggle('is-error', isError);
+}
+async function loadTierbestandFile(file) {
+  if (!file) return;
+  setTbStatus('Lese ' + file.name + ' …');
+  try {
+    await ensurePdfJs();
+    const parsed = await parseHitPdf(await file.arrayBuffer(), window.pdfjsLib);
+    if (!parsed.von || !parsed.tiere.length) {
+      setTbStatus('In dieser Datei wurde kein HIT-Bestandsregister erkannt (PDF „Bestandsregister“ aus HI-Tier).', true);
+      return;
+    }
+    if (tierbestandData && !confirm('Den vorhandenen Tierbestand durch diesen Auszug ersetzen? Die Zuordnung zu Stallabteilen bleibt erhalten.')) { setTbStatus(''); return; }
+    tierbestandData = {
+      von: parsed.von, bis: parsed.bis, tiere: parsed.tiere, kontrolle: parsed.kontrolle,
+      importiertAm: new Date().toISOString(),
+      lfHa: tierbestandData ? tierbestandData.lfHa : null,
+      kuhNutzung: tierbestandData ? tierbestandData.kuhNutzung : 'mutterkuh'
+    };
+    tbFilter = 'bestand'; tbSearch = '';
+    markToolHintDone('tiere');
+    setTbStatus(`${parsed.tiere.length} Tiere gelesen (${tbFmtDate(parsed.von)} – ${tbFmtDate(parsed.bis)}).`);
+    persistLocalState().catch(() => {});
+    renderTierbestand(true);
+  } catch (err) {
+    console.error(err);
+    setTbStatus('Datei konnte nicht gelesen werden — ' + (err.message || 'unbekannter Fehler'), true);
+  }
+}
+document.querySelectorAll('#tb-file, #tb-file-empty').forEach(input => input.addEventListener('change', (e) => {
+  const f = e.target.files[0];
+  e.target.value = '';
+  loadTierbestandFile(f);
+}));
+document.getElementById('btn-tb-delete').addEventListener('click', () => {
+  if (!tierbestandData || !confirm('Tierbestand dieses Betriebs löschen? Die Stallpläne bleiben erhalten.')) return;
+  tierbestandData = null;
+  setTbStatus('');
+  persistLocalState().catch(() => {});
+  renderTierbestand();
+});
+
+// Stallabteile mit Rindern (Zuordnung): alle Abteile aller Stallpläne.
+function tbStallAbteile() {
+  return stallplaene.flatMap(plan => (plan.compartments || []).map(c => ({ plan, c })));
+}
+const tbRinderIn = (c) => (c.tierbestand || []).filter(tb => tb.tierart === 'rinder').reduce((s, tb) => s + (Number(tb.tieranzahl) || 0), 0);
+
+// Animationen nur beim Öffnen der Ansicht und nach dem Laden eines Auszugs
+// (animate = true): Kacheln und Karten schweben gestaffelt ein, Zahlen zählen
+// hoch, Balken und Säulen wachsen. Bei "weniger Bewegung" alles sofort fertig.
+let tbAnimTimer = null;
+function tbAnimate(animate) {
+  const view = document.getElementById('tiere-view');
+  clearTimeout(tbAnimTimer);
+  view.classList.remove('ue-animating');
+  if (!animate || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  void view.offsetWidth; // Neustart der CSS-Animationen
+  view.classList.add('ue-animating');
+  view.querySelectorAll('[data-grow]').forEach((el, i) => {
+    const prop = el.dataset.grow, ziel = el.style[prop];
+    el.style.transition = 'none';
+    el.style[prop] = '0%';
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      el.style.transition = '';
+      el.style.transitionDelay = (250 + Math.min(i, 40) * 28) + 'ms';
+      el.style[prop] = ziel;
+    }));
+  });
+  view.querySelectorAll('.tb-count').forEach((el, i) => countUp(el, Number(el.dataset.v), { decimals: Number(el.dataset.d) || 0, delay: 120 + (i % 8) * 70 }));
+  // danach wieder aus, damit spätere Aktualisierungen (Filter, Eingaben) nicht erneut einblenden
+  tbAnimTimer = setTimeout(() => view.classList.remove('ue-animating'), 2400);
+}
+const tbCount = (n, d = 0) => `<span class="tb-count" data-v="${Number.isFinite(n) ? n : 0}" data-d="${d}">${tbNum(n, d)}</span>`;
+
+function renderTierbestand(animate = false) {
+  const has = !!tierbestandData;
+  document.getElementById('tb-empty').hidden = has;
+  document.getElementById('tb-content').hidden = !has;
+  document.getElementById('btn-tb-delete').hidden = !has;
+  document.getElementById('btn-tb-xlsx').hidden = !has;
+  const betrieb = activeZuordnung ? activeZuordnung.betrieb : 'Kein Betrieb zugeordnet';
+  document.getElementById('tb-subtitle').textContent = has
+    ? `${betrieb} · Zeitraum ${tbFmtDate(tierbestandData.von)} – ${tbFmtDate(tierbestandData.bis)}`
+    : betrieb;
+  if (!has) { tbAnimate(animate); return; }
+  const d = tierbestandData;
+  const { r, lf, lfAuto } = tbResult();
+
+  // Kennzahlen
+  let kpiNr = 0;
+  const kpi = (label, value, unit, sub, icon, cls = '') => `<div class="ue-kpi${cls} ue-anim" style="--i:${kpiNr++}">
+      <span class="material-symbols-rounded icon ue-kpi-icon" aria-hidden="true">${icon}</span>
+      <span class="ue-kpi-label">${escapeHtml(label)}</span>
+      <span class="ue-kpi-value">${value}${unit ? `<small>${unit}</small>` : ''}</span>
+      <span class="ue-kpi-sub">${escapeHtml(sub)}</span>
+    </div>`;
+  document.getElementById('tb-kpis').innerHTML =
+    kpi('Bestand am ' + tbFmtDate(r.bis), tbCount(r.endbestand), 'Tiere', `${tbNum(r.gvStichtag, 1)} GV am Stichtag`, 'pets', ' primary') +
+    kpi('Zugänge', tbCount(r.zugaenge.n), '', `davon ${r.zugaenge.geburten} Geburten`, 'add_box') +
+    kpi('Abgänge', tbCount(r.abgaenge.n), '', r.abgaenge.verluste ? `davon ${r.abgaenge.verluste} verendet/tot` : 'keine Verluste', 'logout') +
+    kpi('Ø Bestand im Zeitraum', tbCount(r.gvSchnitt, 1), 'GV', `${tbNum(r.schnitt, 1)} Tiere im Durchschnitt`, 'balance');
+
+  // Kontrollsummen des Auszugs
+  const k = d.kontrolle || {};
+  const checks = [];
+  if (k.datensaetze != null) checks.push([k.datensaetze === r.anzahl, `${r.anzahl} von ${k.datensaetze} Datensätzen gelesen`]);
+  if (k.endbestand != null) checks.push([k.endbestand === r.endbestand, `Endbestand ${r.endbestand} (Auszug: ${k.endbestand})`]);
+  if (k.gve != null) checks.push([Math.abs(k.gve - r.gvDatei) < 0.05, `GVE ${tbNum(r.gvDatei, 3)} (Auszug: ${tbNum(k.gve, 3)})`]);
+  const allOk = checks.every(c => c[0]);
+  document.getElementById('tb-check').innerHTML = checks.length
+    ? `<span class="tb-check ${allOk ? 'is-ok' : 'is-warn'}"><span class="material-symbols-rounded icon" aria-hidden="true">${allOk ? 'task_alt' : 'warning'}</span>${allOk ? 'Kontrollsummen des Auszugs stimmen' : 'Abweichung zu den Kontrollsummen des Auszugs — bitte prüfen'}: ${checks.map(c => escapeHtml(c[1])).join(' · ')}</span>`
+    : '';
+
+  // Bestandsentwicklung
+  const artList = (arten, total) => arten.length ? arten.map(a => `<div class="tb-art" data-art="${escapeHtml(a.art)}">
+      <span class="tb-art-label">${escapeHtml(a.label)}</span>
+      <span class="tb-art-track"><span data-grow="width" style="width:${total ? a.n / total * 100 : 0}%"></span></span>
+      <span class="tb-art-n">${a.n}</span></div>`).join('') : '<p class="kb-tile-empty">keine</p>';
+  const betriebe = (list, text) => list.length ? `<p class="ue-hint-line">${text}: ${list.slice(0, 6).map(([nr, n]) => `<span class="tb-betrieb">${escapeHtml(nr)} · ${n}</span>`).join(' ')}${list.length > 6 ? ` und ${list.length - 6} weitere` : ''}</p>` : '';
+  const maxMon = Math.max(1, ...r.monate.map(m => Math.max(m.zu, m.ab)));
+  document.getElementById('tb-bewegung').innerHTML = `
+    <div class="tb-bilanz" id="tb-bilanz">
+      <div><b>${tbCount(r.anfang)}</b><span>Anfangsbestand<br>${tbFmtDate(r.von)}</span></div><i>+</i>
+      <div class="is-zu"><b>${tbCount(r.zugaenge.n)}</b><span>Zugänge</span></div><i>−</i>
+      <div class="is-ab"><b>${tbCount(r.abgaenge.n)}</b><span>Abgänge</span></div><i>=</i>
+      <div class="is-end"><b>${tbCount(r.endbestand)}</b><span>Bestand<br>${tbFmtDate(r.bis)}</span></div>
+    </div>
+    <div class="ue-grid2 tb-arten">
+      <div><h4>Zugänge nach Art</h4><div id="tb-zugaenge">${artList(r.zugaenge.arten, r.zugaenge.n)}</div>${betriebe(r.zugaenge.vorbesitzer, 'Von Betrieb (Nr. · Tiere)')}</div>
+      <div><h4>Abgänge nach Art</h4><div id="tb-abgaenge">${artList(r.abgaenge.arten, r.abgaenge.n)}</div>${betriebe(r.abgaenge.uebernehmer, 'An Betrieb (Nr. · Tiere)')}
+        ${r.verlustrate != null ? `<p class="ue-hint-line">Verluste (verendet/tot): ${r.abgaenge.verluste} Tiere = ${tbNum(r.verlustrate, 1)} % des Durchschnittsbestands.</p>` : ''}</div>
+    </div>
+    <h4>Zu- und Abgänge je Monat</h4>
+    <div class="tb-monate">${r.monate.map(m => `<div class="tb-monat" title="${m.monat.slice(5)}/${m.monat.slice(0, 4)}: ${m.zu} Zugänge, ${m.ab} Abgänge">
+        <span class="tb-monat-bars"><span class="is-zu" data-grow="height" style="height:${m.zu / maxMon * 100}%"></span><span class="is-ab" data-grow="height" style="height:${m.ab / maxMon * 100}%"></span></span>
+        <span class="tb-monat-label">${m.monat.slice(5)}/${m.monat.slice(2, 4)}</span></div>`).join('')}</div>
+    <p class="ue-hint-line"><span class="tb-legend is-zu"></span>Zugänge <span class="tb-legend is-ab"></span>Abgänge</p>`;
+
+  // Altersklassen am Stichtag
+  document.getElementById('tb-klassen-title').textContent = 'Bestand nach Alter und Geschlecht am ' + tbFmtDate(r.bis);
+  document.getElementById('tb-klassen').innerHTML = `<thead><tr><th>Klasse</th><th class="num" title="männlich">m</th><th class="num" title="weiblich">w</th><th class="num">gesamt</th><th class="num">GV</th></tr></thead>
+    <tbody>${r.klassen.map((c, i) => `<tr data-klasse="${c.key}" class="ue-row-anim" style="--i:${i * 3}"><td>${escapeHtml(c.label)}</td><td class="num">${c.m || '–'}</td><td class="num">${c.w || '–'}</td><td class="num"><b>${c.anzahl}</b></td><td class="num">${tbNum(c.gvStichtag, 1)}</td></tr>`).join('')}</tbody>
+    <tfoot><tr><td>Summe</td><td class="num">${r.klassen.reduce((s, c) => s + c.m, 0)}</td><td class="num">${r.klassen.reduce((s, c) => s + c.w, 0)}</td><td class="num">${r.endbestand}</td><td class="num">${tbNum(r.gvStichtag, 1)}</td></tr></tfoot>`;
+
+  // Düngung und Tierbesatz
+  const lfInput = document.getElementById('tb-lf');
+  if (document.activeElement !== lfInput) lfInput.value = lf != null ? String(lf).replace('.', ',') : '';
+  document.getElementById('tb-lf-hint').innerHTML = d.lfHa != null
+    ? `von Hand eingetragen${lfAuto > 0 ? ` — <button type="button" class="ko-link-btn" id="tb-lf-reset">Flächenübersicht verwenden (${tbNum(lfAuto, 2)} ha)</button>` : ''}`
+    : (lfAuto > 0 ? 'aus der Flächenübersicht übernommen' : 'keine Flächen geladen — bitte eintragen');
+  document.getElementById('tb-kuh').value = d.kuhNutzung || 'mutterkuh';
+  const pct = r.nAuslastung;
+  const level = pct == null ? '' : pct > 100 ? ' is-bad' : pct > 90 ? ' is-warn' : ' is-ok';
+  document.getElementById('tb-duengung').innerHTML = `
+    <div class="tb-n${level}" id="tb-n">
+      <div class="tb-n-main">
+        <span class="tb-n-value">${r.nJeHa != null ? tbCount(r.nJeHa, 1) : '–'}<small>kg N/ha</small></span>
+        <span class="tb-n-text">${pct == null ? 'Fläche eintragen, um den Stickstoffanfall je Hektar zu berechnen.'
+          : pct > 100 ? `Die Grenze von ${TB_N_GRENZE} kg N je Hektar und Jahr ist überschritten (${tbNum(pct, 0)} %).`
+            : `${tbNum(pct, 0)} % der Grenze von ${TB_N_GRENZE} kg N je Hektar und Jahr.`}</span>
+      </div>
+      <div class="tb-n-bar" role="img" aria-label="Auslastung der Stickstoffgrenze"><span data-grow="width" style="width:${Math.min(100, pct || 0)}%"></span><i></i></div>
+      <div class="tb-n-facts">
+        <span><b>${tbNum(r.nJahr, 0)} kg N</b> Anfall je Jahr</span>
+        <span><b>${tbNum(r.nMaxHa, 2)} ha</b> Mindestfläche für diesen Bestand</span>
+        <span id="tb-besatz"><b>${r.gvJeHa != null ? tbNum(r.gvJeHa, 2) : '–'} GV/ha</b> Tierbesatz (Ø im Zeitraum)</span>
+      </div>
+    </div>
+    <div class="ue-table-wrap"><table class="tb-table" id="tb-n-table"><thead><tr><th>Klasse</th><th class="num" title="Durchschnittsbestand im Zeitraum">Ø Tiere</th><th class="num" title="kg Stickstoff je Tier und Jahr">kg N/Tier</th><th class="num" title="kg Stickstoff je Jahr">kg N/Jahr</th></tr></thead>
+      <tbody>${r.klassen.filter(c => c.schnitt > 0).map(c => `<tr><td>${escapeHtml(c.label)}</td><td class="num">${tbNum(c.schnitt, 1)}</td><td class="num">${tbNum(c.nFaktor, 1)}</td><td class="num">${tbNum(c.nJahr, 0)}</td></tr>`).join('')}</tbody>
+      <tfoot><tr><td>Summe</td><td class="num">${tbNum(r.schnitt, 1)}</td><td></td><td class="num">${tbNum(r.nJahr, 0)}</td></tr></tfoot></table></div>`;
+
+  renderTbStall(r);
+  renderTbTiere(r);
+  tbAnimate(animate);
+}
+
+// Zuordnung zu Stallabteilen: Tiere landen im Stallplan (Abteil › Tiere) und
+// zählen dort in die Flächenprüfung nach Öko-VO.
+function renderTbStall(r) {
+  const el = document.getElementById('tb-stall');
+  const abteile = tbStallAbteile();
+  if (!abteile.length) {
+    el.innerHTML = `<div class="ko-empty ko-empty-small"><span class="material-symbols-rounded icon" aria-hidden="true">space_dashboard</span><p>Noch kein Stallplan mit Abteilen. Lege im Stallplaner den Stall und seine Abteile an — dann lassen sich die Tiere hier zuordnen.</p></div>
+      <button type="button" class="betrieb-btn" data-tb-goto="stallplaner"><span class="material-symbols-rounded icon" aria-hidden="true">space_dashboard</span>Zum Stallplaner</button>`;
+    return;
+  }
+  const zugeordnet = abteile.reduce((s, x) => s + tbRinderIn(x.c), 0);
+  const offen = r.endbestand - zugeordnet;
+  const kats = OEKO_VO_KATEGORIEN.filter(kat => kat.tierart === 'rinder');
+  el.innerHTML = `<div class="tb-stall-sum${offen < 0 ? ' is-bad' : offen === 0 ? ' is-ok' : ''}" id="tb-stall-sum">
+      <b>${zugeordnet}</b> von <b>${r.endbestand}</b> Rindern einem Abteil zugeordnet · ${offen > 0 ? `<b>${offen}</b> noch ohne Abteil` : offen === 0 ? 'alle zugeordnet' : `<b>${-offen}</b> mehr zugeordnet als im Bestand`}
+    </div>
+    ${abteile.map(({ plan, c }) => {
+      const area = shoelaceArea(c.points) * plan.gridScale * plan.gridScale;
+      const benoetigt = compartmentHasCountedAnimals(c) ? compartmentBenoetigteFlaeche(c) : null;
+      const badge = benoetigt == null ? '' : area >= benoetigt
+        ? `<span class="stallplan-badge ok">✓ ${(area - benoetigt).toFixed(1)} m² Reserve</span>`
+        : `<span class="stallplan-badge fail">✗ ${(benoetigt - area).toFixed(1)} m² fehlend</span>`;
+      const chips = (c.tierbestand || []).filter(tb => tb.kategorieId && tb.tieranzahl).map(tb => {
+        const kat = OEKO_VO_KATEGORIEN.find(x => x.id === tb.kategorieId);
+        return `<span class="tb-stall-chip">${tb.tieranzahl} × ${escapeHtml(kat ? kat.label : 'Tiere')}<button type="button" data-tb-unassign="${escapeHtml(tb.id)}" data-c="${escapeHtml(c.id)}" title="Zuordnung entfernen" aria-label="Zuordnung entfernen"><span class="material-symbols-rounded icon" aria-hidden="true">close</span></button></span>`;
+      }).join('');
+      return `<div class="tb-stall-row" data-tb-abteil="${escapeHtml(c.id)}">
+        <div class="tb-stall-head"><strong>${escapeHtml(c.name || 'Abteil')}</strong><span>${escapeHtml(plan.name || 'Stallplan')} · ${area.toFixed(1)} m²</span>${badge}</div>
+        <div class="tb-stall-chips">${chips || '<span class="kb-tile-empty">Noch keine Tiere zugeordnet.</span>'}</div>
+        <div class="tb-stall-form">
+          <select aria-label="Kategorie">${kats.map(kat => `<option value="${kat.id}">${escapeHtml(kat.label)}</option>`).join('')}</select>
+          <input type="number" min="1" inputmode="numeric" placeholder="Anzahl" aria-label="Anzahl">
+          <button type="button" class="betrieb-btn" data-tb-assign="${escapeHtml(c.id)}"><span class="material-symbols-rounded icon" aria-hidden="true">add</span>Zuordnen</button>
+        </div>
+      </div>`;
+    }).join('')}
+    <p class="ue-hint-line">Die Zuordnung steht auch im Stallplaner beim Abteil unter „Tiere“ und zählt dort in die Flächenprüfung nach Öko-Verordnung. Die Kategorien richten sich dort nach dem Gewicht — der Auszug kennt nur das Alter.</p>`;
+}
+function tbFindAbteil(id) {
+  return tbStallAbteile().find(x => x.c.id === id) || null;
+}
+
+function tbVisibleTiere(r) {
+  const d = tierbestandData;
+  const q = tbSearch.trim().toLowerCase();
+  return d.tiere.filter(t => {
+    const st = tbStatus(t, d.von, d.bis);
+    if (tbFilter === 'bestand' && st === 'abgang') return false;
+    if (tbFilter === 'zugang' && !(t.zugang.datum >= d.von)) return false;
+    if (tbFilter === 'abgang' && st !== 'abgang') return false;
+    return !q || `${t.ohrmarke} ${t.rasse} ${t.zugang.betrieb} ${t.abgang ? t.abgang.betrieb : ''}`.toLowerCase().includes(q);
+  });
+}
+function renderTbTiere(r) {
+  const d = tierbestandData;
+  document.querySelectorAll('#tb-filter [data-tb-filter]').forEach(b => b.setAttribute('aria-checked', String(b.dataset.tbFilter === tbFilter)));
+  const rows = tbVisibleTiere(r);
+  document.getElementById('tb-tiere-count').textContent = rows.length;
+  document.getElementById('tb-tiere').innerHTML = `<thead><tr><th>Ohrmarke</th><th>Geboren</th><th>Alter</th><th>Geschl.</th><th>Rasse</th><th>Zugang</th><th>Abgang</th></tr></thead>
+    <tbody>${rows.length ? rows.map((t, ti) => {
+      const bisDatum = t.abgang && t.abgang.datum <= d.bis ? t.abgang.datum : d.bis;
+      return `<tr class="is-${tbStatus(t, d.von, d.bis)}${ti < 30 ? ' ue-row-anim' : ''}" style="--i:${Math.min(ti, 30) + 12}"><td>${escapeHtml(t.ohrmarke)}</td><td>${tbFmtDate(t.geb)}</td><td>${tbAlterText(t.geb, bisDatum)}</td><td>${t.sex === 'M' ? 'm' : 'w'}</td><td>${escapeHtml(t.rasse)}</td>
+        <td>${tbFmtDate(t.zugang.datum)} · ${escapeHtml(t.zugang.art === 'GE' ? 'Geburt' : (TB_ZUGANG_ARTEN[t.zugang.art] || t.zugang.art).split(' (')[0])}${t.zugang.betrieb ? ` <small>von ${escapeHtml(t.zugang.betrieb)}</small>` : ''}</td>
+        <td>${t.abgang ? `${tbFmtDate(t.abgang.datum)} · ${escapeHtml((TB_ABGANG_ARTEN[t.abgang.art] || t.abgang.art).split(' (')[0])}${t.abgang.betrieb ? ` <small>an ${escapeHtml(t.abgang.betrieb)}</small>` : ''}` : '–'}</td></tr>`;
+    }).join('') : '<tr><td colspan="7" style="color:var(--muted); padding:14px;">Keine Tiere in dieser Auswahl.</td></tr>'}</tbody>`;
+}
+function exportTierbestand() {
+  if (!tierbestandData) return;
+  const d = tierbestandData;
+  const headers = ['Ohrmarke', 'Geboren', 'Geschlecht', 'Rasse', 'Zugang', 'Zugang Art', 'Vorbesitzer', 'Abgang', 'Abgang Art', 'Übernehmer', 'GVE'];
+  const data = tbVisibleTiere().map(t => [t.ohrmarke, tbFmtDate(t.geb), t.sex === 'M' ? 'm' : 'w', t.rasse, tbFmtDate(t.zugang.datum), TB_ZUGANG_ARTEN[t.zugang.art] || t.zugang.art, t.zugang.betrieb,
+    t.abgang ? tbFmtDate(t.abgang.datum) : '', t.abgang ? (TB_ABGANG_ARTEN[t.abgang.art] || t.abgang.art) : '', t.abgang ? t.abgang.betrieb : '', t.gve]);
+  exportXlsx(headers, data, zuordnungFileName('Tierbestand', 'xlsx') || `tierbestand_${d.bis}.xlsx`, 'Tierbestand');
+}
+document.getElementById('btn-tb-xlsx').addEventListener('click', exportTierbestand);
+
+document.getElementById('tiere-view').addEventListener('click', (e) => {
+  const t = e.target.closest('button');
+  if (!t) return;
+  if (t.dataset.tbFilter) { tbFilter = t.dataset.tbFilter; renderTbTiere(); return; }
+  if (t.id === 'tb-wfp') { openBestandsentwicklungWfp(); return; }
+  if (t.dataset.tbGoto) { setActiveSegment(t.dataset.tbGoto); return; }
+  if (t.id === 'tb-lf-reset') { tierbestandData.lfHa = null; persistLocalState().catch(() => {}); renderTierbestand(); return; }
+  if (t.dataset.tbAssign) {
+    const x = tbFindAbteil(t.dataset.tbAssign);
+    const row = t.closest('.tb-stall-row');
+    const n = parseInt(row.querySelector('input').value, 10);
+    if (!x || !(n > 0)) { row.querySelector('input').focus(); return; }
+    const entry = newTierbestandEntry('rinder');
+    entry.kategorieId = row.querySelector('select').value;
+    entry.tieranzahl = n;
+    x.c.tierbestand = x.c.tierbestand || [];
+    x.c.tierbestand.push(entry);
+    persistLocalState().catch(() => {});
+    renderTierbestand();
+    return;
+  }
+  if (t.dataset.tbUnassign) {
+    const x = tbFindAbteil(t.dataset.c);
+    if (!x) return;
+    x.c.tierbestand = (x.c.tierbestand || []).filter(tb => tb.id !== t.dataset.tbUnassign);
+    persistLocalState().catch(() => {});
+    renderTierbestand();
+  }
+});
+document.getElementById('tb-search').addEventListener('input', (e) => { tbSearch = e.target.value; renderTbTiere(); });
+document.getElementById('tb-lf').addEventListener('change', (e) => {
+  if (!tierbestandData) return;
+  const v = parseFloat(String(e.target.value).replace(/\./g, '').replace(',', '.'));
+  tierbestandData.lfHa = Number.isFinite(v) && v > 0 ? v : null;
+  persistLocalState().catch(() => {});
+  renderTierbestand();
+});
+document.getElementById('tb-kuh').addEventListener('change', (e) => {
+  if (!tierbestandData) return;
+  tierbestandData.kuhNutzung = e.target.value;
+  persistLocalState().catch(() => {});
+  renderTierbestand();
+});
+function refreshTierbestandIfOpen() {
+  if (document.body.dataset.view === 'tiere') renderTierbestand();
+}
+
 // ---- Warenflussprüfungen am Termin (Logik/Oberfläche: src/warenfluss.js) ----
 function warenflussSectionHtml(ev) {
   const list = ev.warenfluss || [];
@@ -16571,9 +16931,59 @@ function wireWarenflussSection(ev) {
     renderTerminkalenderDetail(ev);
   }));
 }
+// Kulturen mit summierten Hektar aus der Flächenübersicht für die
+// Warenflussprüfung — nur wenn die geladenen Flächen zum Betrieb des Termins
+// gehören (sonst kämen die Hektar eines anderen Betriebs in die Prüfung).
+function warenflussFlaechenCtx(ev) {
+  const passt = activeZuordnung && kbKey(activeZuordnung.betrieb) === kbKey(ev.kunde);
+  if (!passt) return { flaechen: null, flaechenHinweis: `Flächen aus der Flächenübersicht werden übernommen, sobald „${ev.kunde}“ als Betrieb gewählt ist.` };
+  const { rows } = collectGesamtFlaechen();
+  if (!rows.length) return { flaechen: null, flaechenHinweis: 'Für diesen Betrieb sind noch keine Flächen geladen — dann werden die Hektar je Kultur automatisch übernommen.' };
+  return {
+    flaechen: summarizeGesamtKulturen(rows).all.filter(k => k.label !== 'Ohne Angabe').map(k => ({ label: k.label, ha: k.value, count: k.count })),
+    flaechenHinweis: ''
+  };
+}
+// Auswertung des Tierbestands (HIT-Auszug) für die Warenflussprüfung
+// "Bestandsentwicklung Rinder" — wie bei den Flächen nur, wenn der geladene
+// Tierbestand zum Betrieb des Termins gehört.
+function warenflussBestandCtx(ev) {
+  const passt = activeZuordnung && kbKey(activeZuordnung.betrieb) === kbKey(ev.kunde);
+  if (!passt) return { bestand: null, bestandHinweis: `Der Tierbestand wird übernommen, sobald „${ev.kunde}“ als Betrieb gewählt ist.` };
+  if (!tierbestandData) return { bestand: null, bestandHinweis: 'Für diesen Betrieb ist noch kein Tierbestand geladen — unter „Tierbestand“ das Bestandsregister aus HI-Tier laden.' };
+  const { r } = tbResult();
+  return {
+    bestandHinweis: '',
+    bestand: {
+      von: r.von, bis: r.bis, anfang: r.anfang, endbestand: r.endbestand, bilanzOk: r.bilanzOk,
+      zugaenge: { n: r.zugaenge.n, arten: r.zugaenge.arten },
+      abgaenge: { n: r.abgaenge.n, arten: r.abgaenge.arten, verluste: r.abgaenge.verluste },
+      verlustrate: r.verlustrate, gvSchnitt: r.gvSchnitt,
+      klassen: r.klassen.map(k => ({ label: k.label, anzahl: k.anzahl }))
+    }
+  };
+}
+// Aus der Ansicht "Tierbestand": Prüfung "Bestandsentwicklung Rinder" am
+// aktuellen Termin des Betriebs anlegen (oder die vorhandene öffnen).
+function openBestandsentwicklungWfp() {
+  const status = document.getElementById('tb-wfp-status');
+  if (!(isSupabaseConfigured && accountSession)) { status.textContent = 'Warenflussprüfungen gehören zur Kontrolle — bitte zuerst anmelden.'; return; }
+  const g = kbCurrent();
+  if (!g) { status.textContent = 'Die Prüfung wird an einem Termin gespeichert — bitte oben einen Betrieb mit Termin wählen.'; return; }
+  status.textContent = '';
+  const ev = g.primary;
+  let chk = (ev.warenfluss || []).find(c => c.modul === 'bestand');
+  if (!chk) {
+    chk = createWarenfluss('bestand');
+    ev.warenfluss = ev.warenfluss || [];
+    ev.warenfluss.push(chk);
+  }
+  initWarenflussUi();
+  openWarenflussFor(ev, chk);
+}
 function openWarenflussFor(ev, chk) {
   openWarenfluss(chk, {
-    ctx: { betrieb: ev.kunde, datum: tkFmtDate(ev.date), kontrolleur: kontoProfil.name || '' },
+    ctx: { betrieb: ev.kunde, datum: tkFmtDate(ev.date), kontrolleur: kontoProfil.name || '', ...warenflussFlaechenCtx(ev), ...warenflussBestandCtx(ev) },
     onChange: () => { /* Speicherung über den regulären lokalen Abgleich (persistLocalState) */ },
     onDelete: (c) => {
       ev.warenfluss = (ev.warenfluss || []).filter(x => x.id !== c.id);

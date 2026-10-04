@@ -10,7 +10,7 @@ async function openNew(page, modul) {
   await gotoKontrolleKalender(page);
   await openFirstTermin(page, 'protokolle');
   await page.locator('#tk-warenfluss-new').click();
-  await expect(page.locator('.wf-module-btn')).toHaveCount(6);
+  await expect(page.locator('.wf-module-btn')).toHaveCount(7);
   await page.locator(`[data-wf-new="${modul}"]`).click();
   await expect(page.locator('#warenfluss-overlay')).toBeVisible();
   return id;
@@ -439,6 +439,14 @@ test.describe('Warenflussprüfung', () => {
     const list = await stored(page, id);
     expect(list[0]).toMatchObject({ zeitraum: wj, zeitraumVon: `${y - 2}-07-01`, zeitraumBis: `${y - 1}-06-30` });
     await expect(page.locator('#wf-auto-text')).toContainText(`Zeitraum: ${wj}`);
+  });
+
+  test('Pflanzenbau: Saatgut steht vor der Ernte — in der Tabelle und im Prüftext', async ({ page }) => {
+    await openNew(page, 'pflanzenbau');
+    await expect(page.locator('.wf-section[data-table] h4')).toHaveText(['Saat- und Pflanzgut', 'Ernte und Ertrag je Hektar']);
+    const text = await page.locator('#wf-auto-text').innerText();
+    expect(text.indexOf('Saat- und Pflanzgut')).toBeGreaterThan(-1);
+    expect(text.indexOf('Saat- und Pflanzgut')).toBeLessThan(text.indexOf('Ernte und Ertrag je Hektar'));
   });
 
   test('Prüfung wieder öffnen und löschen', async ({ page }) => {

@@ -148,6 +148,7 @@
     <button class="segment-btn" data-view="bienenflug"><span class="material-symbols-rounded icon" aria-hidden="true">hive</span><span class="segment-label">Bienenflug<wbr>karte</span></button>
     <button class="segment-btn" data-view="hofplan"><span class="material-symbols-rounded icon" aria-hidden="true">home_work</span><span class="segment-label">Hofplan</span></button>
     <button class="segment-btn" data-view="stallplaner"><span class="material-symbols-rounded icon" aria-hidden="true">space_dashboard</span><span class="segment-label">Stall<wbr>planer</span></button>
+    <button class="segment-btn" data-view="tiere"><span class="material-symbols-rounded icon" aria-hidden="true">pets</span><span class="segment-label">Tier<wbr>bestand</span></button>
   </nav>
 
   <div id="brand">
@@ -275,6 +276,35 @@
     </div>
     <div class="tool-footer">
       <div id="compare-status" class="status-line"></div>
+    </div>
+  </div>
+
+  <!-- Tierbestand: HIT-Bestandsregister (main.js "Tierbestand", src/tierbestand.js) -->
+  <div class="sidebar-section" data-view="tiere">
+    <div class="tool-main">
+      <div class="tool-hint"><span class="material-symbols-rounded icon">info</span><span>Bestandsregister aus HI-Tier als PDF laden — Bestand, Zu- und Abgänge, Stickstoff und Tierbesatz.</span></div>
+      <div class="compare-upload">
+        <label class="compare-label">HIT-Auszug</label>
+        <div class="dropzone-mini" id="tb-drop">
+          <span>Bestandsregister laden (.pdf)…</span>
+          <input type="file" id="tb-file" accept=".pdf,application/pdf">
+        </div>
+      </div>
+      <details class="tool-tips">
+        <summary>Tipps</summary>
+        <ul>
+          <li>In HI-Tier: Bestandsregister für den Zeitraum seit der letzten Kontrolle als PDF speichern.</li>
+          <li>Übernommen werden nur die Tierzeilen und der Zeitraum — keine Namen, Anschriften oder Telefonnummern.</li>
+          <li>Ein neuer Auszug ersetzt den alten.</li>
+          <li>Bisher für Rinder (HIT-Bestandsregister „Standard“).</li>
+        </ul>
+      </details>
+    </div>
+    <div class="tool-footer">
+      <div class="tool-footer-title">Exportieren</div>
+      <button id="btn-tb-xlsx" class="tool-btn" hidden><span class="material-symbols-rounded icon">table_view</span>Tierliste (Excel)</button>
+      <button id="btn-tb-delete" class="tool-btn" hidden><span class="material-symbols-rounded icon">delete</span>Tierbestand löschen</button>
+      <div id="tb-status" class="status-line"></div>
     </div>
   </div>
 
@@ -632,16 +662,7 @@
       <table id="feature-table">
         <thead>
           <tr>
-            <th>Schlagnr. / Flächennr.</th>
-            <th>Flächenname</th>
-            <th>Flächenidentifikator</th>
-            <th>Größe</th>
-            <th>Kulturart</th>
-            <th>Bäume</th>
-            <th>Besichtigt</th>
-            <th>Notiz</th>
-            <th>Anbauplanung</th>
-            <th>Route</th>
+            <!-- Spalten setzt renderFeatureTable() (je nach Anmeldung/Bildschirm) -->
           </tr>
         </thead>
         <tbody id="feature-table-body"></tbody>
@@ -938,6 +959,83 @@
           <p class="ue-hint-line">Schlag antippen: zeigt ihn auf der Karte, eingefärbt nach Kultur. Schläge werden über die Schlagnummer verbunden.</p>
         </section>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ---------- Tierbestand (HIT-Bestandsregister) ----------
+     Eigene Vollansicht wie die Flächenübersicht (gleiche Karten/Kennzahlen).
+     Inhalt: renderTierbestand() in main.js. -->
+<div id="tiere-view" hidden>
+  <div id="tiere-scroll">
+    <header class="ue-head">
+      <div>
+        <h2>Tierbestand</h2>
+        <p id="tb-subtitle"></p>
+      </div>
+    </header>
+
+    <div id="tb-empty" class="ue-card ue-empty ue-anim">
+      <span class="material-symbols-rounded icon" aria-hidden="true">pets</span>
+      <h3>Noch kein Tierbestand</h3>
+      <p>Lade das Bestandsregister aus der HI-Tier-Datenbank als PDF (Zeitraum seit der letzten Kontrolle). Übernommen werden nur die Tierzeilen und der Zeitraum.</p>
+      <div class="dropzone-mini uf-drop">
+        <span>Bestandsregister laden (.pdf)…</span>
+        <input type="file" id="tb-file-empty" accept=".pdf,application/pdf">
+      </div>
+    </div>
+
+    <div id="tb-content" hidden>
+      <div class="ue-kpis" id="tb-kpis"></div>
+      <p id="tb-check" class="ue-anim" style="--i:4"></p>
+
+      <section class="ue-card ue-anim" style="--i:4">
+        <div class="ue-table-head">
+          <h3>Bestandsentwicklung im Zeitraum</h3>
+          <button type="button" class="betrieb-btn tb-wfp-btn" id="tb-wfp" title="Warenflussprüfung „Bestandsentwicklung Rinder“ als Freitext am aktuellen Termin"><span class="material-symbols-rounded icon" aria-hidden="true">balance</span>Warenflussprüfung erstellen</button>
+        </div>
+        <p class="ue-hint-line" id="tb-wfp-status" aria-live="polite"></p>
+        <div id="tb-bewegung"></div>
+      </section>
+
+      <div class="ue-grid2">
+        <section class="ue-card ue-anim" style="--i:6">
+          <h3 id="tb-klassen-title">Bestand nach Alter und Geschlecht</h3>
+          <div class="ue-table-wrap"><table class="tb-table" id="tb-klassen"></table></div>
+          <p class="ue-hint-line">GV nach dem Schlüssel des Auszugs (bis 6 Monate 0,3 · 6 bis 24 Monate 0,6 · darüber 1,0). „Mit Kalbung“ heißt: Das Tier steht im Auszug als Mutter eines anderen Tieres.</p>
+        </section>
+        <section class="ue-card ue-anim" style="--i:7">
+          <h3>Düngung und Tierbesatz</h3>
+          <div class="tb-form">
+            <label><span>Landwirtschaftliche Fläche (ha)</span><input type="text" id="tb-lf" class="fotomappe-input" inputmode="decimal" placeholder="z. B. 120,5"><small id="tb-lf-hint"></small></label>
+            <label><span>Kühe sind</span><select id="tb-kuh" class="fotomappe-input"><option value="mutterkuh">Mutterkühe (68 kg N)</option><option value="milch">Milchkühe (85 kg N)</option></select></label>
+          </div>
+          <div id="tb-duengung"></div>
+          <p class="ue-hint-line">Stickstoffanfall aus dem Durchschnittsbestand des Zeitraums, hochgerechnet auf ein Jahr. Werte je Tier abgeleitet aus Anhang IV der VO (EG) 889/2008 (170 kg N ÷ zulässige Tiere je Hektar) — Orientierung, keine Düngebedarfsermittlung. Andere Tierarten sind nicht enthalten.</p>
+        </section>
+      </div>
+
+      <section class="ue-card ue-anim" style="--i:8">
+        <h3>Zuordnung zu Stallabteilen</h3>
+        <div id="tb-stall"></div>
+      </section>
+
+      <section class="ue-card ue-anim" style="--i:9">
+        <div class="ue-table-head">
+          <h3>Tiere (<span id="tb-tiere-count">0</span>)</h3>
+          <div class="ff-seg tb-filter" id="tb-filter" role="radiogroup" aria-label="Auswahl">
+            <button type="button" role="radio" data-tb-filter="bestand" aria-checked="true">Bestand</button>
+            <button type="button" role="radio" data-tb-filter="zugang" aria-checked="false">Zugänge</button>
+            <button type="button" role="radio" data-tb-filter="abgang" aria-checked="false">Abgänge</button>
+            <button type="button" role="radio" data-tb-filter="alle" aria-checked="false">Alle</button>
+          </div>
+          <label class="ue-search">
+            <span class="material-symbols-rounded icon" aria-hidden="true">search</span>
+            <input type="search" id="tb-search" placeholder="Ohrmarke, Rasse, Betriebsnr. …" aria-label="Tiere durchsuchen">
+          </label>
+        </div>
+        <div class="ue-table-wrap"><table class="tb-table" id="tb-tiere"></table></div>
+      </section>
     </div>
   </div>
 </div>

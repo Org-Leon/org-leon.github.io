@@ -35,8 +35,54 @@ export const WF_MODULE = {
   imkerei: { label: 'Imkerei', icon: 'hive', sub: 'Honig je Volk, Mengenbilanz' },
   verarbeitung: { label: 'Verarbeitung', icon: 'handyman', sub: 'Ausbeute Rohware → Produkt, Mengenbilanz' },
   handel: { label: 'Handel', icon: 'compare_arrows', sub: 'Bestand, Zukauf, Verkauf, Schwund' },
-  kette: { label: 'Warenflusskette', icon: 'account_tree', sub: 'Mehrstufig: Erzeugung → Verarbeitung → Verkauf' }
+  kette: { label: 'Warenflusskette', icon: 'account_tree', sub: 'Mehrstufig: Erzeugung → Verarbeitung → Verkauf' },
+  bestand: { label: 'Bestandsentwicklung Rinder', icon: 'pets', sub: 'Aus dem HIT-Auszug: Bestand, Zugänge, Abgänge' }
 };
+
+// ---- Flächen aus der Flächenübersicht ----
+// ctx.flaechen = [{ label, ha, count }] (Kulturen des Betriebs mit summierten
+// Hektar, von main.js übergeben, wenn der Betrieb gewählt und Flächen geladen
+// sind). Die Antragsdaten nennen Kulturen je Bundesland anders
+// ("Winterweichweizen", "Sommerhafer", "Winterroggen, Winter-Waldstaudenroggen")
+// — zugeordnet wird über Namensmuster. Kulturen ohne Muster (z. B.
+// Grassilage, Sonstige) werden nicht automatisch gefüllt.
+const WF_KULTUR_MUSTER = {
+  winterweizen: /winter(weich)?weizen/i,
+  dinkel: /dinkel/i,
+  winterroggen: /winterroggen/i,
+  wintertriticale: /triticale/i,
+  wintergerste: /wintergerste/i,
+  sommergerste: /sommergerste/i,
+  hafer: /hafer/i,
+  koernermais: /k(ö|oe)rnermais|\bccm\b/i,
+  ackerbohne: /ackerbohne/i,
+  futtererbse: /erbse/i,
+  sojabohne: /soja/i,
+  lupine: /lupine/i,
+  sonnenblume: /sonnenblume/i,
+  speisekartoffel: /kartoffel/i
+};
+const round4 = (n) => Math.round(n * 10000) / 10000;
+// Summierte Fläche einer Prüf-Kultur aus der Flächenübersicht (oder null).
+export function flaecheFuerKultur(flaechen, key) {
+  const re = WF_KULTUR_MUSTER[key];
+  if (!re || !Array.isArray(flaechen)) return null;
+  const hits = flaechen.filter(f => re.test(f.label));
+  if (!hits.length) return null;
+  return { ha: round4(hits.reduce((s, f) => s + f.ha, 0)), count: hits.reduce((s, f) => s + f.count, 0), labels: hits.map(f => f.label) };
+}
+const flaecheInfo = (m) => `Flächenübersicht: ${m.labels.join(', ')} · ${m.count} ${m.count === 1 ? 'Fläche' : 'Flächen'}`;
+// Beim Wählen der Kultur: Fläche übernehmen, solange sie nicht von Hand eingetragen wurde.
+function fillFlaeche(row, key, field = 'flaeche') {
+  const auto = field + 'Auto', info = field + 'Info';
+  const m = state && flaecheFuerKultur(state.ctx.flaechen, key);
+  if (!m) { if (row[auto]) { row[field] = null; row[auto] = false; row[info] = ''; } return; }
+  if (row[field] != null && !row[auto]) return;
+  row[field] = m.ha;
+  row[auto] = true;
+  row[info] = flaecheInfo(m);
+}
+const flaecheBadge = (info) => `<span class="wf-src wf-fl-src" title="${esc(info)} — überschreibbar">Flächenübersicht</span>`;
 
 // ---- Bewertung ----
 // Gegen Referenz: innerhalb Spanne (bzw. typ) ± Toleranz = plausibel, bis
@@ -93,34 +139,35 @@ function bilanzTable(opts = {}) {
 
 const TABLES = {
   pflanzenbau: [
-    {
-      key: 'ertrag', title: 'Ernte und Ertrag je Hektar', tol: 'tolErtrag',
-      hint: 'Angegebene Erntemenge im Vergleich zum Referenzertrag. Referenzen sind Mittelwerte — Standort und Jahr können deutlich abweichen.',
-      refKey: 'kultur',
-      columns: [
-        { key: 'kultur', label: 'Kultur', type: 'select', width: 170, options: WF_KULTUREN.map(k => ({ value: k.key, label: k.label })),
-          onSelect: (row, v) => { const k = WF_KULTUREN.find(x => x.key === v); Object.assign(row, refFrom(k && k.ertrag)); if (k && k.key !== 'sonstige') row.kulturName = k.label; } },
-        { key: 'flaeche', label: 'Fläche', unit: 'ha', type: 'num', sum: true },
-        { key: 'refTyp', label: 'Referenz', unit: 'dt/ha', type: 'ref' },
-        { key: 'erwartet', label: 'Ernte erwartet', unit: 'dt', type: 'calc', sum: true, calc: r => (num(r.flaeche) != null && num(r.refTyp) != null ? num(r.flaeche) * num(r.refTyp) : null) },
-        { key: 'ernte', label: 'Ernte angegeben', unit: 'dt', type: 'num', sum: true },
-        { key: 'ertragHa', label: 'Ertrag', unit: 'dt/ha', type: 'calc', calc: r => (num(r.ernte) != null && num(r.flaeche) ? num(r.ernte) / num(r.flaeche) : null) },
-        { key: 'status', label: 'Bewertung', type: 'status', calc: (r, c, chk) => rateAgainstRef(c.ertragHa, r, chk.tolErtrag) }
-      ],
-      newRow: () => ({})
-    },
+    // Reihenfolge wie im Anbaujahr: erst das Saatgut, dann die Ernte.
     {
       key: 'saat', title: 'Saat- und Pflanzgut', tol: 'tolErtrag',
       hint: 'Eingesetzte Menge (eigenes + zugekauftes Öko-Saatgut) im Vergleich zum Bedarf aus der Saatstärke. Tausendkornmassen sind sortenabhängig — Referenz ggf. anpassen.',
       columns: [
         { key: 'kultur', label: 'Kultur', type: 'select', width: 170, options: WF_KULTUREN.map(k => ({ value: k.key, label: k.label })),
-          onSelect: (row, v) => { const k = WF_KULTUREN.find(x => x.key === v); Object.assign(row, refFrom(k && k.saat)); } },
+          onSelect: (row, v) => { const k = WF_KULTUREN.find(x => x.key === v); Object.assign(row, refFrom(k && k.saat)); fillFlaeche(row, v); } },
         { key: 'flaeche', label: 'Fläche', unit: 'ha', type: 'num', sum: true },
         { key: 'refTyp', label: 'Bedarf je ha', unit: 'kg/ha', type: 'ref' },
         { key: 'bedarf', label: 'Bedarf gesamt', unit: 'kg', type: 'calc', sum: true, calc: r => (num(r.flaeche) != null && num(r.refTyp) != null ? num(r.flaeche) * num(r.refTyp) : null) },
         { key: 'eingesetzt', label: 'Eingesetzt', unit: 'kg', type: 'num', sum: true },
         { key: 'jeHa', label: 'Eingesetzt je ha', unit: 'kg/ha', type: 'calc', calc: r => (num(r.eingesetzt) != null && num(r.flaeche) ? num(r.eingesetzt) / num(r.flaeche) : null) },
         { key: 'status', label: 'Bewertung', type: 'status', calc: (r, c, chk) => rateAgainstRef(c.jeHa, r, chk.tolErtrag) }
+      ],
+      newRow: () => ({})
+    },
+    {
+      key: 'ertrag', title: 'Ernte und Ertrag je Hektar', tol: 'tolErtrag',
+      hint: 'Angegebene Erntemenge im Vergleich zum Referenzertrag. Referenzen sind Mittelwerte — Standort und Jahr können deutlich abweichen.',
+      refKey: 'kultur',
+      columns: [
+        { key: 'kultur', label: 'Kultur', type: 'select', width: 170, options: WF_KULTUREN.map(k => ({ value: k.key, label: k.label })),
+          onSelect: (row, v) => { const k = WF_KULTUREN.find(x => x.key === v); Object.assign(row, refFrom(k && k.ertrag)); if (k && k.key !== 'sonstige') row.kulturName = k.label; fillFlaeche(row, v); } },
+        { key: 'flaeche', label: 'Fläche', unit: 'ha', type: 'num', sum: true },
+        { key: 'refTyp', label: 'Referenz', unit: 'dt/ha', type: 'ref' },
+        { key: 'erwartet', label: 'Ernte erwartet', unit: 'dt', type: 'calc', sum: true, calc: r => (num(r.flaeche) != null && num(r.refTyp) != null ? num(r.flaeche) * num(r.refTyp) : null) },
+        { key: 'ernte', label: 'Ernte angegeben', unit: 'dt', type: 'num', sum: true },
+        { key: 'ertragHa', label: 'Ertrag', unit: 'dt/ha', type: 'calc', calc: r => (num(r.ernte) != null && num(r.flaeche) ? num(r.ernte) / num(r.flaeche) : null) },
+        { key: 'status', label: 'Bewertung', type: 'status', calc: (r, c, chk) => rateAgainstRef(c.ertragHa, r, chk.tolErtrag) }
       ],
       newRow: () => ({})
     },
@@ -197,7 +244,8 @@ const TABLES = {
   handel: [
     bilanzTable({ noZugang: true, sonstLabel: 'Schwund / Verderb', einheit: 'kg', optional: false })
   ],
-  kette: [] // eigene Darstellung (Stufen), siehe "Warenflusskette"
+  kette: [], // eigene Darstellung (Stufen), siehe "Warenflusskette"
+  bestand: [] // Freitext aus dem Tierbestand (HIT-Auszug), siehe "Bestandsentwicklung Rinder"
 };
 
 // Mengenbilanz ist abschaltbar (chk.mitBilanz). Ältere Prüfungen ohne das
@@ -258,6 +306,7 @@ function applyStufeRef(s, key) {
   } else if (s.art === 'pflanze') {
     const k = WF_KULTUREN.find(x => x.key === key);
     Object.assign(s, refFrom(k && k.ertrag));
+    fillFlaeche(s, key, 'basis');
     s.refEinheit = 'dt/ha';
     if (k && k.key !== 'sonstige') { produkt = k.label; einheit = 'dt'; }
   } else if (s.art === 'prozess') {
@@ -343,7 +392,7 @@ export function createWarenfluss(modul) {
     id: uid(), modul, titel: WF_MODULE[modul].label, zeitraum: String(new Date().getFullYear() - 1),
     // Verarbeitungsausbeuten sind eng (z. B. Röstverlust 11–20 %) — dort 5 % um
     // die belegte Spanne; Erträge/Leistungen schwanken nach Jahr und Standort stärker.
-    modus: 'tabelle', tolErtrag: modul === 'verarbeitung' ? 5 : 25, tolBilanz: 2, tables, freitext: null,
+    modus: modul === 'bestand' ? 'text' : 'tabelle', tolErtrag: modul === 'verarbeitung' ? 5 : 25, tolBilanz: 2, tables, freitext: null,
     // Mengenbilanz nur auf Wunsch; in der Kette trägt sie die Verknüpfung (Verbleib je Stufe).
     mitBilanz: modul === 'handel' || modul === 'kette',
     ...(modul === 'kette' ? { stufen, tolAusbeute: 5 } : {}),
@@ -366,6 +415,10 @@ const rowHasInput = (table, row) => table.columns.some(col => (col.type === 'num
 
 export function summarizeWarenfluss(chk) {
   const out = { ok: 0, warn: 0, bad: 0 };
+  if (chk.modul === 'bestand') {
+    if (chk.bestand) out[chk.bestand.bilanzOk ? 'ok' : 'bad'] = 1;
+    return out;
+  }
   if (chk.modul === 'kette') {
     (chk.stufen || []).forEach(s => {
       const c = computeStufe(chk, s);
@@ -465,8 +518,8 @@ function detailLine(t, r, c) {
   const dev = c.status && c.status.dev != null && t.key !== 'bilanz' ? ` (${devText(c.status)} zur Referenz)` : '';
   const name = rowName(t, r);
   switch (t.key) {
-    case 'ertrag': return `– ${name}: ${L(num(r.flaeche), 2, 'ha')}, Ernte ${L(num(r.ernte), 1, 'dt')} = ${L(c.ertragHa, 1, 'dt/ha')}; Referenz ${L(num(r.refTyp), 1, 'dt/ha')} (${quelleKurz(r)}) → ${status}${dev}.`;
-    case 'saat': return `– ${name}: ${L(num(r.flaeche), 2, 'ha')}, eingesetzt ${L(num(r.eingesetzt), 0, 'kg')} = ${L(c.jeHa, 0, 'kg/ha')}; Bedarf ${L(num(r.refTyp), 0, 'kg/ha')} (${quelleKurz(r)}) → ${status}${dev}. Herkunft (Öko / Ausnahmegenehmigung): [ ].`;
+    case 'ertrag': return `– ${name}: ${L(num(r.flaeche), 4, 'ha')}${r.flaecheAuto ? ' (lt. Flächenübersicht)' : ''}, Ernte ${L(num(r.ernte), 1, 'dt')} = ${L(c.ertragHa, 1, 'dt/ha')}; Referenz ${L(num(r.refTyp), 1, 'dt/ha')} (${quelleKurz(r)}) → ${status}${dev}.`;
+    case 'saat': return `– ${name}: ${L(num(r.flaeche), 4, 'ha')}${r.flaecheAuto ? ' (lt. Flächenübersicht)' : ''}, eingesetzt ${L(num(r.eingesetzt), 0, 'kg')} = ${L(c.jeHa, 0, 'kg/ha')}; Bedarf ${L(num(r.refTyp), 0, 'kg/ha')} (${quelleKurz(r)}) → ${status}${dev}. Herkunft (Öko / Ausnahmegenehmigung): [ ].`;
     case 'leistung': return `– ${name}: ${L(num(r.anzahl), 0)} (${r.basis || 'Anzahl'}), ${r.produktLabel || 'Leistung'} ${L(num(r.angegeben), 0)} = ${L(c.jeTier, 1)} ${r.refEinheit || ''}; Referenz ${L(num(r.refTyp), 1)} (${quelleKurz(r)}) → ${status}${dev}.`;
     case 'futter': return `– ${name}: Bedarf ${L(c.bedarf, 0, 'kg')} (${L(num(r.refTyp), 1)} ${r.refEinheit || ''}, ${quelleKurz(r)}), belegt ${L(num(r.verfuegbar), 0, 'kg')} → ${status}${dev}. Zukauf ausschließlich Öko-Futter: [ja / nein].`;
     case 'honig': return `– ${name}: ${L(num(r.voelker), 0, 'Völker')}, geerntet ${L(num(r.geerntet), 0, 'kg')} = ${L(c.jeVolk, 1, 'kg/Volk')}; Referenz ${L(num(r.refTyp), 1, 'kg/Volk')} (${quelleKurz(r)}) → ${status}${dev}.`;
@@ -518,6 +571,7 @@ const GRUNDLAGEN = {
 
 export function generateWarenflussText(chk, ctx) {
   if (chk.modul === 'kette') return generateKetteText(chk, ctx);
+  if (chk.modul === 'bestand') return generateBestandText(chk, ctx);
   const tbls = visibleTables(chk);
   const lines = [];
   const klaerung = { bad: [], warn: [] };
@@ -571,6 +625,77 @@ function pushErgebnis(lines, sum, tolText, klaerung, quellen) {
     lines.push('Referenzwerte (Orientierungswerte, betriebsindividuell angepasst wo vermerkt):');
     [...quellen].forEach(q => lines.push('– ' + q));
   }
+}
+
+// ---- Bestandsentwicklung Rinder ----
+// Freitext aus dem Tierbestand (HIT-Auszug, Abschnitt "Tierbestand" in
+// main.js): Bestand zur letzten Jahreskontrolle (Beginn des Auszugs),
+// Zugänge (Geburten/Zukäufe), Abgänge (Verkauf, Verendung, Schlachtung …),
+// Bestand zum Kontrollzeitpunkt. chk.bestand ist die Auswertung zum Zeitpunkt
+// der Prüfung: { von, bis, anfang, endbestand, zugaenge: { n, arten },
+// abgaenge: { n, arten, verluste }, verlustrate, klassen, gvSchnitt, bilanzOk }.
+const BESTAND_ZUGANG_TEXT = { GE: ['Geburt im Betrieb', 'Geburten im Betrieb'], ZU: ['Zukauf/Zugang von einem anderen Betrieb', 'Zukäufe/Zugänge von anderen Betrieben'], ER: ['Ersterfassung', 'Ersterfassungen'], EU: ['EU-Einfuhr', 'EU-Einfuhren'], IM: ['Importmarkierung', 'Importmarkierungen'] };
+const BESTAND_ABGANG_TEXT = { AB: ['Abgang an einen anderen Betrieb (Verkauf/Abgabe)', 'Abgänge an andere Betriebe (Verkauf/Abgabe)'], SC: ['Schlachtung', 'Schlachtungen'], HS: ['Hausschlachtung', 'Hausschlachtungen'], VE: ['Verendung', 'Verendungen'], TO: ['Tod', 'Todesfälle'], AU: ['Ausfuhr', 'Ausfuhren'] };
+const deDatum = (isoDate) => (isoDate ? isoDate.split('-').reverse().join('.') : '[Datum]');
+function artenText(arten, texte) {
+  if (!arten.length) return '';
+  const teile = arten.map(a => `${a.n} ${(texte[a.art] || [a.label, a.label])[a.n === 1 ? 0 : 1]}`);
+  return ', davon ' + (teile.length > 1 ? teile.slice(0, -1).join(', ') + ' und ' + teile[teile.length - 1] : teile[0]);
+}
+function generateBestandText(chk, ctx) {
+  const b = chk.bestand;
+  const lines = [];
+  lines.push(`Warenflussprüfung Bestandsentwicklung Rinder — ${ctx.betrieb || '[Betrieb]'}`);
+  if (!b) {
+    lines.push(`Kontrolle am ${ctx.datum || '[Datum]'}${ctx.kontrolleur ? ' · ' + ctx.kontrolleur : ''}`);
+    lines.push('');
+    lines.push('[Für diesen Betrieb ist noch kein Tierbestand geladen. Unter „Tierbestand“ das Bestandsregister aus HI-Tier laden und diesen Betrieb wählen — der Text wird dann automatisch geschrieben.]');
+    return lines.join('\n');
+  }
+  const tiere = (n) => `${fmt(n, 0)} ${n === 1 ? 'Rind' : 'Rinder'}`;
+  lines.push(`Zeitraum: ${deDatum(b.von)} – ${deDatum(b.bis)} (seit der letzten Jahreskontrolle) · Kontrolle am ${ctx.datum || '[Datum]'}${ctx.kontrolleur ? ' · ' + ctx.kontrolleur : ''}`);
+  lines.push('');
+  lines.push(`Grundlage der Prüfung: Bestandsregister aus der HI-Tier-Datenbank (HIT) für den Zeitraum ${deDatum(b.von)} bis ${deDatum(b.bis)}, Abgleich mit dem Tierbestand vor Ort.`);
+  lines.push('');
+  lines.push(`Bestand zur letzten Jahreskontrolle (${deDatum(b.von)}): ${tiere(b.anfang)}.`);
+  lines.push('');
+  lines.push('Bestandsentwicklung im Zeitraum');
+  lines.push(b.zugaenge.n ? `– Zugänge: ${fmt(b.zugaenge.n, 0)} ${b.zugaenge.n === 1 ? 'Tier' : 'Tiere'}${artenText(b.zugaenge.arten, BESTAND_ZUGANG_TEXT)}.` : '– Zugänge: keine.');
+  lines.push(b.abgaenge.n ? `– Abgänge: ${fmt(b.abgaenge.n, 0)} ${b.abgaenge.n === 1 ? 'Tier' : 'Tiere'}${artenText(b.abgaenge.arten, BESTAND_ABGANG_TEXT)}.` : '– Abgänge: keine.');
+  if (b.abgaenge.verluste) lines.push(`– Verluste (verendet/tot): ${fmt(b.abgaenge.verluste, 0)} ${b.abgaenge.verluste === 1 ? 'Tier' : 'Tiere'}${b.verlustrate != null ? ` = ${fmt(b.verlustrate, 1)} % des Durchschnittsbestands` : ''}.`);
+  lines.push('');
+  const klassen = (b.klassen || []).filter(k => k.anzahl).map(k => `${k.anzahl} ${k.label}`);
+  lines.push(`Bestand zum Kontrollzeitpunkt (${deDatum(b.bis)}): ${tiere(b.endbestand)}${klassen.length ? ' — ' + klassen.join(', ') : ''}.`);
+  if (b.gvSchnitt != null) lines.push(`Durchschnittsbestand im Zeitraum: ${fmt(b.gvSchnitt, 1)} GV.`);
+  lines.push('');
+  lines.push('Ergebnis');
+  lines.push(b.bilanzOk
+    ? `Rechnerisch: ${fmt(b.anfang, 0)} + ${fmt(b.zugaenge.n, 0)} − ${fmt(b.abgaenge.n, 0)} = ${fmt(b.endbestand, 0)} Tiere. Das entspricht dem Bestand laut HIT zum ${deDatum(b.bis)}; die Bestandsentwicklung ist nachvollziehbar.`
+    : `Rechnerisch: ${fmt(b.anfang, 0)} + ${fmt(b.zugaenge.n, 0)} − ${fmt(b.abgaenge.n, 0)} = ${fmt(b.anfang + b.zugaenge.n - b.abgaenge.n, 0)} Tiere; laut HIT sind es zum ${deDatum(b.bis)} ${fmt(b.endbestand, 0)} Tiere. Die Abweichung ist zu klären.`);
+  lines.push('Bestand vor Ort am Kontrolltag gezählt: [ ] Tiere — Abweichung zum Bestand laut HIT: [keine].');
+  if (b.zugaenge.arten.some(a => a.art !== 'GE')) lines.push('Öko-Status bzw. Umstellungszeit der zugekauften Tiere belegt: [ja / nein].');
+  lines.push('');
+  lines.push('Erläuterung des Betriebs: [ ]');
+  return lines.join('\n');
+}
+// Kurzübersicht im Tabellen-Modus (nur Anzeige — die Zahlen kommen aus dem Tierbestand).
+function renderBestand() {
+  const b = state.chk.bestand;
+  if (!b) {
+    el('wf-tables').innerHTML = `<section class="wf-section"><p class="wf-hint wf-fl-hint"><span class="material-symbols-rounded icon" aria-hidden="true">info</span>${esc(state.ctx.bestandHinweis || 'Für diesen Betrieb ist noch kein Tierbestand geladen.')}</p></section>`;
+    return;
+  }
+  const row = (label, n, cls = '') => `<tr class="${cls}"><td>${esc(label)}</td><td class="wf-col-calc"><output class="wf-calc">${fmt(n, 0)}</output></td></tr>`;
+  el('wf-tables').innerHTML = `<section class="wf-section wf-bestand">
+    <div class="wf-section-head"><h4>Bestandsentwicklung ${deDatum(b.von)} – ${deDatum(b.bis)}</h4></div>
+    <p class="wf-hint">Aus dem Tierbestand (HIT-Auszug) dieses Betriebs. Ändert sich der Tierbestand, wird die Prüfung beim nächsten Öffnen aktualisiert.</p>
+    <div class="wf-table-wrap"><table class="wf-table"><tbody>
+      ${row('Bestand zur letzten Jahreskontrolle (' + deDatum(b.von) + ')', b.anfang, 'wf-bestand-sum')}
+      ${b.zugaenge.arten.map(a => row('+ ' + (BESTAND_ZUGANG_TEXT[a.art] || [a.label, a.label])[1], a.n)).join('')}
+      ${b.abgaenge.arten.map(a => row('− ' + (BESTAND_ABGANG_TEXT[a.art] || [a.label, a.label])[1], a.n)).join('')}
+      ${row('Bestand zum Kontrollzeitpunkt (' + deDatum(b.bis) + ')', b.endbestand, 'wf-bestand-sum')}
+    </tbody></table></div>
+  </section>`;
 }
 
 function generateKetteText(chk, ctx) {
@@ -655,6 +780,16 @@ export function openWarenfluss(chk, { ctx = {}, onChange = () => {}, onDelete = 
   el('wf-tol-ausbeute-wrap').hidden = chk.modul !== 'kette';
   el('wf-tol-ertrag-label').textContent = chk.modul === 'kette' ? 'Toleranz Erzeugung ±%' : 'Toleranz Referenz ±%';
   el('wf-delete').hidden = !onDelete;
+  // Bestandsentwicklung: Zahlen und Zeitraum aus dem Tierbestand übernehmen
+  // (falls für diesen Betrieb geladen), Toleranz gibt es dort nicht.
+  el('wf-tol-ertrag').closest('label').hidden = chk.modul === 'bestand';
+  if (chk.modul === 'bestand' && ctx.bestand) {
+    chk.bestand = ctx.bestand;
+    chk.zeitraumVon = ctx.bestand.von;
+    chk.zeitraumBis = ctx.bestand.bis;
+    chk.zeitraum = formatZeitraum(ctx.bestand.von, ctx.bestand.bis);
+    el('wf-zeitraum').value = chk.zeitraum;
+  }
   renderTables();
   setMode(chk.modus || 'tabelle');
   ov.hidden = false;
@@ -714,7 +849,7 @@ function updateStaleBanner() {
 }
 // Darstellung im Tabellen-Modus: Überschriften fett, Befunde/Ergebnis farbig.
 function autoTextHtml(text) {
-  const headings = new Set([...(TABLES[state.chk.modul] || []).map(t => t.title), 'Ergebnis', 'Befund:']);
+  const headings = new Set([...(TABLES[state.chk.modul] || []).map(t => t.title), 'Ergebnis', 'Befund:', 'Bestandsentwicklung im Zeitraum']);
   return text.split('\n').map(line => {
     if (!line.trim()) return '<div class="wf-auto-gap"></div>';
     const e = esc(line).replace(/\[[^\]]*\]/g, m => `<mark>${m}</mark>`);
@@ -758,7 +893,7 @@ function cellHtml(t, col, row, c) {
         ? `<a class="wf-src${row.refQuelle === 'annahme' ? ' is-annahme' : ''}" href="${esc(q.url)}" target="_blank" rel="noopener" title="${esc(tip)}">${esc(q.kurz)}</a>`
         : `<span class="wf-src is-annahme" title="${esc(tip)}">${esc(q.kurz)}</span>`) : '';
     }
-    return `<div class="wf-numcell"><input class="wf-input wf-num${col.type === 'ref' ? ' wf-ref' : ''}" data-field="${col.key}" value="${esc(val)}" inputmode="decimal" aria-label="${esc(col.label)}">${unit ? `<span class="wf-unit">${esc(unit)}</span>` : ''}</div>${refBadge}`;
+    return `<div class="wf-numcell"><input class="wf-input wf-num${col.type === 'ref' ? ' wf-ref' : ''}" data-field="${col.key}" value="${esc(val)}" inputmode="decimal" aria-label="${esc(col.label)}">${unit ? `<span class="wf-unit">${esc(unit)}</span>` : ''}</div>${refBadge}${row[col.key + 'Auto'] ? flaecheBadge(row[col.key + 'Info'] || '') : ''}`;
   }
   if (col.type === 'calc') {
     const v = c[col.key];
@@ -796,6 +931,7 @@ function tableHtml(t) {
   return `<section class="wf-section" data-table="${t.key}">
     <div class="wf-section-head"><h4>${esc(t.title)}</h4><div class="wf-section-tools"><span class="wf-tol-chip">${tolLabel}</span>${t.optional ? '<button type="button" class="wf-section-toggle" data-wf-bilanz="off" title="Mengenbilanz ausblenden — eingetragene Werte bleiben erhalten"><span class="material-symbols-rounded icon" aria-hidden="true">visibility_off</span>Ausblenden</button>' : ''}</div></div>
     <p class="wf-hint">${esc(t.hint)}</p>
+    ${flaechenBarHtml(t)}
     <div class="wf-table-wrap"><table class="wf-table">
       <thead><tr>${t.columns.map(col => `<th class="wf-col-${col.type}">${esc(col.label)}${col.unit && col.type !== 'status' && !col.unitFrom ? `<small>${esc(col.unit)}</small>` : ''}</th>`).join('')}<th></th></tr></thead>
       <tbody>${rows.map(r => rowHtml(t, r)).join('')}</tbody>
@@ -805,10 +941,50 @@ function tableHtml(t) {
   </section>`;
 }
 const BILANZ_ADD_HTML = (label, hint) => `<div class="wf-add-section-wrap"><button type="button" class="wf-add-section" data-wf-bilanz="on"><span class="material-symbols-rounded icon" aria-hidden="true">add</span>${label}</button><span class="wf-hint">${hint}</span></div>`;
+// Ertrag/Saatgut: Flächen aus der Flächenübersicht übernehmen.
+function flaechenBarHtml(t) {
+  if (t.key !== 'ertrag' && t.key !== 'saat') return '';
+  const fl = state.ctx.flaechen;
+  if (!fl || !fl.length) return state.ctx.flaechenHinweis ? `<p class="wf-hint wf-fl-hint"><span class="material-symbols-rounded icon" aria-hidden="true">info</span>${esc(state.ctx.flaechenHinweis)}</p>` : '';
+  return `<div class="wf-fl-bar"><button type="button" class="wf-add-row wf-fl-btn" data-wf-flaechen="${t.key}"><span class="material-symbols-rounded icon" aria-hidden="true">donut_small</span>Kulturen aus Flächenübersicht übernehmen</button><span class="wf-hint" id="wf-fl-status-${t.key}">Beim Wählen einer Kultur wird ihre Fläche automatisch eingetragen.</span></div>`;
+}
+// Legt je passender Kultur des Betriebs eine Zeile an (bzw. aktualisiert die
+// Fläche vorhandener Zeilen, wenn sie nicht von Hand eingetragen wurde).
+function uebernehmeFlaechen(tableKey) {
+  const t = TABLES[state.chk.modul].find(x => x.key === tableKey);
+  const rows = state.chk.tables[tableKey];
+  const kulturCol = t.columns.find(c => c.key === 'kultur');
+  let neu = 0, aktualisiert = 0;
+  const benutzt = new Set();
+  WF_KULTUREN.forEach(k => {
+    const m = flaecheFuerKultur(state.ctx.flaechen, k.key);
+    if (!m) return;
+    m.labels.forEach(l => benutzt.add(l));
+    let row = rows.find(r => r.kultur === k.key);
+    if (!row) {
+      // erste noch völlig leere Zeile wiederverwenden
+      row = rows.find(r => !r.kultur && !rowHasInput(t, r));
+      if (!row) { row = { id: uid(), ...t.newRow() }; rows.push(row); }
+      row.kultur = k.key;
+      kulturCol.onSelect(row, k.key);
+      neu++;
+    } else if (row.flaeche == null || row.flaecheAuto) {
+      if (row.flaeche !== m.ha) aktualisiert++;
+      fillFlaeche(row, k.key);
+    }
+  });
+  const ohne = state.ctx.flaechen.filter(f => !benutzt.has(f.label)).map(f => f.label);
+  touch();
+  renderTables();
+  const status = el('wf-fl-status-' + tableKey);
+  if (status) status.textContent = (neu || aktualisiert ? `${neu} ${neu === 1 ? 'Kultur' : 'Kulturen'} übernommen${aktualisiert ? `, ${aktualisiert} aktualisiert` : ''}.` : 'Alle passenden Kulturen sind schon eingetragen.')
+    + (ohne.length ? ` Ohne Referenzwert, nicht übernommen: ${ohne.join(', ')}.` : '');
+}
 function renderTables() {
   const chk = state.chk;
   el('wf-tol-bilanz-wrap').hidden = !(bilanzAn(chk) || (chk.modul === 'kette' && (chk.stufen || []).some(s => s.art === 'ware')));
   if (chk.modul === 'kette') { renderKette(); renderSummary(); return; }
+  if (chk.modul === 'bestand') { renderBestand(); renderSummary(); return; }
   const tbls = visibleTables(chk);
   const hiddenOptional = (TABLES[chk.modul] || []).some(t => t.optional) && !bilanzAn(chk);
   el('wf-tables').innerHTML = tbls.map(tableHtml).join('')
@@ -932,6 +1108,7 @@ export function initWarenflussUi() {
         tablesEl.querySelectorAll(`option[data-stufe-opt="${CSS.escape(s.id)}"]`).forEach(o => { o.textContent = stufeName(state.chk, s); });
       } else {
         s[input.dataset.field] = num(input.value);
+        if (input.dataset.field === 'basis' && s.basisAuto) { s.basisAuto = false; input.closest('.wf-sfield').querySelector('.wf-fl-src')?.remove(); }
       }
       touch();
       refreshKette();
@@ -945,6 +1122,7 @@ export function initWarenflussUi() {
     if (!row || input.tagName === 'SELECT') return;
     const col = t.columns.find(c => c.key === input.dataset.field);
     row[input.dataset.field] = col && (col.type === 'num' || col.type === 'ref') ? num(input.value) : input.value;
+    if (input.dataset.field === 'flaeche' && row.flaecheAuto) { row.flaecheAuto = false; input.closest('td').querySelector('.wf-fl-src')?.remove(); }
     touch();
     refreshRow(tr, t, row);
   });
@@ -984,6 +1162,8 @@ export function initWarenflussUi() {
   });
   tablesEl.addEventListener('click', (e) => {
     if (!state) return;
+    const flBtn = e.target.closest('[data-wf-flaechen]');
+    if (flBtn) { uebernehmeFlaechen(flBtn.dataset.wfFlaechen); return; }
     const tog = e.target.closest('[data-wf-bilanz]');
     if (tog) {
       state.chk.mitBilanz = tog.dataset.wfBilanz === 'on';

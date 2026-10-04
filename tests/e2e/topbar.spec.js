@@ -122,7 +122,7 @@ test.describe('Top-Bar Desktop', () => {
       compareBtn: document.querySelector('.segment-btn[data-view="compare"]').getBoundingClientRect().width
     }));
     const base = await measure();
-    for (const view of ['compare', 'zeichner', 'obstbaum', 'bienenflug', 'hofplan', 'stallplaner', 'uebersicht', 'viewer']) {
+    for (const view of ['compare', 'zeichner', 'obstbaum', 'bienenflug', 'hofplan', 'stallplaner', 'tiere', 'uebersicht', 'viewer']) {
       await page.locator(`.segment-btn[data-view="${view}"]`).click();
       expect(await measure(), view).toEqual(base);
     }

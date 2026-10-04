@@ -58,3 +58,15 @@
    erneut ausführen — sonst zeigt das neue Icon nur den Rohtext statt der
    Glyphe. `material-symbols` (die volle Font, Quelle fürs Subsetting) und
    `subset-font` (das Subsetting-Werkzeug) sind reine Dev-Dependencies.
+
+5. **Benutzerhandbuch aktuell halten**: `HANDBUCH.md` (Repo-Wurzel) ist die
+   Dokumentation für die Nutzer der App (Öko-Kontrolleure, keine Entwickler)
+   — auf Deutsch, in Du-Form, ohne Code- und Dateinamen. **Jede Änderung, die
+   Nutzer sehen oder bedienen** (neue/geänderte/entfernte Funktion, andere
+   Beschriftung, anderer Ablauf, neue Grenze oder neuer Hinweis), gehört im
+   selben Zug ins Handbuch: betroffenes Kapitel anpassen, bei neuen Funktionen
+   ein Kapitel bzw. einen Abschnitt ergänzen (Inhaltsverzeichnis mitziehen),
+   Entferntes streichen und das „Stand“-Datum oben aktualisieren. Nur
+   beschreiben, was die App tatsächlich tut — Beschriftungen wörtlich wie in
+   der Oberfläche. Reine interne Änderungen (Refactoring, Tests) brauchen
+   keinen Eintrag.
