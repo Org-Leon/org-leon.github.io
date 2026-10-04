@@ -2,8 +2,8 @@ import { isSupabaseConfigured, signUp, signIn, signOut, getSession, saveState, l
 import { readLocalState, writeLocalState, deleteLocalState, readLastUser, writeLastUser, addBackup, listBackups, saveQueuedUpload, listQueuedUploads, deleteQueuedUpload, saveFotomappeFoto, listFotomappeFotos, deleteFotomappeFoto } from './offline-store.js';
 import { registerSW } from 'virtual:pwa-register';
 import iconFontUrl from './assets/material-symbols-rounded-subset.woff2?url';
-import { BerichtPdf, BRAND, CULTURE_COLORS, formatHa, formatPct } from './gesamtbericht.js';
-import { renderFlaechenuebersicht } from './flaechenuebersicht.js';
+import { BerichtPdf, BRAND, CULTURE_COLORS, formatHa, formatHaExact, haExactFixed, formatPct } from './gesamtbericht.js';
+import { renderFlaechenuebersicht, countUp } from './flaechenuebersicht.js';
 import { WF_MODULE, createWarenfluss, openWarenfluss, initWarenflussUi, warenflussRowInfo } from './warenfluss.js';
 import { rankBackCameras, drawScaled, rotateCanvas, defaultQuad, detectDocumentQuad, QuadTracker, quadDistance, warpDocument, applyScanFilter, SCAN_FILTERS, targetSizeForQuad } from './scan-engine.js';
 // Icon-Font selbst NICHT über das npm-Paket eingebunden (5+ MB Variable-Font
@@ -2349,7 +2349,7 @@ function renderFeatureTable() {
   const treeCounts = computeObstbaumParcelTreeCounts();
   tbody.innerHTML = rows.map(entry => {
     const num = parseFloat(String(entry.groesse).replace(',', '.'));
-    const groesseText = isFinite(num) ? num.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ha' : (entry.groesse || '–');
+    const groesseText = isFinite(num) ? formatHaExact(num) + ' ha' : (entry.groesse || '–');
     const routeCell = entry.center
       ? `<a class="table-route-link" href="${googleMapsDirectionsUrl(entry.center.lat, entry.center.lng)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Route <span class="material-symbols-rounded icon">open_in_new</span></a>`
       : '–';
@@ -2603,7 +2603,7 @@ function markToolHintDone(view) {
 // Eine kurze Zeile unter der Funktionsauswahl: was die Funktion tut.
 const SEGMENT_CAPTIONS = {
   viewer: 'Shapefiles und GeoJSON auf der Karte ansehen',
-  uebersicht: 'Flächen und Kulturen auf einen Blick',
+  uebersicht: 'Flächen, Kulturen und Fruchtfolge auf einen Blick',
   compare: 'Mehrere Jahre vergleichen: Zugänge, Abgänge, Änderungen',
   zeichner: 'Eigene Flächen auf der Karte zeichnen',
   obstbaum: 'Obstbäume auf der Karte erfassen',
@@ -2643,6 +2643,7 @@ function setActiveSegment(target) {
   updateShapeToolbar();
   if (target !== 'hofplan' && hofplanToolMode) hofplanToolMode = null;
   updateHofplanToolbar();
+  if (target !== 'viewer' && ffMapActive) setKulturenMap(false);
   if (target !== 'compare') { restoreCompareHiddenLayer(); compareTablePanel.close(); }
   document.getElementById('map').classList.toggle('placing', target === 'bienenflug');
 
@@ -2721,6 +2722,14 @@ let compareYears = []; // { id, jahr, fileName, layerName, fc }
 let compareResult = null; // { a, b } — die verglichenen Jahre (a älter)
 let compareViewMode = 'diff'; // 'diff' | id eines Jahres
 let compareRecords = [];
+// Fruchtfolge (Flächenübersicht › Reiter "Fruchtfolge", Karte › "Kulturen") — siehe unten.
+let ffGeoLayer = null;
+let ffYearId = null;
+let ffData = null; // { years, rows, colorOf, stats }
+let ffOnlyHints = false;
+let ffKnownYears = '';
+let ffMapActive = false; // Karte nach Kultur eingefärbt
+let ueTab = 'flaechen'; // Reiter der Flächenübersicht
 let compareHiddenLayerIds = []; // normale Kartenebenen, während der Jahresansicht ausgeblendet (sonst doppelte Darstellung)
 
 // Normale Ebenen ausblenden, solange Vergleich/Jahresansicht auf der Karte liegt.
@@ -2858,6 +2867,7 @@ function renderCompareYears() {
   updateCompareRunEnabled();
   renderCompareLayerPick();
   renderCompareToggle();
+  refreshFruchtfolgeIfOpen();
 }
 function updateCompareRunEnabled() {
   const a = document.getElementById('compare-sel-a').dataset.value, b = document.getElementById('compare-sel-b').dataset.value;
@@ -3087,7 +3097,7 @@ function showCompareView(fitView) {
     const g = parseHa(pickGroesse(p));
     const layer = L.geoJSON(f, { style: { color: '#5F7A93', weight: 1.4, fillColor: '#5F7A93', fillOpacity: 0.25 } });
     layer.bindPopup('<b>' + escapeHtml(nr || '–') + '</b>' + (name ? ' – ' + escapeHtml(name) : '') + '<br>' +
-      'Jahr: ' + escapeHtml(y.jahr) + '<br>Größe: ' + (g !== null ? g.toFixed(2) + ' ha' : '–') + '<br>Kultur: ' + escapeHtml(pickField(p, FIELD_CANDIDATES.kultur) || '–'));
+      'Jahr: ' + escapeHtml(y.jahr) + '<br>Größe: ' + (g !== null ? formatHaExact(g) + ' ha' : '–') + '<br>Kultur: ' + escapeHtml(pickField(p, FIELD_CANDIDATES.kultur) || '–'));
     layer.addTo(compareGeoLayer);
     addFeatureLabel(f, featureLabelHtml(nr, name), compareGeoLayer);
   });
@@ -3143,9 +3153,9 @@ function renderCompareTable(records) {
   tbody.innerHTML = records.map((r, i) => {
     const gA = parseHa(r.groesseA);
     const gB = parseHa(r.groesseB);
-    const gAText = gA !== null ? gA.toFixed(2) : (r.groesseA || '–');
-    const gBText = gB !== null ? gB.toFixed(2) : (r.groesseB || '–');
-    const deltaText = r.delta !== null ? (r.delta >= 0 ? '+' : '') + r.delta.toFixed(2) : '–';
+    const gAText = gA !== null ? formatHaExact(gA) : (r.groesseA || '–');
+    const gBText = gB !== null ? formatHaExact(gB) : (r.groesseB || '–');
+    const deltaText = r.delta !== null ? (r.delta >= 0 ? '+' : '−') + formatHaExact(Math.abs(r.delta)) : '–';
     const kulturText = escapeHtml(r.kulturA || '–') + (r.kulturA !== r.kulturB ? ' → ' + escapeHtml(r.kulturB || '–') : '');
     return '<tr data-idx="' + i + '">' +
       '<td><span class="status-pill" style="background:' + STATUS_COLORS[r.status] + '">' + STATUS_LABELS[r.status] + '</span></td>' +
@@ -3165,8 +3175,8 @@ function renderCompareTable(records) {
 function compareRecordPopupHtml(r) {
   const gA = parseHa(r.groesseA);
   const gB = parseHa(r.groesseB);
-  const gAText = gA !== null ? gA.toFixed(2) + ' ha' : '–';
-  const gBText = gB !== null ? gB.toFixed(2) + ' ha' : '–';
+  const gAText = gA !== null ? formatHaExact(gA) + ' ha' : '–';
+  const gBText = gB !== null ? formatHaExact(gB) + ' ha' : '–';
   return '<b>' + escapeHtml(r.nummer) + '</b>' + (r.name ? ' – ' + escapeHtml(r.name) : '') + '<br>' +
     'Status: ' + STATUS_LABELS[r.status] + '<br>' +
     'Größe ' + escapeHtml(compareResult ? compareResult.a.jahr : 'A') + ': ' + gAText + ' · Größe ' + escapeHtml(compareResult ? compareResult.b.jahr : 'B') + ': ' + gBText + '<br>' +
@@ -3306,6 +3316,316 @@ function renderSingleYearLayers(records, which, fitView) {
   }
 }
 
+// ---------- Fruchtfolge ----------
+// Liest die im Jahresvergleich hinterlegten Jahre (compareYears, je Betrieb
+// gespeichert) und stellt je Schlag die Kulturfolge zusammen. Anzeige an zwei
+// Stellen: Flächenübersicht › Reiter "Fruchtfolge" (Kennzahlen,
+// Leguminosenanteil je Jahr, Hinweise, Tabelle Schlag × Jahr) und in der
+// Kartenansicht die Option "Kulturen" (Karte eingefärbt nach Kultur eines Jahres).
+// Schläge werden wie im Jahresvergleich über die Schlagnummer verbunden.
+// Die Hinweise sind Anhaltspunkte für die Kontrolle, keine Bewertung — die
+// Einordnung der Kulturen läuft über Namensmuster (unten, anpassbar).
+const FF_LEGUME = /klee|luzerne|erbse|bohne|lupine|wicke|soja|linse|esparsette|serradella|leguminos/i;
+const FF_HALM = /weizen|roggen|gerste|hafer|dinkel|triticale|emmer|einkorn|getreide/i;
+// Dauerkulturen/Grünland: keine Ackerfläche, keine Fruchtfolge-Hinweise.
+const FF_DAUER = /gr(ü|ue)nland|wiese|weide(?!l)|obst|wein|rebe|hopfen|spargel|dauerkultur|baumschule|brache|stilllegung|hecke/i;
+// Mehrjährig angebaut: dieselbe Kultur in Folge ist dort normal.
+const FF_MEHRJAEHRIG = /klee|luzerne|gras|feldfutter/i;
+const FF_MIN_YEARS_LEGUME = 5;
+
+const ffKultur = (cell) => (cell && cell.kultur) || 'Ohne Angabe';
+function buildFruchtfolge() {
+  const years = compareYearsSorted().filter(y => y.jahr);
+  const bySchlag = new Map();
+  const haByKultur = new Map();
+  years.forEach(y => (y.fc.features || []).forEach(f => {
+    const p = f.properties || {};
+    const nr = pickField(p, FIELD_CANDIDATES.nummer);
+    if (!nr) return;
+    let row = bySchlag.get(nr);
+    if (!row) { row = { nummer: nr, name: '', cells: {}, hints: [] }; bySchlag.set(nr, row); }
+    row.name = pickField(p, FIELD_CANDIDATES.name) || row.name;
+    const cell = { kultur: (pickField(p, FIELD_CANDIDATES.kultur) || '').trim(), ha: parseHa(pickGroesse(p)), feature: f };
+    row.cells[y.id] = cell;
+    haByKultur.set(ffKultur(cell), (haByKultur.get(ffKultur(cell)) || 0) + (cell.ha || 0));
+  }));
+  // Feste Farbe je Kultur über alle Jahre (größte zuerst), wie in der Flächenübersicht.
+  const colorOf = new Map();
+  [...haByKultur.entries()].filter(([k]) => k !== 'Ohne Angabe').sort((a, b) => b[1] - a[1])
+    .forEach(([k], i) => colorOf.set(k, CULTURE_COLORS[i % CULTURE_COLORS.length]));
+  colorOf.set('Ohne Angabe', '#B8BFB2');
+
+  const rows = [...bySchlag.values()].sort((a, b) => String(a.nummer).localeCompare(String(b.nummer), undefined, { numeric: true }));
+  rows.forEach(row => { row.hints = fruchtfolgeHints(row, years); });
+
+  const stats = years.map(y => {
+    let acker = 0, leg = 0, total = 0;
+    const kulturen = new Map();
+    rows.forEach(r => {
+      const c = r.cells[y.id];
+      if (!c) return;
+      const ha = c.ha || 0;
+      total += ha;
+      kulturen.set(ffKultur(c), (kulturen.get(ffKultur(c)) || 0) + ha);
+      if (FF_DAUER.test(c.kultur) && !FF_LEGUME.test(c.kultur)) return;
+      acker += ha;
+      if (FF_LEGUME.test(c.kultur)) leg += ha;
+    });
+    return { year: y, acker, leg, total, share: acker ? leg / acker * 100 : null, kulturen: [...kulturen.entries()].sort((a, b) => b[1] - a[1]) };
+  });
+  return { years, rows, colorOf, stats };
+}
+// Hinweise je Schlag. "In Folge" zählt nur über direkt aufeinanderfolgende Jahre.
+function fruchtfolgeHints(row, years) {
+  const hints = [];
+  const seq = years.map(y => ({ jahr: Number(y.jahr), cell: row.cells[y.id] || null }));
+  // Läufe aufeinanderfolgender Jahre, in denen test(cell) gilt und key gleich bleibt
+  const runs = (test, key = () => 1) => {
+    const out = [];
+    let cur = null;
+    seq.forEach(s => {
+      const ok = s.cell && test(s.cell);
+      const k = ok ? key(s.cell) : null;
+      if (ok && cur && cur.key === k && s.jahr === cur.to + 1) { cur.to = s.jahr; cur.n++; }
+      else { if (cur) out.push(cur); cur = ok ? { key: k, from: s.jahr, to: s.jahr, n: 1 } : null; }
+    });
+    if (cur) out.push(cur);
+    return out;
+  };
+  runs(c => c.kultur && !FF_DAUER.test(c.kultur) && !FF_MEHRJAEHRIG.test(c.kultur), c => c.kultur.toLowerCase())
+    .filter(r => r.n >= 2)
+    .forEach(r => hints.push({ type: 'selbstfolge', text: `${seq.find(s => s.jahr === r.from).cell.kultur} ${r.n} Jahre in Folge (${r.from}–${r.to})` }));
+  runs(c => FF_HALM.test(c.kultur)).filter(r => r.n >= 3)
+    .forEach(r => hints.push({ type: 'getreide', text: `${r.n} Jahre Getreide in Folge (${r.from}–${r.to})` }));
+  const acker = seq.filter(s => s.cell && s.cell.kultur && !(FF_DAUER.test(s.cell.kultur) && !FF_LEGUME.test(s.cell.kultur)));
+  if (acker.length >= FF_MIN_YEARS_LEGUME && !acker.some(s => FF_LEGUME.test(s.cell.kultur))) {
+    hints.push({ type: 'leguminose', text: `keine Leguminose in ${acker.length} Jahren` });
+  }
+  return hints;
+}
+
+const ffHa = (n) => (n || 0).toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+// ---- Flächenübersicht › Reiter "Fruchtfolge" ----
+// Kennzahlen, Leguminosenanteil je Jahr (Säulen, beim Öffnen animiert),
+// Hinweise und die Tabelle Schlag × Jahr. Reiterwahl: ueTab.
+function setUeTab(tab) {
+  ueTab = tab === 'fruchtfolge' ? 'fruchtfolge' : 'flaechen';
+  openFlaechenuebersicht({ animate: true });
+}
+function syncUeTab(animate) {
+  document.querySelectorAll('#ue-tabs [data-ue-tab]').forEach(b => b.setAttribute('aria-checked', String(b.dataset.ueTab === ueTab)));
+  document.getElementById('ue-tab-flaechen').hidden = ueTab !== 'flaechen';
+  document.getElementById('ue-tab-fruchtfolge').hidden = ueTab !== 'fruchtfolge';
+  document.body.dataset.ueTab = ueTab;
+  if (ueTab === 'fruchtfolge') renderFruchtfolgeTab(animate);
+}
+document.querySelectorAll('#ue-tabs [data-ue-tab]').forEach(b => b.addEventListener('click', () => setUeTab(b.dataset.ueTab)));
+
+function renderFruchtfolgeTab(animate) {
+  const anim = !!animate && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  ffData = buildFruchtfolge();
+  const { years, rows, stats } = ffData;
+  document.getElementById('uebersicht-view').classList.toggle('ue-animating', anim);
+  document.getElementById('ff-empty').hidden = years.length > 0;
+  document.getElementById('ff-content').hidden = years.length === 0;
+  if (!years.length) return;
+  const afterPaint = (fn) => requestAnimationFrame(() => requestAnimationFrame(fn));
+  const withHints = rows.filter(r => r.hints.length);
+  const last = stats[stats.length - 1];
+
+  // Kennzahlen (wie in "Flächen": schweben ein, Zahlen zählen hoch)
+  const tiles = [
+    { label: 'Hinterlegte Jahre', value: years.length, decimals: 0, sub: years.length > 1 ? `${years[0].jahr}–${last.year.jahr}` : `nur ${last.year.jahr} — weitere Jahre hinzufügen`, primary: true, icon: 'calendar_month' },
+    { label: 'Schläge', value: rows.length, decimals: 0, sub: `${ffHa(last.total)} ha in ${last.year.jahr}`, icon: 'crop_square' },
+    { label: `Leguminosen ${last.year.jahr}`, value: last.share || 0, decimals: 0, unit: '%', sub: `${ffHa(last.leg)} von ${ffHa(last.acker)} ha Acker`, icon: 'eco' },
+    { label: 'Schläge mit Hinweis', value: withHints.length, decimals: 0, sub: withHints.length ? 'Details in der Tabelle' : 'keine Auffälligkeiten', icon: 'warning', warn: withHints.length > 0 }
+  ];
+  const kpis = document.getElementById('ff-kpis');
+  kpis.innerHTML = tiles.map((t, i) => `
+    <div class="ue-kpi${t.primary ? ' primary' : ''}${t.warn ? ' is-warn' : ''}${anim ? ' ue-anim' : ''}" style="--i:${i}">
+      <span class="material-symbols-rounded icon ue-kpi-icon" aria-hidden="true">${t.icon}</span>
+      <span class="ue-kpi-label">${escapeHtml(t.label)}</span>
+      <span class="ue-kpi-value"><span class="ue-count" data-i="${i}">0</span>${t.unit ? `<small>${t.unit}</small>` : ''}</span>
+      <span class="ue-kpi-sub">${escapeHtml(t.sub)}</span>
+    </div>`).join('');
+  kpis.querySelectorAll('.ue-count').forEach(el => {
+    const t = tiles[+el.dataset.i];
+    if (anim) countUp(el, t.value, { decimals: t.decimals, delay: 120 + +el.dataset.i * 70 });
+    else el.textContent = t.value.toLocaleString('de-DE', { maximumFractionDigits: t.decimals });
+  });
+
+  // Leguminosenanteil: eine Säule je Jahr, wächst von unten, Prozent zählt hoch.
+  const maxShare = Math.max(...stats.map(s => s.share || 0));
+  const scale = Math.max(40, Math.ceil(maxShare / 10) * 10);
+  const chart = document.getElementById('ff-stats');
+  chart.style.setProperty('--cols', stats.length);
+  chart.innerHTML = `<div class="uf-leg-axis" aria-hidden="true"><span>${scale} %</span><span>${scale / 2} %</span><span>0 %</span></div>` + stats.map((s, i) => {
+    const h = s.share == null ? 0 : (s.share / scale) * 100;
+    return `<div class="uf-leg-col${s.share === 0 ? ' is-zero' : ''}" data-ff-stat="${escapeHtml(s.year.jahr)}" title="${escapeHtml(s.year.jahr)}: ${ffHa(s.leg)} von ${ffHa(s.acker)} ha Acker">
+      <span class="uf-leg-val">${s.share == null ? '–' : `<span class="uf-count" data-v="${s.share}">${anim ? 0 : Math.round(s.share)}</span> %`}</span>
+      <span class="uf-leg-track"><span class="uf-leg-fill" data-h="${h}" style="height:${anim ? 0 : h}%; transition-delay:${anim ? 250 + i * 110 : 0}ms"></span></span>
+      <span class="uf-leg-jahr">${escapeHtml(s.year.jahr)}</span>
+      <span class="uf-leg-sub">${ffHa(s.leg)} von ${ffHa(s.acker)} ha</span>
+    </div>`;
+  }).join('');
+  if (anim) {
+    afterPaint(() => chart.querySelectorAll('.uf-leg-fill').forEach(el => { el.style.height = el.dataset.h + '%'; }));
+    chart.querySelectorAll('.uf-count').forEach((el, i) => countUp(el, +el.dataset.v, { decimals: 0, duration: 900, delay: 250 + i * 110 }));
+  }
+
+  // Hinweise
+  const byType = (t) => rows.filter(r => r.hints.some(h => h.type === t)).length;
+  document.getElementById('ff-hints').innerHTML = withHints.length
+    ? `<div class="ff-hint-sum"><span class="material-symbols-rounded icon" aria-hidden="true">warning</span><strong>${withHints.length} ${withHints.length === 1 ? 'Schlag' : 'Schläge'} mit Hinweis</strong></div>
+      <ul>${[['selbstfolge', 'gleiche Kultur in Folge'], ['getreide', '3+ Jahre Getreide in Folge'], ['leguminose', `keine Leguminose in ${FF_MIN_YEARS_LEGUME}+ Jahren`]]
+        .filter(([t]) => byType(t)).map(([t, label]) => `<li><b>${byType(t)} ×</b> ${label}</li>`).join('')}</ul>`
+    : `<div class="ff-hint-sum is-ok"><span class="material-symbols-rounded icon" aria-hidden="true">task_alt</span><strong>Keine Hinweise</strong></div>
+      <p class="ue-hint-line">Geprüft: gleiche Kultur in Folge, 3+ Jahre Getreide in Folge, keine Leguminose in ${FF_MIN_YEARS_LEGUME}+ Jahren.</p>`;
+  document.getElementById('ff-only-hints-wrap').hidden = !withHints.length;
+  if (!withHints.length) { ffOnlyHints = false; document.getElementById('ff-only-hints').checked = false; }
+  document.getElementById('ff-years-info').textContent = years.map(y => y.jahr).join(' · ');
+  renderFruchtfolgeTable(anim);
+}
+function ffVisibleRows() {
+  return ffData.rows.filter(r => !ffOnlyHints || r.hints.length);
+}
+function renderFruchtfolgeTable(anim = false) {
+  const { years, colorOf } = ffData;
+  const rows = ffVisibleRows();
+  document.getElementById('ff-table-count').textContent = rows.length;
+  document.querySelector('#ff-table thead').innerHTML = `<tr><th>Nr.</th><th>Name</th>${years.map(y => `<th>${escapeHtml(y.jahr)}</th>`).join('')}<th>Hinweise</th></tr>`;
+  document.getElementById('ff-table-body').innerHTML = rows.length ? rows.map((r, i) => `<tr data-ff-row="${escapeHtml(r.nummer)}" class="${r.hints.length ? 'has-hint' : ''}${anim && i < 40 ? ' ue-anim' : ''}" style="--i:${Math.min(i, 40) * 0.4 + 5}" title="Auf der Karte zeigen">
+      <td>${escapeHtml(r.nummer)}</td><td>${escapeHtml(r.name || '–')}</td>
+      ${years.map(y => {
+        const c = r.cells[y.id];
+        if (!c) return '<td class="ff-none">–</td>';
+        return `<td><span class="ff-cell${FF_LEGUME.test(c.kultur) ? ' is-leg' : ''}" title="${c.ha != null ? formatHaExact(c.ha) + ' ha' : ''}"><i style="background:${colorOf.get(ffKultur(c))}"></i>${escapeHtml(ffKultur(c))}</span></td>`;
+      }).join('')}
+      <td class="ff-hint-cell">${r.hints.map(h => `<span class="ff-hint-pill">${escapeHtml(h.text)}</span>`).join('') || '<span class="ff-none">–</span>'}</td>
+    </tr>`).join('')
+    : `<tr><td colspan="${years.length + 3}" style="color:var(--muted); padding:14px;">Keine Schläge.</td></tr>`;
+}
+// Zeile antippen: Karte öffnen, nach Kultur eingefärbt, auf den Schlag zoomen.
+document.getElementById('ff-table-body').addEventListener('click', (e) => {
+  const tr = e.target.closest('[data-ff-row]');
+  if (tr) showSchlagKulturOnMap(tr.dataset.ffRow);
+});
+function showSchlagKulturOnMap(nummer) {
+  const src = ffData && ffData.rows.find(x => String(x.nummer) === String(nummer));
+  if (!src) return;
+  // Schlag im gewählten Jahr nicht vorhanden -> neuestes Jahr mit diesem Schlag
+  const y = (src.cells[ffYearId] && ffData.years.find(x => x.id === ffYearId)) || ffData.years.slice().reverse().find(x => src.cells[x.id]);
+  if (!y) return;
+  setActiveSegment('viewer');
+  map.invalidateSize();
+  ffYearId = y.id;
+  setKulturenMap(true, { fit: false });
+  const r = ffData.rows.find(x => String(x.nummer) === String(nummer));
+  if (!r || !r._mapLayer) return;
+  const b = r._mapLayer.getBounds();
+  if (b.isValid()) { map.fitBounds(b, { padding: [60, 60], maxZoom: 17 }); r._mapLayer.openPopup(b.getCenter()); }
+}
+document.getElementById('ff-only-hints').addEventListener('change', (e) => {
+  ffOnlyHints = e.target.checked;
+  renderFruchtfolgeTable();
+});
+document.querySelectorAll('#ff-file-add, #ff-file-add-empty').forEach(input => input.addEventListener('change', async (e) => {
+  for (const f of [...e.target.files]) await loadCompareFile(f);
+  e.target.value = '';
+}));
+document.querySelectorAll('[data-ff-goto-compare]').forEach(b => b.addEventListener('click', () => setActiveSegment('compare')));
+
+// ---- Karte: nach Kultur einfärben (Option in der Kartenansicht) ----
+// Knopf "Kulturen" über der Karte (nur wenn Jahre hinterlegt sind): zeigt
+// statt der normalen Ebenen die Flächen eines hinterlegten Jahres, gefärbt
+// nach Kultur; je Jahr ein Knopf, Legende unten links.
+function updateKulturenButton() {
+  const has = compareYears.some(y => y.jahr);
+  document.getElementById('btn-kulturen').hidden = !has;
+  if (!has && ffMapActive) setKulturenMap(false);
+}
+function setKulturenMap(on, { fit = true } = {}) {
+  ffMapActive = !!on && compareYears.some(y => y.jahr);
+  const btn = document.getElementById('btn-kulturen');
+  btn.setAttribute('aria-pressed', String(ffMapActive));
+  document.getElementById('kulturen-extra').classList.toggle('is-on', ffMapActive);
+  document.getElementById('ff-year-toggle').hidden = !ffMapActive;
+  document.getElementById('ff-map-legend').hidden = !ffMapActive;
+  if (!ffMapActive) {
+    if (ffGeoLayer) { map.removeLayer(ffGeoLayer); ffGeoLayer = null; restoreCompareHiddenLayer(); }
+    return;
+  }
+  ffData = buildFruchtfolge();
+  const { years } = ffData;
+  const known = years.map(y => y.id).join('|');
+  // Neues Jahr hinzugekommen (oder gewähltes entfernt) -> neuestes Jahr zeigen
+  if ((ffKnownYears && known !== ffKnownYears) || !years.some(y => y.id === ffYearId)) ffYearId = years[years.length - 1].id;
+  ffKnownYears = known;
+  renderFruchtfolgeToggle();
+  renderKulturenLegend();
+  showFruchtfolgeMap(fit);
+}
+document.getElementById('btn-kulturen').addEventListener('click', () => setKulturenMap(!ffMapActive));
+function renderFruchtfolgeToggle() {
+  document.getElementById('ff-year-toggle').innerHTML = ffData.years.map(y =>
+    `<button type="button" role="radio" data-ff-year="${y.id}" aria-checked="${y.id === ffYearId}">${escapeHtml(y.jahr)}</button>`).join('');
+}
+function renderKulturenLegend() {
+  const stat = ffData.stats.find(s => s.year.id === ffYearId);
+  document.getElementById('ff-legend-title').textContent = stat ? `Kulturen ${stat.year.jahr}` : 'Kulturen';
+  document.getElementById('ff-legend').innerHTML = stat ? stat.kulturen.map(([k, ha]) =>
+    `<div><span class="legend-swatch" style="background:${ffData.colorOf.get(k)}"></span><span class="ff-legend-name">${escapeHtml(k)}${FF_LEGUME.test(k) ? ' <span class="ff-leg-tag">Leg.</span>' : ''}</span><span class="ff-legend-ha">${ffHa(ha)} ha</span></div>`).join('') : '';
+}
+document.getElementById('ff-year-toggle').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-ff-year]');
+  if (!btn) return;
+  ffYearId = btn.dataset.ffYear;
+  renderFruchtfolgeToggle();
+  renderKulturenLegend();
+  showFruchtfolgeMap(false);
+});
+function showFruchtfolgeMap(fitView) {
+  if (ffGeoLayer) map.removeLayer(ffGeoLayer);
+  ffGeoLayer = L.featureGroup().addTo(map);
+  const y = ffData.years.find(x => x.id === ffYearId);
+  if (!compareHiddenLayerIds.length) hideMapLayersForCompare();
+  ffData.rows.forEach(r => {
+    const c = y && r.cells[y.id];
+    r._mapLayer = null;
+    if (!c || !c.feature.geometry) return;
+    const color = ffData.colorOf.get(ffKultur(c));
+    const layer = L.geoJSON(c.feature, { style: { color, weight: r.hints.length ? 2.4 : 1.4, fillColor: color, fillOpacity: 0.45, dashArray: r.hints.length ? '5,4' : null } });
+    layer.bindPopup(fruchtfolgePopupHtml(r));
+    layer.addTo(ffGeoLayer);
+    addFeatureLabel(c.feature, featureLabelHtml(r.nummer, ffKultur(c)), ffGeoLayer);
+    r._mapLayer = layer;
+  });
+  if (fitView && ffGeoLayer.getLayers().length) map.fitBounds(ffGeoLayer.getBounds(), { padding: [30, 30] });
+}
+function fruchtfolgePopupHtml(r) {
+  return '<b>' + escapeHtml(r.nummer) + '</b>' + (r.name ? ' – ' + escapeHtml(r.name) : '') + '<br>' +
+    ffData.years.map(y => escapeHtml(y.jahr) + ': ' + escapeHtml(r.cells[y.id] ? ffKultur(r.cells[y.id]) : '–')).join('<br>') +
+    (r.hints.length ? '<br><i>' + r.hints.map(h => escapeHtml(h.text)).join('; ') + '</i>' : '');
+}
+// Hinterlegte Jahre geändert (hinzugefügt, entfernt, Betrieb gewechselt).
+function refreshFruchtfolgeIfOpen() {
+  updateKulturenButton();
+  if (ffMapActive) setKulturenMap(true, { fit: false });
+  if (document.body.dataset.view === 'uebersicht' && ueTab === 'fruchtfolge') renderFruchtfolgeTab(false);
+}
+
+function exportFruchtfolgeTable(type) {
+  if (!ffData || !ffData.rows.length) { showCompareError('Keine Fruchtfolge zum Exportieren — erst Jahre hinterlegen.'); return; }
+  const { years } = ffData;
+  const headers = ['Nummer', 'Name', ...years.map(y => y.jahr), 'Hinweise'];
+  const data = ffVisibleRows().map(r => [r.nummer, r.name || '', ...years.map(y => (r.cells[y.id] ? ffKultur(r.cells[y.id]) : '')), r.hints.map(h => h.text).join('; ')]);
+  const ts = new Date().toISOString().slice(0, 10);
+  if (type === 'csv') exportCsv(headers, data, zuordnungFileName('Fruchtfolge', 'csv') || `fruchtfolge_${ts}.csv`);
+  else if (type === 'xlsx') exportXlsx(headers, data, zuordnungFileName('Fruchtfolge', 'xlsx') || `fruchtfolge_${ts}.xlsx`, 'Fruchtfolge');
+  else if (type === 'pdf') exportPdf(headers, data, zuordnungFileName('Fruchtfolge', 'pdf') || `fruchtfolge_${ts}.pdf`, 'Fruchtfolge');
+}
+
 function zoomToCompareRecord(rec) {
   if (!rec || !rec._mapLayer) return;
   const b = rec._mapLayer.getBounds();
@@ -3433,7 +3753,7 @@ function exportViewerTable(type) {
   const headers = ['Schlagnr./Flächennr.', 'Flächenname', 'Flächenidentifikator', 'Größe (ha)', 'Kulturart', 'Ebene'];
   const data = rows.map(e => {
     const n = parseFloat(String(e.groesse).replace(',', '.'));
-    const groesseText = isFinite(n) ? n.toFixed(2) : (e.groesse || '');
+    const groesseText = isFinite(n) ? haExactFixed(n) : (e.groesse || '');
     return [e.nummer || '', e.featName || '', e.flaechenId || '', groesseText, e.kultur || '', e.layerName || ''];
   });
   const ts = new Date().toISOString().slice(0, 10);
@@ -3453,9 +3773,9 @@ function exportCompareTable(type) {
       STATUS_LABELS[r.status],
       r.nummer || '',
       r.name || '',
-      gA !== null ? gA.toFixed(2) : (r.groesseA || ''),
-      gB !== null ? gB.toFixed(2) : (r.groesseB || ''),
-      r.delta !== null ? r.delta.toFixed(2) : '',
+      gA !== null ? haExactFixed(gA) : (r.groesseA || ''),
+      gB !== null ? haExactFixed(gB) : (r.groesseB || ''),
+      r.delta !== null ? haExactFixed(r.delta) : '',
       r.kulturA || '',
       r.kulturB || ''
     ];
@@ -3471,6 +3791,7 @@ document.querySelectorAll('.export-btn').forEach(btn => {
     const type = btn.getAttribute('data-export');
     const target = btn.getAttribute('data-target');
     if (target === 'viewer') exportViewerTable(type);
+    else if (target === 'fruchtfolge') exportFruchtfolgeTable(type);
     else exportCompareTable(type);
   });
 });
@@ -3548,7 +3869,7 @@ function addFlaechenkartePage(doc, pageW, pageH, margin, canvas, row) {
   doc.setFontSize(11);
   const num = parseFloat(String(row.groesse).replace(',', '.'));
   const groesseText = isFinite(num)
-    ? num.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ha'
+    ? formatHaExact(num) + ' ha'
     : (row.groesse || '–');
   const subtitleParts = ['Größe: ' + groesseText, 'Kulturart: ' + (row.kultur || '–')];
   if (row.flaechenId) subtitleParts.push('Flächen-ID: ' + row.flaechenId);
@@ -5193,7 +5514,7 @@ function addObstbaumParcelPage(doc, pageW, pageH, margin, canvas, parcelEntry, c
   doc.setFontSize(11);
   const num = parseFloat(String(parcelEntry.groesse).replace(',', '.'));
   const groesseText = isFinite(num)
-    ? num.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ha'
+    ? formatHaExact(num) + ' ha'
     : (parcelEntry.groesse || '–');
   const subtitleParts = ['Größe: ' + groesseText, 'Kulturart: ' + (parcelEntry.kultur || '–')];
   if (parcelEntry.flaechenId) subtitleParts.push('Flächen-ID: ' + parcelEntry.flaechenId);
@@ -6453,6 +6774,7 @@ function openFlaechenuebersicht({ animate = false } = {}) {
     onRowClick: showFlaecheOnMap,
     subtitle: `${betrieb} · Stand ${new Date().toLocaleDateString('de-DE')}`
   });
+  syncUeTab(animate);
 }
 // Daten geändert, während die Übersicht offen ist: neu zeichnen, ohne
 // die Einblend-Animationen zu wiederholen.
@@ -6468,6 +6790,7 @@ function showFlaecheOnMap(id) {
   const entry = featureIndex.find(e => e.id === id);
   if (!entry) return;
   setActiveSegment('viewer');
+  if (ffMapActive) setKulturenMap(false); // normale Ebenen wieder zeigen
   map.invalidateSize();
   if (entry.leafletLayer.getBounds) map.fitBounds(entry.leafletLayer.getBounds(), { padding: [60, 60], maxZoom: 17 });
   highlightFeature(entry);
@@ -6715,7 +7038,7 @@ async function exportKombiniertesPDF() {
         const top = [...rows].sort((a, c) => c.ha - a.ha).slice(0, 5);
         b.sectionHeading('Die größten Flächen', rightX, py + 7);
         b.doc.autoTable({
-          body: top.map(r => [gesamtFlaecheLabel(r), r.kultur || 'Ohne Angabe', formatHa(r.ha) + ' ha']),
+          body: top.map(r => [gesamtFlaecheLabel(r), r.kultur || 'Ohne Angabe', (r.computed ? formatHa(r.ha) : formatHaExact(r.ha)) + ' ha']),
           startY: py + 10,
           margin: { left: rightX, right: M, top: b.contentTop, bottom: 18 },
           theme: 'plain',
@@ -6733,7 +7056,7 @@ async function exportKombiniertesPDF() {
         r.nummer || '–', r.name || '–', r.kultur || 'Ohne Angabe', r.flaechenId || '–',
         r.isDrawn ? 'Gezeichnet' : r.quelle,
         ...(withTrees ? [r.trees ? String(r.trees) : '–'] : []),
-        formatHa(r.ha) + (r.computed ? '*' : '')
+        (r.computed ? formatHa(r.ha) + '*' : formatHaExact(r.ha))
       ]);
       const right = (content) => ({ content, styles: { halign: 'right' } });
       const foot = [['', `Summe (${rows.length} Flächen)`, '', '', '', ...(withTrees ? [right(String(rows.reduce((s, r) => s + r.trees, 0)))] : []), right(formatHa(totalHa))]];
@@ -6762,7 +7085,7 @@ async function exportKombiniertesPDF() {
       setStatus(`Gesamtübersicht … Flächenkarten (${i + 1}/${drawnRows.length})`);
       const canvas = parcel ? await safeGesamtCapture(() => captureParcelScreenshot(map, basemaps.satellite, 'map', parcel.leafletLayer.toGeoJSON()), r.nummer) : null;
       const panel = [
-        { label: 'Größe', value: `${formatHa(r.ha)} ha`, bold: true },
+        { label: 'Größe', value: `${r.computed ? formatHa(r.ha) : formatHaExact(r.ha)} ha`, bold: true },
         { label: 'Kulturart', value: r.kultur || 'Ohne Angabe' }
       ];
       if (r.name) panel.unshift({ label: 'Name', value: r.name });
@@ -10009,7 +10332,7 @@ function renderKontrolleBetrieb() {
       <div class="kb-links">
         <span class="kb-links-label">Betriebsdaten</span>
         <div class="kb-link-row">
-          ${[['uebersicht', 'donut_large', 'Flächenübersicht'], ['zeichner', 'draw', 'Flächenzeichner'], ['hofplan', 'home_work', 'Hofplan'], ['stallplaner', 'window', 'Stallplaner'], ['obstbaum', 'park', 'Obstbäume'], ['bienenflug', 'hive', 'Bienenflug']]
+          ${[['uebersicht', 'donut_large', 'Flächenübersicht'], ['zeichner', 'draw', 'Flächenzeichner'], ['fruchtfolge', 'cycle', 'Fruchtfolge'], ['hofplan', 'home_work', 'Hofplan'], ['stallplaner', 'window', 'Stallplaner'], ['obstbaum', 'park', 'Obstbäume'], ['bienenflug', 'hive', 'Bienenflug']]
             .map(([seg, icon, label]) => `<button type="button" class="kb-link" data-kb-segment="${seg}"><span class="material-symbols-rounded icon" aria-hidden="true">${icon}</span>${label}</button>`).join('')}
         </div>
       </div>
@@ -10092,6 +10415,7 @@ document.getElementById('kontrolle-betrieb').addEventListener('click', async (e)
     renderKontrolleBetrieb();
     return;
   }
+  if (d.kbSegment === 'fruchtfolge') { ueTab = 'fruchtfolge'; setActiveSegment('uebersicht'); return; }
   if (d.kbSegment) { setActiveSegment(d.kbSegment); return; }
   if (d.kbTermin) { openKontrollmappe(d.kbTermin, 'ueberblick'); return; }
   if (d.kbMappe) {

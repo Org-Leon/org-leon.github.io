@@ -30,10 +30,16 @@ function pct(part, total) {
   const v = part / total * 100;
   return v.toLocaleString('de-DE', { maximumFractionDigits: v < 10 ? 1 : 0 }) + ' %';
 }
+// Einzelfläche: Größe aus der Shapedatei mit bis zu vier Nachkommastellen
+// (qm-genau); aus der Geometrie berechnete Größen bleiben bei zwei.
+function haRow(r) {
+  if (r.computed) return ha(r.ha);
+  return (Number.isFinite(r.ha) ? r.ha : 0).toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+}
 const kulturOf = (r) => r.kultur || 'Ohne Angabe';
 
 // Zahl von 0 hochzählen (easeOutCubic).
-function countUp(el, target, { decimals = 0, duration = 900, delay = 0 } = {}) {
+export function countUp(el, target, { decimals = 0, duration = 900, delay = 0 } = {}) {
   const fmt = (v) => v.toLocaleString('de-DE', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
   if (reduceMotion()) { el.textContent = fmt(target); return; }
   el.textContent = fmt(0);
@@ -189,7 +195,7 @@ function renderTop(container, d, animate) {
     <li class="ue-top-item${animate ? ' ue-anim' : ''}" style="--i:${i + 5}" data-id="${esc(r.id)}" title="Auf der Karte zeigen">
       <span class="ue-top-rank">${i + 1}</span>
       <span class="ue-top-name">${esc([r.nummer, r.name].filter(Boolean).join(' – ') || 'Ohne Bezeichnung')}<small><span class="ue-dot" style="background:${color(r)}"></span>${esc(kulturOf(r))}</small></span>
-      <span class="ue-top-ha">${ha(r.ha)} ha</span>
+      <span class="ue-top-ha">${haRow(r)} ha</span>
     </li>`).join('');
   container.querySelectorAll('.ue-top-item').forEach(li => li.addEventListener('click', () => state.onRowClick && state.onRowClick(li.dataset.id)));
 }
@@ -230,7 +236,7 @@ function renderTable(animate) {
       <td><span class="ue-dot" style="background:${color(r)}"></span>${esc(kulturOf(r))}</td>
       <td>${esc(r.flaechenId || '–')}</td>
       <td>${r.isDrawn ? '<span class="ue-tag">Gezeichnet</span>' : esc(r.quelle)}</td>
-      <td class="num">${ha(r.ha)}${r.computed ? '<sup title="aus der Geometrie berechnet">*</sup>' : ''}</td>
+      <td class="num">${haRow(r)}${r.computed ? '<sup title="aus der Geometrie berechnet">*</sup>' : ''}</td>
     </tr>`).join('') || `<tr><td colspan="${COLUMNS.length}" class="ue-table-empty">Keine Fläche passt zum Filter.</td></tr>`;
   const sum = rows.reduce((s, r) => s + r.ha, 0);
   document.querySelector('#ue-table tfoot').innerHTML = `<tr><td colspan="${COLUMNS.length - 1}">Summe · ${rows.length} ${rows.length === 1 ? 'Fläche' : 'Flächen'}${rows.length !== d.rows.length ? ` von ${d.rows.length}` : ''}</td><td class="num">${ha(sum)}</td></tr>`;

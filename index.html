@@ -204,6 +204,7 @@
           <li>Größe aus der Shapedatei; fehlt sie, aus der Form berechnet (*).</li>
           <li>Teilflächen-Ebenen zählen nicht mit — sie liegen in anderen Flächen.</li>
           <li>Fläche in der Tabelle antippen: springt zur Karte.</li>
+          <li>Reiter „Fruchtfolge“: Kulturen je Schlag über die hinterlegten Jahre.</li>
         </ul>
       </details>
     </div>
@@ -586,12 +587,21 @@
     <button id="btn-locate" title="Mein Standort" aria-label="Mein Standort">
       <span class="material-symbols-rounded icon gps-icon">my_location</span>
     </button>
+    <!-- Karte nach Kultur einfärben (setKulturenMap in main.js) — nur mit hinterlegten Jahren -->
+    <div class="topbar-extra" data-view="viewer" id="kulturen-extra">
+      <button id="btn-kulturen" title="Flächen nach Kultur einfärben (hinterlegte Jahre)" aria-label="Flächen nach Kultur einfärben" aria-pressed="false" hidden><span class="material-symbols-rounded icon topbar-icon" aria-hidden="true">grass</span><span class="topbar-label">Kulturen</span></button>
+      <div id="ff-year-toggle" class="ff-seg" role="radiogroup" aria-label="Jahr auf der Karte" hidden></div>
+    </div>
     <div class="topbar-extra" data-view="compare">
       <div id="compare-view-toggle" class="ff-seg">
         <button class="cvt-btn active" data-mode="diff" disabled>Vergleich</button>
       </div>
     </div>
   </div>
+  <details id="ff-map-legend" open hidden>
+    <summary id="ff-legend-title">Kulturen</summary>
+    <div id="ff-legend" class="ff-legend"></div>
+  </details>
   <div id="coord-readout">–, –</div>
   <!-- Handy: zeigt, dass gerade ein Setz-Werkzeug aktiv ist (Obstbaum/
        Bienenstand) — die Auswahl selbst steckt in der geschlossenen
@@ -810,7 +820,13 @@
         <h2>Flächenübersicht</h2>
         <p id="ue-subtitle"></p>
       </div>
+      <div class="ff-seg ue-tabs" id="ue-tabs" role="radiogroup" aria-label="Ansicht">
+        <button type="button" role="radio" data-ue-tab="flaechen" aria-checked="true"><span class="material-symbols-rounded icon" aria-hidden="true">donut_small</span>Flächen</button>
+        <button type="button" role="radio" data-ue-tab="fruchtfolge" aria-checked="false"><span class="material-symbols-rounded icon" aria-hidden="true">cycle</span>Fruchtfolge</button>
+      </div>
     </header>
+
+    <div id="ue-tab-flaechen">
 
     <div id="ue-empty" class="ue-card ue-empty" hidden>
       <span class="material-symbols-rounded icon" aria-hidden="true">donut_large</span>
@@ -860,6 +876,68 @@
         </div>
         <p class="ue-note" id="ue-notes" hidden></p>
       </section>
+    </div>
+    </div>
+
+    <!-- Reiter "Fruchtfolge": aus den im Jahresvergleich hinterlegten Jahren
+         (renderFruchtfolgeTab in main.js) -->
+    <div id="ue-tab-fruchtfolge" hidden>
+      <div id="ff-empty" class="ue-card ue-empty" hidden>
+        <span class="material-symbols-rounded icon" aria-hidden="true">cycle</span>
+        <h3>Noch keine Jahre hinterlegt</h3>
+        <p>Lade die Shape-Dateien der Antragsjahre — daraus entsteht die Kulturfolge je Schlag. Die Jahre gelten auch für den Jahresvergleich und bleiben beim Betrieb gespeichert.</p>
+        <div class="dropzone-mini uf-drop">
+          <span>Jahre hinzufügen (.zip / .geojson)…</span>
+          <input type="file" id="ff-file-add-empty" accept=".zip,.geojson,.json" multiple>
+        </div>
+      </div>
+      <div id="ff-content" hidden>
+        <div class="ue-kpis" id="ff-kpis"></div>
+
+        <section class="ue-card ue-anim" style="--i:2">
+          <h3>Leguminosen an der Ackerfläche</h3>
+          <div id="ff-stats" class="uf-leg-chart"></div>
+          <p class="ue-hint-line">Anteil der Leguminosen (Kleegras, Luzerne, Erbsen, Bohnen …) an der Ackerfläche je Jahr — Grünland und Dauerkulturen zählen nicht zur Ackerfläche.</p>
+        </section>
+
+        <div class="ue-grid2">
+          <section class="ue-card ue-anim" style="--i:3">
+            <h3>Hinweise zur Fruchtfolge</h3>
+            <div id="ff-hints" class="ff-hints"></div>
+            <p class="ue-hint-line">Anhaltspunkte für die Kontrolle — die Kulturen werden am Namen erkannt. Mehrjährige Kulturen (Kleegras, Luzerne, Grünland, Obst) sind ausgenommen.</p>
+          </section>
+          <section class="ue-card ue-anim" style="--i:4">
+            <h3>Hinterlegte Jahre</h3>
+            <p class="ff-years-info" id="ff-years-info"></p>
+            <div class="dropzone-mini uf-drop">
+              <span>Jahr hinzufügen (.zip / .geojson)…</span>
+              <input type="file" id="ff-file-add" accept=".zip,.geojson,.json" multiple>
+            </div>
+            <button type="button" class="ff-link-btn" data-ff-goto-compare><span class="material-symbols-rounded icon" aria-hidden="true">compare</span>Jahre verwalten (Jahresvergleich)</button>
+          </section>
+        </div>
+
+        <section class="ue-card ue-anim" style="--i:5">
+          <div class="ue-table-head">
+            <h3>Kulturfolge je Schlag (<span id="ff-table-count">0</span>)</h3>
+            <label class="criteria-option uf-only" id="ff-only-hints-wrap" hidden>
+              <input type="checkbox" class="ff-switch" id="ff-only-hints"> Nur mit Hinweis
+            </label>
+            <div class="export-buttons uf-export" id="ff-export-buttons">
+              <button class="export-btn" data-export="csv" data-target="fruchtfolge">CSV</button>
+              <button class="export-btn" data-export="xlsx" data-target="fruchtfolge">Excel</button>
+              <button class="export-btn" data-export="pdf" data-target="fruchtfolge">PDF</button>
+            </div>
+          </div>
+          <div class="ue-table-wrap">
+            <table id="ff-table">
+              <thead></thead>
+              <tbody id="ff-table-body"></tbody>
+            </table>
+          </div>
+          <p class="ue-hint-line">Schlag antippen: zeigt ihn auf der Karte, eingefärbt nach Kultur. Schläge werden über die Schlagnummer verbunden.</p>
+        </section>
+      </div>
     </div>
   </div>
 </div>

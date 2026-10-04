@@ -22,7 +22,7 @@ const ICON_NAMES = [
   'calendar_month', 'calendar_view_week', 'call', 'cameraswitch', 'category',
   'check', 'chevron_left', 'chevron_right', 'close', 'cloud_done',
   'cloud_off', 'cloud_upload', 'compare', 'compare_arrows', 'content_copy', 'content_cut',
-  'crop', 'crop_free', 'crop_square', 'dark_mode', 'dashboard', 'delete',
+  'crop', 'crop_free', 'crop_square', 'cycle', 'dark_mode', 'dashboard', 'delete',
   'description', 'devices', 'directions', 'document_scanner', 'donut_large',
   'donut_small', 'door_front', 'download', 'drag_handle', 'drag_indicator',
   'draw', 'eco', 'edit', 'edit_note', 'egg', 'event_busy', 'event_upcoming',

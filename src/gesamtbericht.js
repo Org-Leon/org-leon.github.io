@@ -27,6 +27,16 @@ export const CULTURE_COLORS = [
 export function formatHa(n, digits = 2) {
   return (Number.isFinite(n) ? n : 0).toLocaleString('de-DE', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
+// Einzelflächen mit Größe aus der Shapedatei: bis zu vier Nachkommastellen
+// (auf den Quadratmeter genau, wie im Antrag), mindestens zwei. Summen,
+// Kennzahlen und aus der Geometrie berechnete Größen bleiben bei formatHa().
+export function formatHaExact(n) {
+  return (Number.isFinite(n) ? n : 0).toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+}
+// Dasselbe mit Dezimalpunkt (Tabellen-Exporte, bisher toFixed(2)).
+export function haExactFixed(n) {
+  return Number(n).toFixed(4).replace(/0{1,2}$/, '');
+}
 export function formatPct(part, total) {
   if (!total) return '0 %';
   return (part / total * 100).toLocaleString('de-DE', { maximumFractionDigits: part / total < 0.1 ? 1 : 0 }) + ' %';
