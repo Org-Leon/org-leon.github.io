@@ -39,6 +39,35 @@ document.getElementById('theme-toggle').addEventListener('click', () => {
 });
 updateThemeToggleLabel();
 
+// ---------- Design (Test): Standard / Feldbuch ----------
+// Zweite Gestaltung zum Ausprobieren (src/design-feldbuch.css), gewählt über
+// <html data-design="feldbuch">. Die gespeicherte Wahl wird wie das Theme
+// schon im <head> angewendet; hier der Umschalter und das Nachladen der
+// Schriften (IBM Plex; Fraunces lädt index.html ohnehin fürs Logo) — nur wenn das Design aktiv ist.
+function applyDesign(name) {
+  const feldbuch = name === 'feldbuch';
+  if (feldbuch) document.documentElement.setAttribute('data-design', 'feldbuch');
+  else document.documentElement.removeAttribute('data-design');
+  if (feldbuch && !document.getElementById('design-fonts')) {
+    const link = document.createElement('link');
+    link.id = 'design-fonts';
+    link.rel = 'stylesheet';
+    link.href = 'https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap';
+    document.head.appendChild(link);
+  }
+  const btn = document.getElementById('design-toggle');
+  btn.setAttribute('aria-pressed', String(feldbuch));
+  btn.title = feldbuch ? 'Design: Feldbuch (Test) — zum Standard wechseln' : 'Design: Standard — zum Feldbuch (Test) wechseln';
+}
+function toggleDesign() {
+  const next = document.documentElement.getAttribute('data-design') === 'feldbuch' ? 'standard' : 'feldbuch';
+  try { localStorage.setItem('feldfolio-design', next); } catch {}
+  applyDesign(next);
+}
+document.getElementById('design-toggle').addEventListener('click', toggleDesign);
+document.getElementById('btn-design-mobile').addEventListener('click', toggleDesign);
+applyDesign(document.documentElement.getAttribute('data-design') || 'standard');
+
 // ---------- Mobile: Sidebar als Einschub ----------
 // Ab der Media-Query-Breite in style.css wird #sidebar per CSS zu einem
 // festen Einschub von links (transform, siehe dort) — hier nur die

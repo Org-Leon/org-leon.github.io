@@ -1,6 +1,6 @@
 # FeldFolio – Benutzerhandbuch
 
-Stand: 4. Oktober 2026
+Stand: 5. Oktober 2026
 
 FeldFolio ist ein Werkzeug für die Öko-Kontrolle: Flächen eines Betriebs auf der Karte ansehen und auswerten, Hof und Stall erfassen und die Kontrolle selbst mit Terminen, Protokollen und Dokumenten begleiten. Die App läuft im Browser auf PC, Tablet und Handy und funktioniert vor Ort auch ohne Empfang.
 
@@ -35,6 +35,10 @@ FeldFolio ist ein Werkzeug für die Öko-Kontrolle: Flächen eines Betriebs auf 
 - **Hauptbereich:** die Karte oder die jeweilige Ansicht.
 
 Ein Tipp auf die bereits aktive Kachel führt zurück zur Karte.
+
+### Design (Test)
+
+Über das Paletten-Symbol in der Kopfzeile (am Handy: in der Schublade unten „Design wechseln (Test)“) schaltest du zwischen dem Standard-Design und dem Test-Design „Feldbuch“ um. Das Feldbuch-Design zeigt dieselben Funktionen in anderer Gestaltung: Papier und Tinte, harte Kanten, Linien wie in einem Kontrollbogen. Hell und Dunkel gibt es in beiden Designs. Die Wahl bleibt auf dem Gerät gespeichert. Beschriftungen und Abläufe sind gleich; die Bilder und Beschreibungen in diesem Handbuch gelten für beide.
 
 ### Mit und ohne Konto
 

@@ -1,0 +1,304 @@
+/* ---------- Design "Feldbuch" (Test) ----------
+   Alternative Gestaltung, umschaltbar über <html data-design="feldbuch">
+   (Knopf in der Kopfzeile bzw. ?design=feldbuch; siehe main.js "Design").
+   Das Standard-Design in style.css bleibt unverändert — diese Datei legt
+   sich nur darüber.
+
+   Idee: das Feldbuch eines Vermessers statt "App mit runden Karten" —
+   Papier und Tinte, harte Kanten, Linien wie in einem Kontrollbogen,
+   Serifenschrift für Titel und Zahlen, Schreibmaschinen-Schrift für
+   Beschriftungen, Stempel statt Pillen, harte Druckschatten.
+
+   Technik: Alle Regeln stehen in einem :is(...)-Block. Das zweite Argument
+   (#ff-design) trifft nie, hebt aber die Spezifität auf ID-Niveau — damit
+   gewinnen die Regeln hier auch gegen ID-Regeln in style.css. Verschachtelung
+   (CSS Nesting) wird im Build für ältere Browser aufgelöst. */
+
+:is(:root[data-design="feldbuch"], #ff-design) {
+  /* Tinte (dunkel) */
+  --bg: #131714;
+  --panel: #191E1A;
+  --panel-2: #212821;
+  --border: #37423A;
+  --text: #ECE6D6;
+  --muted: #98A08F;
+  --accent: #C8DB6E;
+  --accent-dim: #46552A;
+  --accent-tint: #2D3721;
+  --on-accent: #ECE6D6;
+  --warn: #EE7B57;
+  --ink: #ECE6D6;          /* Linienfarbe für kräftige Regeln */
+  --paper: #131714;        /* Schrift auf Tinte-Flächen */
+  --stamp: #EE7B57;
+  --grid: rgba(236, 230, 214, 0.035);
+  --serif: 'Fraunces', 'Iowan Old Style', Georgia, serif;
+  --sans: 'IBM Plex Sans', -apple-system, 'Segoe UI', sans-serif;
+  --mono: 'IBM Plex Mono', 'SF Mono', Menlo, Consolas, monospace;
+  --shadow-hard: 3px 3px 0 var(--ink);
+
+  /* Papier (hell) */
+  &[data-theme="light"] {
+    --bg: #EFE9DB;
+    --panel: #F8F4EA;
+    --panel-2: #E6DFCE;
+    --border: #C5BBA4;
+    --text: #1D2A22;
+    --muted: #6A6959;
+    --accent: #1F5A3C;
+    --accent-dim: #1F5A3C;
+    --accent-tint: #DCE3BE;
+    --on-accent: #F8F4EA;
+    --warn: #B43E27;
+    --ink: #1D2A22;
+    --paper: #F8F4EA;
+    --stamp: #B43E27;
+    --grid: rgba(29, 42, 34, 0.045);
+  }
+
+  /* ---- Grundton: Schrift, Kanten ---- */
+  & body { font-family: var(--sans); background: var(--bg); color: var(--text); }
+  & *:not(.leaflet-pane *):not(#scan-modal-overlay *):not(svg *) { border-radius: 0 !important; }
+  /* was rund bleiben muss: Punkte/Statuslichter */
+  & .ff-switch, & .ff-switch::before, & .ff-switch::after { border-radius: 999px !important; }
+  & .save-dot, & .wf-dot, & .kb-auftrag i, & .tb-legend, & .kb-fl-dot, & .fruit-dot, & .legend-swatch { border-radius: 50% !important; }
+  & h1, & h2, & h3 { font-family: var(--serif); font-weight: 600; letter-spacing: -0.01em; }
+  & ::selection { background: var(--accent); color: var(--paper); }
+
+  /* Kleine Beschriftungen: Schreibmaschine statt gesperrter Grotesk */
+  & .compare-label, & .kb-section-label, & .ko-day-label, & .tool-footer-title, & .ue-kpi-label,
+  & .account-label, & .fotomappe-label, & .tb-form label > span, & .wf-field > span, & .wf-field > label,
+  & .kb-termin-label, & .wf-sfield-label, & .wf-stage-sub, & #tiere-view h4, & .tk-attachments-head {
+    font-family: var(--mono); font-weight: 500; font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted);
+  }
+
+  /* ---- Kopfzeile ---- */
+  & #tabbar { background: var(--bg); border-bottom: 2px solid var(--ink); box-shadow: none; }
+  & #tabbar-left { border-right: 1px solid var(--border); }
+  & #current-view-title { font-family: var(--serif); font-weight: 600; font-size: 15px; }
+  & #tabbar .tabbar-search, & #flaechen-suche, & #tabbar input[type="search"] {
+    background: transparent; border: none; border-bottom: 1.5px solid var(--ink); box-shadow: none;
+  }
+  & #tabbar kbd, & .tabbar-search kbd { font-family: var(--mono); border: 1px solid var(--border); background: transparent; }
+  & #btn-betrieb { border: 1px solid transparent; }
+  & #btn-betrieb:hover, & #btn-betrieb.active:hover { border-color: var(--ink); background: transparent; }
+  & .betrieb-avatar, & .kb-avatar, & .account-avatar, & .betrieb-row-avatar {
+    background: var(--ink); color: var(--paper); font-family: var(--serif); font-weight: 700;
+  }
+  & #save-status { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+
+  /* ---- Seitenleiste ---- */
+  & #sidebar { background: var(--bg); border-right: 2px solid var(--ink); }
+  /* Funktionswahl: Registerkarten eines Ordners statt runder Kacheln */
+  & #view-switcher { gap: 0; border-top: 1px solid var(--ink); border-left: 1px solid var(--ink); }
+  & .segment-btn {
+    background: transparent; border: none; border-right: 1px solid var(--ink); border-bottom: 1px solid var(--ink);
+    color: var(--text); font-family: var(--mono); font-size: 10.5px; font-weight: 400; letter-spacing: 0.01em; box-shadow: none;
+    transition: background-color .1s, color .1s;
+  }
+  & .segment-btn .icon { color: var(--accent); }
+  & .segment-btn:hover { background: var(--panel-2); border-color: var(--ink); }
+  & .segment-btn.active { background: var(--ink); color: var(--paper); font-weight: 500; box-shadow: none; border-color: var(--ink); }
+  & .segment-btn.active .icon { color: var(--paper); }
+  & .segment-btn.segment-btn-wide { margin-bottom: 0; border-left: none; background: var(--accent-tint); background-image: none; }
+  & .segment-btn-wide .segment-label { font-family: var(--serif); font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
+  & .segment-btn-wide .segment-sub { font-family: var(--mono); font-size: 10px; }
+  & .segment-btn.segment-btn-wide.active { background: var(--ink); box-shadow: none; }
+  & .segment-btn.segment-btn-wide.active .segment-sub { color: var(--paper); opacity: .7; }
+  & #brand-caption { font-family: var(--serif); font-style: italic; font-weight: 400; font-size: 13px; color: var(--muted); }
+  & .tool-hint { background: transparent; border: none; border-left: 3px solid var(--accent); color: var(--text); padding-left: 10px; }
+  & .tool-hint .icon { display: none; }
+  & .ko-subnav-btn { border: none; border-bottom: 1px solid var(--border); font-family: var(--sans); }
+  & .ko-subnav-btn.active { background: transparent; color: var(--text); font-weight: 700; box-shadow: inset 4px 0 0 var(--accent); }
+  & .ko-subnav-count { font-family: var(--mono); background: var(--ink) !important; color: var(--paper); }
+
+  /* ---- Knöpfe: rechteckig, Tinte, harter Druckschatten ---- */
+  & .betrieb-btn, & .tool-btn, & .export-btn, & .tk-attachment-btn, & .ue-empty-btn, & #topbar button,
+  & .kb-tile-new, & .wf-add-row, & .wf-add-section, & .cy-layer-btn, & .wf-section-toggle, & .pp-signature-big,
+  & .pp-signature-clear, & .pp-signature-own, & .stallplan-abteil-act, & .stallplan-tb-add {
+    background: var(--panel); border: 1.5px solid var(--ink); color: var(--text);
+    font-family: var(--sans); font-weight: 600; box-shadow: none;
+    transition: transform .08s, box-shadow .08s, background-color .1s;
+  }
+  & .betrieb-btn:hover, & .tool-btn:hover, & .export-btn:hover, & .tk-attachment-btn:hover, & #topbar button:hover,
+  & .kb-tile-new:hover, & .wf-add-row:hover, & .wf-add-section:hover {
+    background: var(--panel); border-color: var(--ink); color: var(--text);
+    transform: translate(-1px, -1px); box-shadow: var(--shadow-hard);
+  }
+  & .betrieb-btn:active, & .tool-btn:active, & #topbar button:active { transform: none; box-shadow: none; }
+  & .betrieb-btn.primary, & .tool-btn.primary, & .tk-attachment-btn-primary, & #btn-compare-run:not(:disabled), & .ue-empty-btn {
+    background: var(--accent); border-color: var(--ink); color: var(--paper);
+  }
+  & .betrieb-btn.primary:hover, & .tool-btn.primary:hover, & .tk-attachment-btn-primary:hover, & #btn-compare-run:not(:disabled):hover {
+    background: var(--accent); color: var(--paper);
+  }
+  & .betrieb-btn.primary .icon, & .tool-btn.primary .icon, & .tk-attachment-btn-primary .icon { color: inherit; }
+  & .kb-tile-new, & .wf-add-row, & .wf-add-section { border-style: dashed; color: var(--text); }
+  & .account-btn-danger { border-color: var(--stamp); color: var(--stamp); }
+  & .ko-link-btn, & .ff-link-btn { font-family: var(--mono); font-size: 11.5px; font-weight: 500; text-decoration: underline; text-underline-offset: 3px; color: var(--text); }
+  & .ko-icon-btn:hover, & .betrieb-icon-btn:hover { background: var(--ink); color: var(--paper); }
+
+  /* ---- Umschalter: unterstrichene Reiter statt Pillen ---- */
+  & .ff-seg { background: transparent; border: none; border-bottom: 1.5px solid var(--ink); padding: 0; gap: 0; }
+  & .ff-seg > button, & #topbar .ff-seg > button, & #compare-view-toggle.ff-seg .cvt-btn {
+    border: none; background: transparent; color: var(--muted); font-family: var(--mono); font-size: 11.5px; font-weight: 500;
+    text-transform: uppercase; letter-spacing: 0.03em; box-shadow: none; transform: none; margin-bottom: -1.5px; border-bottom: 3px solid transparent;
+  }
+  & .ff-seg > button:hover, & #topbar .ff-seg > button:hover { color: var(--text); background: transparent; transform: none; box-shadow: none; }
+  & .ff-seg > button.active, & .ff-seg > button[aria-checked="true"], & .ff-seg > button[aria-pressed="true"], & .ff-seg > button[aria-selected="true"],
+  & #topbar .ff-seg > button[aria-checked="true"], & #compare-view-toggle.ff-seg .cvt-btn.active {
+    background: transparent; color: var(--text); font-weight: 600; border-bottom-color: var(--accent);
+  }
+  /* über der Karte brauchen die Reiter einen Grund */
+  & #topbar .ff-seg { background: var(--panel); border: 1.5px solid var(--ink); }
+  & #topbar .ff-seg > button { margin-bottom: 0; }
+  & #topbar .ff-seg > button[aria-checked="true"], & #compare-view-toggle.ff-seg .cvt-btn.active { background: var(--ink); color: var(--paper); border-bottom-color: transparent; }
+  & #topbar button, & .leaflet-bar a { box-shadow: 2px 2px 0 var(--ink); }
+  & .leaflet-bar { border: 1.5px solid var(--ink) !important; box-shadow: 2px 2px 0 var(--ink) !important; border-radius: 0 !important; }
+  & .leaflet-bar a { border-radius: 0 !important; background: var(--panel); color: var(--text); box-shadow: none; border-bottom-color: var(--ink); }
+  & #topbar #btn-kulturen[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+
+  /* ---- Karten und Abschnitte: Kontrollbogen mit Kopflinie statt Kästen ---- */
+  & #uebersicht-scroll, & #tiere-scroll, & .ko-scroll {
+    background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+  & .ue-card, & .ko-card, & .kb-tile, & .kb-flaechen {
+    background: var(--panel); border: 1px solid var(--border); border-top: 3px solid var(--ink); box-shadow: none;
+  }
+  & .ue-card h3, & .ko-card-head h3, & .kb-tile-head h4 { font-family: var(--serif); font-size: 17px; font-weight: 600; color: var(--text); letter-spacing: -0.01em; }
+  & .ko-card-head h3 .icon, & .kb-tile-icon { display: none; }
+  & .kb-tile.is-open { border-top-color: var(--stamp); }
+  & .kb-tile.is-done { border-top-color: var(--accent); }
+  & .ue-head h2, & .ko-header h2 { font-family: var(--serif); font-size: 34px; font-weight: 700; letter-spacing: -0.02em; }
+  & .ue-head h2::after { width: 100%; height: 2px; background: var(--ink); }
+  & .ue-head { border-bottom: none; }
+  & .ko-header { border-bottom: 2px solid var(--ink); background: var(--bg); }
+  & .ue-head p, & .ko-header p { font-family: var(--mono); font-size: 11.5px; }
+
+  /* Kennzahlen: große Serifenziffern, durch Linien getrennt */
+  & .ue-kpis, & .ko-kpis { gap: 0; border: 1px solid var(--ink); border-top: 3px solid var(--ink); background: var(--panel); }
+  & .ue-kpi, & .ko-kpi { background: transparent; border: none; border-right: 1px solid var(--ink); }
+  & .ue-kpi:last-child, & .ko-kpi:last-child { border-right: none; }
+  & .ue-kpi.primary { background: var(--ink); background-image: none; color: var(--paper); border-color: var(--ink); }
+  & .ue-kpi.primary .ue-kpi-label, & .ue-kpi.primary .ue-kpi-sub, & .ue-kpi.primary .ue-kpi-value, & .ue-kpi.primary .ue-kpi-value small { color: var(--paper); }
+  & .ue-kpi.primary .ue-kpi-icon { color: var(--paper); }
+  & .ue-kpi-value, & .ko-kpi-value, & .kb-fl-value, & .tb-bilanz b, & .tb-n-value, & .ue-donut-value { font-family: var(--serif); font-weight: 600; letter-spacing: -0.02em; }
+  & .ue-kpi-value { font-size: 36px; }
+  & .ue-kpi-sub, & .ko-kpi-label { font-family: var(--mono); font-size: 10.5px; }
+  & .ue-kpi-icon { opacity: .5; }
+  & .ko-kpi .icon { background: transparent; color: var(--accent); }
+  & .ue-kpi.is-warn .ue-kpi-value { color: var(--stamp); }
+
+  /* Betriebsseite */
+  & .kb-hero { background: var(--panel); background-image: none; border: 1px solid var(--ink); border-top: 3px solid var(--ink); }
+  & .kb-hero-text h3 { font-family: var(--serif); font-size: 28px; font-weight: 700; letter-spacing: -0.02em; }
+  & .kb-hero-text p { font-family: var(--mono); font-size: 11.5px; }
+  & .kb-fns { gap: 0; border-top: 1px solid var(--ink); border-left: 1px solid var(--ink); }
+  & .kb-fn { background: var(--panel); border: none; border-right: 1px solid var(--ink); border-bottom: 1px solid var(--ink); font-family: var(--mono); font-size: 11px; font-weight: 500; }
+  & .kb-fn:hover { background: var(--ink); color: var(--paper); }
+  & .kb-fn:hover .icon { color: var(--paper); }
+  & .kb-item, & .kb-hist-row, & .kb-termin, & .ko-agenda-row, & .tb-stall-row, & .km-auftrag, & .cy-row { background: transparent; border: none; border-bottom: 1px dashed var(--border); }
+  & .kb-item:hover, & .kb-hist-row:hover, & .ko-agenda-row:hover { background: var(--accent-tint); border-color: var(--border); }
+  & .kb-termin { border: 1.5px solid var(--ink); border-left: 6px solid var(--accent); background: var(--panel-2); }
+  & .ko-agenda-row { border-left: 4px solid var(--accent); }
+  & .ko-agenda-row.is-warn { border-left-color: var(--stamp); }
+  & .km-auftrag { border-left: 4px solid var(--auftrag-color, var(--accent)); }
+  & .ko-agenda-time, & .kb-hist-date, & .kb-pick-date { font-family: var(--mono); }
+
+  /* ---- Stempel statt Pillen ---- */
+  & .tk-badge, & .tk-chip, & .kb-auftrag, & .status-pill, & .wf-tol-chip, & .kb-tile-state, & .kb-tile-count, & .km-tab-count,
+  & .ff-hint-pill, & .tb-stall-chip, & .ff-leg-tag, & .tb-betrieb, & .stallplan-badge, & .tk-auftrag-count {
+    font-family: var(--mono); font-weight: 500; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em;
+    background: transparent; border: 1.5px solid currentColor; box-shadow: none;
+  }
+  & .tk-chip-verband { background: var(--chip-bg); color: var(--chip-fg); border-color: var(--ink); }
+  & .tk-badge-warn, & .kb-tile.is-open .kb-tile-state, & .stallplan-badge.fail { color: var(--stamp); transform: rotate(-1.5deg); }
+  & .tk-badge-ok, & .kb-tile.is-done .kb-tile-state, & .stallplan-badge.ok { color: var(--accent); }
+  & .kb-tile-count, & .km-tab-count { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+  & .wf-status { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; }
+  & .wf-summary .wf-status, & .wf-list-row .wf-status { background: transparent; border: 1.5px solid currentColor; }
+  & .ff-cell { background: transparent; border: none; border-bottom: 1.5px solid var(--border); padding: 1px 2px; }
+  & .ff-cell.is-leg { border-bottom-color: var(--accent); font-weight: 600; }
+
+  /* ---- Tabellen: liniertes Formular ---- */
+  & table thead th, & .tb-table th, & #ff-table thead th, & .wf-table th {
+    font-family: var(--mono); font-weight: 500; font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text);
+    background: transparent; border-top: 2px solid var(--ink); border-bottom: 1px solid var(--ink);
+  }
+  & table tbody td { border-bottom: 1px dashed var(--border); }
+  & .tb-table tfoot td, & #ue-table tfoot td, & .wf-table tfoot td { background: transparent; border-top: 2px solid var(--ink); border-bottom: 3px double var(--ink); font-family: var(--serif); font-size: 15px; }
+  & td.num, & .num, & .wf-calc, & .kb-fl-ha, & .tb-art-n, & .ue-bar-value { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  & #table-panel, & #compare-table-panel, & #obstbaum-table-panel { border-top: 2px solid var(--ink); background: var(--bg); }
+  & .wf-table-wrap { border: 1px solid var(--ink); }
+  & .wf-table th:first-child, & .wf-table td:first-child { background: var(--panel); }
+
+  /* ---- Eingaben: Linie zum Ausfüllen ---- */
+  & .wf-input, & .fotomappe-input, & .account-input, & .km-notiz, & .wf-text, & .cy-jahr, & #compare-jahrb-picker,
+  & .tb-stall-form select, & .tb-stall-form input, & .cy-layer-pick select, & .cy-pair-row select, & .ue-search, & .stallplan-abteil-name,
+  & input[type="date"], & .pp-field input, & .pp-field textarea, & .pp-field select {
+    background: var(--panel); border: 1px solid var(--border); border-bottom: 1.5px solid var(--ink); font-family: var(--sans);
+  }
+  & .wf-input:focus, & .fotomappe-input:focus, & .account-input:focus, & .km-notiz:focus, & .wf-text:focus {
+    border-color: var(--ink); background: var(--accent-tint); outline: none;
+  }
+  & .wf-input.wf-num, & .cy-jahr { font-family: var(--mono); }
+  & .wf-input.wf-ref { border: 1px dashed var(--accent); border-bottom: 1.5px solid var(--accent); }
+  & .dropzone-mini { border: 1.5px dashed var(--ink); background: transparent; font-family: var(--mono); font-size: 11.5px; }
+  & .dropzone-mini:hover { background: var(--accent-tint); }
+  & .wf-auto { background: var(--panel); border: 1.5px solid var(--ink); border-left: 6px solid var(--accent); }
+  & .wf-auto-text, & .wf-text { font-family: var(--serif); font-size: 14.5px; line-height: 1.65; background: var(--panel); }
+  & .wf-auto-h { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text); border-bottom: 1px solid var(--ink); padding-bottom: 2px; margin-top: 8px; }
+  & .wf-auto-befund { border-left-color: var(--stamp); }
+  & .wf-stage, & .wf-flow, & .wf-flow-node { background: var(--panel); border-color: var(--ink); }
+  & .wf-flow { background: transparent; border: none; border-top: 1px solid var(--ink); border-bottom: 1px solid var(--ink); }
+  & .wf-stage-nr, & .wf-flow-nr { background: var(--ink); color: var(--paper); font-family: var(--serif); }
+
+  /* ---- Dialoge: Blatt mit Druckschatten ---- */
+  & .modal-card, & .sigpad-card, & #kontrollmappe, & .account-menu, & .wf-zeitraum-pop {
+    background: var(--bg); border: 2px solid var(--ink); box-shadow: 8px 8px 0 rgba(0, 0, 0, 0.35);
+  }
+  & #kontrollmappe { box-shadow: -8px 0 0 rgba(0, 0, 0, 0.18); border-right: none; border-top: none; border-bottom: none; }
+  & .modal-overlay { background: rgba(10, 14, 11, 0.6); backdrop-filter: none; }
+  & .betrieb-head h3, & .km-title h3, & .wf-head-main h3, & .sigpad-head h3, & .modal-card > h3 { font-family: var(--serif); font-size: 21px; font-weight: 700; letter-spacing: -0.015em; }
+  & .wf-head-icon { background: var(--ink); color: var(--paper); }
+  & .betrieb-date-badge { background: var(--panel); border: 1.5px solid var(--ink); font-family: var(--mono); }
+  & .betrieb-date-badge b { font-family: var(--serif); }
+
+  /* ---- Kalender ---- */
+  & .tk-card { background: var(--panel); border: 1px solid var(--ink); border-left: 5px solid var(--accent); box-shadow: none; }
+  & .tk-card:hover, & .tk-card.selected { box-shadow: var(--shadow-hard); transform: translate(-1px, -1px); }
+  & .tk-day-head { font-family: var(--mono); border-bottom: 1px solid var(--ink); background: var(--bg); }
+  & .tk-day-col { border-left: 1px dashed var(--border); }
+  & #tk-week-label { font-family: var(--serif); font-size: 17px; }
+
+  /* ---- Diagramme ---- */
+  & .ue-bar-track, & .tb-art-track, & .tb-n-bar, & .besichtigt-bar, & .kb-fl-bar, & .uf-leg-track {
+    background: transparent; background-image: repeating-linear-gradient(90deg, var(--border) 0 1px, transparent 1px 8px); border: none; border-bottom: 1px solid var(--ink);
+  }
+  & .uf-leg-track { background-image: repeating-linear-gradient(0deg, var(--border) 0 1px, transparent 1px 15px); border-bottom: 2px solid var(--ink); }
+  & .uf-leg-fill { background: var(--accent); background-image: repeating-linear-gradient(45deg, transparent 0 5px, rgba(0,0,0,.12) 5px 6px); }
+  & .tb-monat-bars { border-bottom: 2px solid var(--ink); }
+  & .tb-bilanz > div, & .kb-fl-kpi, & .tb-n { background: transparent; border: none; border-top: 2px solid var(--ink); }
+  & .tb-bilanz .is-end { background: var(--ink); border-color: var(--ink); }
+  & .tb-bilanz .is-end b, & .tb-bilanz .is-end span { color: var(--paper); }
+  & .tb-bilanz i { font-family: var(--serif); }
+  & .tb-n.is-bad { border-color: var(--stamp); }
+  & .tb-stall-sum { background: transparent; border: 1.5px solid var(--ink); font-family: var(--mono); font-size: 12px; }
+  & .tb-check { font-family: var(--mono); font-size: 11px; }
+
+  /* ---- Karte: Flächennamen als Etikett ---- */
+  & .leaflet-tooltip.feature-label { border: 1.5px solid var(--ink); background: var(--panel); font-family: var(--mono); font-size: 10.5px; }
+  & .feature-label b { font-family: var(--serif); font-size: 12px; color: var(--text); }
+  & #ff-map-legend { border: 1.5px solid var(--ink); box-shadow: var(--shadow-hard); }
+  & #ff-map-legend summary { font-family: var(--serif); font-size: 14px; }
+  & .leaflet-popup-content-wrapper { border: 1.5px solid var(--ink); border-radius: 0 !important; box-shadow: var(--shadow-hard); }
+}
+
+/* ---- Logo im Feldbuch-Design ----
+   Bewusst nur dezent angepasst: Der Schriftzug steht in Tinte statt
+   Markengrün, damit er zu Papier und Tinte passt. Form und Schrift, der
+   Apfel und das "+" bleiben wie im Standard-Logo. Nur in der Kopfzeile
+   (#tabbar) — die Kopie des Logos für PDF-Exporte bleibt unverändert. */
+:is(:root[data-design="feldbuch"], #ff-design) {
+  & #tabbar #brand-logo { color: var(--ink); }
+}

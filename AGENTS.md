@@ -48,7 +48,10 @@
    Symbols (Stil Rounded, Icon-Name als Ligatur-Text, z.B.
    `<span class="material-symbols-rounded icon">draw</span>`) — Ausnahme
    ist die Apfel-Illustration im `#brand-logo`-Schriftzug, die bleibt
-   unangetastet (Markenzeichen, kein UI-Icon). Die volle
+   unangetastet (Markenzeichen, kein UI-Icon). Im Test-Design „Feldbuch“
+   (`src/design-feldbuch.css`) bleibt das Logo ebenfalls erhalten — dort steht nur der
+   Schriftzug in Tinte statt Markengrün (Wunsch: Logo höchstens dezent
+   anpassen, Apfel und „+“ nicht verändern). Die volle
    `material-symbols`-Variable-Font wiegt 5+ MB; eingebunden ist
    stattdessen eine auf die tatsächlich genutzten Icon-Namen UND auf eine
    feste Achsen-Instanz reduzierte Datei (`src/assets/material-symbols-

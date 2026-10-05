@@ -14,7 +14,7 @@
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <meta name="theme-color" content="#12151A">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,900&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400..900&display=swap">
 <script>
   // Gespeicherte Theme-Wahl synchron vor dem ersten Rendern anwenden, damit
   // beim Neuladen im Hellmodus nicht kurz der Dunkelmodus aufblitzt.
@@ -23,6 +23,13 @@
       if (localStorage.getItem('oekoviewer-theme') === 'light') {
         document.documentElement.setAttribute('data-theme', 'light');
       }
+    } catch (err) {}
+    // Design "Feldbuch" (Test): ?design=feldbuch|standard oder gespeicherte Wahl
+    // (Umschalter in der Kopfzeile, siehe main.js "Design").
+    try {
+      var d = new URLSearchParams(location.search).get('design');
+      if (d === 'feldbuch' || d === 'standard') localStorage.setItem('feldfolio-design', d);
+      if (localStorage.getItem('feldfolio-design') === 'feldbuch') document.documentElement.setAttribute('data-design', 'feldbuch');
     } catch (err) {}
   })();
 </script>
@@ -40,6 +47,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
 <link rel="stylesheet" href="/src/style.css">
+<link rel="stylesheet" href="/src/design-feldbuch.css">
 </head>
 <body data-view="viewer">
 
@@ -97,6 +105,9 @@
   <span id="save-status" role="status" hidden><span class="save-dot" aria-hidden="true"></span><span id="save-status-text"></span></span>
   <button id="btn-betrieb" title="Betrieb/Termin für Dateibenennung zuordnen" aria-label="Betrieb wählen">
     <span id="btn-betrieb-label"><span class="material-symbols-rounded icon betrieb-empty-icon" aria-hidden="true">business</span><span class="btn-betrieb-name">Betrieb wählen</span><span class="material-symbols-rounded icon tabbar-caret betrieb-caret" aria-hidden="true">expand_more</span></span>
+  </button>
+  <button id="design-toggle" class="tabbar-icon-btn" title="Design wechseln (Test): Standard / Feldbuch" aria-label="Design wechseln" aria-pressed="false">
+    <span class="material-symbols-rounded icon" aria-hidden="true">palette</span>
   </button>
   <button id="theme-toggle" class="tabbar-icon-btn" title="Hell-/Dunkelmodus umschalten" aria-label="Hell-/Dunkelmodus umschalten">
     <span class="material-symbols-rounded icon theme-icon theme-icon-sun" aria-hidden="true">light_mode</span>
@@ -529,6 +540,10 @@
     <button type="button" id="btn-theme-mobile">
       <span class="material-symbols-rounded icon" aria-hidden="true">dark_mode</span>
       <span>Hell / Dunkel umschalten</span>
+    </button>
+    <button type="button" id="btn-design-mobile">
+      <span class="material-symbols-rounded icon" aria-hidden="true">palette</span>
+      <span>Design wechseln (Test)</span>
     </button>
   </div>
 </div>

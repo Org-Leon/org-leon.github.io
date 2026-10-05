@@ -6397,7 +6397,7 @@
   @media (max-width: 860px) {
     #tabbar { min-height: calc(52px + env(safe-area-inset-top, 0px)); gap: 6px; padding-left: calc(8px + env(safe-area-inset-left, 0px)); padding-right: calc(8px + env(safe-area-inset-right, 0px)); }
     #btn-sidebar-toggle { margin-left: 0; }
-    #tabbar #theme-toggle { display: none; }
+    #tabbar #theme-toggle, #tabbar #design-toggle { display: none; }
     #brand-logo .ff-plus, #brand-logo.is-logged-in .ff-plus { display: none; }
     /* Am Handy öffnet die Funktionsanzeige die Schublade — dafür wieder als
        Button erkennbar (Fläche + Pfeil). */

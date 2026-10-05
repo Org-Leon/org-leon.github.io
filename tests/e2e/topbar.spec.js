@@ -31,7 +31,7 @@ test.describe('Top-Bar Desktop', () => {
     await page.goto('/');
     const ids = await page.evaluate(() => [...document.querySelectorAll('#tabbar > *')]
       .filter(el => el.offsetParent).map(el => el.id || el.className));
-    expect(ids).toEqual(['tabbar-left', 'topbar-search-wrap', 'btn-betrieb', 'theme-toggle', 'btn-account']);
+    expect(ids).toEqual(['tabbar-left', 'topbar-search-wrap', 'btn-betrieb', 'design-toggle', 'theme-toggle', 'btn-account']);
     const leftIds = await page.evaluate(() => [...document.querySelectorAll('#tabbar-left > *')].map(el => el.id || el.className));
     expect(leftIds).toEqual(['brand-logo', 'tabbar-divider', 'tool-switcher']);
     // Alle sichtbaren Buttons ≥ 44×44 und mit zugänglichem Namen.

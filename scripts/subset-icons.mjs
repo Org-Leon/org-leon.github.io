@@ -31,7 +31,7 @@ const ICON_NAMES = [
   'grid_on', 'handyman', 'history', 'hive', 'home_work', 'info',
   'install_mobile', 'ios_share', 'key', 'layers', 'light_mode',
   'location_on', 'logout', 'mail', 'manage_accounts', 'map', 'menu',
-  'more_horiz', 'my_location', 'open_in_full', 'open_in_new', 'park', 'pending_actions',
+  'more_horiz', 'my_location', 'open_in_full', 'open_in_new', 'palette', 'park', 'pending_actions',
   'person', 'pets', 'photo_camera', 'photo_library', 'picture_as_pdf',
   'polyline', 'radio_button_checked', 'rectangle', 'redo', 'refresh',
   'restaurant', 'rotate_right', 'route', 'schedule', 'screen_rotation', 'science', 'search',
