@@ -74,6 +74,22 @@ export async function saveState(data) {
   return updatedAt;
 }
 
+// Sofort-Abgleich zwischen den Geräten eines Nutzers: Nach jedem Speichern
+// sendet ein Gerät über einen Realtime-Broadcast-Kanal nur ein kurzes
+// "es gibt Neues" (keine Daten) — die anderen Geräte holen dann sofort ab
+// statt auf den nächsten 30-s-Takt zu warten. Broadcast braucht keine
+// Datenbank-Einrichtung. Ohne Supabase (Tests, lokal) -> null.
+export function oeffneSyncKanal(userId, onPing) {
+  if (!supabase || !userId) return null;
+  const kanal = supabase.channel('ff-sync-' + userId, { config: { broadcast: { self: false } } });
+  kanal.on('broadcast', { event: 'geaendert' }, (msg) => onPing(msg && msg.payload));
+  kanal.subscribe();
+  return {
+    senden: (payload = {}) => { kanal.send({ type: 'broadcast', event: 'geaendert', payload }).catch(() => {}); },
+    schliessen: () => { supabase.removeChannel(kanal); }
+  };
+}
+
 export async function loadState() {
   if (import.meta.env.DEV && window.__ffTestCloud) return window.__ffTestCloud.load();
   if (!supabase) throw new Error('Cloud-Konto ist nicht konfiguriert.');

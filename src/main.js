@@ -1,9 +1,13 @@
-import { isSupabaseConfigured, signUp, signIn, signOut, getSession, saveState, loadState, uploadPhoto, getPhotoUrl, deletePhoto, requestAccess, listPendingAccessRequests, approveAccessRequest, declineAccessRequest, authErrorMessage, requestPasswordReset, updatePassword, verifyPassword, signOutEverywhere, onPasswordRecovery, deleteMyAccount } from './supabase.js';
+import { oeffneSyncKanal, isSupabaseConfigured, signUp, signIn, signOut, getSession, saveState, loadState, uploadPhoto, getPhotoUrl, deletePhoto, requestAccess, listPendingAccessRequests, approveAccessRequest, declineAccessRequest, authErrorMessage, requestPasswordReset, updatePassword, verifyPassword, signOutEverywhere, onPasswordRecovery, deleteMyAccount } from './supabase.js';
 import { readLocalState, writeLocalState, deleteLocalState, readLastUser, writeLastUser, addBackup, listBackups, saveQueuedUpload, listQueuedUploads, deleteQueuedUpload, saveFotomappeFoto, listFotomappeFotos, deleteFotomappeFoto } from './offline-store.js';
 import { registerSW } from 'virtual:pwa-register';
 import iconFontUrl from './assets/material-symbols-rounded-subset.woff2?url';
 import { BerichtPdf, BRAND, CULTURE_COLORS, formatHa, formatHaExact, haExactFixed, formatPct } from './gesamtbericht.js';
 import { renderFlaechenuebersicht, countUp } from './flaechenuebersicht.js';
+import { dbfDoppelteErgaenzen } from './dbf-felder.js';
+import { fnnZeilen, fnnAuswerten, fnnZeileFuer } from './fnn.js';
+import { kulturZuordnen, kulturEintrag, kategorieFuer, INTACT_KULTUREN, INTACT_KATEGORIEN, LANDSCHAFTSELEMENT_RE, LANDSCHAFTSELEMENT_FLIK_RE } from './kulturen.js';
+import { slStatusTexteLernen, slParse, slAbgleich, slStufe, slExportZeilen, slIsoAusDe, slDeAusIso, slFlikKern, slFlikLand, slFlikPasst, SL_STATUS_STANDARD, SL_STUFEN } from './schlagliste.js';
 import { parseHitPdf, computeTierbestand, tbFmtDate, tbAlterText, tbStatus, TB_ZUGANG_ARTEN, TB_ABGANG_ARTEN, TB_N_GRENZE } from './tierbestand.js';
 import { WF_MODULE, createWarenfluss, openWarenfluss, initWarenflussUi, warenflussRowInfo } from './warenfluss.js';
 import { rankBackCameras, drawScaled, rotateCanvas, defaultQuad, detectDocumentQuad, QuadTracker, quadDistance, warpDocument, applyScanFilter, SCAN_FILTERS, targetSizeForQuad } from './scan-engine.js';
@@ -133,9 +137,11 @@ let highlightedEntry = null;
 //  - schlag_nr/bez/flaeche_ha/nutz_code (Baden-Württemberg/Brandenburg "fiona"-Export)
 //  - GEOWD_ID/GEOWD_GEO_ (Thüringen "Antragsflächen Hauptnutzung": mehrere
 //    DBF-Felder werden beim 10-Zeichen-Kürzen auf denselben Namen abgeschnitten,
-//    z.B. 6x "GEOWD_GEO_" — props behält dadurch nur den JEWEILS LETZTEN
-//    gleichnamigen Wert; Name/Kulturart/Flächenidentifikator gehen so verloren,
-//    siehe TODO in todo.txt)
+//    z.B. 8x "GEOWD_GEO_". Der Feldname behält den letzten Wert (Fläche ha),
+//    dbfDoppelteErgaenzen() (dbf-felder.js) liest die übrigen Spalten nach
+//    Position und setzt daraus FLIK und TH_SCHLAG (Schlagnummer — nicht
+//    eindeutig, ein Schlag besteht aus mehreren FLIK-Stücken, daher bleibt
+//    GEOWD_ID die Flächennummer). Name und Kulturart enthält der Export nicht.)
 // Achtung bei "kultur": manche Felder, die wie Kulturarten aussehen, sind es
 // nicht — ZWECK/MASSNAHME (Sachsen) und "interventi"/GEOWD_FREE (NRW/RLP/BW/
 // Thüringen) sind Förderkulissen-Kürzel (z.B. "EGS,AZL,OEBL"), keine Kulturarten,
@@ -145,11 +151,11 @@ let highlightedEntry = null;
 const FIELD_CANDIDATES = {
   nummer: ['NUMMER', 'SCHLAG_NR', 'SCHLAGNR', 'SCHLAG_ID', 'TF_ID', 'SCHLAG', 'FSNr', 'schlagnr_a', 'schlag_nr', 'GEOWD_ID', 'ID', 'NR'],
   name: ['NAME', 'Name', 'BEZEICHNUNG', 'FLAECHENNAME', 'SCHLAGNAME', 'SCHLAGBEZ', 'SCHLAG_BEZ', 'TF_BEZ', 'lage_bez', 'LAGE_BEZ', 'bez'],
-  kultur: ['NUTZ_BEZ', 'CODE_BEZ', 'KULTURART', 'FRUCHTART', 'NUTZUNG', 'Nutzung', 'NC', 'nutz_code', 'ncode_aktu', 'SC_HA_CODE', 'KTA_AJ', 'NCODE'],
+  kultur: ['NUTZ_BEZ', 'CODE_BEZ', 'KULTURART', 'FRUCHTART', 'NUTZUNG', 'Nutzung', 'NC', 'nutz_code', 'ncode_aktu', 'SC_HA_CODE', 'KTA_AJ', 'NCODE', 'KULTUR_FNN'],
   // Zusätzlicher, von Nummer/Name unabhängiger amtlicher Flächenidentifikator
   // (FLIK/FLEK-Code o.ä.) — heißt je nach Bundesland anders und ist nicht
   // überall vorhanden (siehe todo.txt).
-  flaechenid: ['FLEK', 'FLIK', 'FB_BEZEICH', 'FLIK_FLEK', 'FID', 'flik_aktue']
+  flaechenid: ['FLEK', 'FLIK', 'FBI', 'FB_BEZEICH', 'FLIK_FLEK', 'FID', 'flik_aktue']
 };
 
 // Die Flächengröße braucht eine Sonderbehandlung: manche Quellen liefern sie
@@ -610,6 +616,7 @@ async function parseShapefileZip(file) {
   const groups = {};
   let flaechenuebersichtEntry = null;
   let nrwNutzungXmlEntry = null;
+  const fnnPdfEntries = []; // Ausdruck des Nutzungsnachweises (PDF) im Zip, z.B. Bayern
   const otherXmlEntries = []; // Kandidaten für die Niedersachsen-Sammelantrag-XML (kein festes Namensmuster, siehe extractNiedersachsenSchlagMap)
   const relevantExt = ['shp', 'shx', 'dbf', 'prj', 'cpg'];
   zip.forEach((path, entry) => {
@@ -625,6 +632,7 @@ async function parseShapefileZip(file) {
     const base = fileName.slice(0, dot);
     const ext = fileName.slice(dot + 1).toLowerCase();
     if (ext === 'xlsx' && /flaechenuebersicht/i.test(fileName)) flaechenuebersichtEntry = entry;
+    if (ext === 'pdf' && /nutzungsnachweis|fnn|hauptnutzung|nutzungen|fl(ä|ae)chenverzeichnis/i.test(fileName)) fnnPdfEntries.push(entry);
     if (ext === 'xml') {
       if (/NTNW/i.test(fileName)) nrwNutzungXmlEntry = entry;
       else otherXmlEntries.push(entry);
@@ -640,6 +648,8 @@ async function parseShapefileZip(file) {
     if (!g.shp) continue; // ohne .shp keine Geometrie
     try {
       const shpBuf = await g.shp.async('arraybuffer');
+      // leere Ebene (z.B. "hinweispunkte" ohne Einträge, Shape-Typ 0) still überspringen
+      if (shpBuf.byteLength <= 100 || new DataView(shpBuf).getInt32(32, true) === 0) continue;
       // Rohgeometrien im Quell-Koordinatensystem, KEINE automatische Umprojektion
       const rawGeometries = shp.parseShp(shpBuf);
 
@@ -664,6 +674,8 @@ async function parseShapefileZip(file) {
         const dbfBuf = await g.dbf.async('arraybuffer');
         const cpgText = g.cpg ? (await g.cpg.async('text')).trim() : detectDbfEncoding(dbfBuf);
         properties = shp.parseDbf(dbfBuf, cpgText);
+        // gleichnamige (auf 10 Zeichen gekürzte) Spalten nicht verlieren, z.B. FLIK in Thüringen
+        properties = dbfDoppelteErgaenzen(properties, dbfBuf, cpgText);
       }
 
       const fc = shp.combine([geometries, properties]);
@@ -705,6 +717,20 @@ async function parseShapefileZip(file) {
     if (schlagMap) { mergeNiedersachsenSchlaege(results, schlagMap); break; }
   }
 
+  // Antragsjahr aus einer Begleit-XML (z.B. Nutzungsnachweis Sachsen-Anhalt "*.nn.xml") an die
+  // Flächen schreiben, falls dort kein Jahresfeld steht — damit Jahresvergleich/Fruchtfolge das Jahr kennen.
+  for (const entry of otherXmlEntries) {
+    let text;
+    try { text = await entry.async('text'); } catch (err) { continue; }
+    const m = /<(?:\w+:)?antragsjahr>\s*((?:19|20)\d{2})\s*</i.exec(text);
+    if (!m) continue;
+    results.forEach(r => (r.fc.features || []).forEach(f => {
+      f.properties = f.properties || {};
+      if (!Object.keys(f.properties).some(k => /jahr/i.test(k))) f.properties.ANTRAGSJAHR = m[1];
+    }));
+    break;
+  }
+
   // Bundesland-spezifische Nutzungscodes zuletzt übersetzen, nachdem alle
   // XML-Anreicherungen oben (die z.T. selbst erst NCODE befüllen) gelaufen
   // sind.
@@ -712,7 +738,92 @@ async function parseShapefileZip(file) {
     (r.fc.features || []).forEach(f => applyBundeslandNutzungscode(f.properties || {}));
   });
 
+  // Übrige reine Nutzungscodes: früher gelernte Bedeutung, sonst aus einem
+  // mitgelieferten Nutzungsnachweis (PDF) lernen (siehe fnn.js)
+  const alleFeatures = results.flatMap(r => r.fc.features || []);
+  fnnCodesAnwenden(alleFeatures);
+  for (const entry of fnnPdfEntries) {
+    if (!fnnOffen(alleFeatures)) break;
+    try { await fnnLernenUndAnwenden(await entry.async('arraybuffer'), alleFeatures); }
+    catch (err) { console.warn('Nutzungsnachweis nicht lesbar:', err.message); }
+  }
+
   return results;
+}
+
+// ---- Nutzungscodes aus dem Nutzungsnachweis (FNN) lernen, siehe fnn.js ----
+// Gelernte Bedeutungen je Bundesland (aus der FLIK, z.B. "BY", "TH") für alle Betriebe merken.
+const FNN_CODES_KEY = 'feldfolio-nutzungscodes';
+function fnnGelernt() {
+  try { return JSON.parse(localStorage.getItem(FNN_CODES_KEY) || '{}') || {}; } catch { return {}; }
+}
+function fnnMerken(land, codes) {
+  const g = fnnGelernt();
+  g[land] = { ...(g[land] || {}), ...Object.fromEntries(codes) };
+  try { localStorage.setItem(FNN_CODES_KEY, JSON.stringify(g)); } catch { /* ohne Speicher */ }
+}
+const fnnLand = (p) => (/^DE([A-Z]{2})LI/.exec(String(pickField(p, FIELD_CANDIDATES.flaechenid) || '').toUpperCase()) || [])[1] || '';
+// Feld, in dem die Kultur steht (erstes befülltes Kandidatenfeld)
+const fnnKulturFeld = (p) => FIELD_CANDIDATES.kultur.find(k => p[k] !== undefined && p[k] !== null && String(p[k]).trim() !== '');
+const fnnRohcode = (p) => { const k = fnnKulturFeld(p); return k && /^\d+$/.test(String(p[k]).trim()) ? String(p[k]).trim() : null; };
+// Bayern: offizielle Tabelle hat Vorrang (die greift erst beim Zusammenführen von Feldstück + Nutzung)
+const fnnAmtlich = (land, code) => land === 'BY' && !!bayernNutzungscodeKlartext(code);
+// Reine Codes mit gelernter Bedeutung übersetzen. Ergebnis: Anzahl übersetzter Flächen
+function fnnCodesAnwenden(features, gelernt = fnnGelernt()) {
+  let n = 0;
+  features.forEach(f => {
+    const p = f.properties || {};
+    const code = fnnRohcode(p);
+    if (!code) return;
+    const land = fnnLand(p);
+    if (fnnAmtlich(land, code)) return;
+    const text = (gelernt[land] || {})[code];
+    if (!text) return;
+    const k = fnnKulturFeld(p);
+    p[k + '_Code'] = code;
+    p[k] = text;
+    n++;
+  });
+  return n;
+}
+// Gibt es Flächen mit reinem Code oder ganz ohne Kultur (aber mit FLIK)?
+const fnnOffen = (features) => features.some(f => { const p = f.properties || {}; return (fnnRohcode(p) && !fnnAmtlich(fnnLand(p), fnnRohcode(p))) || (!fnnKulturFeld(p) && pickField(p, FIELD_CANDIDATES.flaechenid)); });
+async function fnnZeilenAusPdf(arrayBuffer) {
+  await ensurePdfJs();
+  const pdf = await window.pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+  const seiten = [];
+  for (let s = 1; s <= pdf.numPages; s++) {
+    const inhalt = await (await pdf.getPage(s)).getTextContent();
+    seiten.push(inhalt.items.map(it => ({ x: Math.round(it.transform[4]), y: it.transform[5], s: it.str })));
+  }
+  return fnnZeilen(seiten);
+}
+// Ausdruck mit den Flächen vergleichen: Codes lernen (nur solche, die in den Shapes
+// vorkommen) und Flächen ohne Kultur über FLIK (+ Größe/Schlag) ergänzen.
+async function fnnLernenUndAnwenden(arrayBuffer, features) {
+  const zeilen = await fnnZeilenAusPdf(arrayBuffer);
+  // Codes je Land der Flächen lernen
+  const jeLand = new Map();
+  features.forEach(f => { const p = f.properties || {}; const c = fnnRohcode(p); if (c) { const l = fnnLand(p); jeLand.set(l, (jeLand.get(l) || new Set()).add(c)); } });
+  let gelernt = 0;
+  jeLand.forEach((codes, land) => {
+    const erg = fnnAuswerten(zeilen, { codes });
+    if (erg.codes.size) { fnnMerken(land, erg.codes); gelernt += erg.codes.size; }
+  });
+  const uebersetzt = fnnCodesAnwenden(features);
+  // Flächen ganz ohne Kultur über die FLIK-Zeilen des Ausdrucks
+  const alleZeilen = fnnAuswerten(zeilen).zeilen;
+  let ergaenzt = 0;
+  features.forEach(f => {
+    const p = f.properties || {};
+    if (fnnKulturFeld(p)) return;
+    const z = fnnZeileFuer({ flik: pickField(p, FIELD_CANDIDATES.flaechenid), ha: parseHa(pickGroesse(p)), schlag: p.TH_SCHLAG || pickField(p, FIELD_CANDIDATES.nummer) }, alleZeilen);
+    if (!z) return;
+    p.KULTUR_FNN = z.text;
+    p.KULTUR_FNN_Code = z.code;
+    ergaenzt++;
+  });
+  return { gelernt, uebersetzt, ergaenzt };
 }
 
 // Amtliche Codierungsliste für das bayerische Flächen- und Nutzungsnachweis
@@ -727,6 +838,8 @@ const BAYERN_NUTZUNGSCODE_KLARTEXT = {
   114: 'Winterdinkel', 120: 'Sommerdinkel',
   115: 'Winterweizen (Weichweizen)', 116: 'Sommerweizen (Weichweizen)',
   118: 'Winteremmer, Wintereinkorn', 119: 'Sommeremmer, Sommereinkorn',
+  // seit der Liste 2022 dazugekommen, Klartext aus einem Flächen- und Nutzungsnachweis 2025 (Kurzfassung)
+  434: 'Kleegras, Klee-/Luzernegras-Gemisch (Leguminosen überwiegen)',
   121: 'Winterroggen, Winter-Waldstaudenroggen', 122: 'Sommerroggen, Sommer-Waldstaudenroggen',
   125: 'Wintermenggetreide mit Weizen', 126: 'Wintermenggetreide ohne Weizen',
   131: 'Wintergerste', 132: 'Sommergerste',
@@ -1842,7 +1955,31 @@ const RP_NUTZUNGSCODE_KLARTEXT = {
 // FIELD_CANDIDATES.kultur bereits kennt — pickField() findet den übersetzten
 // Klartext dadurch automatisch, ohne dass FIELD_CANDIDATES selbst geändert
 // werden muss.
+// Thüringen (VERONA "Antragsflächen Hauptnutzung", ab Antragsjahr 2026 mit
+// Feldern SCHLAG/KULTURART/FBI): 6-stelliger Kulturart-Code -> Klartext.
+// Quelle: "Liste Hauptnutzungen_Teilflächen 2026" aus VERONA (Ausdruck eines
+// Antrags) — enthält bisher nur die dort vorkommenden Codes; unbekannte Codes
+// bleiben als Code stehen.
+const TH_KULTURART_KLARTEXT = {
+  111150: 'Winterweichweizen', 171003: 'Körnermais oder CCM-Mais mit Untersaat', 190600: 'Rispenhirse, Rutenhirse',
+  190700: 'Winter-Emmer/-Einkorn', 210004: 'Sommer-Futtererbse (Felderbse, Peluschke)', 320003: 'Sonnenblumen mit Untersaat',
+  330000: 'Sojabohnen', 418210: 'Klee-Luzerne-Gemisch',
+  418280: 'Klee (Rot-, Weiß-, Alexandriner-, Inkarnat-, Erd-, Schweden-, Persischer Klee), einschließlich Vermehrung',
+  420999: 'Mischkultur von kleinkörnigen Leguminosen auch zusammen mit Nichtleguminosen, sofern die kleinkörnigen Leguminosen im Feldbestand dominieren',
+  451000: 'Wiesen', 454000: 'Streuobstfläche mit Grünlandnutzung',
+  510062: 'Blühstreifen mehrjährig auf Ackerland (ÖR1a + ÖR1b)', 510063: 'Blühflächen einjährig auf Ackerland (ÖR1a + ÖR1b)',
+  510064: 'Blühflächen mehrjährig auf Ackerland (ÖR1a + ÖR1b)', 510075: 'Altgrasstreifen und -flächen', 610110: 'Kartoffeln',
+  710112: 'Riesenkürbis (Riesenkürbis, Hokkaidokürbis)', 710113: 'Gartenkürbis (Gartenkürbis, Steirischer Kürbis, Zucchini, Spaghettikürbis)',
+  720250: 'Färberdisteln', 793000: 'Hanf', 960010: 'Hecke', 960020: 'Baumreihen'
+};
 const BUNDESLAND_NC_CONFIGS = [
+  {
+    name: 'Thüringen',
+    quelle: 'VERONA "Liste Hauptnutzungen_Teilflächen 2026"',
+    codeField: 'KULTURART',
+    table: TH_KULTURART_KLARTEXT,
+    detect: props => 'KULTURART' in props && 'FBI' in props
+  },
   // Bayern läuft separat über mergeFeldstueckNutzung() (zwei-Shapefile-Format).
   {
     name: 'Baden-Württemberg',
@@ -2822,12 +2959,14 @@ const compareYearLabel = (y) => (y && y.jahr) || 'Jahr ?';
 const STATUS_COLORS = {
   zugang: '#6FBF73',
   abgang: '#D97757',
+  umnummeriert: '#7C8CD8',
   veraendert: '#C9A24F',
   unveraendert: '#5A6270'
 };
 const STATUS_LABELS = {
   zugang: 'Zugang',
   abgang: 'Abgang',
+  umnummeriert: 'Umnummeriert',
   veraendert: 'Verändert',
   unveraendert: 'Unverändert'
 };
@@ -2938,6 +3077,7 @@ function renderCompareYears() {
   renderCompareLayerPick();
   renderCompareToggle();
   refreshFruchtfolgeIfOpen();
+  renderSchlaglisteBox();
 }
 function updateCompareRunEnabled() {
   const a = document.getElementById('compare-sel-a').dataset.value, b = document.getElementById('compare-sel-b').dataset.value;
@@ -2947,9 +3087,11 @@ function updateCompareRunEnabled() {
 function renderCompareToggle() {
   const toggle = document.getElementById('compare-view-toggle');
   const years = compareYearsSorted().filter(y => y.jahr);
-  if (compareViewMode !== 'diff' && !compareYearById(compareViewMode)) compareViewMode = 'diff';
+  if (compareViewMode === 'verlauf' && years.length < 2) compareViewMode = 'diff';
+  if (compareViewMode !== 'diff' && compareViewMode !== 'verlauf' && !compareYearById(compareViewMode)) compareViewMode = 'diff';
   const diffLabel = compareResult ? `${compareResult.a.jahr} → ${compareResult.b.jahr}` : 'Vergleich';
   toggle.innerHTML = `<button class="cvt-btn${compareViewMode === 'diff' ? ' active' : ''}" data-mode="diff"${compareResult ? '' : ' disabled title="Erst zwei Jahre vergleichen"'}>${escapeHtml(diffLabel)}</button>`
+    + (years.length >= 2 ? `<button class="cvt-btn${compareViewMode === 'verlauf' ? ' active' : ''}" data-mode="verlauf" title="Änderungen über alle hinterlegten Jahre">Verlauf</button>` : '')
     + years.map(y => `<button class="cvt-btn${compareViewMode === y.id ? ' active' : ''}" data-mode="${y.id}" title="Nur ${escapeHtml(y.jahr)} anzeigen">${escapeHtml(y.jahr)}</button>`).join('');
 }
 // Geladene Kartenebene als Jahr übernehmen (bisheriger Weg "Jahr B = Ebene").
@@ -2968,11 +3110,25 @@ function renderCompareLayerPick() {
   select.innerHTML = candidates.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
   if (candidates.some(c => c.id === prev)) select.value = prev;
 }
+// Zweite Datei desselben Jahres (z.B. Flächen eines Betriebs in zwei
+// Bundesländern) an ein hinterlegtes Jahr anhängen.
+function mergeCompareYear(ziel, fc, fileName) {
+  ziel.fc = { type: 'FeatureCollection', features: [...(ziel.fc.features || []), ...((fc && fc.features) || [])] };
+  ziel.fileName = `${ziel.fileName} + ${fileName}`;
+  if (compareResult && (compareResult.a === ziel || compareResult.b === ziel)) clearCompareResult();
+  slGeoCache = null;
+  renderCompareYears();
+  setCompareStatus(`${fileName} zu ${ziel.jahr} hinzugefügt.`);
+  persistLocalState().catch(() => {});
+  return ziel;
+}
+const mergeFrage = (jahr, alt, neu) => confirm(`Für ${jahr} ist schon „${alt}“ hinterlegt.\n\nOK: „${neu}“ dazunehmen (beide zusammen, z. B. Flächen aus einem zweiten Bundesland)\nAbbrechen: nicht zusammenführen`);
 function addCompareYear({ fc, fileName, layerName }) {
   const jahr = extractJahrAusMetadaten(fc, fileName);
   const existing = jahr && compareYears.find(y => y.jahr === jahr);
   if (existing) {
-    if (!confirm(`Für ${jahr} ist schon „${existing.fileName}“ hinterlegt. Ersetzen?`)) return null;
+    if (mergeFrage(jahr, existing.fileName, fileName)) return mergeCompareYear(existing, fc, fileName);
+    if (!confirm(`Stattdessen „${existing.fileName}“ durch „${fileName}“ ersetzen?`)) return null;
     compareYears = compareYears.filter(y => y !== existing);
     if (compareResult && (compareResult.a === existing || compareResult.b === existing)) clearCompareResult();
   }
@@ -2999,9 +3155,13 @@ async function loadCompareFile(file) {
       if (!results.length) { showCompareError(file.name + ': Keine Shapefile-Bestandteile gefunden.'); return; }
       results = mergeFeldstueckNutzung(results);
       // Für den Vergleich zählt nur die Parzellen-Ebene — Teilflächen o.ä. werden ignoriert.
-      chosen = results.find(r => /parzelle/i.test(r.name)) || results.find(r => /feldst(ü|ue)ck/i.test(r.name));
+      // Flächenebenen: Parzellen/Feldstücke bevorzugt, sonst Antrags-/Hauptnutzungsflächen, sonst die
+      // einzige (bzw. größte) Polygon-Ebene. Teilflächen, Hinweispunkte, Landschaftselemente nicht.
+      const poly = results.filter(r => !/teilfl|hinweis|landschaft/i.test(r.name) && (r.fc.features || []).some(f => f.geometry && /Polygon/.test(f.geometry.type)));
+      chosen = results.find(r => /parzelle/i.test(r.name)) || results.find(r => /feldst(ü|ue)ck/i.test(r.name))
+        || poly.find(r => /hauptnutzung|schlag|antrag/i.test(r.name)) || (poly.length === 1 ? poly[0] : null);
       if (!chosen) {
-        chosen = results[0];
+        chosen = poly.sort((a, b) => (b.fc.features || []).length - (a.fc.features || []).length)[0] || results[0];
         showCompareError(file.name + ': Keine Ebene mit "Parzellen" im Namen gefunden — verwende stattdessen "' + chosen.name + '".');
       }
     }
@@ -3036,7 +3196,14 @@ document.getElementById('compare-years').addEventListener('change', (e) => {
   const y = compareYearById(input.closest('.cy-row').dataset.cy);
   const v = input.value.trim();
   if (!/^(19|20)\d{2}$/.test(v)) { setCompareStatus('Bitte ein Jahr wie 2024 eintragen.'); input.value = y.jahr; return; }
-  if (compareYears.some(x => x !== y && x.jahr === v)) { setCompareStatus(`${v} ist schon hinterlegt.`); input.value = y.jahr; return; }
+  const schonDa = compareYears.find(x => x !== y && x.jahr === v);
+  if (schonDa) {
+    if (!mergeFrage(v, schonDa.fileName, y.fileName)) { setCompareStatus(`${v} ist schon hinterlegt.`); input.value = y.jahr; return; }
+    compareYears = compareYears.filter(x => x !== y);
+    if (compareResult && (compareResult.a === y || compareResult.b === y)) clearCompareResult();
+    mergeCompareYear(schonDa, y.fc, y.fileName);
+    return;
+  }
   y.jahr = v;
   if (compareResult && (compareResult.a === y || compareResult.b === y)) runComparison();
   renderCompareYears();
@@ -3060,6 +3227,39 @@ function clearCompareResult() {
 function refreshCompareView() {
   renderCompareYears();
   if (document.body.dataset.view === 'compare' && (compareResult || compareViewMode !== 'diff')) showCompareView(false);
+}
+
+// Paare (alte Nummer -> neue Nummer) von Flächen, die nur in einem der beiden
+// Jahre unter ihrer Nummer vorkommen, aber geometrisch dieselbe Fläche sind:
+// Überdeckung (Schnitt ÷ Vereinigung) mindestens 85 %. Jede Fläche höchstens einmal.
+const UMNUMMERIERT_MIN_DECKUNG = 0.85;
+function findeUmnummerierungen(nurAlt, nurNeu) {
+  if (typeof turf === 'undefined' || !nurAlt.length || !nurNeu.length) return [];
+  const kandidaten = [];
+  nurAlt.forEach(a => {
+    if (!a.f || !a.f.geometry) return;
+    let bA;
+    try { bA = turf.bbox(a.f); } catch { return; }
+    nurNeu.forEach(n => {
+      if (!n.f || !n.f.geometry) return;
+      try {
+        const bN = turf.bbox(n.f);
+        if (bA[2] < bN[0] || bN[2] < bA[0] || bA[3] < bN[1] || bN[3] < bA[1]) return;
+        const schnitt = turf.intersect(a.f, n.f);
+        if (!schnitt) return;
+        const s = turf.area(schnitt);
+        const deckung = s / (turf.area(a.f) + turf.area(n.f) - s);
+        if (deckung >= UMNUMMERIERT_MIN_DECKUNG) kandidaten.push({ alt: a.nr, neu: n.nr, deckung });
+      } catch (err) { /* ungültige Geometrie: kein Paar */ }
+    });
+  });
+  kandidaten.sort((x, y) => y.deckung - x.deckung);
+  const usedA = new Set(), usedN = new Set();
+  return kandidaten.filter(k => {
+    if (usedA.has(k.alt) || usedN.has(k.neu)) return false;
+    usedA.add(k.alt); usedN.add(k.neu);
+    return true;
+  });
 }
 
 function parseHa(v) {
@@ -3129,7 +3329,25 @@ function runComparison() {
     records.push({ nummer: nr, name, status, groesseA, groesseB, delta, kulturA, kulturB, featureA: fA, featureB: fB, _mapLayer: null });
   });
 
-  const order = { zugang: 0, abgang: 1, veraendert: 2, unveraendert: 3 };
+  // Nur die Nummer geändert? Abgang + Zugang mit (fast) gleicher Geometrie
+  // werden zu einem Eintrag "Umnummeriert" zusammengefasst.
+  findeUmnummerierungen(
+    records.filter(r => r.status === 'abgang').map(r => ({ nr: r.nummer, f: r.featureA })),
+    records.filter(r => r.status === 'zugang').map(r => ({ nr: r.nummer, f: r.featureB }))
+  ).forEach(({ alt, neu }) => {
+    const rA = records.find(r => r.status === 'abgang' && r.nummer === alt);
+    const rB = records.find(r => r.status === 'zugang' && r.nummer === neu);
+    const hA = parseHa(rA.groesseA), hB = parseHa(rB.groesseB);
+    records.splice(records.indexOf(rA), 1);
+    records.splice(records.indexOf(rB), 1);
+    records.push({
+      nummer: `${alt} → ${neu}`, nummerAlt: alt, nummerNeu: neu, name: rB.name || rA.name, status: 'umnummeriert',
+      groesseA: rA.groesseA, groesseB: rB.groesseB, delta: hA !== null && hB !== null ? hB - hA : null,
+      kulturA: rA.kulturA, kulturB: rB.kulturB, featureA: rA.featureA, featureB: rB.featureB, _mapLayer: null
+    });
+  });
+
+  const order = { zugang: 0, abgang: 1, umnummeriert: 2, veraendert: 3, unveraendert: 4 };
   records.sort((a, b) => {
     if (order[a.status] !== order[b.status]) return order[a.status] - order[b.status];
     return String(a.nummer).localeCompare(String(b.nummer), undefined, { numeric: true });
@@ -3149,10 +3367,12 @@ function showCompareView(fitView) {
   if (compareGeoLayer) map.removeLayer(compareGeoLayer);
   compareGeoLayer = L.featureGroup().addTo(map);
   if (!compareHiddenLayerIds.length) hideMapLayersForCompare();
+  document.getElementById('cmp-verlauf-legende')?.remove();
   if (compareViewMode === 'diff') {
     if (compareRecords.length) renderCompareMapLayers(compareRecords, fitView);
     return;
   }
+  if (compareViewMode === 'verlauf') { renderCompareVerlauf(fitView); return; }
   const y = compareYearById(compareViewMode);
   if (!y) return;
   if (compareResult && (compareResult.a === y || compareResult.b === y)) {
@@ -3196,7 +3416,7 @@ document.getElementById('btn-compare-run').addEventListener('click', runComparis
 });
 
 function renderCompareSummary(records) {
-  const counts = { zugang: 0, abgang: 0, veraendert: 0, unveraendert: 0 };
+  const counts = { zugang: 0, abgang: 0, umnummeriert: 0, veraendert: 0, unveraendert: 0 };
   let deltaSum = 0;
   records.forEach(r => {
     counts[r.status]++;
@@ -3209,6 +3429,7 @@ function renderCompareSummary(records) {
     '<div class="stat"><span class="n">' + counts.zugang + '</span><span class="l">Zugänge</span></div>' +
     '<div class="stat"><span class="n">' + counts.abgang + '</span><span class="l">Abgänge</span></div>' +
     '<div class="stat"><span class="n">' + counts.veraendert + '</span><span class="l">Verändert</span></div>' +
+    (counts.umnummeriert ? '<div class="stat"><span class="n">' + counts.umnummeriert + '</span><span class="l">Umnummeriert</span></div>' : '') +
     '<div class="stat"><span class="n">' + deltaText + '</span><span class="l">Nettodifferenz</span></div>';
   document.getElementById('compare-legend').classList.add('show');
 }
@@ -3217,9 +3438,10 @@ function renderCompareTable(records) {
   const tbody = document.getElementById('compare-table-body');
   document.getElementById('compare-table-count').textContent = records.length;
   if (!records.length) {
-    tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted); padding:14px;">Keine gemeinsamen oder abweichenden Flächennummern gefunden.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" style="color:var(--muted); padding:14px;">Keine gemeinsamen oder abweichenden Flächennummern gefunden.</td></tr>';
     return;
   }
+  const umst = !document.getElementById('compare-th-umst').hidden ? slStatusJeNummer() : null;
   tbody.innerHTML = records.map((r, i) => {
     const gA = parseHa(r.groesseA);
     const gB = parseHa(r.groesseB);
@@ -3235,6 +3457,7 @@ function renderCompareTable(records) {
       '<td>' + gBText + '</td>' +
       '<td>' + deltaText + '</td>' +
       '<td>' + kulturText + '</td>' +
+      (umst ? '<td class="sl-col">' + (r.featureB ? slBadge(umst.get(r.nummerNeu || r.nummer) || null) : '–') + '</td>' : '') +
       '</tr>';
   }).join('');
   tbody.querySelectorAll('tr[data-idx]').forEach(tr => {
@@ -3250,7 +3473,15 @@ function compareRecordPopupHtml(r) {
   return '<b>' + escapeHtml(r.nummer) + '</b>' + (r.name ? ' – ' + escapeHtml(r.name) : '') + '<br>' +
     'Status: ' + STATUS_LABELS[r.status] + '<br>' +
     'Größe ' + escapeHtml(compareResult ? compareResult.a.jahr : 'A') + ': ' + gAText + ' · Größe ' + escapeHtml(compareResult ? compareResult.b.jahr : 'B') + ': ' + gBText + '<br>' +
-    'Kultur: ' + escapeHtml(r.kulturA || '–') + (r.kulturA !== r.kulturB ? ' → ' + escapeHtml(r.kulturB || '–') : '');
+    'Kultur: ' + escapeHtml(r.kulturA || '–') + (r.kulturA !== r.kulturB ? ' → ' + escapeHtml(r.kulturB || '–') : '') +
+    slPopupZeile(r);
+}
+// Umstellungsstatus im Popup (nur angemeldet und mit Schlagliste)
+function slPopupZeile(r) {
+  if (!schlaglisteData || document.body.dataset.auth !== 'in' || !r.featureB) return '';
+  const info = slStatusJeNummer().get(r.nummerNeu || r.nummer);
+  if (!info) return '<br>Umstellung: –';
+  return '<br>Umstellung: ' + escapeHtml(info.label) + (info.key === 'oeko' ? '' : ' (ökologisch ab ' + slDeAusIso(info.oekoAb) + ')');
 }
 
 // Berechnet geometrisch, welches Stück einer Fläche zwischen den beiden Jahren
@@ -3300,6 +3531,7 @@ function addFeatureLabel(feature, text, group) {
   createLabelAnchorAt(latlng, text).addTo(group);
 }
 
+const cmpChip = (text, cls) => `<em class="cmp-chip ${cls}">${escapeHtml(text)}</em>`;
 function renderCompareMapLayers(records, fitView) {
   if (fitView === undefined) fitView = true;
   if (!compareGeoLayer) compareGeoLayer = L.featureGroup().addTo(map);
@@ -3307,15 +3539,26 @@ function renderCompareMapLayers(records, fitView) {
   records.forEach(r => {
     const color = STATUS_COLORS[r.status];
     let mapLayer = null;
-    const labelText = featureLabelHtml(r.nummer, r.name);
+    // Größenänderung ab 0,01 ha — sonst ist "verändert" nur die Kultur
+    const groesseGeaendert = r.delta !== null && r.delta !== undefined && Math.abs(r.delta) > 0.01;
+    const nurKultur = r.status === 'veraendert' && !groesseGeaendert;
+    const chip = r.status === 'zugang' ? cmpChip('neu', 'is-plus') : r.status === 'abgang' ? cmpChip('weg', 'is-minus')
+      : groesseGeaendert ? cmpChip((r.delta > 0 ? '+' : '−') + formatHaExact(Math.abs(r.delta)) + ' ha', r.delta > 0 ? 'is-plus' : 'is-minus')
+      : nurKultur ? cmpChip('Kultur', 'is-kultur') : '';
+    const labelText = featureLabelHtml(r.nummer, r.name) + chip;
 
-    if (r.status === 'zugang' && r.featureB) {
+    if (nurKultur) {
+      // nur die Kultur hat sich geändert: dezent, damit echte Flächenänderungen auffallen
+      const feat = r.featureB || r.featureA;
+      mapLayer = L.geoJSON(feat, { style: { color: '#C9A24F', weight: 1.2, dashArray: '2,4', fillColor: '#5A6270', fillOpacity: 0.1 } });
+      addFeatureLabel(feat, labelText, compareGeoLayer);
+    } else if (r.status === 'zugang' && r.featureB) {
       mapLayer = L.geoJSON(r.featureB, { style: { color, weight: 1.8, fillColor: color, fillOpacity: 0.35 } });
       addFeatureLabel(r.featureB, labelText, compareGeoLayer);
     } else if (r.status === 'abgang' && r.featureA) {
       mapLayer = L.geoJSON(r.featureA, { style: { color, weight: 1.8, fillColor: color, fillOpacity: 0.35, dashArray: '4,3' } });
       addFeatureLabel(r.featureA, labelText, compareGeoLayer);
-    } else if (r.status === 'veraendert') {
+    } else if (r.status === 'veraendert' || r.status === 'umnummeriert') {
       const parts = [];
       // Kontext: alte Grenze gestrichelt-grau, neue Grenze farbig als dünner Umriss
       if (r.featureA) parts.push(L.geoJSON(r.featureA, { style: { color: '#9096a1', weight: 1.4, fillOpacity: 0, dashArray: '4,3' } }));
@@ -3326,13 +3569,13 @@ function renderCompareMapLayers(records, fitView) {
       if (r.featureA && r.featureB) {
         const diff = computeGeometryDiff(r.featureA, r.featureB);
         if (diff.core) {
-          parts.push(L.geoJSON(diff.core, { style: { color: '#5F7A93', weight: 0, fillColor: '#5F7A93', fillOpacity: 0.45 } }));
+          parts.push(L.geoJSON(diff.core, { style: { color: '#5F7A93', weight: 0, fillColor: '#5F7A93', fillOpacity: 0.25 } }));
         }
         if (diff.gained) {
-          parts.push(L.geoJSON(diff.gained, { style: { color: '#1B9C7D', weight: 1, fillColor: '#2EE6B8', fillOpacity: 0.75 } }));
+          parts.push(L.geoJSON(diff.gained, { style: { color: '#1B9C7D', weight: 2, fillColor: '#2EE6B8', fillOpacity: 0.8, className: 'cmp-plus' } }));
         }
         if (diff.lost) {
-          parts.push(L.geoJSON(diff.lost, { style: { color: '#A32E52', weight: 1, fillColor: '#E0507A', fillOpacity: 0.75 } }));
+          parts.push(L.geoJSON(diff.lost, { style: { color: '#A32E52', weight: 2, dashArray: '5,3', fillColor: '#E0507A', fillOpacity: 0.7, className: 'cmp-minus' } }));
         }
         if (!diff.core && !diff.gained && !diff.lost) {
           // Geometrie-Diff nicht berechenbar (z.B. ungültiges Polygon) — Fläche
@@ -3362,6 +3605,87 @@ function renderCompareMapLayers(records, fitView) {
   }
 }
 
+// ---- Verlauf über alle hinterlegten Jahre ----
+// Grundlage ist das neueste Jahr. Je Jahreswechsel werden die Stücke gezeigt,
+// die zur Betriebsfläche dazugekommen (gefüllt) bzw. weggefallen (gestrichelt)
+// sind — jeweils in der Farbe des Jahres. Klick auf eine Fläche: ihre Geschichte.
+const VERLAUF_FARBEN = ['#2EE6B8', '#4C9BE8', '#E8A33D', '#C77DFF', '#E0507A', '#8CB26B'];
+let verlaufCache = null;
+function verlaufUnion(y) {
+  let u = null;
+  (y.fc.features || []).forEach(f => { if (!f.geometry || !/Polygon/.test(f.geometry.type)) return; try { u = u ? turf.union(u, f) : f; } catch { /* ungültig */ } });
+  return u;
+}
+function verlaufDaten() {
+  const years = compareYearsSorted().filter(y => y.jahr);
+  const key = years.map(y => y.id + ':' + (y.fc.features || []).length).join('|');
+  if (verlaufCache && verlaufCache.key === key) return verlaufCache.data;
+  const unions = years.map(verlaufUnion);
+  const schritte = [];
+  for (let i = 1; i < years.length; i++) {
+    const a = unions[i - 1], b = unions[i];
+    let dazu = null, weg = null;
+    try { dazu = a && b ? slEchteTeile(turf.difference(b, a)) : null; } catch { /* */ }
+    try { weg = a && b ? slEchteTeile(turf.difference(a, b)) : null; } catch { /* */ }
+    schritte.push({ von: years[i - 1], nach: years[i], farbe: VERLAUF_FARBEN[(i - 1) % VERLAUF_FARBEN.length], dazu, weg, dazuHa: slHaVon(dazu), wegHa: slHaVon(weg) });
+  }
+  verlaufCache = { key, data: { years, schritte } };
+  return verlaufCache.data;
+}
+// Geschichte einer Fläche des neuesten Jahres: gleiche Nummer, sonst größte Überdeckung
+function verlaufGeschichte(f, years) {
+  const nr = pickField(f.properties || {}, FIELD_CANDIDATES.nummer);
+  return years.map(y => {
+    const feats = (y.fc.features || []).filter(g => g.geometry);
+    let g = nr ? feats.find(x => pickField(x.properties || {}, FIELD_CANDIDATES.nummer) === nr) : null;
+    if (!g) {
+      let best = 0;
+      feats.forEach(x => { try { const a = turf.area(turf.intersect(f, x) || { type: 'Feature', geometry: { type: 'Polygon', coordinates: [] } }); if (a > best) { best = a; g = x; } } catch { /* */ } });
+      if (best < 100) g = null;
+    }
+    if (!g) return { jahr: y.jahr, fehlt: true };
+    const p = g.properties || {};
+    return { jahr: y.jahr, nr: pickField(p, FIELD_CANDIDATES.nummer), ha: parseHa(pickGroesse(p)), kultur: pickField(p, FIELD_CANDIDATES.kultur) };
+  });
+}
+function verlaufPopup(f, years) {
+  const h = verlaufGeschichte(f, years);
+  const p = f.properties || {};
+  let vorher = null;
+  const zeilen = h.map(e => {
+    if (e.fehlt) { vorher = null; return `<tr><td>${escapeHtml(e.jahr)}</td><td colspan="3" class="cmp-hist-leer">nicht im Betrieb</td></tr>`; }
+    const d = vorher !== null && e.ha !== null ? e.ha - vorher : null;
+    vorher = e.ha;
+    return `<tr><td>${escapeHtml(e.jahr)}</td><td>${escapeHtml(e.nr || '–')}</td><td>${e.ha !== null ? formatHaExact(e.ha) + ' ha' : '–'}${d !== null && Math.abs(d) > 0.01 ? ` <b class="${d > 0 ? 'is-plus' : 'is-minus'}">${d > 0 ? '+' : '−'}${formatHaExact(Math.abs(d))}</b>` : ''}</td><td>${escapeHtml(e.kultur || '–')}</td></tr>`;
+  }).join('');
+  return `<b>${escapeHtml(pickField(p, FIELD_CANDIDATES.nummer) || '–')}</b> ${escapeHtml(pickField(p, FIELD_CANDIDATES.name) || '')}<table class="cmp-hist"><tr><th>Jahr</th><th>Nr.</th><th>Größe</th><th>Kultur</th></tr>${zeilen}</table>`;
+}
+function renderCompareVerlauf(fitView) {
+  const { years, schritte } = verlaufDaten();
+  const letzte = years[years.length - 1];
+  (letzte.fc.features || []).forEach(f => {
+    if (!f.geometry) return;
+    const p = f.properties || {};
+    const lyr = L.geoJSON(f, { style: { color: '#5F7A93', weight: 1.2, fillColor: '#5F7A93', fillOpacity: 0.12 } });
+    lyr.bindPopup(() => verlaufPopup(f, years), { maxWidth: 360 });
+    lyr.addTo(compareGeoLayer);
+    addFeatureLabel(f, featureLabelHtml(pickField(p, FIELD_CANDIDATES.nummer), pickField(p, FIELD_CANDIDATES.name)), compareGeoLayer);
+  });
+  schritte.forEach(s => {
+    if (s.weg) L.geoJSON(s.weg, { interactive: false, style: { color: s.farbe, weight: 2, dashArray: '5,4', fillColor: s.farbe, fillOpacity: 0.15, className: 'cmp-verlauf-weg' } }).addTo(compareGeoLayer);
+    if (s.dazu) L.geoJSON(s.dazu, { interactive: false, style: { color: s.farbe, weight: 2, fillColor: s.farbe, fillOpacity: 0.55, className: 'cmp-verlauf-dazu' } }).addTo(compareGeoLayer);
+  });
+  // Legende über der Karte
+  const leg = document.createElement('div');
+  leg.id = 'cmp-verlauf-legende';
+  leg.className = 'cmp-verlauf-legende';
+  leg.innerHTML = `<b>Verlauf ${escapeHtml(years[0].jahr)} – ${escapeHtml(letzte.jahr)}</b>` + schritte.map(s =>
+    `<div><i style="background:${s.farbe}"></i>${escapeHtml(s.von.jahr)} → ${escapeHtml(s.nach.jahr)}: <span class="is-plus">+${formatHaExact(s.dazuHa)} ha</span> · <span class="is-minus">−${formatHaExact(s.wegHa)} ha</span></div>`).join('')
+    + '<small>gefüllt = dazugekommen, gestrichelt = weggefallen · Fläche antippen: Geschichte</small>';
+  document.getElementById('map-wrap').appendChild(leg);
+  if (fitView !== false && compareGeoLayer.getLayers().length) map.fitBounds(compareGeoLayer.getBounds(), { padding: [30, 30] });
+}
+
 // Isolierte Ansicht nur eines Jahres — zeigt ausschließlich die Flächen, die in
 // diesem Jahr existieren (bei "Nur Jahr A" fehlen z.B. die erst später
 // hinzugekommenen "Zugang"-Flächen, weil es sie in Jahr A schlicht noch nicht
@@ -3385,6 +3709,1203 @@ function renderSingleYearLayers(records, which, fitView) {
     map.fitBounds(compareGeoLayer.getBounds(), { padding: [30, 30] });
   }
 }
+
+// ---------- Schlagliste (Umstellung) ----------
+// Jahresvergleich › "Umstellung (Schlagliste)", nur angemeldet: eine extern
+// geführte Schlagliste (Excel) mit den Flächen eines hinterlegten Jahres
+// abgleichen, Umstellungsstatus je Fläche berechnen (1. Jahr konventionell,
+// 2. Jahr Umstellung, ab 3. Jahr ökologisch — ab dem Datum "Zugang Fläche"),
+// Zweifelsfälle und Neuzugänge vom Kontrolleur klären lassen und die Liste im
+// gleichen Format für den Wiederimport exportieren. Logik in schlagliste.js.
+// Je Betrieb gespeichert: { fileName, sheetName, header, rows, cols, jahr,
+//   stichtag, statusTexte, manuell: {zeile: key|null}, zugangNeu: {key: iso},
+//   abgangAm: {zeile: iso}, importiertAm }
+let schlaglisteData = null;
+const SL_TEXTE_KEY = 'feldfolio-sl-status';
+function slGemerkteTexte() {
+  try { const t = JSON.parse(localStorage.getItem(SL_TEXTE_KEY) || 'null'); if (t && t.konv && t.umst && t.oeko) return t; } catch { /* ohne Speicher */ }
+  return { ...SL_STATUS_STANDARD };
+}
+const slHeute = () => new Date().toISOString().slice(0, 10);
+const slStichtag = () => (schlaglisteData && schlaglisteData.stichtag) || slHeute();
+function slJahr() {
+  const years = compareYearsSorted().filter(y => y.jahr);
+  if (!schlaglisteData || !years.length) return null;
+  return years.find(y => y.jahr === schlaglisteData.jahr) || years[years.length - 1];
+}
+// Flächen eines hinterlegten Jahres als Abgleich-Kandidaten (Schlüssel = Nummer)
+function slFlaechen(y) {
+  if (!y) return [];
+  const seen = new Set();
+  return (y.fc.features || []).map((f, i) => {
+    const p = f.properties || {};
+    const nummer = pickField(p, FIELD_CANDIDATES.nummer);
+    let key = nummer ? 'n:' + nummer : 'i:' + i;
+    if (seen.has(key)) key += '#' + i;
+    seen.add(key);
+    const flik = pickField(p, FIELD_CANDIDATES.flaechenid), kultur = pickField(p, FIELD_CANDIDATES.kultur);
+    // Landschaftselement (Hecke, Baumreihe …): gehört zum Schlag, kein eigener Umstellungsfall.
+    // Vom Kontrolleur ausgeblendete Flächen (z. B. nicht erkanntes Feldgehölz) zählen genauso.
+    const leAuto = LANDSCHAFTSELEMENT_RE.test(kultur) || LANDSCHAFTSELEMENT_FLIK_RE.test(flik);
+    const leManuell = !leAuto && !!((schlaglisteData && schlaglisteData.ausgeblendet) || {})[key];
+    return { key, nummer, name: pickField(p, FIELD_CANDIDATES.name), ha: parseHa(pickGroesse(p)), flik, kultur, le: leAuto || leManuell, leManuell, feature: f };
+  });
+}
+// Umnummerierungen zum Vorjahr (geometrisch) als Hilfe für den Abgleich
+function slUmnummeriert(y) {
+  const years = compareYearsSorted().filter(x => x.jahr);
+  const vor = years[years.indexOf(y) - 1];
+  const map = new Map();
+  if (!vor) return map;
+  const nrs = (yy) => new Map((yy.fc.features || []).map(f => [pickField(f.properties || {}, FIELD_CANDIDATES.nummer), f]).filter(([nr]) => nr));
+  const a = nrs(vor), b = nrs(y);
+  findeUmnummerierungen([...a].filter(([nr]) => !b.has(nr)).map(([nr, f]) => ({ nr, f })), [...b].filter(([nr]) => !a.has(nr)).map(([nr, f]) => ({ nr, f })))
+    .forEach(p => map.set(String(p.alt).replace(/^0+(?=\d)/, ''), String(p.neu).replace(/^0+(?=\d)/, '')));
+  return map;
+}
+// Aktueller Abgleich (wird bei jeder Änderung neu berechnet)
+function slBerechne() {
+  const y = slJahr();
+  const feats = slFlaechen(y);
+  const sl = { header: schlaglisteData.header, rows: schlaglisteData.rows, col: slParse([schlaglisteData.header, ...schlaglisteData.rows]).col };
+  const abgleich = slAbgleich(sl, feats, { manuell: schlaglisteData.manuell, zurPruefung: schlaglisteData.zurPruefung || {}, umnummeriert: y ? slUmnummeriert(y) : null });
+  return { y, feats, sl, abgleich, featByKey: new Map(feats.map(f => [f.key, f])) };
+}
+// Status einer Zeile / neuen Fläche am Stichtag
+function slStatusInfo(beginn) {
+  const s = slStufe(beginn, slStichtag());
+  return s ? { ...s, ...SL_STUFEN[s.key], beginn } : null;
+}
+function slBadge(info) {
+  if (!info) return '<span class="sl-badge is-leer" title="Kein Umstellungsbeginn bekannt">ohne Datum</span>';
+  const tip = info.key === 'oeko' ? `ökologisch seit ${slDeAusIso(info.oekoAb)}` : info.key === 'umst' ? `Umstellung, ökologisch ab ${slDeAusIso(info.oekoAb)}` : `konventionell, Umstellung ab ${slDeAusIso(info.umstAb)}, ökologisch ab ${slDeAusIso(info.oekoAb)}`;
+  return `<span class="sl-badge is-${info.key}" title="${escapeHtml(tip)}">${escapeHtml(info.kurz)}</span>`;
+}
+// Status je Flächennummer des Abgleichsjahres — für Tabelle/Popup im Jahresvergleich
+function slStatusJeNummer() {
+  const out = new Map();
+  if (!schlaglisteData || document.body.dataset.auth !== 'in') return out;
+  const { abgleich, featByKey } = slBerechne();
+  abgleich.zeilen.forEach(e => { if (e.key && featByKey.get(e.key).nummer) out.set(featByKey.get(e.key).nummer, slStatusInfo(e.z.zugang)); });
+  abgleich.neu.forEach(f => { const b = schlaglisteData.zugangNeu[f.key]; if (b && f.nummer) out.set(f.nummer, slStatusInfo(b)); });
+  return out;
+}
+
+// Nach dem Agrarantrag (15.05. des Abgleichsjahres) zugegangene Flächen stehen
+// schon in der Liste, aber noch nicht in den Shapes — sie bleiben ohne Abgang.
+// Automatisch bei Zugang nach dem 15.05.; sonst (z. B. Bio-Zugang mit älterem
+// Umstellungsdatum vom Vorbewirtschafter) vom Kontrolleur markiert.
+// schlaglisteData.nachAntrag: { [idx]: true (markiert) | false (doch nicht) }
+const SL_ANTRAG_STICHTAG = '05-15';
+function slNachAntrag(e) {
+  const d = schlaglisteData;
+  if (!d || !(e.art === 'fehlt' || e.art === 'abgang')) return null;
+  const m = (d.nachAntrag || {})[e.idx];
+  if (m === true) return 'markiert';
+  if (m === false) return null;
+  const jahr = d.jahr || (slJahr() || {}).jahr;
+  return jahr && e.z.zugang && e.z.zugang > `${jahr}-${SL_ANTRAG_STICHTAG}` ? 'auto' : null;
+}
+function slZaehle(abgleich) {
+  const n = { sicher: 0, pruefen: 0, neu: 0, fehlt: 0, unvollstaendig: 0, offenNeu: 0 };
+  abgleich.zeilen.forEach(e => {
+    if (e.art === 'sicher' || e.art === 'manuell') n.sicher++;
+    else if (e.art === 'pruefen') n.pruefen++;
+    else if (e.art === 'unvollstaendig') n.unvollstaendig++;
+    else n.fehlt++;
+  });
+  n.neu = abgleich.neu.filter(f => !f.le).length;
+  n.offenNeu = abgleich.neu.filter(f => !f.le && !schlaglisteData.zugangNeu[f.key]).length;
+  n.offenFehlt = abgleich.zeilen.filter(e => (e.art === 'fehlt' || e.art === 'abgang') && !schlaglisteData.abgangAm[e.idx] && !slNachAntrag(e)).length;
+  n.nachAntrag = abgleich.zeilen.filter(e => slNachAntrag(e)).length;
+  return n;
+}
+function renderSchlaglisteBox() {
+  const has = !!schlaglisteData;
+  document.getElementById('sl-actions').hidden = !has;
+  document.getElementById('sl-drop-label').textContent = has ? 'Andere Schlagliste laden (.xlsx)…' : 'Schlagliste laden (.xlsx)…';
+  const sum = document.getElementById('sl-summary');
+  if (!has) { sum.innerHTML = '<p class="sl-empty">Schlagliste aus dem externen Programm laden — FeldFolio ordnet die Flächen zu und berechnet den Umstellungsstatus.</p>'; return; }
+  const y = slJahr();
+  if (!y) { sum.innerHTML = `<p class="sl-empty"><b>${escapeHtml(schlaglisteData.fileName)}</b><br>Erst Shape-Dateien eines Jahres hinterlegen.</p>`; return; }
+  const ctx = slBerechne();
+  const n = slZaehle(ctx.abgleich);
+  const faelle = slFaelle(ctx, slGeoAnalyse(ctx.y, ctx.feats));
+  const offen = faelle.filter(f => !f.erledigt).length;
+  const kritOffen = faelle.filter(f => f.typ === 'kritisch' && !f.erledigt).length;
+  const pct = faelle.length ? Math.round((faelle.length - offen) / faelle.length * 100) : 100;
+  sum.innerHTML = `<div class="sl-file" title="${escapeHtml(schlaglisteData.fileName)}"><span class="material-symbols-rounded icon" aria-hidden="true">table_view</span>${escapeHtml(schlaglisteData.fileName)}</div>
+    <div class="sl-mini">
+      <span class="is-ok"><b>${n.sicher}</b> zugeordnet</span>
+      <span class="${n.pruefen ? 'is-warn' : ''}"><b>${n.pruefen}</b> prüfen</span>
+      <span class="${n.offenNeu ? 'is-warn' : ''}"><b>${n.neu}</b> neu</span>
+      <span class="${n.offenFehlt ? 'is-warn' : ''}"><b>${n.fehlt - n.nachAntrag}</b> nicht in ${escapeHtml(y.jahr)}</span>${n.nachAntrag ? `
+      <span><b>${n.nachAntrag}</b> nach Antrag</span>` : ''}
+    </div>
+    <div class="sl-prog-bar is-mini${offen ? '' : ' is-done'}" title="${pct} % geklärt"><span style="width:${pct}%"></span></div>
+    <p class="sl-hint">${offen ? `Noch <b>${offen}</b> ${offen === 1 ? 'Fall' : 'Fälle'} zu klären${kritOffen ? `, davon <b>${kritOffen} kritisch</b>` : ''}.` : 'Alles geklärt.'} Flächen aus ${escapeHtml(y.jahr)} · Stichtag ${slDeAusIso(slStichtag())}</p>`;
+}
+
+async function loadSchlaglisteFile(file) {
+  try {
+    if (typeof XLSX === 'undefined') throw new Error('Excel-Bibliothek nicht geladen.');
+    const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+    const sheetName = wb.SheetNames[0];
+    const ws = wb.Sheets[sheetName];
+    const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
+    const parsed = slParse(aoa);
+    if (schlaglisteData && !confirm(`Die bisherige Schlagliste „${schlaglisteData.fileName}“ samt Zuordnungen ersetzen?`)) return;
+    const years = compareYearsSorted().filter(y => y.jahr);
+    schlaglisteData = {
+      fileName: file.name, sheetName, header: parsed.header, rows: parsed.rows,
+      cols: (ws['!cols'] || []).map(c => (c && c.wch ? { wch: c.wch } : null)),
+      jahr: years.length ? years[years.length - 1].jahr : '', stichtag: slHeute(),
+      // Statustexte: gemerkt bzw. Vorgabe, überschrieben von dem, was in der Liste selbst steht
+      statusTexte: { ...slGemerkteTexte(), ...slStatusTexteLernen(parsed, slHeute()) }, manuell: {}, zugangNeu: {}, abgangAm: {}, importiertAm: new Date().toISOString()
+    };
+    slUndoStapel = [];
+    Object.keys(slSecZustand).forEach(k => delete slSecZustand[k]);
+    renderSchlaglisteBox();
+    refreshCompareStatusColumn();
+    persistLocalState().catch(() => {});
+    setCompareStatus(`${file.name}: ${parsed.rows.length} Zeilen gelesen.`);
+    if (years.length) openSchlaglisteReview();
+  } catch (err) {
+    console.error(err);
+    showCompareError(file.name + ': ' + (err.message || 'Schlagliste konnte nicht gelesen werden.'));
+  }
+}
+document.getElementById('sl-file').addEventListener('change', async (e) => {
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (f) await loadSchlaglisteFile(f);
+});
+document.getElementById('btn-sl-review').addEventListener('click', () => openSchlaglisteReview());
+document.getElementById('btn-sl-export').addEventListener('click', () => exportSchlagliste());
+document.getElementById('sl-export2').addEventListener('click', () => exportSchlagliste());
+document.getElementById('btn-sl-reset').addEventListener('click', () => slZuruecksetzen());
+document.getElementById('btn-sl-remove').addEventListener('click', () => {
+  if (!schlaglisteData || !confirm(`Schlagliste „${schlaglisteData.fileName}“ samt Zuordnungen entfernen?`)) return;
+  closeSchlaglisteReview();
+  schlaglisteData = null;
+  renderSchlaglisteBox();
+  refreshCompareStatusColumn();
+  persistLocalState().catch(() => {});
+});
+
+// Flächendifferenz Liste -> Shape als Text (nur wenn sie über 0,0001 ha liegt)
+function slHaDiff(listeHa, shapeHa) {
+  if (listeHa === null || listeHa === undefined || shapeHa === null || shapeHa === undefined || shapeHa === false) return '';
+  const d = shapeHa - listeHa;
+  if (Math.abs(d) < 0.00005) return '';
+  return ` · Shape ${d > 0 ? '+' : '−'}${formatHaExact(Math.abs(d))} ha gegenüber Liste`;
+}
+// Listenzeile kurz: Bezeichnung, Schlagnummer nur davor, wenn sie dort nicht schon steht
+const slZeileName = (z) => ((z.nr && !z.bezNr ? z.nr + ' ' : '') + (z.bez || '–')).trim();
+// ---- Abgleich auf der Karte ----
+// Der Abgleich läuft als Panel neben der Karte: jede Fläche des Abgleichsjahres
+// ist eingefärbt (zugeordnet / prüfen / neu), kritische Änderungen gegenüber
+// dem Vorjahr sind sichtbar (dazugekommenes Teilstück rot, weggefallenes
+// gestrichelt). Fall antippen -> Karte fliegt hin; Fläche antippen -> Fall
+// im Panel. Ein dazugekommenes Teilstück kann als Unterfläche mit eigenem
+// Umstellungsbeginn angelegt werden (eigene Zeile im Export).
+// Leicht spielerisch: Fortschritt "x von y geklärt", Häkchen beim Erledigen,
+// Auge für "auf der Karte angesehen", kleine Feier, wenn alles geklärt ist.
+const SL_MIN_HA = 0.01;
+const SL_FARBEN = { le: '#7FA36B', zugeordnet: '#5F7A93', pruefen: '#E8A33D', neu: '#4C9BE8', plus: '#E0507A', weg: '#E0507A', fehlt: '#D97757' };
+let slGeoCache = null;
+let slMapLayer = null;
+let slFocusLayer = null;
+let slFokus = null;            // id des Falls, der gerade auf der Karte gezeigt wird
+let slVorherErledigt = null;   // Set der erledigten Fälle beim letzten Zeichnen (für den Häkchen-Effekt)
+let slWarFertig = false;
+const slSecZustand = {};       // Abschnitt -> { offen, fertig } wie zuletzt vom Nutzer gesetzt
+function slSecMerken(det) {
+  if (!det || !det.dataset.slSec) return;
+  slSecZustand[det.dataset.slSec] = { offen: det.open, fertig: det.dataset.slFertig === 'null' ? null : det.dataset.slFertig === 'true' };
+}
+const slOhneNullen = (s) => String(s || '').replace(/^0+(?=\d)/, '');
+const slHaVon = (g) => { try { return g ? turf.area(g) / 10000 : 0; } catch { return 0; } };
+// Nur "echte" Teilstücke behalten: Splitter aus leicht versetzten Grenzlinien
+// (mittlere Breite unter 5 m) und Kleinststücke unter 0,01 ha fallen weg.
+const SL_MIN_BREITE_M = 5;
+function slEchteTeile(geom) {
+  if (!geom || !geom.geometry) return null;
+  const polys = geom.geometry.type === 'Polygon' ? [geom.geometry.coordinates] : geom.geometry.type === 'MultiPolygon' ? geom.geometry.coordinates : [];
+  const behalten = polys.filter(coords => {
+    try {
+      const p = turf.polygon(coords);
+      const m2 = turf.area(p);
+      const umfang = turf.length(turf.polygonToLine(p), { units: 'kilometers' }) * 1000;
+      return m2 / 10000 >= SL_MIN_HA && umfang > 0 && (2 * m2 / umfang) >= SL_MIN_BREITE_M;
+    } catch { return false; }
+  });
+  if (!behalten.length) return null;
+  return behalten.length === 1 ? turf.polygon(behalten[0]) : turf.multiPolygon(behalten);
+}
+function slVorjahr(y) {
+  const years = compareYearsSorted().filter(x => x.jahr);
+  return years[years.indexOf(y) - 1] || null;
+}
+// Je Fläche des Abgleichsjahres: neues Teilstück (nicht in den Vorjahresflächen),
+// weggefallenes Stück des Vorgängers, Vorgänger (gleiche Nummer, umnummeriert
+// oder größte Überdeckung) und Anteil "Neuland".
+function slGeoAnalyse(y, feats) {
+  const vor = y ? slVorjahr(y) : null;
+  const cacheKey = y ? `${y.id}|${vor ? vor.id : '-'}|${feats.length}|${(y.fc.features || []).length}|${vor ? (vor.fc.features || []).length : 0}` : '-';
+  if (slGeoCache && slGeoCache.key === cacheKey) return slGeoCache.data;
+  const data = { vor, byKey: new Map(), vorByNr: new Map() };
+  slGeoCache = { key: cacheKey, data };
+  if (!vor || typeof turf === 'undefined') return data;
+  const vorFeats = (vor.fc.features || []).filter(f => f.geometry && /Polygon/.test(f.geometry.type));
+  vorFeats.forEach(f => { const nr = pickField(f.properties || {}, FIELD_CANDIDATES.nummer); if (nr) data.vorByNr.set(slOhneNullen(nr), f); });
+  let union = null;
+  vorFeats.forEach(f => { try { union = union ? turf.union(union, f) : f; } catch { /* ungültige Geometrie */ } });
+  const neuZuAlt = new Map([...slUmnummeriert(y)].map(([alt, neu]) => [neu, alt]));
+  feats.forEach(f => {
+    const g = f.feature;
+    if (!g || !g.geometry || !/Polygon/.test(g.geometry.type)) return;
+    const info = { neuGeom: null, neuHa: 0, wegGeom: null, wegHa: 0, vorgaenger: null, vorgaengerNr: '', anteilNeu: 1, ganzNeu: false, umnummeriert: false };
+    try {
+      const total = slHaVon(g);
+      if (union) {
+        const d = slEchteTeile(turf.difference(g, union));
+        info.neuHa = slHaVon(d);
+        info.anteilNeu = total ? info.neuHa / total : 1;
+        // Ganz neue Fläche: kein "Teilstück", sondern eine eigene neue Fläche
+        if (info.anteilNeu >= 0.9) info.ganzNeu = true;
+        else if (d) info.neuGeom = d;
+      }
+      const nr = slOhneNullen(f.nummer);
+      let v = data.vorByNr.get(nr) || null;
+      let vnr = v ? nr : '';
+      if (!v && neuZuAlt.has(nr)) { vnr = neuZuAlt.get(nr); v = data.vorByNr.get(vnr) || null; info.umnummeriert = !!v; }
+      if (!v) {
+        let best = 0;
+        vorFeats.forEach(ff => { try { const a = slHaVon(turf.intersect(g, ff)); if (a > best) { best = a; v = ff; } } catch { /* ungültig */ } });
+        if (best < SL_MIN_HA) v = null;
+        vnr = v ? slOhneNullen(pickField(v.properties || {}, FIELD_CANDIDATES.nummer)) : '';
+      }
+      info.vorgaenger = v;
+      info.vorgaengerNr = vnr;
+      if (v) {
+        const w = slEchteTeile(turf.difference(v, g));
+        if (w) { info.wegGeom = w; info.wegHa = slHaVon(w); }
+      }
+    } catch (err) { console.warn('Geometrievergleich (Schlagliste):', err.message); }
+    data.byKey.set(f.key, info);
+  });
+  return data;
+}
+// Alle Fälle des Abgleichs (für Fortschritt und Panel)
+function slFaelle(ctx, geo) {
+  const d = schlaglisteData;
+  const zeileByKey = new Map(ctx.abgleich.zeilen.filter(e => e.key).map(e => [e.key, e]));
+  const faelle = [];
+  ctx.feats.forEach(f => {
+    const g = geo.byKey.get(f.key);
+    if (!g || !g.neuGeom) return;
+    const u = (d.unterflaechen || {})[f.key];
+    faelle.push({ id: 'k:' + f.key, typ: 'kritisch', key: f.key, erledigt: !!(u && u.beginn) || !!(d.teilstueckOk || {})[f.key] });
+  });
+  ctx.abgleich.zeilen.forEach(e => {
+    if (e.art === 'pruefen') faelle.push({ id: 'p:' + e.idx, typ: 'pruefen', idx: e.idx, key: e.key, erledigt: false });
+    else if (e.art === 'manuell') faelle.push({ id: 'p:' + e.idx, typ: 'pruefen', idx: e.idx, key: e.key, erledigt: true });
+    else if ((e.art === 'fehlt' || e.art === 'abgang') && !slNachAntrag(e)) faelle.push({ id: 'f:' + e.idx, typ: 'fehlt', idx: e.idx, erledigt: !!d.abgangAm[e.idx] });
+  });
+  ctx.abgleich.neu.filter(f => !f.le).forEach(f => faelle.push({ id: 'n:' + f.key, typ: 'neu', key: f.key, erledigt: !!d.zugangNeu[f.key] }));
+  // Kulturen ohne eindeutige Zuordnung zum Katalog des externen Programms
+  slKulturen(ctx).forEach(k => { if (k.offen || k.bestaetigt) faelle.push({ id: 'c:' + k.quelle, typ: 'kultur', quelle: k.quelle, erledigt: !k.offen }); });
+  return faelle;
+}
+// Zusammengelegt? Mehrere Listenzeilen mit gleicher FLIK ergeben zusammen genau
+// die Größe einer Fläche (z.B. zwei Teilschläge 2026 als ein Schlag beantragt).
+// Ergebnis: Zeilen-Index -> { f, zeilen, summe }
+function slZusammenlegungen(ctx) {
+  const out = new Map();
+  ctx.feats.filter(f => !f.le && f.flik && f.ha).forEach(f => {
+    const zeilen = ctx.abgleich.zeilen.filter(e => e.art !== 'unvollstaendig' && e.z.ha !== null
+      && (e.key === f.key || ['fehlt', 'abgang', 'pruefen'].includes(e.art)) && slFlikPasst(e.z, f) === 'gleich');
+    if (zeilen.length < 2) return;
+    const summe = zeilen.reduce((sum, e) => sum + e.z.ha, 0);
+    if (Math.abs(summe - f.ha) > Math.max(0.01, f.ha * 0.002)) return;
+    zeilen.forEach(e => out.set(e.idx, { f, zeilen, summe }));
+  });
+  return out;
+}
+// ---- Kulturen (Katalog des externen Programms, siehe kulturen.js) ----
+const SL_KULTUR_KEY = 'feldfolio-kultur-zuordnung';
+function slKulturGemerkt() {
+  let global = {};
+  try { global = JSON.parse(localStorage.getItem(SL_KULTUR_KEY) || '{}') || {}; } catch { /* ohne Speicher */ }
+  return { ...global, ...((schlaglisteData && schlaglisteData.kulturen) || {}) };
+}
+function slKulturMerken(quelle, name) {
+  schlaglisteData.kulturen = { ...(schlaglisteData.kulturen || {}), [quelle]: name };
+  try {
+    const g = JSON.parse(localStorage.getItem(SL_KULTUR_KEY) || '{}') || {};
+    g[quelle] = name;
+    localStorage.setItem(SL_KULTUR_KEY, JSON.stringify(g));
+  } catch { /* ohne Speicher */ }
+}
+const slKulturVon = (f) => (f && f.kultur && !f.le ? kulturZuordnen(f.kultur, slKulturGemerkt()) : null);
+// Verschiedene Kulturen der Flächen (ohne Landschaftselemente) mit ihrer Zuordnung
+// Kategorie (Spalte "Kategorie") je Katalogkultur: festgelegt > aus der Liste gelernt > Regel
+const SL_KATEGORIE_KEY = 'feldfolio-kultur-kategorie';
+function slGelernteKategorien(ctx) {
+  const m = new Map();
+  if (ctx.sl.col.kultur !== undefined && ctx.sl.col.kategorie !== undefined) {
+    ctx.sl.rows.forEach(r => { const k = String(r[ctx.sl.col.kultur] || '').trim(), c = String(r[ctx.sl.col.kategorie] || '').trim(); if (k && c && !m.has(k)) m.set(k, c); });
+  }
+  let global = {};
+  try { global = JSON.parse(localStorage.getItem(SL_KATEGORIE_KEY) || '{}') || {}; } catch { /* ohne Speicher */ }
+  Object.entries({ ...global, ...((schlaglisteData && schlaglisteData.kategorien) || {}) }).forEach(([k, c]) => m.set(k, c));
+  return m;
+}
+function slKategorieMerken(kultur, kategorie) {
+  schlaglisteData.kategorien = { ...(schlaglisteData.kategorien || {}), [kultur]: kategorie };
+  try {
+    const g = JSON.parse(localStorage.getItem(SL_KATEGORIE_KEY) || '{}') || {};
+    g[kultur] = kategorie;
+    localStorage.setItem(SL_KATEGORIE_KEY, JSON.stringify(g));
+  } catch { /* ohne Speicher */ }
+}
+// Auswahl für "Kategorie": Kategorien des externen Programms (+ abweichende aus der Liste)
+function slKategorieOptionen(ctx) {
+  const set = new Set(INTACT_KATEGORIEN);
+  if (ctx.sl.col.kategorie !== undefined) ctx.sl.rows.forEach(r => { const c = String(r[ctx.sl.col.kategorie] || '').trim(); if (c) set.add(c); });
+  Object.values((schlaglisteData && schlaglisteData.kategorien) || {}).forEach(c => set.add(c));
+  return [...set].sort((a, b) => a.localeCompare(b, 'de'));
+}
+function slKulturen(ctx) {
+  const d = schlaglisteData;
+  const kategorien = slGelernteKategorien(ctx);
+  const map = new Map();
+  ctx.feats.filter(f => f.kultur && !f.le).forEach(f => {
+    const e = map.get(f.kultur) || { quelle: f.kultur, anzahl: 0, ha: 0, keys: [] };
+    e.anzahl++; e.ha += f.ha || 0; e.keys.push(f.key);
+    map.set(f.kultur, e);
+  });
+  // Hinweis aus der Schlagliste: Welche Kultur steht dort bisher bei den Flächen
+  // mit dieser Kultur? (Vorjahreskultur — bei mehrjährigen Kulturen meist dieselbe)
+  const zeileJeKey = new Map(ctx.abgleich.zeilen.filter(z => z.key).map(z => [z.key, z]));
+  return [...map.values()].map(e => {
+    let zu = slKulturVon({ kultur: e.quelle });
+    const unsicher = zu.sicherheit === 'aehnlich' || zu.sicherheit === 'unbekannt';
+    const listeZaehl = new Map();
+    // nur bei unsicherer Zuordnung — bei eindeutigen Kulturen wäre der Vorjahreswert nur Fruchtwechsel
+    if (unsicher) e.keys.forEach(k => { const z = zeileJeKey.get(k); if (!z || !z.z.kultur) return; const n = kulturZuordnen(z.z.kultur).name || z.z.kultur; listeZaehl.set(n, [...(listeZaehl.get(n) || []), slZeileName(z.z)]); });
+    const liste = [...listeZaehl.entries()].map(([name, zeilen]) => ({ name, zeilen })).sort((a, b) => b.zeilen.length - a.zeilen.length);
+    // Unsicherer Vorschlag, den die Liste genau so führt -> bestätigt
+    if ((zu.sicherheit === 'aehnlich' || zu.sicherheit === 'unbekannt') && zu.name && liste.some(l => l.name === zu.name)) zu = { ...zu, sicherheit: 'liste' };
+    const bestaetigt = !!(d.kulturen || {})[e.quelle];
+    const kategorie = zu.name ? kategorieFuer(zu.name, kategorien) : null;
+    const kulturOffen = !bestaetigt && (zu.sicherheit === 'aehnlich' || zu.sicherheit === 'unbekannt');
+    const kategorieOffen = d.kulturUebernehmen !== false && !!zu.name && !kategorie;
+    // Fälle nur, wenn die Kulturen auch exportiert werden
+    const aktiv = d.kulturUebernehmen !== false;
+    return { ...e, zu, liste, bestaetigt: bestaetigt || !!(d.kategorien || {})[zu.name], kategorie, kulturOffen: aktiv && kulturOffen, kategorieOffen, offen: aktiv && (kulturOffen || kategorieOffen) };
+  }).sort((a, b) => Number(b.offen) - Number(a.offen) || b.ha - a.ha);
+}
+const SL_KULTUR_LABEL = { gleich: 'gleich', regel: 'Regel', aehnlich: 'ähnlich – prüfen', unbekannt: 'unbekannt', manuell: 'festgelegt', liste: 'wie in der Liste' };
+const slKulturBadge = (zu) => `<span class="sl-kbadge is-${zu.sicherheit}">${SL_KULTUR_LABEL[zu.sicherheit]}</span>`;
+const slKulturText = (f) => { const zu = slKulturVon(f); return zu && zu.name ? ` <span class="sl-kultur" title="${escapeHtml(f.kultur)}">→ ${escapeHtml(zu.name)}</span>` : ''; };
+const SL_KATALOG_OPTIONEN = INTACT_KULTUREN.slice().sort((a, b) => a.name.localeCompare(b.name, 'de'));
+// Umstellungsdatum der Listenzeile, die zur Vorjahresfläche mit dieser Nummer gehört
+function slDatumVonNummer(ctx, nr) {
+  if (!nr) return null;
+  const e = ctx.abgleich.zeilen.find(z => z.key && z.art !== 'pruefen' && slOhneNullen(ctx.featByKey.get(z.key).nummer) === nr)
+    || ctx.abgleich.zeilen.find(z => z.z.nr === nr || z.z.bezNr === nr);
+  return e && e.z.zugang ? { datum: e.z.zugang, name: slZeileName(e.z) } : null;
+}
+function slChips(geo, f) {
+  const g = f && geo.byKey.get(f.key);
+  if (!g) return '';
+  const vj = geo.vor ? geo.vor.jahr : 'Vorjahr';
+  const out = [];
+  if (g.neuGeom) out.push(`<span class="sl-chip is-plus" title="Teilstück, das ${escapeHtml(vj)} zu keiner Fläche gehörte">+${formatHaExact(g.neuHa)} ha neu</span>`);
+  if (g.wegGeom) out.push(`<span class="sl-chip is-minus" title="Stück der Fläche aus ${escapeHtml(vj)}, das jetzt fehlt">−${formatHaExact(g.wegHa)} ha weg</span>`);
+  if (g.ganzNeu) out.push(`<span class="sl-chip is-plus" title="Fläche gehörte ${escapeHtml(vj)} zu keiner Fläche des Betriebs">neu seit ${escapeHtml(vj)}</span>`);
+  if (g.umnummeriert) out.push(`<span class="sl-chip">Nr. ${escapeHtml(g.vorgaengerNr)} → ${escapeHtml(slOhneNullen(f.nummer))}</span>`);
+  return out.join('');
+}
+const slAuge = (id) => ((schlaglisteData.angesehen || {})[id] ? '<span class="sl-eye" title="Auf der Karte angesehen"><span class="material-symbols-rounded icon" aria-hidden="true">visibility</span></span>' : '');
+const slKarteBtn = (id) => `<button type="button" class="sl-mapbtn" data-sl-focus="${escapeHtml(id)}" title="Auf der Karte zeigen" aria-label="Auf der Karte zeigen"><span class="material-symbols-rounded icon" aria-hidden="true">my_location</span></button>`;
+
+function openSchlaglisteReview() {
+  if (!schlaglisteData) return;
+  if (!slJahr()) { showCompareError('Erst Shape-Dateien eines Jahres hinterlegen.'); return; }
+  const panel = document.getElementById('sl-overlay');
+  const warOffen = !panel.hidden;
+  panel.hidden = false;
+  document.body.classList.add('sl-review-open');
+  if (compareGeoLayer) map.removeLayer(compareGeoLayer);
+  if (!compareHiddenLayerIds.length) hideMapLayersForCompare();
+  slVorherErledigt = null;
+  slWarFertig = false;
+  renderSchlaglisteReview(!warOffen);
+}
+function closeSchlaglisteReview() {
+  const panel = document.getElementById('sl-overlay');
+  if (panel.hidden) return;
+  panel.hidden = true;
+  document.body.classList.remove('sl-review-open');
+  if (slMapLayer) { map.removeLayer(slMapLayer); slMapLayer = null; }
+  if (slFocusLayer) { map.removeLayer(slFocusLayer); slFocusLayer = null; }
+  slFokus = null;
+  renderSchlaglisteBox();
+  refreshCompareStatusColumn();
+  if (document.body.dataset.view === 'compare' && (compareResult || compareViewMode !== 'diff')) showCompareView(false);
+  else restoreCompareHiddenLayer();
+}
+document.getElementById('sl-close').addEventListener('click', closeSchlaglisteReview);
+// Funktion gewechselt -> Panel schließen
+new MutationObserver(() => { if (document.body.dataset.view !== 'compare') closeSchlaglisteReview(); })
+  .observe(document.body, { attributes: true, attributeFilter: ['data-view'] });
+
+const slFmtHa = (ha) => (ha === null || ha === undefined ? '–' : formatHaExact(ha) + ' ha');
+const slFlaecheText = (f) => `${f.nummer || '–'} ${f.name || ''} · ${slFmtHa(f.ha)}`.replace(/\s+/g, ' ').trim();
+function slZeileHtml(e, sl) {
+  const z = e.z;
+  const nr = sl.col.schlagnr !== undefined ? String(sl.rows[e.idx][sl.col.schlagnr] || '') : '';
+  return `<div class="sl-liste"><span class="sl-tag">Liste</span><b>${escapeHtml(nr || '–')}</b> ${escapeHtml(z.bez || '–')} · ${slFmtHa(z.ha)}
+    <span class="sl-meta">${z.zugang ? 'Zugang ' + slDeAusIso(z.zugang) : 'ohne Zugangsdatum'}</span> ${slBadge(slStatusInfo(z.zugang))}</div>`;
+}
+function slAuswahl(e, ctx, freieKeys, leerText = '— keine Fläche (nicht im Betrieb) —') {
+  const vorschlaege = ctx.abgleich.vorschlaege(e.idx);
+  const sichtbar = new Set([e.key, ...freieKeys].filter(Boolean));
+  const opts = [];
+  const nimm = (f, why) => opts.push(`<option value="${escapeHtml(f.key)}"${f.key === e.key ? ' selected' : ''}>${escapeHtml(slFlaecheText(f))}${why ? ' — ' + escapeHtml(why) : ''}</option>`);
+  vorschlaege.filter(v => sichtbar.has(v.f.key)).forEach(v => nimm(v.f, v.gruende.join(', ')));
+  ctx.feats.filter(f => sichtbar.has(f.key) && !vorschlaege.some(v => v.f.key === f.key)).forEach(f => nimm(f, ''));
+  return `<select class="sl-select" data-sl-match="${e.idx}" aria-label="Fläche für Zeile ${e.idx + 1}">
+      <option value="">${leerText}</option>${opts.join('')}</select>`;
+}
+// Fortschritt (spielerisch) oben im Panel
+function slFortschrittHtml(faelle) {
+  const ges = faelle.length, fertig = faelle.filter(f => f.erledigt).length;
+  const pct = ges ? Math.round(fertig / ges * 100) : 100;
+  const kritOffen = faelle.filter(f => f.typ === 'kritisch' && !f.erledigt).length;
+  const krit = faelle.filter(f => f.typ === 'kritisch' || f.typ === 'neu');
+  const gesehen = krit.filter(f => (schlaglisteData.angesehen || {})[f.id]).length;
+  const done = fertig === ges;
+  return `<div class="sl-progress${done ? ' is-done' : ''}">
+      <div class="sl-prog-top">
+        <span class="sl-prog-count"><b>${fertig}</b> von <b>${ges}</b> ${ges === 1 ? 'Fall' : 'Fällen'} geklärt</span>
+        <span class="sl-prog-pct">${pct} %</span>
+      </div>
+      <div class="sl-prog-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span style="width:${pct}%"></span></div>
+      <p class="sl-prog-hint">${done
+        ? '<span class="material-symbols-rounded icon" aria-hidden="true">celebration</span> Alles geklärt — bereit für den Export.'
+        : `Noch ${ges - fertig} offen${kritOffen ? ` · <b>${kritOffen} kritische ${kritOffen === 1 ? 'Änderung' : 'Änderungen'}</b>` : ''}`}
+        ${krit.length ? `<span class="sl-prog-eyes" title="Kritische Fälle auf der Karte angesehen"><span class="material-symbols-rounded icon" aria-hidden="true">visibility</span>${gesehen}/${krit.length}</span>` : ''}</p>
+    </div>`;
+}
+function slKonfetti() {
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const panel = document.getElementById('sl-overlay');
+  const box = document.createElement('div');
+  box.className = 'sl-confetti';
+  const farben = ['#8CB26B', '#E8A33D', '#4C9BE8', '#E0507A', '#F2D16B'];
+  for (let i = 0; i < 28; i++) {
+    const s = document.createElement('span');
+    s.style.left = (5 + Math.random() * 90) + '%';
+    s.style.background = farben[i % farben.length];
+    s.style.animationDelay = (Math.random() * 0.25) + 's';
+    s.style.setProperty('--dx', ((Math.random() - 0.5) * 80) + 'px');
+    s.style.setProperty('--rot', (Math.random() * 540) + 'deg');
+    box.appendChild(s);
+  }
+  panel.appendChild(box);
+  setTimeout(() => box.remove(), 1800);
+}
+
+function renderSchlaglisteReview(fitMap = false) {
+  const ctx = slBerechne();
+  const { y, abgleich, sl, featByKey } = ctx;
+  const d = schlaglisteData;
+  d.unterflaechen = d.unterflaechen || {};
+  d.teilstueckOk = d.teilstueckOk || {};
+  d.angesehen = d.angesehen || {};
+  const geo = slGeoAnalyse(y, ctx.feats);
+  const faelle = slFaelle(ctx, geo);
+  const fallById = new Map(faelle.map(f => [f.id, f]));
+  const vj = geo.vor ? geo.vor.jahr : null;
+  document.getElementById('sl-sub').textContent = `${d.fileName} · ${d.rows.length} Zeilen${vj ? ` · Karte: ${y.jahr} gegen ${vj}` : ''}`;
+  const years = compareYearsSorted().filter(x => x.jahr);
+  document.getElementById('sl-jahr').innerHTML = years.map(x => `<option value="${escapeHtml(x.jahr)}"${x === y ? ' selected' : ''}>${escapeHtml(x.jahr)}</option>`).join('');
+  document.getElementById('sl-stichtag').value = slStichtag();
+  document.getElementById('sl-kultur-uebernehmen').checked = d.kulturUebernehmen !== false;
+  document.querySelectorAll('[data-sl-text]').forEach(inp => { inp.value = d.statusTexte[inp.dataset.slText] || ''; });
+  document.getElementById('sl-progress-wrap').innerHTML = slFortschrittHtml(faelle);
+
+  const freieKeys = abgleich.neu.map(f => f.key);
+  const pruefen = abgleich.zeilen.filter(e => e.art === 'pruefen');
+  const manuell = abgleich.zeilen.filter(e => e.art === 'manuell');
+  const fehlt = abgleich.zeilen.filter(e => e.art === 'fehlt' || e.art === 'abgang');
+  const sicher = abgleich.zeilen.filter(e => e.art === 'sicher' || e.art === 'manuell');
+  const unv = abgleich.zeilen.filter(e => e.art === 'unvollstaendig');
+  const kritisch = faelle.filter(f => f.typ === 'kritisch');
+  const zeileByKey = new Map(abgleich.zeilen.filter(e => e.key).map(e => [e.key, e]));
+  const jahrNeu = Number(slStichtag().slice(0, 4));
+  const item = (id, inner, extraCls = '') => {
+    const fall = fallById.get(id);
+    return `<div class="sl-item${fall && fall.erledigt ? ' is-done' : ''}${extraCls}${slFokus === id ? ' is-focus' : ''}" data-sl-fall="${escapeHtml(id)}">
+      <span class="sl-done-mark" aria-hidden="true"><span class="material-symbols-rounded icon">check</span></span>${inner}</div>`;
+  };
+  const sec = (cls, icon, title, liste, hint, inner, open = true, nochZuTun = false) => {
+    if (!inner) return '';
+    const offen = liste ? liste.filter(f => !f.erledigt).length : null;
+    const chip = liste ? (offen ? `<span class="sl-sec-chip">${offen} offen</span>` : '<span class="sl-sec-chip is-done"><span class="material-symbols-rounded icon" aria-hidden="true">check</span>erledigt</span>') : '';
+    // Erledigte Abschnitte sind zu. Selbst auf-/zugeklappt bleibt so, solange
+    // sich am "erledigt" nichts ändert (wird ein Abschnitt fertig, klappt er zu).
+    const key = cls || icon;
+    const fertig = liste ? offen === 0 && !nochZuTun : null;
+    if (fertig) open = false;
+    const z = slSecZustand[key];
+    if (z && z.fertig === fertig) open = z.offen;
+    return `<details class="sl-sec ${cls}" data-sl-sec="${key}" data-sl-fertig="${fertig}"${open ? ' open' : ''}><summary><span class="material-symbols-rounded icon" aria-hidden="true">${icon}</span><span class="sl-sec-title">${title}</span>${chip}</summary>${hint ? `<p class="sl-sec-hint">${hint}</p>` : ''}${inner}</details>`;
+  };
+
+  // 1) Kritische Änderungen: Teilstück dazugekommen
+  const kritHtml = kritisch.map(fall => {
+    const f = featByKey.get(fall.key), g = geo.byKey.get(fall.key);
+    const e = zeileByKey.get(fall.key);
+    const u = d.unterflaechen[fall.key];
+    const basis = e ? slStatusInfo(e.z.zugang) : (d.zugangNeu[fall.key] ? slStatusInfo(d.zugangNeu[fall.key]) : null);
+    const beginn = (u && u.beginn) || '';
+    let aktion;
+    if (u && u.beginn) {
+      aktion = `<div class="sl-unter"><span class="material-symbols-rounded icon" aria-hidden="true">call_split</span>
+          Unterfläche ${formatHaExact(u.ha)} ha ab ${slDeAusIso(u.beginn)} ${slBadge(slStatusInfo(u.beginn))}
+          <button type="button" class="sl-undo" data-sl-unter-weg="${escapeHtml(fall.key)}">entfernen</button></div>`;
+    } else if (d.teilstueckOk[fall.key]) {
+      aktion = `<div class="sl-unter is-ok"><span class="material-symbols-rounded icon" aria-hidden="true">task_alt</span>Teilstück gehört mit gleichem Status zur Fläche
+          <button type="button" class="sl-undo" data-sl-teil-reset="${escapeHtml(fall.key)}">ändern</button></div>`;
+    } else {
+      aktion = `<div class="sl-match">
+          <label class="sl-date">Umstellungsbeginn Teilstück <input type="date" data-sl-unter-datum="${escapeHtml(fall.key)}" value="${beginn || `${jahrNeu}-01-01`}"></label>
+          <button type="button" class="betrieb-btn primary" data-sl-unter="${escapeHtml(fall.key)}"><span class="material-symbols-rounded icon" aria-hidden="true">call_split</span>Unterfläche anlegen</button>
+          <button type="button" class="betrieb-btn" data-sl-teil-ok="${escapeHtml(fall.key)}">Gehört dazu (gleicher Status)</button>
+        </div>`;
+    }
+    return item(fall.id, `<div class="sl-liste"><span class="sl-tag is-shape">${escapeHtml(y.jahr)}</span><b>${escapeHtml(f.nummer || '–')}</b> ${escapeHtml(f.name || '')} · ${slFmtHa(f.ha)} ${basis ? slBadge(basis) : ''} ${slAuge(fall.id)} ${slKarteBtn(fall.id)}</div>
+      <p class="sl-krit"><span class="material-symbols-rounded icon" aria-hidden="true">warning</span><span><b>+${formatHaExact(g.neuHa)} ha Teilstück dazugekommen</b> — gehörte ${escapeHtml(vj)} zu keiner Fläche des Betriebs. Hat es einen eigenen Umstellungsbeginn, als Unterfläche anlegen.</span></p>
+      ${aktion}`, ' is-krit');
+  }).join('');
+
+  const zusammen = slZusammenlegungen(ctx);
+  const zusammenHtml = (e) => {
+    const z = zusammen.get(e.idx);
+    if (!z) return '';
+    const andere = z.zeilen.filter(x => x !== e);
+    const erledigt = z.zeilen.some(x => x.key === z.f.key && x.art !== 'pruefen') && z.zeilen.filter(x => x.key !== z.f.key).every(x => !!d.abgangAm[x.idx]);
+    return `<p class="sl-krit sl-zus${erledigt ? ' is-done' : ''}"><span class="material-symbols-rounded icon" aria-hidden="true">merge</span><span><b>${erledigt ? 'Zusammengelegt — übernommen:' : 'Zusammengelegt?'}</b> ${escapeHtml(slZeileName(e.z))} + ${andere.map(x => escapeHtml(slZeileName(x.z))).join(' + ')}
+      = ${formatHaExact(z.summe)} ha — genau Fläche ${escapeHtml(z.f.nummer || '–')} (${formatHaExact(z.f.ha)} ha).</span>
+      ${erledigt ? '' : `<button type="button" class="betrieb-btn primary" data-sl-zusammen="${e.idx}">Als zusammengelegt übernehmen</button>`}</p>`;
+  };
+
+  // 2) Zweifelsfälle
+  const pruefenHtml = pruefen.map(e => {
+    const f = e.key && featByKey.get(e.key);
+    return item('p:' + e.idx, `${slZeileHtml(e, sl)}
+      <div class="sl-match"><span class="sl-tag is-shape">${escapeHtml(y.jahr)}</span>${slAuswahl(e, ctx, freieKeys)}
+        <button type="button" class="betrieb-btn primary sl-ok" data-sl-ok="${e.idx}"><span class="material-symbols-rounded icon" aria-hidden="true">check</span>Passt</button>${slKarteBtn('p:' + e.idx)}</div>
+      <p class="sl-why">${escapeHtml(e.gruende.join(' · ') || 'nur schwache Übereinstimmung')}${slHaDiff(e.z.ha, f && f.ha)} ${slChips(geo, f)} ${slAuge('p:' + e.idx)}</p>
+      ${zusammenHtml(e)}`);
+  }).join('') + manuell.map(e => {
+    // schon entschieden: bleibt hier stehen (abgehakt), mit "ändern" zurück in die Prüfung
+    const f = e.key && featByKey.get(e.key);
+    return item('p:' + e.idx, `${slZeileHtml(e, sl)}
+      <div class="sl-unter is-ok"><span class="material-symbols-rounded icon" aria-hidden="true">task_alt</span>
+        ${f ? `zugeordnet: <b>${escapeHtml(f.nummer || '–')}</b> ${escapeHtml(f.name || '')} · ${slFmtHa(f.ha)}` : `keine Fläche — Abgang ${d.abgangAm[e.idx] ? 'am ' + slDeAusIso(d.abgangAm[e.idx]) : ''}`}
+        ${f ? slKarteBtn('p:' + e.idx) : ''}<button type="button" class="sl-undo" data-sl-reset="${e.idx}">ändern</button></div>`);
+  }).join('');
+
+  // 3) Neu in den Shapes (ohne Landschaftselemente)
+  const neuOhneLe = abgleich.neu.filter(f => !f.le);
+  const leFlaechen = abgleich.neu.filter(f => f.le);
+  // gleicher Feldblock (FLIK) wie eine zugeordnete Fläche -> deren Umstellungsdatum
+  const feldblockDatum = new Map();
+  abgleich.zeilen.filter(e => e.key && e.art !== 'pruefen' && e.z.zugang).forEach(e => {
+    const kern = slFlikKern(featByKey.get(e.key).flik);
+    if (kern && !feldblockDatum.has(kern)) feldblockDatum.set(kern, { datum: e.z.zugang, name: slZeileName(e.z) });
+  });
+  // häufigstes Zugangsdatum der Liste je Bundesland (Vorschlag für ganz neue Flächen)
+  const haeufigJeLand = new Map();
+  abgleich.zeilen.filter(e => e.z.zugang).forEach(e => {
+    const m = haeufigJeLand.get(e.z.land || '') || new Map();
+    m.set(e.z.zugang, (m.get(e.z.zugang) || 0) + 1);
+    haeufigJeLand.set(e.z.land || '', m);
+  });
+  const haeufigFuer = (f) => {
+    const m = haeufigJeLand.get(slFlikLand(f.flik)) || haeufigJeLand.get('');
+    if (!m) return null;
+    return [...m.entries()].sort((a, b) => b[1] - a[1])[0][0];
+  };
+  const vorschlagFuer = (f) => {
+    const fb = feldblockDatum.get(slFlikKern(f.flik));
+    if (fb) return { art: 'feldblock', datum: fb.datum, text: `Gleicher Feldblock wie ${fb.name} (Zugang ${slDeAusIso(fb.datum)})` };
+    const g = geo.byKey.get(f.key);
+    const herkunft = g && g.vorgaenger && g.anteilNeu < 0.9 ? slDatumVonNummer(ctx, g.vorgaengerNr) : null;
+    if (herkunft) return { art: 'vorjahr', datum: herkunft.datum, text: `War ${geo.vor.jahr} Teil von Nr. ${g.vorgaengerNr} (${herkunft.name}, Zugang ${slDeAusIso(herkunft.datum)})` };
+    return null;
+  };
+  const offeneNeu = neuOhneLe.filter(f => !d.zugangNeu[f.key]);
+  const mitFeldblock = offeneNeu.filter(f => vorschlagFuer(f)?.art === 'feldblock');
+  const ohneVorschlag = offeneNeu.filter(f => !vorschlagFuer(f));
+  const landText = { TH: 'Thüringen', ST: 'Sachsen-Anhalt', BY: 'Bayern', SN: 'Sachsen', BB: 'Brandenburg', HE: 'Hessen', NI: 'Niedersachsen', NW: 'NRW', RP: 'Rheinland-Pfalz', BW: 'Baden-Württemberg', MV: 'Mecklenburg-Vorpommern', SH: 'Schleswig-Holstein', SL: 'Saarland' };
+  const haeufigGruppen = new Map();
+  ohneVorschlag.forEach(f => { const dt = haeufigFuer(f); if (dt) { const k = slFlikLand(f.flik) + '|' + dt; haeufigGruppen.set(k, [...(haeufigGruppen.get(k) || []), f.key]); } });
+  const sammel = (mitFeldblock.length ? `<button type="button" class="betrieb-btn sl-bulk" data-sl-bulk="feldblock"><span class="material-symbols-rounded icon" aria-hidden="true">done_all</span>Feldblock-Datum für alle ${mitFeldblock.length} übernehmen</button>` : '')
+    + [...haeufigGruppen.entries()].map(([k, keys]) => { const [land, dt] = k.split('|');
+      return `<button type="button" class="betrieb-btn sl-bulk" data-sl-bulk-datum="${dt}" data-sl-bulk-keys="${escapeHtml(keys.join(','))}" title="Häufigstes Zugangsdatum der Liste${land ? ' in ' + escapeHtml(landText[land] || land) : ''}"><span class="material-symbols-rounded icon" aria-hidden="true">event_available</span>${slDeAusIso(dt)}${land ? ' (' + escapeHtml(land) + ')' : ''} für ${keys.length} ohne Vorschlag</button>`; }).join('');
+  const neuHtml = (sammel ? `<div class="sl-bulkbar">${sammel}</div>` : '') + neuOhneLe.map(f => {
+    const id = 'n:' + f.key;
+    const b = d.zugangNeu[f.key] || '';
+    const g = geo.byKey.get(f.key);
+    const vorschlag = vorschlagFuer(f);
+    const istNeuland = !vorschlag && (!g || !geo.vor || g.anteilNeu >= 0.9);
+    const info = vorschlag
+      ? `<p class="sl-why"><span class="material-symbols-rounded icon sl-inline-icon" aria-hidden="true">${vorschlag.art === 'feldblock' ? 'grid_view' : 'call_split'}</span>${escapeHtml(vorschlag.text)}.
+          ${vorschlag.datum !== b ? `<button type="button" class="betrieb-btn sl-uebernehmen" data-sl-datum="${escapeHtml(f.key)}" data-sl-datum-wert="${vorschlag.datum}">Datum übernehmen</button>` : ''}</p>`
+      : istNeuland && geo.vor ? `<p class="sl-krit"><span class="material-symbols-rounded icon" aria-hidden="true">warning</span><span><b>Neue Fläche</b> — ${escapeHtml(geo.vor.jahr)} noch nicht im Betrieb. Umstellungsbeginn eintragen.</span></p>`
+      : '';
+    return item(id, `<div class="sl-liste"><span class="sl-tag is-shape">${escapeHtml(y.jahr)}</span><b>${escapeHtml(f.nummer || '–')}</b> ${escapeHtml(f.name || '')} · ${slFmtHa(f.ha)}${f.flik ? ` <span class="sl-meta">${escapeHtml(f.flik)}</span>` : ''}${slKulturText(f)} ${b ? slBadge(slStatusInfo(b)) : ''} ${slAuge(id)} ${slKarteBtn(id)}</div>
+      ${info}
+      <div class="sl-match">
+        <label class="sl-date">Umstellungsbeginn <input type="date" data-sl-beginn="${escapeHtml(f.key)}" value="${b}"></label>
+        <button type="button" class="betrieb-btn sl-jan" data-sl-jan="${escapeHtml(f.key)}" title="Auf den 1.1. zurückdatieren (z.B. Bayern)">1.1.${jahrNeu}</button>
+        <button type="button" class="betrieb-btn sl-aus" data-sl-aus="${escapeHtml(f.key)}" title="Hecke, Feldgehölz o. ä. — gehört nicht in die Schlagliste"><span class="material-symbols-rounded icon" aria-hidden="true">visibility_off</span>Ausblenden</button>
+        ${fehlt.length ? `<select class="sl-select" data-sl-assign="${escapeHtml(f.key)}" aria-label="Listenzeile zuordnen"><option value="">… oder Listenzeile zuordnen</option>${fehlt.map(e => `<option value="${e.idx}">${escapeHtml(slZeileName(e.z) + ' · ' + slFmtHa(e.z.ha))}</option>`).join('')}</select>` : ''}
+      </div>`, istNeuland && geo.vor ? ' is-krit' : '');
+  }).join('');
+  const leHtml = leFlaechen.length ? `<ul class="sl-unv">${leFlaechen.map(f => `<li class="sl-le-item" data-sl-fall="l:${escapeHtml(f.key)}">${escapeHtml(f.nummer || '–')} · ${escapeHtml(f.kultur || 'Landschaftselement')} · ${slFmtHa(f.ha)}${f.flik ? ' · ' + escapeHtml(f.flik) : ''}${f.leManuell ? ` <span class="sl-meta">ausgeblendet</span> <button type="button" class="sl-undo" data-sl-ein="${escapeHtml(f.key)}">wieder einblenden</button>` : ''}</li>`).join('')}</ul>` : '';
+
+  // Kulturen: Zuordnung zum Katalog des externen Programms
+  const kulturen = slKulturen(ctx);
+  const kulturZeile = (k) => `<div class="sl-item sl-kitem${k.offen ? '' : ' is-done'}" data-sl-fall="c:${escapeHtml(k.quelle)}">
+      <span class="sl-done-mark" aria-hidden="true"><span class="material-symbols-rounded icon">check</span></span>
+      <div class="sl-liste"><span class="sl-tag is-shape">${escapeHtml(y.jahr)}</span>${escapeHtml(k.quelle)} <span class="sl-meta">${k.anzahl}× · ${formatHaExact(k.ha)} ha</span> ${slKulturBadge(k.zu)}</div>
+      ${k.liste && k.liste.length ? `<p class="sl-why sl-kliste"><span class="sl-tag">Liste</span>Bisher: ${k.liste.map(l => `<b>${escapeHtml(l.name)}</b> (${l.zeilen.map(escapeHtml).join(', ')})${l.name !== k.zu.name && kulturEintrag(l.name) ? ` <button type="button" class="sl-undo" data-sl-kultur-liste="${escapeHtml(k.quelle)}" data-sl-kultur-name="${escapeHtml(l.name)}">übernehmen</button>` : ''}`).join(' · ')}</p>` : ''}
+      <div class="sl-match">
+        <select class="sl-select" data-sl-kultur="${escapeHtml(k.quelle)}" aria-label="Kultur im externen Programm">
+          <option value="">— keine Zuordnung —</option>${SL_KATALOG_OPTIONEN.map(e => `<option value="${escapeHtml(e.name)}"${e.name === k.zu.name ? ' selected' : ''}>${escapeHtml(e.v)}</option>`).join('')}
+        </select>
+        ${k.kulturOffen && k.zu.name ? `<button type="button" class="betrieb-btn primary" data-sl-kultur-ok="${escapeHtml(k.quelle)}"><span class="material-symbols-rounded icon" aria-hidden="true">check</span>Passt</button>` : ''}
+      </div>
+      ${k.zu.name && d.kulturUebernehmen !== false ? `<div class="sl-match"><label class="sl-date">Kategorie
+        <select class="sl-select sl-kat" data-sl-kategorie="${escapeHtml(k.zu.name)}" aria-label="Kategorie für ${escapeHtml(k.zu.name)}">
+          <option value="">— bitte wählen —</option>${katOptionen.map(c => `<option${c === k.kategorie ? ' selected' : ''}>${escapeHtml(c)}</option>`).join('')}
+        </select></label>${k.kategorieOffen ? '<span class="sl-kbadge is-unbekannt">Kategorie fehlt</span>' : ''}</div>` : ''}
+    </div>`;
+  const katOptionen = slKategorieOptionen(ctx);
+  const kulturOffen = kulturen.filter(k => k.offen || k.bestaetigt);
+  const kulturEindeutig = kulturen.filter(k => !k.offen && !k.bestaetigt);
+  // Nutzungsnachweis (PDF) laden: Codes lernen, Flächen ohne Kultur ergänzen (fnn.js)
+  const ohneKultur = ctx.feats.filter(f => !f.le && !f.kultur).length;
+  const nurCode = kulturen.filter(k => /^\d+$/.test(k.quelle)).reduce((s, k) => s + k.anzahl, 0);
+  const fnnHtml = `<div class="sl-fnn">
+      <p class="sl-sec-hint">${ohneKultur || nurCode
+        ? `<b>${[ohneKultur ? `${ohneKultur} ${ohneKultur === 1 ? 'Fläche' : 'Flächen'} ohne Kultur` : '', nurCode ? `${nurCode} nur mit Nutzungscode` : ''].filter(Boolean).join(', ')}.</b> Den Flächen- und Nutzungsnachweis (PDF) laden — die App vergleicht ihn mit den Shapes und ergänzt die Kulturen.`
+        : 'Fehlt eine Kultur oder steht nur ein Nutzungscode da, hilft der Flächen- und Nutzungsnachweis (PDF).'}</p>
+      <label class="betrieb-btn sl-bulk"><span class="material-symbols-rounded icon" aria-hidden="true">upload_file</span>Nutzungsnachweis (PDF) laden<input type="file" id="sl-fnn-file" accept=".pdf,application/pdf" hidden></label>
+      ${d.fnnInfo ? `<p class="sl-why" id="sl-fnn-info">${escapeHtml(d.fnnInfo)}</p>` : ''}
+    </div>`;
+  const kulturHtml = fnnHtml + kulturOffen.map(kulturZeile).join('')
+    + (kulturEindeutig.length ? `<details class="sl-kfold"><summary>Eindeutig zugeordnet (${kulturEindeutig.length})</summary>${kulturEindeutig.map(kulturZeile).join('')}</details>` : '');
+
+  // 4) Nicht mehr in den Shapes
+  const nachAntrag = fehlt.filter(e => slNachAntrag(e));
+  const fehltEcht = fehlt.filter(e => !slNachAntrag(e));
+  const antragDatum = `15.05.${y.jahr}`;
+  const nachAntragHtml = nachAntrag.length ? `<ul class="sl-unv sl-nachantrag">${nachAntrag.map(e => `<li data-sl-fall="a:${e.idx}">${escapeHtml(slZeileName(e.z))} · ${slFmtHa(e.z.ha)}${e.z.zugang ? ` · Zugang ${slDeAusIso(e.z.zugang)}` : ''} ${e.z.zugang ? slBadge(slStatusInfo(e.z.zugang)) : ''}
+      <span class="sl-meta">${slNachAntrag(e) === 'auto' ? 'Zugang nach dem ' + antragDatum : 'markiert'}</span>
+      <button type="button" class="sl-undo" data-sl-nach-nein="${e.idx}">doch nicht</button></li>`).join('')}</ul>` : '';
+  const fehltHtml = fehltEcht.map(e => {
+    const id = 'f:' + e.idx;
+    const am = d.abgangAm[e.idx] || '';
+    const warDa = geo.vor && (geo.vorByNr.get(e.z.nr) || geo.vorByNr.get(e.z.bezNr));
+    return item(id, `${slZeileHtml(e, sl)}
+      ${warDa ? `<p class="sl-why">${escapeHtml(geo.vor.jahr)} noch auf der Karte (gestrichelt) ${slKarteBtn(id)} ${slAuge(id)}</p>` : ''}
+      ${zusammenHtml(e)}
+      <div class="sl-match">
+        <label class="sl-check"><input type="checkbox" data-sl-abgang="${e.idx}"${am ? ' checked' : ''}> Abgang eintragen am</label>
+        <button type="button" class="betrieb-btn sl-nach" data-sl-nach="${e.idx}" title="Fläche ist nach dem Agrarantrag (${antragDatum}) zugegangen und noch nicht in den Shapes — Zeile bleibt ohne Abgang"><span class="material-symbols-rounded icon" aria-hidden="true">event_upcoming</span>Nach Antrag zugegangen</button>
+        <input type="date" class="sl-date-input" data-sl-abgang-am="${e.idx}" value="${am || slStichtag()}"${am ? '' : ' disabled'}>
+        ${freieKeys.length ? slAuswahl({ ...e, key: null }, ctx, freieKeys, '… oder Fläche zuordnen') : ''}
+      </div>`);
+  }).join('');
+
+  // 5) Automatisch zugeordnet
+  const sicherHtml = sicher.length ? `<table class="sl-table"><thead><tr><th>Liste</th><th>ha</th><th>Fläche ${escapeHtml(y.jahr)}</th><th>ha</th><th>Status</th><th></th></tr></thead><tbody>${sicher.map(e => {
+    const f = featByKey.get(e.key);
+    const diff = e.z.ha !== null && f.ha !== null && Math.abs(e.z.ha - f.ha) > 0.00005;
+    return `<tr data-sl-row-key="${escapeHtml(e.key)}"${slFokus === 'z:' + e.key ? ' class="is-focus"' : ''}><td>${escapeHtml(slZeileName(e.z))}</td><td>${slFmtHa(e.z.ha)}</td><td>${escapeHtml((f.nummer || '–') + ' ' + (f.name || ''))}${e.art === 'manuell' ? ' <span class="sl-meta">manuell</span>' : ''} ${slChips(geo, f)}</td><td${diff ? ' class="is-diff"' : ''}>${slFmtHa(f.ha)}</td><td>${slBadge(slStatusInfo(e.z.zugang))}</td>
+      <td class="sl-td-btns">${slKarteBtn('z:' + e.key)}<button type="button" class="sl-undo" data-sl-reset="${e.idx}" title="Zuordnung prüfen">ändern</button></td></tr>`;
+  }).join('')}</tbody></table>` : '';
+  const unvHtml = unv.length ? `<ul class="sl-unv">${unv.map(e => `<li>Zeile ${e.idx + 2}${e.z.nr ? ' · Schlagnummer ' + escapeHtml(e.z.nr) : ''} — ohne Bezeichnung und Fläche, bleibt unverändert</li>`).join('')}</ul>` : '';
+  const liste = (typ) => faelle.filter(f => f.typ === typ);
+
+  document.getElementById('sl-body').innerHTML =
+    sec('is-krit', 'warning', `Kritische Änderungen (${kritisch.length})`, kritisch, vj ? `Flächen, an die seit ${escapeHtml(vj)} ein Teilstück dazugekommen ist (auf der Karte rot). Ein neues Teilstück hat oft einen eigenen Umstellungsbeginn.` : '', kritHtml)
+    + sec('is-warn', 'help', `Zweifelsfälle prüfen (${pruefen.length + manuell.length})`, liste('pruefen'), 'Vorschlag ansehen, ggf. andere Fläche wählen und mit „Passt“ bestätigen. Bis dahin bleibt die Zeile beim Export unverändert.', pruefenHtml)
+    + sec('is-neu', 'add_circle', `Neu in den Shapes (${neuOhneLe.length})`, liste('neu'), 'Nicht in der Schlagliste. Umstellungsbeginn eintragen — dann kommen sie beim Export als neue Zeile dazu. Teilstücke eines schon zugeordneten Feldblocks (gleiche FLIK) bekommen dessen Datum vorgeschlagen. Ist es eine umbenannte Fläche, die passende Listenzeile zuordnen.', neuHtml)
+    + sec('is-kultur', 'eco', `Kulturen (${kulturen.length})`, liste('kultur'), 'Kulturen aus den Shapes, übersetzt in den Kulturkatalog des externen Programms. „ähnlich“ und „unbekannt“ bitte prüfen — die Wahl merkt sich die App auch für andere Betriebe.', kulturHtml, kulturOffen.length > 0 || ohneKultur > 0, ohneKultur > 0)
+    + sec('is-le', 'park', `Landschaftselemente und ausgeblendet (${leFlaechen.length})`, null, 'Hecken, Baumreihen, Feldgehölze u. ä. gehören zum Schlag — kein eigener Umstellungsfall, kommen nicht in den Export. Erkennt die App ein solches Element nicht, blendest du es unter „Neu in den Shapes“ mit „Ausblenden“ aus.', leHtml, false)
+    + sec('is-fehlt', 'remove_circle', `Nicht in den Shapes ${escapeHtml(y.jahr)} (${fehltEcht.length})`, liste('fehlt'), `Diese Zeilen der Liste haben keine Fläche mehr. Abgang eintragen oder einer Fläche zuordnen. Ist die Fläche erst nach dem Agrarantrag (${antragDatum}) zum Betrieb gekommen — z. B. ein Bio-Zugang mit dem Umstellungsdatum des Vorbewirtschafters —, „Nach Antrag zugegangen“ wählen.`, fehltHtml)
+    + sec('is-nachantrag', 'event_upcoming', `Nach dem Agrarantrag zugegangen (${nachAntrag.length})`, null, `In der Liste, aber noch nicht in den Shapes ${escapeHtml(y.jahr)}: zugegangen nach dem ${antragDatum}. Kein Abgang — die Zeilen bleiben beim Export unverändert (nur der Umstellungsstatus wird zum Stichtag fortgeschrieben). Zeilen mit Zugang nach dem ${antragDatum} erkennt die App von selbst.`, nachAntragHtml, false)
+    + sec('is-ok', 'task_alt', `Automatisch zugeordnet (${sicher.length})`, null, '', sicherHtml, false)
+    + sec('', 'block', `Unvollständige Zeilen (${unv.length})`, null, '', unvHtml, false);
+
+  // Häkchen-Effekt für gerade erledigte Fälle, Feier bei 100 %
+  const erledigt = new Set(faelle.filter(f => f.erledigt).map(f => f.id));
+  if (slVorherErledigt) erledigt.forEach(id => { if (!slVorherErledigt.has(id)) document.querySelector(`#sl-body [data-sl-fall="${CSS.escape(id)}"]`)?.classList.add('just-done'); });
+  const fertig = faelle.length > 0 && erledigt.size === faelle.length;
+  if (fertig && slVorherErledigt && !slWarFertig) slKonfetti();
+  slWarFertig = fertig;
+  slVorherErledigt = erledigt;
+  slUndoKnopf();
+  renderSlMap(ctx, geo, fitMap);
+}
+
+// ---- Rückgängig / Zurücksetzen ----
+// Vor jeder Entscheidung im Panel wird der Stand gemerkt (slVorAenderung);
+// slSpeichern legt ihn auf den Stapel, wenn sich wirklich etwas geändert hat.
+const SL_ENTSCHEIDUNGEN = ['manuell', 'ausgeblendet', 'nachAntrag', 'zugangNeu', 'abgangAm', 'zurPruefung', 'unterflaechen', 'teilstueckOk', 'angesehen', 'kulturen', 'kategorien', 'kulturUebernehmen', 'stichtag', 'fnnInfo'];
+let slUndoStapel = [];
+let slVorAenderung = null;
+function slSchnappschuss(fallId = null) {
+  const d = schlaglisteData;
+  const werte = {};
+  SL_ENTSCHEIDUNGEN.forEach(k => { if (d[k] !== undefined) werte[k] = JSON.parse(JSON.stringify(d[k])); });
+  let lsKultur = null, lsKategorie = null;
+  try { lsKultur = localStorage.getItem(SL_KULTUR_KEY); lsKategorie = localStorage.getItem(SL_KATEGORIE_KEY); } catch { /* ohne Speicher */ }
+  return { werte, lsKultur, lsKategorie, fallId };
+}
+const slStandGleich = (a, b) => JSON.stringify(a.werte) === JSON.stringify(b.werte) && a.lsKultur === b.lsKultur && a.lsKategorie === b.lsKategorie;
+function slUndoMerken() {
+  if (!slVorAenderung || !schlaglisteData) return;
+  if (!slStandGleich(slVorAenderung, slSchnappschuss())) {
+    slUndoStapel.push(slVorAenderung);
+    if (slUndoStapel.length > 30) slUndoStapel.shift();
+  }
+  slVorAenderung = null;
+}
+function slUndoKnopf() {
+  const b = document.getElementById('sl-undo');
+  b.disabled = !slUndoStapel.length;
+  b.title = slUndoStapel.length ? `Letzte Entscheidung rückgängig machen (${slUndoStapel.length} gemerkt)` : 'Noch nichts zum Rückgängigmachen';
+}
+function slUndo() {
+  const s = slUndoStapel.pop();
+  if (!s || !schlaglisteData) return;
+  const d = schlaglisteData;
+  SL_ENTSCHEIDUNGEN.forEach(k => { if (k in s.werte) d[k] = s.werte[k]; else delete d[k]; });
+  try {
+    if (s.lsKultur === null) localStorage.removeItem(SL_KULTUR_KEY); else localStorage.setItem(SL_KULTUR_KEY, s.lsKultur);
+    if (s.lsKategorie === null) localStorage.removeItem(SL_KATEGORIE_KEY); else localStorage.setItem(SL_KATEGORIE_KEY, s.lsKategorie);
+  } catch { /* ohne Speicher */ }
+  slVorherErledigt = null; // kein Häkchen-Effekt beim Zurücknehmen
+  slGeoCache = null;
+  persistLocalState().catch(() => {});
+  renderSchlaglisteReview();
+  renderSchlaglisteBox();
+  // zur betroffenen Fläche zurück
+  if (s.fallId && document.querySelector(`#sl-body [data-sl-fall="${CSS.escape(s.fallId)}"]`)) slFocus(s.fallId);
+}
+function slZuruecksetzen() {
+  const d = schlaglisteData;
+  if (!d) return;
+  if (!confirm('Alle Entscheidungen dieses Abgleichs verwerfen (Zuordnungen, Umstellungsdaten, Abgänge, Unterflächen, ausgeblendete Flächen, Kulturen)? Die Schlagliste selbst bleibt geladen. Mit „Rückgängig“ lässt sich das zurücknehmen.')) return;
+  slVorAenderung = slSchnappschuss(null);
+  // hier gelernte Kulturen/Kategorien auch aus dem Gedächtnis nehmen, sonst wären sie gleich wieder "geklärt"
+  try {
+    [[SL_KULTUR_KEY, d.kulturen], [SL_KATEGORIE_KEY, d.kategorien]].forEach(([key, lokal]) => {
+      if (!lokal) return;
+      const g = JSON.parse(localStorage.getItem(key) || '{}') || {};
+      Object.entries(lokal).forEach(([k, v]) => { if (g[k] === v) delete g[k]; });
+      localStorage.setItem(key, JSON.stringify(g));
+    });
+  } catch { /* ohne Speicher */ }
+  Object.assign(d, { manuell: {}, ausgeblendet: {}, nachAntrag: {}, zugangNeu: {}, abgangAm: {}, zurPruefung: {}, unterflaechen: {}, teilstueckOk: {}, angesehen: {}, kulturen: {}, kategorien: {} });
+  slGeoCache = null;
+  delete d.fnnInfo;
+  slFokus = null;
+  slVorherErledigt = null;
+  slWarFertig = false;
+  slSpeichern();
+  renderSchlaglisteBox();
+  refreshCompareStatusColumn();
+}
+
+// ---- Karte ----
+function slPanelPadding() {
+  const panel = document.getElementById('sl-overlay');
+  const r = panel.getBoundingClientRect();
+  const mapR = map.getContainer().getBoundingClientRect();
+  if (featureTableMobile.matches) return { paddingTopLeft: [20, 20], paddingBottomRight: [20, Math.max(20, mapR.bottom - r.top + 20)] };
+  return { paddingTopLeft: [30, 30], paddingBottomRight: [Math.max(30, mapR.right - r.left + 30), 30] };
+}
+function renderSlMap(ctx, geo, fit) {
+  if (slMapLayer) map.removeLayer(slMapLayer);
+  slMapLayer = L.featureGroup().addTo(map);
+  const d = schlaglisteData;
+  const zeileByKey = new Map(ctx.abgleich.zeilen.filter(e => e.key).map(e => [e.key, e]));
+  const neuKeys = new Set(ctx.abgleich.neu.map(f => f.key));
+  const fallFuer = (f) => {
+    const e = zeileByKey.get(f.key);
+    if (geo.byKey.get(f.key)?.neuGeom) return 'k:' + f.key;
+    if (e && e.art === 'pruefen') return 'p:' + e.idx;
+    if (neuKeys.has(f.key)) return f.le ? 'l:' + f.key : 'n:' + f.key;
+    return 'z:' + f.key;
+  };
+  const klick = (id) => (ev) => { L.DomEvent.stopPropagation(ev); slFocus(id, { vonKarte: true }); };
+  ctx.feats.forEach(f => {
+    if (!f.feature || !f.feature.geometry) return;
+    const e = zeileByKey.get(f.key);
+    const farbe = f.le && neuKeys.has(f.key) ? SL_FARBEN.le : neuKeys.has(f.key) ? SL_FARBEN.neu : e && e.art === 'pruefen' ? SL_FARBEN.pruefen : SL_FARBEN.zugeordnet;
+    const id = fallFuer(f);
+    const lyr = L.geoJSON(f.feature, { style: { color: farbe, weight: f.le ? 1 : 1.6, dashArray: f.le ? '2,3' : null, fillColor: farbe, fillOpacity: f.le ? 0.12 : 0.22, className: f.le ? 'sl-flaeche sl-le' : 'sl-flaeche' } });
+    lyr.on('click', klick(id));
+    lyr.addTo(slMapLayer);
+    addFeatureLabel(f.feature, featureLabelHtml(f.nummer, f.name), slMapLayer);
+    const g = geo.byKey.get(f.key);
+    if (g && g.wegGeom) L.geoJSON(g.wegGeom, { interactive: false, style: { color: SL_FARBEN.weg, weight: 1.6, dashArray: '5,4', fillColor: SL_FARBEN.weg, fillOpacity: 0.08, className: 'sl-weg' } }).addTo(slMapLayer);
+    if (g && g.neuGeom) {
+      const u = d.unterflaechen[f.key];
+      const st = u && u.beginn ? slStatusInfo(u.beginn) : null;
+      const c = st ? { konv: '#6B7480', umst: '#E8A33D', oeko: '#2F6B3A' }[st.key] : SL_FARBEN.plus;
+      const tl = L.geoJSON(g.neuGeom, { style: { color: c, weight: 2, dashArray: st ? '6,4' : null, fillColor: c, fillOpacity: st ? 0.5 : 0.65, className: 'sl-teilstueck' } });
+      tl.on('click', klick(id));
+      tl.addTo(slMapLayer);
+    }
+  });
+  // Listenzeilen ohne Fläche: Vorjahresform gestrichelt
+  ctx.abgleich.zeilen.filter(e => e.art === 'fehlt' || e.art === 'abgang').forEach(e => {
+    const v = geo.vor && (geo.vorByNr.get(e.z.nr) || geo.vorByNr.get(e.z.bezNr));
+    if (!v) return;
+    const lyr = L.geoJSON(v, { style: { color: SL_FARBEN.fehlt, weight: 1.6, dashArray: '4,4', fillColor: SL_FARBEN.fehlt, fillOpacity: 0.06, className: 'sl-fehlt' } });
+    lyr.on('click', klick('f:' + e.idx));
+    lyr.addTo(slMapLayer);
+    addFeatureLabel(v, featureLabelHtml(e.z.nr || e.z.bezNr, e.z.name), slMapLayer);
+  });
+  if (fit && slMapLayer.getLayers().length) map.fitBounds(slMapLayer.getBounds(), slPanelPadding());
+  if (slFokus) slZeigeFokus(slFokus, false);
+}
+// Geometrien eines Falls (für Hervorhebung und Zoom)
+function slFallGeometrien(id) {
+  const ctx = slBerechne();
+  const geo = slGeoAnalyse(ctx.y, ctx.feats);
+  const [typ, rest] = [id.slice(0, 1), id.slice(2)];
+  const out = [];
+  const fl = (key) => ctx.featByKey.get(key);
+  if (typ === 'k' || typ === 'n' || typ === 'z' || typ === 'l') {
+    const f = fl(rest);
+    if (f && f.feature) out.push(f.feature);
+    const g = geo.byKey.get(rest);
+    if (g && g.neuGeom) out.push(g.neuGeom);
+  } else if (typ === 'p') {
+    const e = ctx.abgleich.zeilen[Number(rest)];
+    if (e && e.key && fl(e.key)) out.push(fl(e.key).feature);
+  } else if (typ === 'f') {
+    const e = ctx.abgleich.zeilen[Number(rest)];
+    const v = e && geo.vor && (geo.vorByNr.get(e.z.nr) || geo.vorByNr.get(e.z.bezNr));
+    if (v) out.push(v);
+  }
+  return out;
+}
+function slZeigeFokus(id, fliegen = true) {
+  if (slFocusLayer) { map.removeLayer(slFocusLayer); slFocusLayer = null; }
+  const geoms = slFallGeometrien(id);
+  if (!geoms.length) return false;
+  slFocusLayer = L.featureGroup(geoms.map(g => L.geoJSON(g, { interactive: false, style: { color: '#FFFFFF', weight: 4, fill: false, className: 'sl-focus' } }))).addTo(map);
+  if (fliegen) map.flyToBounds(slFocusLayer.getBounds(), { ...slPanelPadding(), maxZoom: 17, duration: 0.6 });
+  return true;
+}
+function slFocus(id, { vonKarte = false } = {}) {
+  const d = schlaglisteData;
+  slFokus = id;
+  const gezeigt = slZeigeFokus(id, !vonKarte);
+  const wasNew = gezeigt && !(d.angesehen || {})[id];
+  if (gezeigt) { d.angesehen = d.angesehen || {}; d.angesehen[id] = true; }
+  document.querySelectorAll('#sl-body .is-focus').forEach(el => el.classList.remove('is-focus'));
+  const el = document.querySelector(`#sl-body [data-sl-fall="${CSS.escape(id)}"]`) || document.querySelector(`#sl-body [data-sl-row-key="${CSS.escape(id.slice(2))}"]`);
+  if (el) {
+    el.closest('.sl-sec')?.querySelectorAll('details').forEach(x => { if (x.contains(el)) x.open = true; });
+    const sec = el.closest('.sl-sec');
+    if (sec && !sec.open) { sec.open = true; slSecMerken(sec); }
+    el.classList.add('is-focus');
+    if (vonKarte) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+  if (wasNew) {
+    persistLocalState().catch(() => {});
+    // nur Fortschritt (Augen) auffrischen, Panel-Inhalt bleibt stehen
+    const ctx = slBerechne();
+    document.getElementById('sl-progress-wrap').innerHTML = slFortschrittHtml(slFaelle(ctx, slGeoAnalyse(ctx.y, ctx.feats)));
+    if (el && !el.querySelector('.sl-eye')) el.querySelector('.sl-liste, td')?.insertAdjacentHTML('beforeend', ' ' + slAuge(id));
+  }
+}
+
+// Nutzungsnachweis (PDF) auf alle hinterlegten Jahre anwenden
+async function slFnnLaden(datei) {
+  const d = schlaglisteData;
+  try {
+    const features = compareYears.flatMap(y => y.fc.features || []);
+    d.fnnInfo = 'Lese Nutzungsnachweis …';
+    renderSchlaglisteReview();
+    const r = await fnnLernenUndAnwenden(await datei.arrayBuffer(), features);
+    const teile = [];
+    if (r.gelernt) teile.push(`${r.gelernt} Nutzungscodes erkannt`);
+    if (r.uebersetzt) teile.push(`${r.uebersetzt} Flächen mit Kultur statt Code`);
+    if (r.ergaenzt) teile.push(`${r.ergaenzt} Flächen über die FLIK ergänzt`);
+    d.fnnInfo = `${datei.name}: ${teile.length ? teile.join(', ') : 'nichts Passendes gefunden (Codes bzw. FLIK stimmen nicht mit den Shapes überein)'}.`;
+    slGeoCache = null;
+    renderCompareYears();
+  } catch (err) {
+    console.error(err);
+    d.fnnInfo = `${datei.name}: konnte nicht gelesen werden (${err.message || 'unbekannter Fehler'}).`;
+  }
+  slSpeichern();
+}
+function slSpeichern() {
+  slUndoMerken();
+  persistLocalState().catch(() => {});
+  renderSchlaglisteReview();
+}
+const slOverlay = document.getElementById('sl-overlay');
+slOverlay.addEventListener('click', (e) => {
+  const d = schlaglisteData;
+  if (!d) return;
+  const t = e.target;
+  const sum = t.closest('#sl-body .sl-sec > summary');
+  if (sum) { setTimeout(() => slSecMerken(sum.parentElement)); return; } // Auf-/Zuklappen merken
+  if (t.closest('#sl-undo')) return slUndo();
+  if (t.closest('#sl-reset2')) return slZuruecksetzen();
+  slVorAenderung = slSchnappschuss(t.closest('[data-sl-fall]')?.dataset.slFall || null);
+  const ok = t.closest('[data-sl-ok]');
+  if (ok) {
+    const idx = Number(ok.dataset.slOk);
+    const sel = slOverlay.querySelector(`[data-sl-match="${idx}"]`);
+    d.manuell[idx] = sel.value || null;
+    if (d.zurPruefung) delete d.zurPruefung[idx];
+    if (!sel.value) d.abgangAm[idx] = d.abgangAm[idx] || slStichtag();
+    return slSpeichern();
+  }
+  const nach = t.closest('[data-sl-nach]');
+  if (nach) {
+    const idx = Number(nach.dataset.slNach);
+    d.nachAntrag = { ...(d.nachAntrag || {}), [idx]: true };
+    delete d.abgangAm[idx];
+    return slSpeichern();
+  }
+  const nachNein = t.closest('[data-sl-nach-nein]');
+  if (nachNein) {
+    d.nachAntrag = { ...(d.nachAntrag || {}), [Number(nachNein.dataset.slNachNein)]: false };
+    return slSpeichern();
+  }
+  const aus = t.closest('[data-sl-aus]');
+  if (aus) {
+    d.ausgeblendet = { ...(d.ausgeblendet || {}), [aus.dataset.slAus]: true };
+    delete d.zugangNeu[aus.dataset.slAus];
+    slGeoCache = null;
+    return slSpeichern();
+  }
+  const ein = t.closest('[data-sl-ein]');
+  if (ein) {
+    d.ausgeblendet = { ...(d.ausgeblendet || {}) };
+    delete d.ausgeblendet[ein.dataset.slEin];
+    slGeoCache = null;
+    return slSpeichern();
+  }
+  const jan = t.closest('[data-sl-jan]');
+  if (jan) { d.zugangNeu[jan.dataset.slJan] = `${slStichtag().slice(0, 4)}-01-01`; return slSpeichern(); }
+  const bulk = t.closest('[data-sl-bulk="feldblock"]');
+  if (bulk) {
+    const ctx = slBerechne();
+    const datumJeKern = new Map();
+    ctx.abgleich.zeilen.filter(e => e.key && e.art !== 'pruefen' && e.z.zugang).forEach(e => { const k = slFlikKern(ctx.featByKey.get(e.key).flik); if (k && !datumJeKern.has(k)) datumJeKern.set(k, e.z.zugang); });
+    ctx.abgleich.neu.filter(f => !f.le && !d.zugangNeu[f.key]).forEach(f => { const dt = datumJeKern.get(slFlikKern(f.flik)); if (dt) d.zugangNeu[f.key] = dt; });
+    return slSpeichern();
+  }
+  const bulkDatum = t.closest('[data-sl-bulk-datum]');
+  if (bulkDatum) {
+    const keys = bulkDatum.dataset.slBulkKeys.split(',');
+    if (!confirm(`${keys.length} neue Flächen ohne anderen Hinweis bekommen den Umstellungsbeginn ${slDeAusIso(bulkDatum.dataset.slBulkDatum)}. Einzelne kannst du danach noch ändern. Übernehmen?`)) return;
+    keys.forEach(k => { if (!d.zugangNeu[k]) d.zugangNeu[k] = bulkDatum.dataset.slBulkDatum; });
+    return slSpeichern();
+  }
+  const zus = t.closest('[data-sl-zusammen]');
+  if (zus) {
+    const z = slZusammenlegungen(slBerechne()).get(Number(zus.dataset.slZusammen));
+    if (!z) return;
+    const { f, zeilen } = z;
+    const haupt = zeilen.slice().sort((a, b) => b.z.ha - a.z.ha)[0];
+    zeilen.forEach(x => {
+      if (x === haupt) { d.manuell[x.idx] = f.key; delete d.abgangAm[x.idx]; if (d.zurPruefung) delete d.zurPruefung[x.idx]; }
+      else { d.manuell[x.idx] = null; d.abgangAm[x.idx] = d.abgangAm[x.idx] || slStichtag(); }
+    });
+    return slSpeichern();
+  }
+  const kulturListe = t.closest('[data-sl-kultur-liste]');
+  if (kulturListe) { slKulturMerken(kulturListe.dataset.slKulturListe, kulturListe.dataset.slKulturName); return slSpeichern(); }
+  const kulturOk = t.closest('[data-sl-kultur-ok]');
+  if (kulturOk) {
+    const sel = slOverlay.querySelector(`[data-sl-kultur="${CSS.escape(kulturOk.dataset.slKulturOk)}"]`);
+    if (sel && sel.value) slKulturMerken(kulturOk.dataset.slKulturOk, sel.value);
+    return slSpeichern();
+  }
+  const uebernehmen = t.closest('[data-sl-datum]');
+  if (uebernehmen) { d.zugangNeu[uebernehmen.dataset.slDatum] = uebernehmen.dataset.slDatumWert; return slSpeichern(); }
+  const unter = t.closest('[data-sl-unter]');
+  if (unter) {
+    const key = unter.dataset.slUnter;
+    const datum = slOverlay.querySelector(`[data-sl-unter-datum="${CSS.escape(key)}"]`).value;
+    if (!datum) return;
+    const ctx = slBerechne();
+    const g = slGeoAnalyse(ctx.y, ctx.feats).byKey.get(key);
+    d.unterflaechen[key] = { beginn: datum, ha: Math.round(g.neuHa * 10000) / 10000 };
+    delete d.teilstueckOk[key];
+    return slSpeichern();
+  }
+  const unterWeg = t.closest('[data-sl-unter-weg]');
+  if (unterWeg) { delete d.unterflaechen[unterWeg.dataset.slUnterWeg]; return slSpeichern(); }
+  const teilOk = t.closest('[data-sl-teil-ok]');
+  if (teilOk) { d.teilstueckOk[teilOk.dataset.slTeilOk] = true; return slSpeichern(); }
+  const teilReset = t.closest('[data-sl-teil-reset]');
+  if (teilReset) { delete d.teilstueckOk[teilReset.dataset.slTeilReset]; return slSpeichern(); }
+  const reset = t.closest('[data-sl-reset]');
+  if (reset) {
+    // zurück in die Prüfung: Zuordnung als Vorschlag stehen lassen
+    const idx = Number(reset.dataset.slReset);
+    delete d.manuell[idx];
+    d.zurPruefung = { ...(d.zurPruefung || {}), [idx]: true };
+    return slSpeichern();
+  }
+  const fokus = t.closest('[data-sl-focus]');
+  if (fokus) return slFocus(fokus.dataset.slFocus);
+  // Klick auf eine Karte (nicht auf Bedienelemente) zeigt den Fall auf der Karte
+  if (t.closest('input, select, button, label, summary, a')) return;
+  const karte = t.closest('[data-sl-fall]');
+  if (karte) return slFocus(karte.dataset.slFall);
+  const zeile = t.closest('[data-sl-row-key]');
+  if (zeile) return slFocus('z:' + zeile.dataset.slRowKey);
+});
+slOverlay.addEventListener('change', (e) => {
+  const d = schlaglisteData;
+  if (!d) return;
+  const t = e.target;
+  slVorAenderung = slSchnappschuss(t.closest('[data-sl-fall]')?.dataset.slFall || null);
+  if (t.matches('[data-sl-match]')) {
+    const idx = Number(t.dataset.slMatch);
+    if (t.closest('.sl-sec.is-fehlt')) {
+      // Zeile ohne Fläche: Fläche direkt zuordnen
+      if (t.value) { d.manuell[idx] = t.value; delete d.abgangAm[idx]; return slSpeichern(); }
+      return;
+    }
+    return; // Zweifelsfall: erst mit "Passt" übernehmen
+  }
+  if (t.matches('[data-sl-unter-datum]')) return; // erst mit "Unterfläche anlegen"
+  if (t.matches('[data-sl-kultur]')) { if (t.value) slKulturMerken(t.dataset.slKultur, t.value); return slSpeichern(); }
+  if (t.matches('[data-sl-kategorie]')) { if (t.value) slKategorieMerken(t.dataset.slKategorie, t.value); return slSpeichern(); }
+  if (t.id === 'sl-kultur-uebernehmen') { d.kulturUebernehmen = t.checked; return slSpeichern(); }
+  if (t.id === 'sl-fnn-file') {
+    const datei = t.files[0];
+    t.value = '';
+    if (datei) slFnnLaden(datei);
+    return;
+  }
+  if (t.matches('[data-sl-beginn]')) { if (t.value) d.zugangNeu[t.dataset.slBeginn] = t.value; else delete d.zugangNeu[t.dataset.slBeginn]; return slSpeichern(); }
+  if (t.matches('[data-sl-assign]')) { if (t.value !== '') { d.manuell[Number(t.value)] = t.dataset.slAssign; delete d.abgangAm[Number(t.value)]; delete d.zugangNeu[t.dataset.slAssign]; } return slSpeichern(); }
+  if (t.matches('[data-sl-abgang]')) {
+    const idx = Number(t.dataset.slAbgang);
+    if (t.checked) d.abgangAm[idx] = slOverlay.querySelector(`[data-sl-abgang-am="${idx}"]`).value || slStichtag();
+    else delete d.abgangAm[idx];
+    return slSpeichern();
+  }
+  if (t.matches('[data-sl-abgang-am]')) { if (t.value) d.abgangAm[Number(t.dataset.slAbgangAm)] = t.value; return slSpeichern(); }
+  if (t.matches('[data-sl-text]')) {
+    d.statusTexte[t.dataset.slText] = t.value.trim() || SL_STATUS_STANDARD[t.dataset.slText];
+    try { localStorage.setItem(SL_TEXTE_KEY, JSON.stringify(d.statusTexte)); } catch { /* ohne Speicher */ }
+    return slSpeichern();
+  }
+  if (t.id === 'sl-jahr') {
+    if (t.value !== d.jahr && (Object.keys(d.manuell).length || Object.keys(d.zugangNeu).length || Object.keys(d.unterflaechen || {}).length) && !confirm('Für ein anderes Jahr gelten die bisherigen manuellen Zuordnungen nicht mehr. Wechseln?')) { t.value = d.jahr; return; }
+    Object.assign(d, { jahr: t.value, manuell: {}, ausgeblendet: {}, nachAntrag: {}, zugangNeu: {}, zurPruefung: {}, unterflaechen: {}, teilstueckOk: {}, angesehen: {} });
+    slFokus = null;
+    slUndoStapel = [];
+    Object.keys(slSecZustand).forEach(k => delete slSecZustand[k]);
+    slVorAenderung = null;
+    persistLocalState().catch(() => {});
+    slVorherErledigt = null;
+    return renderSchlaglisteReview(true);
+  }
+  if (t.id === 'sl-stichtag') { d.stichtag = t.value || slHeute(); return slSpeichern(); }
+});
+
+// ---- Export für den Wiederimport ----
+function exportSchlagliste() {
+  const d = schlaglisteData;
+  if (!d) return;
+  const ctx = slBerechne();
+  if (!ctx.y) { showCompareError('Erst Shape-Dateien eines Jahres hinterlegen.'); return; }
+  const n = slZaehle(ctx.abgleich);
+  const offen = [];
+  if (n.pruefen) offen.push(`${n.pruefen} Zweifelsfälle (bleiben unverändert)`);
+  if (n.offenNeu) offen.push(`${n.offenNeu} neue Flächen ohne Umstellungsbeginn (werden nicht angehängt)`);
+  const fehltOffen = n.offenFehlt;
+  if (fehltOffen) offen.push(`${fehltOffen} Zeilen ohne Fläche und ohne Abgang (bleiben unverändert)`);
+  const kritOffen = slFaelle(ctx, slGeoAnalyse(ctx.y, ctx.feats)).filter(f => f.typ === 'kritisch' && !f.erledigt).length;
+  if (kritOffen) offen.push(`${kritOffen} kritische Änderungen (Teilstück dazugekommen) nicht geklärt`);
+  if (offen.length && !confirm('Noch offen:\n• ' + offen.join('\n• ') + '\n\nTrotzdem exportieren?')) return;
+  // Kategorie je Kultur: festgelegt > aus der Liste gelernt (z.B. Winterweizen -> Getreide) > Regel
+  const gelernteKategorien = slGelernteKategorien(ctx);
+  const kulturListe = slKulturen(ctx);
+  const offeneKulturen = kulturListe.filter(k => k.kulturOffen).length, ohneKategorie = kulturListe.filter(k => k.kategorieOffen).length;
+  if (offeneKulturen && d.kulturUebernehmen !== false) offen.push(`${offeneKulturen} Kulturen ohne bestätigte Zuordnung (werden mit dem Vorschlag exportiert, „unbekannt“ bleibt unverändert)`);
+  if (ohneKategorie && d.kulturUebernehmen !== false) offen.push(`${ohneKategorie} Kulturen ohne Kategorie (dort bleiben Kultur und Kategorie unverändert)`);
+  // "Fläche besichtigt im Jahr": Häkchen "Besichtigt" der Flächentabelle (gleiche Nummer)
+  const besichtigtNr = new Set(featureIndex.filter(en => en.besichtigt && en.nummer).map(en => en.nummer));
+  const besichtigt = new Set(ctx.feats.filter(f => f.nummer && besichtigtNr.has(f.nummer)).map(f => f.key));
+  const aoa = slExportZeilen(ctx.sl, ctx.abgleich, {
+    featByKey: ctx.featByKey, stichtag: slStichtag(), statusTexte: d.statusTexte,
+    zugangNeu: d.zugangNeu, abgangAm: d.abgangAm, besichtigt, unterflaechen: d.unterflaechen || {},
+    kulturFuer: d.kulturUebernehmen === false ? null : (key, zeile) => {
+      const zu = slKulturVon(ctx.featByKey.get(key));
+      if (!zu || !zu.name) return null;
+      // gleiche Kultur wie bisher in der Liste: Schreibweise der Liste behalten
+      if (zeile && zeile.kultur && kulturZuordnen(zeile.kultur, slKulturGemerkt()).name === zu.name) return null;
+      const kategorie = kategorieFuer(zu.name, gelernteKategorien);
+      // ohne passende Kategorie lieber nichts ändern als "Getreide | Hanf" erzeugen
+      if (!kategorie && zeile) return null;
+      return { kultur: zu.name, kategorie };
+    }
+  });
+  // Gleiches Format wie die Vorlage: alles als Text ("@"), nur "ha" als Zahl.
+  const haCol = d.header.indexOf('ha');
+  const ws = {};
+  aoa.forEach((row, r) => row.forEach((v, c) => {
+    const ref = XLSX.utils.encode_cell({ r, c });
+    if (r > 0 && c === haCol && v !== '' && isFinite(Number(v))) ws[ref] = { t: 'n', v: Number(v), z: 'General' };
+    else if (v === '' || v === null || v === undefined) ws[ref] = { t: 'z', z: '@' };
+    else ws[ref] = { t: 's', v: String(v), z: '@' };
+  }));
+  ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: aoa.length - 1, c: d.header.length - 1 } });
+  if (d.cols && d.cols.length) ws['!cols'] = d.cols.map(c => c || {});
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, d.sheetName || 'Tabelle1');
+  const base = d.fileName.replace(/\.xlsx?$/i, '');
+  XLSX.writeFile(wb, `${base} (abgeglichen ${slStichtag()}).xlsx`);
+  setCompareStatus('Schlagliste für den Import exportiert.');
+}
+
+// Spalte "Umstellung" in der Vergleichstabelle (nur angemeldet und mit Schlagliste)
+function refreshCompareStatusColumn() {
+  const aktiv = !!schlaglisteData && document.body.dataset.auth === 'in';
+  document.getElementById('compare-th-umst').hidden = !aktiv;
+  if (compareRecords.length) renderCompareTable(compareRecords);
+}
+renderSchlaglisteBox();
 
 // ---------- Fruchtfolge ----------
 // Liest die im Jahresvergleich hinterlegten Jahre (compareYears, je Betrieb
@@ -7564,7 +9085,7 @@ function updateAccountButton() {
   document.getElementById('brand-logo').classList.toggle('is-logged-in', !!accountSession);
   // "Besichtigt" in der Flächentabelle gibt es nur angemeldet.
   const auth = accountSession ? 'in' : 'out';
-  if (document.body.dataset.auth !== auth) { document.body.dataset.auth = auth; renderFeatureTable(); }
+  if (document.body.dataset.auth !== auth) { document.body.dataset.auth = auth; renderFeatureTable(); refreshCompareStatusColumn(); }
   // Der Terminkalender ist ohne Anmeldung ohnehin nur ein "bitte anmelden"-
   // Hinweis (siehe #terminkalender-not-logged-in) — der eigene, groß
   // abgesetzte Umschalter-Button lenkt in der normalen (nicht angemeldeten)
@@ -8320,7 +9841,39 @@ function refreshAutoSyncTimer() {
   if (autoSyncEnabled && isSupabaseConfigured && accountSession) {
     autoSyncTimer = setInterval(runAutoSync, AUTO_SYNC_INTERVAL_MS);
   }
+  syncKanalAktualisieren();
 }
+
+// ---- Sofort-Abgleich ----
+// Der 30-s-Takt bleibt als Rückfall. Zusätzlich: gleich nach einem Upload bzw.
+// einer lokalen Änderung abgleichen, beim Zurückkehren in die App abholen und
+// auf das "es gibt Neues" der anderen Geräte reagieren (Realtime-Kanal).
+let syncKanal = null;
+let syncKanalUser = null;
+let syncBaldTimer = null;
+const syncAutoAktiv = () => autoSyncEnabled && !!accountSession && !accountSession.offline &&
+  (isSupabaseConfigured || (import.meta.env.DEV && !!window.__ffTestCloud));
+function syncBald(ms = 800) {
+  if (!syncAutoAktiv()) return;
+  clearTimeout(syncBaldTimer);
+  syncBaldTimer = setTimeout(() => { syncBaldTimer = null; syncWithCloud(); }, ms);
+}
+function syncKanalAktualisieren() {
+  const uid = autoSyncEnabled && accountSession && !accountSession.offline ? currentUserId() : null;
+  if (uid === syncKanalUser) return;
+  if (syncKanal) { syncKanal.schliessen(); syncKanal = null; }
+  syncKanalUser = uid;
+  if (uid) syncKanal = oeffneSyncKanal(uid, () => syncBald(300));
+}
+let syncZuletztAbgeholt = 0;
+function syncBeimZurueckkehren() {
+  if (document.hidden || Date.now() - syncZuletztAbgeholt < 5000) return;
+  syncZuletztAbgeholt = Date.now();
+  syncBald(150);
+}
+window.addEventListener('focus', syncBeimZurueckkehren);
+// Dev-only Testhaken: "es gibt Neues" von einem anderen Gerät nachahmen, gesendete Anstöße zählen
+if (import.meta.env.DEV) window.__ffTestSync = { gesendet: 0, ping: () => syncBald(300) };
 
 btnSync.addEventListener('click', () => {
   autoSyncEnabled = !autoSyncEnabled;
@@ -8333,7 +9886,7 @@ btnSync.addEventListener('click', () => {
 // warten — das ist der Moment, in dem ungespeicherte Änderungen am ehesten
 // verloren gehen könnten, z.B. weil der Tab danach ganz geschlossen wird.
 document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) return;
+  if (!document.hidden) { syncBeimZurueckkehren(); return; }
   persistLocalState();
   runAutoSync();
 });
@@ -8385,7 +9938,8 @@ function serializeWorkspace() {
     stallplaene: stallplaene.map(p => structuredClone(p)),
     vergleichsjahre: compareYears.map(y => ({ jahr: y.jahr, fileName: y.fileName, layerName: y.layerName, fc: y.fc })),
     // als Liste (leer = kein Tierbestand), damit ein leerer Workspace leer bleibt
-    tierbestand: tierbestandData ? [structuredClone(tierbestandData)] : []
+    tierbestand: tierbestandData ? [structuredClone(tierbestandData)] : [],
+    schlagliste: schlaglisteData ? [structuredClone(schlaglisteData)] : []
   };
 }
 
@@ -8399,6 +9953,11 @@ function restoreWorkspace(data) {
   if ((data.tierbestand || []).length) {
     tierbestandData = structuredClone(data.tierbestand[0]);
     refreshTierbestandIfOpen();
+  }
+  if ((data.schlagliste || []).length) {
+    schlaglisteData = structuredClone(data.schlagliste[0]);
+    renderSchlaglisteBox();
+    refreshCompareStatusColumn();
   }
   if ((data.vergleichsjahre || []).length) {
     compareYears = data.vergleichsjahre.map((y, i) => ({ id: 'cy-r' + i + '-' + Date.now().toString(36), jahr: y.jahr || '', fileName: y.fileName || 'Datei', layerName: y.layerName || '', fc: y.fc }));
@@ -8495,6 +10054,10 @@ function clearAllStallplaene() {
 }
 function clearWorkspace() {
   tierbestandData = null;
+  schlaglisteData = null;
+  closeSchlaglisteReview();
+  renderSchlaglisteBox();
+  refreshCompareStatusColumn();
   refreshTierbestandIfOpen();
   clearAllCompareYears();
   clearAllLayers();
@@ -8563,7 +10126,7 @@ async function switchWorkspace(oldKey, newKey) {
 // ein leeres serialisiertes Workspace-Objekt zu prüfen, da hier der gerade
 // sichtbare Stand gemeint ist, bevor er überhaupt gespeichert wurde.
 function currentWorkspaceHasContent() {
-  return !!(Object.keys(layers).length || obstbaumTrees.length || bienenflugPoints.length || hofplanShapes.length || stallplaene.length || compareYears.length || tierbestandData);
+  return !!(Object.keys(layers).length || obstbaumTrees.length || bienenflugPoints.length || hofplanShapes.length || stallplaene.length || compareYears.length || tierbestandData || schlaglisteData);
 }
 
 // Hängt die vier Bestandslisten zweier serialisierter Workspaces aneinander
@@ -8578,7 +10141,8 @@ function mergeWorkspaces(target, moved) {
     hofplanShapes: [...(target.hofplanShapes || []), ...(moved.hofplanShapes || [])],
     stallplaene: [...(target.stallplaene || []), ...(moved.stallplaene || [])],
     vergleichsjahre: [...(target.vergleichsjahre || []), ...(moved.vergleichsjahre || [])],
-    tierbestand: (target.tierbestand || []).length ? target.tierbestand : (moved.tierbestand || [])
+    tierbestand: (target.tierbestand || []).length ? target.tierbestand : (moved.tierbestand || []),
+    schlagliste: (target.schlagliste || []).length ? target.schlagliste : (moved.schlagliste || [])
   };
 }
 
@@ -8739,6 +10303,7 @@ async function persistLocalState() {
       syncErrorMessage = 'Lokales Speichern fehlgeschlagen: ' + (err.message || err);
       syncState = 'error';
     }
+    if (!syncPromise) syncBald(2500);
   }
   updateSyncIndicator();
   return changed;
@@ -8818,6 +10383,8 @@ async function runCloudSync() {
     } catch (err) {
       return failSync(err);
     }
+    if (syncKanal) syncKanal.senden();
+    if (import.meta.env.DEV && window.__ffTestSync) window.__ffTestSync.gesendet++;
   }
 
   // Lokalen Datensatz nachziehen. Änderungen, die WÄHREND des Abgleichs
@@ -8839,6 +10406,18 @@ async function runCloudSync() {
     if (!stillDirty) rec.full.workspaces[k] = merged.workspaces[k];
   });
   pushedKeys.concat(theirsKeys).forEach(k => { if (!(rec.dirtyGen[k] > genAtStart)) delete rec.dirtyGen[k]; });
+  // Termine/Anhänge/Betriebsliste, die ein ANDERES Gerät geändert hat, während
+  // hier nichts offen ist: übernehmen (bisher nur bei einem Konflikt — dadurch
+  // erschienen z.B. Fotos vom Handy auf dem Laptop erst nach einem Neuladen).
+  // Nicht, solange hier ein Protokoll offen ist (das hält Bezüge auf die
+  // bisherigen Termin-Objekte) — dann beim nächsten Abgleich.
+  const protokollOffen = !document.getElementById('probenprotokoll-modal-overlay')?.hidden;
+  const sharedVonAussen = !pushShared && !sharedConflict && !(rec.sharedDirtyGen > 0) && !protokollOffen && !sameShared(merged, rec.full);
+  if (sharedVonAussen) {
+    rec.full.terminkalenderEvents = merged.terminkalenderEvents;
+    rec.full.manualBetriebe = merged.manualBetriebe;
+    rec.full.profil = merged.profil;
+  }
   if (!(rec.sharedDirtyGen > genAtStart)) {
     if (pushShared || (sharedConflict && !keepMine)) rec.sharedDirtyGen = 0;
     if (!rec.sharedDirtyGen && (sharedConflict && !keepMine)) {
@@ -8864,8 +10443,14 @@ async function runCloudSync() {
     clearWorkspace();
     restoreWorkspace(merged.workspaces[currentWorkspaceKey]);
   }
-  if (sharedConflict && !keepMine) restoreSharedState(merged);
-  if (theirsKeys.includes(currentWorkspaceKey) || (sharedConflict && !keepMine)) rebaselineLocalState();
+  if ((sharedConflict && !keepMine) || sharedVonAussen) restoreSharedState(merged);
+  if (theirsKeys.includes(currentWorkspaceKey) || (sharedConflict && !keepMine) || sharedVonAussen) rebaselineLocalState();
+  if (sharedVonAussen) {
+    // offenen Termin (Kontrollmappe) neu zeichnen, damit neue Anhänge gleich erscheinen
+    const sel = terminkalenderSelectedId && (tkGroupFor(terminkalenderSelectedId)?.primary || terminkalenderEvents.find(e => e.id === terminkalenderSelectedId));
+    if (sel) renderTerminkalenderDetail(sel);
+    if (typeof refreshKontrolleBetrieb === 'function') refreshKontrolleBetrieb();
+  }
 
   syncState = 'idle';
   syncErrorMessage = '';
@@ -10995,6 +12580,8 @@ async function runUploadQueue() {
         }
         removeQueuedUpload(rec);
         try { await persistLocalState(); } catch {}
+        // Anhang sofort in die Cloud, damit er auf den anderen Geräten gleich erscheint
+        syncBald(200);
         renderTerminkalenderGrid();
         if (target && tkGroupFor(target.id)?.id === terminkalenderSelectedId) renderTerminkalenderAttachments(target);
         refreshUploadViews(rec.evId);
@@ -11793,6 +13380,9 @@ let scanCameras = [];      // Rückkameras, beste zuerst
 let scanCameraId = null;
 let scanPages = [];        // { dataUrl, width, height, a4 } je übernommener Seite
 let scanCurrentEvent = null;
+// Optionales Ziel für den fertigen Scan (z.B. Anlage eines Protokolls) statt
+// eines eigenen Dokuments am Termin: (file, pages) => Promise
+let scanZiel = null;
 let scanSession = 0;       // jedes Öffnen/Schließen zählt hoch (veraltete awaits abbrechen)
 let scanLoopActive = false;
 let scanLastDetect = 0;
@@ -12352,9 +13942,10 @@ scanBtnSwitch.addEventListener('click', async () => {
 });
 
 // ---- Öffnen / Schließen ----
-async function openScanModal(ev) {
+async function openScanModal(ev, { onFertig = null } = {}) {
   const session = ++scanSession;
   scanCurrentEvent = ev;
+  scanZiel = onFertig;
   scanPages = [];
   scanSource = null;
   scanReview = null;
@@ -12400,6 +13991,7 @@ function closeScanModal() {
   scanPausedForNativeCamera = false;
   scanModal.hidden = true;
   scanCurrentEvent = null;
+  scanZiel = null;
   scanSource = null;
   scanReview = null;
   scanLoupe.hidden = true;
@@ -12430,13 +14022,17 @@ document.getElementById('scan-btn-finish').addEventListener('click', async () =>
   if (!scanPages.length || !scanCurrentEvent) return;
   const ev = scanCurrentEvent;
   const pages = scanPages;
+  const ziel = scanZiel;
   scanSession++;
   stopScanCamera();
   scanModal.hidden = true;
   scanCurrentEvent = null;
+  scanZiel = null;
+  scanPages = [];
   const blob = buildPdfFromScanPages(pages);
   const ts = new Date().toISOString().slice(0, 10);
   const file = new File([blob], `Scan_${ts}.pdf`, { type: 'application/pdf' });
+  if (ziel) { await ziel(file, pages); return; }
   const recId = await uploadTerminkalenderAttachment(ev, file);
   if (!recId) return;
   const art = await askDocName({
@@ -16261,7 +17857,8 @@ const PROBENPROTOKOLL_SECTIONS = [
   {
     title: 'Anmerkungen',
     fields: [
-      { name: 'Erläuterung zur Probenahme Flurstücksname u nummer bzw Gebäudebezeichnung LagerChargennummer', label: 'Anmerkungen zur Probenahme', type: 'textarea' }
+      // unterUeberschrift: Feld schließt die vorgedruckte Überschrift ein -> Text eine Zeile tiefer
+      { name: 'Erläuterung zur Probenahme Flurstücksname u nummer bzw Gebäudebezeichnung LagerChargennummer', label: 'Anmerkungen zur Probenahme', type: 'textarea', unterUeberschrift: true }
     ]
   },
   {
@@ -16393,13 +17990,17 @@ const CROSSCHECK_ALL_FIELDS = formularAllFields(CROSSCHECK_SECTIONS);
 // Datumsfeld (x 46–159) — per pdf.js aus der Vorlage gemessen.
 const CROSSCHECK_SIGNATURE_BOX = { x: 172, y: 211, width: 200, height: 26 };
 
-// Die Vorlage hat nur formularweit Schriftgröße "auto" (0 Tf) — pdf-lib würde
-// kurze Texte in den 75 pt hohen Tabellenzellen riesig setzen. Feste Größen passend zur
-// jeweiligen Feldhöhe.
-function crossCheckFontSize(field) {
-  const h = field.acroField.getWidgets()[0].getRectangle().height;
-  if (field.isMultiline()) return h < 30 ? 8 : 9;
-  return Math.max(7.5, Math.min(9, h - 1.5));
+// Die Vorlagen haben nur formularweit Schriftgröße "auto" (0 Tf) — pdf-lib setzt
+// Texte dann so groß wie das Feld hoch ist (riesig, abgeschnitten, verrutscht).
+// Feste Größe passend zur Feldhöhe; einzeilige Texte werden verkleinert, bis sie
+// in die Feldbreite passen. Gilt für alle Formulare (Cross Check, Probenahme).
+function formularSchriftgroesse(field, text, font) {
+  const r = field.acroField.getWidgets()[0].getRectangle();
+  if (field.isMultiline()) return r.height < 30 ? 8 : 9;
+  let size = Math.max(7, Math.min(9.5, r.height - 3));
+  const breite = r.width - 4;
+  while (size > 5.5 && font.widthOfTextAtSize(String(text || ''), size) > breite) size -= 0.5;
+  return size;
 }
 
 // Alle Formulare, die an einem Termin hängen können. listKey = Array am
@@ -16467,7 +18068,6 @@ const TK_FORMULARE = {
     signatures: [
       { key: 'signatureKontrolleur', label: 'Unterschrift Kontrolleur / Kontrollstelle', canvasId: 'cc-sig-kontrolleur', box: CROSSCHECK_SIGNATURE_BOX, own: true }
     ],
-    fontSize: crossCheckFontSize,
     prefill(ev, values) {
       values['Name'] = ev.kunde;
       values['Anschrift'] = [ev.strasse, [ev.plz, ev.ort].filter(Boolean).join(' ')].filter(Boolean).join('\n');
@@ -17251,6 +18851,9 @@ function probenprotokollAnlagenFilesHtml() {
           <input type="file" id="pp-anlage-file-input" hidden>
           <span class="material-symbols-rounded icon">attach_file</span> Foto/Dokument hinzufügen
         </label>
+        <button type="button" class="tk-attachment-btn" id="pp-anlage-scan">
+          <span class="material-symbols-rounded icon">document_scanner</span> Dokument scannen
+        </button>
       </div>
       <p class="modal-hint" id="pp-anlage-status"></p>
     </div>`;
@@ -17303,6 +18906,10 @@ function renderProbenprotokollForm() {
     const file = e.target.files[0];
     e.target.value = '';
     addProbenprotokollAnlage(p, file);
+  });
+  // Scan direkt als Anlage des Protokolls (wird beim Export als Seiten angehängt)
+  document.getElementById('pp-anlage-scan').addEventListener('click', () => {
+    openScanModal(ref.ev, { onFertig: (file) => addProbenprotokollAnlage(p, new File([file], `Scan_${def.fileArt}_${new Date().toISOString().slice(0, 10)}.pdf`, { type: 'application/pdf' })) });
   });
 }
 
@@ -17729,6 +19336,7 @@ async function exportProbenprotokollPdf(ev, p, def = tkFormularDef('probenprotok
     const templateBytes = await fetch(def.template).then(r => r.arrayBuffer());
     const pdfDoc = await PDFLib.PDFDocument.load(templateBytes);
     const form = pdfDoc.getForm();
+    const helv = await pdfDoc.embedFont(PDFLib.StandardFonts.Helvetica);
 
     def.allFields.forEach(f => {
       // Abhängige Felder (z. B. Fragen der Empfängerprüfung bei gewählter
@@ -17744,8 +19352,12 @@ async function exportProbenprotokollPdf(ev, p, def = tkFormularDef('probenprotok
         const field = form.getTextField(f.name);
         // Felder ohne eigenes /DA (nur formularweit, auto-Größe): Darstellung
         // je Feld setzen — setFontSize() verlangt ein vorhandenes /DA.
-        if (def.fontSize) field.acroField.setDefaultAppearance(`/Helv ${def.fontSize(field)} Tf 0 g`);
-        field.setText(value || '');
+        field.acroField.setDefaultAppearance(`/Helv ${formularSchriftgroesse(field, value, helv)} Tf 0 g`);
+        // Niedrige "mehrzeilige" Felder mit einzeiligem Wert (z.B. Name im Cross Check)
+        // senkrecht zentrieren statt oben an den Rand zu setzen.
+        if (field.isMultiline() && value && !String(value).includes('\n') && field.acroField.getWidgets()[0].getRectangle().height < 30) field.disableMultiline();
+        // Feld schließt die vorgedruckte Überschrift ein -> Text eine Zeile tiefer
+        field.setText(value ? (f.unterUeberschrift ? '\n' + value : value) : '');
       }
     });
 
@@ -17756,6 +19368,7 @@ async function exportProbenprotokollPdf(ev, p, def = tkFormularDef('probenprotok
       drawSignatureFitted(page, img, s.box);
     }
 
+    form.updateFieldAppearances(helv);
     form.flatten();
 
     for (const anlage of (p.anlagenDateien || [])) {

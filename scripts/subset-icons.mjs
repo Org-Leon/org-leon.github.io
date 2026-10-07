@@ -26,6 +26,7 @@ const ICON_NAMES = [
   'description', 'devices', 'directions', 'document_scanner', 'donut_large',
   'donut_small', 'door_front', 'download', 'drag_handle', 'drag_indicator',
   'draw', 'eco', 'edit', 'edit_note', 'egg', 'event_busy', 'event_upcoming',
+  'add_circle', 'block', 'call_split', 'celebration', 'checklist', 'done_all', 'event_available', 'grid_view', 'help', 'merge', 'remove_circle',
   'expand_less', 'expand_more', 'fact_check', 'fit_screen', 'flashlight_on',
   'folder_open', 'format_color_fill', 'format_color_reset', 'grass',
   'grid_on', 'handyman', 'history', 'hive', 'home_work', 'info',
@@ -36,7 +37,7 @@ const ICON_NAMES = [
   'polyline', 'radio_button_checked', 'rectangle', 'redo', 'refresh',
   'restaurant', 'rotate_right', 'route', 'schedule', 'screen_rotation', 'science', 'search',
   'shield', 'space_dashboard', 'sticky_note_2', 'storefront', 'straighten', 'swap_horiz', 'sync',
-  'table_view', 'task_alt', 'today', 'touch_app', 'undo', 'unfold_more',
+  'restart_alt', 'table_view', 'task_alt', 'today', 'touch_app', 'undo', 'unfold_more',
   'upload_file', 'view_agenda', 'view_week', 'visibility', 'visibility_off',
   'warning', 'water_drop', 'window', 'zoom_in', 'zoom_out'
 ];

@@ -34,7 +34,7 @@ test.describe('Jahresvergleich (mehrere Jahre)', () => {
     await expect(page.locator('.cy-row').first()).toContainText('2 Flächen · 3,50 ha');
 
     // Über der Karte: Vergleich + Jahreszahlen, keine "Jahr A/B" mehr
-    await expect(toggleBtns(page)).toHaveText(['Vergleich', '2023', '2024', '2025']);
+    await expect(toggleBtns(page)).toHaveText(['Vergleich', 'Verlauf', '2023', '2024', '2025']);
     await expect(toggleBtns(page).first()).toBeDisabled();
     await expect(page.locator('#compare-view-toggle')).not.toContainText('Jahr A');
 
@@ -65,6 +65,39 @@ test.describe('Jahresvergleich (mehrere Jahre)', () => {
     await expect(page.locator('#compare-summary')).toContainText('2Zugänge');
   });
 
+  test('Verlauf über alle Jahre: Legende je Jahreswechsel, Geschichte einer Fläche, Änderungs-Kennzeichen', async ({ page }) => {
+    await page.goto('/');
+    await openCompare(page);
+    await page.setInputFiles('#compare-file-add', [yearFile(2023), yearFile(2024), yearFile(2025)]);
+    await page.locator('#btn-compare-run').click();
+    // Kennzeichen im Vergleich 2024 → 2025: neu / weg / +0,20 ha
+    await expect(page.locator('#map .cmp-chip.is-plus', { hasText: 'neu' })).toHaveCount(1);
+    await expect(page.locator('#map .cmp-chip.is-minus', { hasText: 'weg' })).toHaveCount(1);
+    await expect(page.locator('#map .cmp-chip.is-plus', { hasText: '+0,2' })).toHaveCount(1);
+
+    await toggleBtns(page).filter({ hasText: 'Verlauf' }).click();
+    const leg = page.locator('#cmp-verlauf-legende');
+    await expect(leg).toBeVisible();
+    await expect(leg).toContainText('Verlauf 2023 – 2025');
+    await expect(leg).toContainText('2023 → 2024');
+    await expect(leg).toContainText('2024 → 2025');
+    await expect.poll(() => page.locator('#map path.cmp-verlauf-dazu').count()).toBeGreaterThan(0);
+    await expect.poll(() => page.locator('#map path.cmp-verlauf-weg').count()).toBeGreaterThan(0);
+    // Fläche 1 antippen -> Geschichte 2023/2024/2025
+    await page.evaluate(() => {
+      let hit = null;
+      window.__ffTestMap.eachLayer(l => { if (!hit && l.getPopup && l.getPopup() && l.getLayers && l.getLayers().some(c => c.feature?.properties?.SCHLAG_NR === '1')) hit = l; });
+      hit.openPopup();
+    });
+    const pop = page.locator('.leaflet-popup .cmp-hist');
+    await expect(pop.locator('tr')).toHaveCount(4);
+    await expect(pop).toContainText('2,20 ha');
+    await expect(pop).toContainText('+0,20');
+    // anderer Modus: Legende verschwindet
+    await toggleBtns(page).filter({ hasText: /^2024$/ }).click();
+    await expect(leg).toHaveCount(0);
+  });
+
   test('ohne erkennbares Jahr: eintragen; doppeltes Jahr ersetzen; Jahr entfernen', async ({ page }) => {
     await page.goto('/');
     await openCompare(page);
@@ -83,11 +116,23 @@ test.describe('Jahresvergleich (mehrere Jahre)', () => {
     await expect(row).not.toHaveClass(/is-missing/);
     await expect(toggleBtns(page)).toHaveText(['Vergleich', '2024']);
 
-    // gleiches Jahr erneut -> Rückfrage, ersetzen
-    page.once('dialog', d => d.accept());
+    // gleiches Jahr erneut -> Rückfrage: nicht zusammenführen, sondern ersetzen
+    const antworten = [];
+    const beantworte = d => { antworten.push(d.message()); d[antworten.length === 1 ? 'dismiss' : 'accept'](); };
+    page.on('dialog', beantworte);
     await page.setInputFiles('#compare-file-add', yearFile(2024, { name: 'Antrag_2024_neu.geojson' }));
     await expect(page.locator('.cy-row')).toHaveCount(1);
     await expect(page.locator('.cy-row .cy-file')).toHaveText('Antrag_2024_neu.geojson');
+    expect(antworten[0]).toContain('dazunehmen');
+    expect(antworten[1]).toContain('ersetzen');
+    page.off('dialog', beantworte);
+
+    // noch einmal -> diesmal zusammenführen (z.B. Flächen aus einem zweiten Bundesland)
+    page.once('dialog', d => d.accept());
+    await page.setInputFiles('#compare-file-add', yearFile(2024, { name: 'Antrag_2024_ST.geojson' }));
+    await expect(page.locator('.cy-row')).toHaveCount(1);
+    await expect(page.locator('.cy-row .cy-file')).toHaveText('Antrag_2024_neu.geojson + Antrag_2024_ST.geojson');
+    await expect(page.locator('.cy-row')).toContainText('6 Flächen');
 
     page.once('dialog', d => d.accept());
     await page.locator('.cy-row .cy-del').click();
@@ -120,7 +165,7 @@ test.describe('Jahresvergleich (mehrere Jahre)', () => {
 
     await page.evaluate(() => window.__ffTestOffline.switchTo('Hof A'));
     await expect.poll(() => page.locator('.cy-row .cy-jahr').evaluateAll(els => els.map(e => e.value))).toEqual(['2023', '2024']);
-    await expect(toggleBtns(page)).toHaveText(['Vergleich', '2023', '2024']);
+    await expect(toggleBtns(page)).toHaveText(['Vergleich', 'Verlauf', '2023', '2024']);
     await page.locator('#btn-compare-run').click();
     await expect(page.locator('#compare-summary')).toContainText('1Zugänge');
   });

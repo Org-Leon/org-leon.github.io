@@ -79,6 +79,25 @@ test.describe('Probenahmeprotokoll (Kontrolle)', () => {
     expect(result.filled).toEqual([]);
   });
 
+  // Alte Ausfüllungen dürfen auch nicht unsichtbar in der Datei stecken (sonst
+  // reisen fremde Betriebsdaten in jedem Export mit) — für beide Vorlagen.
+  test('Vorlagen enthalten keine versteckten Alt-Ausfüllungen und keinen Autor', async ({ page }) => {
+    await page.goto('/');
+    for (const datei of ['/probenahmeprotokoll-vorlage.pdf', '/crosscheck-vorlage.pdf']) {
+      const r = await page.evaluate(async (datei) => {
+        const doc = await PDFLib.PDFDocument.load(new Uint8Array(await (await fetch(datei)).arrayBuffer()), { updateMetadata: false });
+        let mitText = 0;
+        doc.context.enumerateIndirectObjects().forEach(([, obj]) => {
+          if (!(obj instanceof PDFLib.PDFRawStream)) return;
+          let t; try { t = new TextDecoder('latin1').decode(PDFLib.decodePDFRawStream(obj).decode()); } catch { return; }
+          if (t.includes('/Tx BMC') && /Tj/.test(t)) mitText++;
+        });
+        return { mitText, autor: doc.getAuthor() || '', xmp: !!doc.catalog.get(PDFLib.PDFName.of('Metadata')) };
+      }, datei);
+      expect(r, datei).toEqual({ mitText: 0, autor: '', xmp: false });
+    }
+  });
+
   test('Neues Protokoll übernimmt Betrieb/Adresse/Kundennummer aus dem Termin', async ({ page }) => {
     const id = await openTerminWithEvent(page, {
       kunde: 'Musterhof GmbH', strasse: 'Feldweg 3', plz: '12345', ort: 'Musterstadt', kundennummer: 'K-999'
@@ -143,6 +162,69 @@ test.describe('Probenahmeprotokoll (Kontrolle)', () => {
     const attachments = await page.evaluate((evId) => window.__ffTestTk.getEvent(evId).attachments, id);
     expect(attachments).toHaveLength(1);
     expect(attachments[0].name).toMatch(/Probenahmeprotokoll\.pdf$/);
+  });
+
+  test('Export: ausgefüllte Texte in normaler Schriftgröße (nicht riesig/verschoben)', async ({ page }) => {
+    const id = await openTerminWithEvent(page, { kunde: 'Musterhof GmbH' });
+    // Upload-Stub merkt sich die PDF-Bytes des Exports
+    await page.evaluate(() => {
+      window.__ffTestUploadPhotoOverride = async (file) => {
+        if (file.type === 'application/pdf') window.__ppPdf = new Uint8Array(await file.arrayBuffer());
+        return 'test/' + file.name;
+      };
+    });
+    await page.locator('#tk-probenprotokoll-new').click();
+    await page.locator('#pp-field-Probe').fill('Hafer');
+    await fillRequired(page, id);
+    await page.locator('#probenprotokoll-modal-export').click();
+    await expect(page.locator('#probenprotokoll-modal-overlay')).toBeHidden();
+    await expect.poll(() => page.evaluate(() => !!window.__ppPdf)).toBe(true);
+    // Erscheinungsbilder der Textfelder: Schriftgröße + Text (hex-kodiert) je Feld
+    const felder = await page.evaluate(async () => {
+      const doc = await PDFLib.PDFDocument.load(window.__ppPdf);
+      const out = [];
+      const hex = (h) => h.replace(/[^0-9a-f]/gi, '').match(/../g)?.map(b => String.fromCharCode(parseInt(b, 16))).join('') || '';
+      doc.context.enumerateIndirectObjects().forEach(([, obj]) => {
+        if (!(obj instanceof PDFLib.PDFRawStream)) return;
+        let t;
+        try { t = new TextDecoder('latin1').decode(PDFLib.decodePDFRawStream(obj).decode()); } catch { return; }
+        if (!t.includes('/Tx BMC')) return;
+        const text = [...t.matchAll(/<([0-9a-fA-F\s]*)> Tj|\((.*?)\) Tj/g)].map(m => (m[1] !== undefined ? hex(m[1]) : m[2])).join(' ').trim();
+        const size = Number((t.match(/([\d.]+) Tf/) || [])[1]);
+        if (text) out.push({ text, size }); // leere Felder zeichnen nichts
+      });
+      return out;
+    });
+    const texte = felder.map(f => f.text).join(' | ');
+    ['Hafer', 'Musterhof GmbH', 'Max Probe', 'Feldweg 3'].forEach(w => expect(texte).toContain(w));
+    // jedes ausgefüllte Feld hat eine feste, lesbare Schriftgröße (vorher "auto" = riesig)
+    felder.forEach(f => { expect(f.size, f.text).toBeGreaterThanOrEqual(5); expect(f.size, f.text).toBeLessThanOrEqual(12); });
+  });
+
+  test('Dokument scannen im Protokoll: Scan wird als Anlage des Protokolls gespeichert', async ({ page }) => {
+    await openTerminWithEvent(page);
+    await page.locator('#tk-probenprotokoll-new').click();
+    await page.locator('#pp-anlage-scan').click();
+    await expect(page.locator('#scan-modal-overlay')).toBeVisible();
+    const png = await page.evaluate(() => {
+      const c = document.createElement('canvas'); c.width = 600; c.height = 840;
+      const g = c.getContext('2d'); g.fillStyle = '#555'; g.fillRect(0, 0, 600, 840); g.fillStyle = '#fff'; g.fillRect(60, 60, 480, 700);
+      return c.toDataURL('image/png');
+    });
+    await page.setInputFiles('#scan-gallery-input', { name: 'beleg.png', mimeType: 'image/png', buffer: Buffer.from(png.split(',')[1], 'base64') });
+    await expect(page.locator('#scan-crop-view')).toBeVisible({ timeout: 60000 });
+    await page.locator('#scan-crop-confirm').click();
+    await expect(page.locator('#scan-review-busy')).toBeHidden({ timeout: 30000 });
+    await page.locator('#scan-review-confirm').click();
+    await expect(page.locator('.scan-thumb')).toHaveCount(1);
+    await page.locator('#scan-btn-finish').click();
+    await expect(page.locator('#scan-modal-overlay')).toBeHidden();
+    // Protokoll bleibt offen, Scan hängt als PDF-Anlage am Protokoll (nicht am Termin)
+    await expect(page.locator('#probenprotokoll-modal-overlay')).toBeVisible();
+    await expect.poll(() => page.evaluate(() => (window.__ffTestProbenprotokoll.getActive().anlagenDateien || []).length)).toBe(1);
+    const anlage = await page.evaluate(() => window.__ffTestProbenprotokoll.getActive().anlagenDateien[0]);
+    expect(anlage.type).toBe('application/pdf');
+    expect(anlage.name).toMatch(/^Scan_.*.pdf$/);
   });
 
   test('Export ist blockiert, solange Pflichtangaben fehlen, und markiert die Felder', async ({ page }) => {

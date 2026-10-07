@@ -1,6 +1,6 @@
 # FeldFolio – Benutzerhandbuch
 
-Stand: 5. Oktober 2026
+Stand: 7. Oktober 2026
 
 FeldFolio ist ein Werkzeug für die Öko-Kontrolle: Flächen eines Betriebs auf der Karte ansehen und auswerten, Hof und Stall erfassen und die Kontrolle selbst mit Terminen, Protokollen und Dokumenten begleiten. Die App läuft im Browser auf PC, Tablet und Handy und funktioniert vor Ort auch ohne Empfang.
 
@@ -50,6 +50,7 @@ Mit einem **FeldFolio+-Konto** kommt dazu:
 - Du arbeitest auf Handy, Tablet und PC mit demselben Stand weiter.
 - Die Funktion **Kontrolle** mit Terminen, Protokollen und Dokumenten.
 - Betriebe: jeder Betrieb hat seinen eigenen Arbeitsstand.
+- Im Jahresvergleich der Abgleich mit der Schlagliste samt Umstellungsstatus (siehe [Umstellung (Schlagliste)](#umstellung-schlagliste)).
 
 Anmelden und registrieren: Konto-Symbol oben rechts. Dort gibt es auch „Passwort vergessen?“ und „Zugang anfragen“.
 
@@ -162,7 +163,7 @@ Export in der Seitenleiste: Gesamtübersicht (PDF) und Flächenliste (Excel).
 Die Fruchtfolge entsteht aus den hinterlegten Jahren des Betriebs (dieselben wie im Jahresvergleich). Jahre kannst du auch direkt hier hinzufügen.
 
 - **Kennzahlen:** hinterlegte Jahre, Schläge, Leguminosenanteil im neuesten Jahr, Schläge mit Hinweis.
-- **Leguminosen an der Ackerfläche:** eine Säule je Jahr. Grünland und Dauerkulturen zählen nicht zur Ackerfläche.
+- **Leguminosen auf der Ackerfläche:** eine Säule je Jahr. Grünland und Dauerkulturen zählen nicht zur Ackerfläche.
 - **Hinweise zur Fruchtfolge:**
   - gleiche Kultur in direkt aufeinanderfolgenden Jahren,
   - drei oder mehr Jahre Getreide in Folge,
@@ -185,7 +186,8 @@ Vergleicht die Flächen eines Betriebs zwischen zwei Jahren und zeigt Zugänge, 
 - Unter „Hinterlegte Jahre“ die Shape-Dateien der Antragsjahre hinzufügen (.zip oder .geojson, auch mehrere auf einmal).
 - Das Jahr wird aus den Daten oder dem Dateinamen erkannt. Fehlt es, ist die Zeile orange markiert und du trägst die Jahreszahl ein.
 - Eine schon geladene Kartenebene übernimmst du mit „Als Jahr“.
-- Lädst du ein Jahr erneut, fragt die App, ob es ersetzt werden soll. Der Papierkorb entfernt ein Jahr.
+- Lädst du für ein Jahr eine zweite Datei, fragt die App, ob beide **zusammengeführt** werden sollen, z. B. wenn ein Betrieb Flächen in zwei Bundesländern hat (Thüringen und Sachsen-Anhalt). Sagst du nein, kannst du das Jahr stattdessen ersetzen. Der Papierkorb entfernt ein Jahr.
+- Das Jahr liest die App aus den Daten (z. B. Feld „ANTJAHR“ in Thüringen) oder aus der Antrags-XML im Zip (Sachsen-Anhalt: „Antragsjahr“).
 
 Die Jahre bleiben beim Betrieb gespeichert und gelten auch für die Fruchtfolge.
 
@@ -193,14 +195,89 @@ Die Jahre bleiben beim Betrieb gespeichert und gelten auch für die Fruchtfolge.
 
 - Unter „Vergleichen“ zwei Jahre wählen. Voreingestellt sind die beiden neuesten. Verglichen wird immer vom älteren zum neueren Jahr.
 - „Als verändert zählt“: Flächengröße und/oder Kulturart.
-- Die Karte färbt die Flächen: Zugang, Abgang, verändert, unverändert. Bei veränderten Flächen siehst du, welches Stück dazugekommen oder weggefallen ist.
+- Die Karte färbt die Flächen: Zugang, Abgang, umnummeriert, verändert, unverändert. Bei veränderten Flächen siehst du, welches Stück dazugekommen (türkis) oder weggefallen ist (rot, gestrichelt).
+- **Kennzeichen am Flächennamen** fassen die Änderung zusammen: „neu“, „weg“, „+0,20 ha“ / „−0,37 ha“ oder „Kultur“. Hat sich bei einer Fläche nur die Kultur geändert, ist sie nur blass mit gelber, gestrichelter Linie gezeichnet. So fallen echte Flächenänderungen sofort auf.
+- **Umnummeriert:** Hat eine Fläche im neueren Jahr nur eine andere Nummer, liegt aber (fast) genau an derselben Stelle, zeigt die App sie als einen Eintrag „Umnummeriert“ mit alter und neuer Nummer (z. B. „14 → 19“). Es wird also kein Abgang und kein Zugang eingetragen.
 - Die Tabelle zeigt Größe und Kultur beider Jahre und die Differenz. Export als CSV, Excel oder PDF.
 
 Eine Größenänderung zählt ab 0,01 ha als „verändert“. Kleinere Unterschiede werden angezeigt, die Fläche bleibt aber „unverändert“.
 
 ### Knöpfe über der Karte
 
-Links der Vergleich (z. B. „2024 → 2025“), daneben ein Knopf je hinterlegtem Jahr. Ein Tipp auf eine Jahreszahl zeigt nur die Flächen dieses Jahres.
+Links der Vergleich (z. B. „2024 → 2025“), daneben **„Verlauf“** (ab zwei hinterlegten Jahren) und ein Knopf je Jahr. Ein Tipp auf eine Jahreszahl zeigt nur die Flächen dieses Jahres.
+
+**Verlauf:** zeigt die Änderungen über alle hinterlegten Jahre auf einer Karte. Grundlage sind die Flächen des neuesten Jahres. Jeder Jahreswechsel hat eine eigene Farbe: gefüllt ist, was in dem Jahr zur Betriebsfläche dazugekommen ist, gestrichelt, was weggefallen ist. Die Legende oben rechts nennt je Jahreswechsel, wie viel Hektar dazugekommen und weggefallen sind. Tippst du eine Fläche an, siehst du ihre Geschichte: je Jahr Nummer, Größe mit Änderung und Kultur, oder „nicht im Betrieb“.
+
+### Umstellung (Schlagliste)
+
+Nur mit Konto. Du gleichst die Schlagliste aus dem externen Programm (Excel „Felder & Kulturen“) mit den Shape-Dateien eines Jahres ab. Daraus berechnet die App für jede Fläche den Umstellungsstatus. Danach exportierst du die Liste wieder, um sie im externen Programm zu importieren.
+
+**Umstellungsstatus:** Er zählt ab dem Datum in „Zugang Fläche“ (Umstellungsbeginn) bis zum Stichtag:
+
+- unter 12 Monaten: **konv.** (1. Jahr, konventionell)
+- 12 bis 24 Monate: **Umstellung** (2. Jahr)
+- ab 24 Monaten: **Bio** (ab dem 3. Jahr, ökologisch)
+
+So gehst du vor:
+
+1. Erst die Shape-Dateien hinterlegen, am besten auch das Vorjahr. Dann im grün umrandeten Kasten **„Abgleich Schlagliste“** direkt unter den hinterlegten Jahren die Excel-Datei laden. Später öffnest du den Abgleich dort mit **„Abgleich prüfen“**. Rechts neben der Karte öffnet sich „Schlagliste abgleichen“ (am Handy unten).
+2. Oben wählst du, mit welchem Jahr abgeglichen wird (voreingestellt das neueste), und den Stichtag (voreingestellt heute).
+3. Die App ordnet Listenzeilen und Flächen über FLIK, Schlagnummer, Nummer in der Bezeichnung, Name und Größe zu. Eindeutige Fälle stehen unter **„Automatisch zugeordnet“**. Umnummerierte Flächen erkennt sie über das Vorjahr. Weicht die Größe ab, bleibt es immer ein Zweifelsfall.
+4. Was noch zu tun ist, steht in Abschnitten. Jeder offene Punkt ist ein **Fall**. Oben siehst du, wie viele schon geklärt sind (siehe „Fortschritt“ unten).
+
+**Woran die App Flächen erkennt (wichtig bei Thüringen, wo die Shapes keine Flächennamen haben):**
+
+- **FLIK in der Bezeichnung**, auch gekürzt („77 AL49352V01“ statt „DETHLIAL49352V01“), mit Zusätzen („/1“, „(82.1)“) oder ohne Nutzungsart („49352D12“). Kleine Tippfehler wie „1“ statt „I“ oder ein falsches Zeichen erkennt sie als „FLIK ähnlich“.
+- **Teilschläge** aus der Bezeichnung („8 8.1 …“, „… (82.1)“). Die genaueste Nummer zählt am meisten.
+- **Schlagnummer:** Passt die Schlagnummer der Liste nicht zur Nummer vorn in der Bezeichnung, ist sie eine interne Zählung des externen Programms. Dann nutzt die App sie nicht und lässt sie beim Export unverändert.
+- **Bundesland:** Das Land aus der FLIK muss zur Spalte „Bundesland“ passen. So wird z. B. Schlag 1 in Thüringen nicht mit Parzelle 1 in Sachsen-Anhalt verwechselt.
+- **Name oder Nummer und Größe** zusammen genau gleich reicht für eine sichere Zuordnung.
+- **Zusammengelegt:** Ergeben mehrere Listenzeilen mit gleicher FLIK zusammen genau die Größe einer Fläche, zeigt die App „Zusammengelegt?“. Mit **„Als zusammengelegt übernehmen“** bekommt die größte Zeile die Fläche, die übrigen einen Abgang.
+- **Landschaftselemente** (Hecken, Baumreihen, Feldgehölze, Feldraine, Tümpel u. ä.) gehören zum Schlag und werden in der Schlagliste nicht geführt. Die App erkennt sie an der Kultur oder an der Art in der FLIK (in Thüringen z. B. „HK“ für Hecken, „BR“ für Baumreihen, „FG“ für Feldgehölze). Sie stehen nur zur Info im Abschnitt „Landschaftselemente und ausgeblendet“ und kommen nicht in den Export. Erkennt die App ein solches Element nicht, steht es unter „Neu in den Shapes“. Dort blendest du es mit **„Ausblenden“** aus.
+
+**Abgleich auf der Karte:** Die Karte zeigt die Flächen des Abgleichsjahres in Farben:
+
+- grau-blau: zugeordnet
+- orange: prüfen
+- blau: neu
+- rot: Teilstück dazugekommen
+- gestrichelt: weggefallen oder nicht mehr da
+
+Tippst du einen Fall im Panel an (oder das Zielkreuz daneben), fliegt die Karte hin und hebt die Fläche hervor. Tippst du eine Fläche auf der Karte an, springt das Panel zum passenden Fall. So siehst du bei jedem Fall, was sich an der Fläche tatsächlich geändert hat. Kleine Kennzeichen am Fall fassen das zusammen, z. B. „+1,56 ha neu“, „−0,37 ha weg“ oder „Nr. 14 → 19“.
+
+Die Abschnitte im Einzelnen:
+
+- **Kritische Änderungen:** An die Fläche ist seit dem Vorjahr ein Teilstück dazugekommen, das damals zu keiner Fläche des Betriebs gehörte. Auf der Karte ist es rot. Ein solches Teilstück hat oft einen eigenen Umstellungsbeginn. Dann trägst du dessen Datum ein und tippst auf **„Unterfläche anlegen“**. Hat das Teilstück denselben Status wie die Fläche, tippst du auf **„Gehört dazu (gleicher Status)“**. Schmale Splitter aus leicht verschobenen Grenzlinien (unter 5 m breit) zählt die App nicht als Teilstück.
+- **Zweifelsfälle prüfen:** Die App zeigt ihren Vorschlag und den Grund, z. B. „Fläche weicht ab · Shape +0,90 ha gegenüber Liste“. Passt er, tippst du auf **„Passt“**. Sonst wählst du eine andere Fläche oder „keine Fläche (nicht im Betrieb)“. Bis du bestätigst, bleibt die Zeile beim Export unverändert. Bestätigte Fälle bleiben abgehakt im Abschnitt stehen („zugeordnet: …“). Mit **„ändern“** holst du einen Fall zurück in die Prüfung.
+- **Neu in den Shapes:** Diese Flächen stehen nicht in der Liste. Du trägst den **Umstellungsbeginn** ein. Der Knopf „1.1.“ datiert auf den 1. Januar des Jahres zurück, z. B. für Bayern. Die App hilft mit Vorschlägen:
+  - **Gleicher Feldblock:** Hat die Fläche dieselbe FLIK wie eine schon zugeordnete Fläche (z. B. ein Blühstreifen im Schlag), schlägt die App deren Umstellungsdatum vor. „Feldblock-Datum für alle übernehmen“ erledigt alle auf einmal.
+  - **Vorjahr:** Ist die Fläche im Vorjahr von einer anderen abgeteilt worden, steht das da („War 2025 Teil von Nr. 2 …“).
+  - **Ohne Hinweis:** Ein Sammelknopf bietet das häufigste Zugangsdatum des Bundeslands aus der Liste an. Vorher fragt die App nach, einzelne Daten kannst du danach noch ändern.
+  - Mit **„Datum übernehmen“** übernimmst du einen Vorschlag. Ist es eine Fläche, die in der Liste anders heißt, ordnest du stattdessen die passende Listenzeile zu.
+  - **„Ausblenden“** ist für Hecken, Feldgehölze u. ä., die nicht in die Schlagliste gehören. Die Fläche wandert in den Abschnitt „Landschaftselemente und ausgeblendet“, ist kein offener Fall mehr und kommt nicht in den Export. Dort holst du sie mit **„wieder einblenden“** zurück. Auf der Karte sind solche Flächen blassgrün und gestrichelt.
+- **Kulturen:** Die Kulturen aus den Shapes übersetzt die App in den Kulturkatalog des externen Programms, z. B. „Winterweichweizen“ → „Winterweizen“, „Winter-Emmer/-Einkorn“ → „Winteremmer, Wintereinkorn“. Bei Thüringen übersetzt sie dafür zuerst den Kulturcode in Klartext. Neben jeder Kultur steht, wie sicher die Zuordnung ist: „gleich“, „Regel“, „ähnlich – prüfen“ oder „unbekannt“. Bei „ähnlich“ bestätigst du mit **„Passt“** oder wählst eine andere Kultur. Hilfe dabei gibt die Schlagliste: Steht bei den Flächen mit dieser Kultur in der Liste schon genau der Vorschlag (z. B. Blühfläche → Grünbrache), gilt er als bestätigt („wie in der Liste“). Steht dort etwas anderes, zeigt die App „Bisher: …“ mit **„übernehmen“**. Weil die Liste die Kultur des Vorjahres enthält, ist das nur ein Hinweis; bei eindeutigen Kulturen zeigt die App ihn deshalb nicht. Darunter steht die **Kategorie** aus der Kategorienliste des externen Programms. Jede Kultur hat eine feste Kategorie (z. B. Körnermais → Mais, Erbsen → Körnerleguminosen, Hanf → Hanf). Steht in deiner Liste für dieselbe Kultur eine andere Kategorie, gilt die aus der Liste. Nur bei Teichflächen, Unbefestigten Mieten und „Unbekannt“ wählst du sie selbst. Ändern kannst du jede Kategorie über die Auswahl. Deine Wahl merkt sich die App auch für andere Betriebe. Ganz oben schaltet „Kulturen aus den Shapes übernehmen“ das Ganze ab.
+- **Nutzungsnachweis (PDF) laden:** Steht bei einer Fläche nur ein Nutzungscode (z. B. „942“) oder fehlt die Kultur ganz (z. B. Thüringen bis 2025), lädst du im Abschnitt „Kulturen“ den Ausdruck des Flächen- und Nutzungsnachweises.
+  - **Codes lernen:** Die App liest daraus, welcher Code welche Kultur ist. Sie übernimmt nur Codes, die in den Shapes vorkommen.
+  - **Flächen ohne Kultur:** Die App ordnet die Zeilen des Ausdrucks über die FLIK (bei mehreren Flächen mit derselben FLIK zusätzlich über Größe bzw. Schlagnummer) den Flächen zu und übernimmt deren Kultur.
+  - Liegt der Nutzungsnachweis als PDF schon im Zip der Shape-Dateien (z. B. Bayern), passiert das beim Laden automatisch.
+  - Gelernte Codes merkt sich die App je Bundesland, auch für andere Betriebe.
+- **Nicht in den Shapes:** Diese Listenzeilen haben keine Fläche mehr. Auf der Karte ist ihre Vorjahresform gestrichelt. Du setzt den Haken „Abgang eintragen am“ und prüfst das Datum, oder du ordnest eine Fläche zu.
+- **Nach dem Agrarantrag zugegangen:** Flächen, die erst nach dem 15.05. des Abgleichsjahres zum Betrieb gekommen sind, stehen schon in der Liste, aber noch nicht in den Shapes. Sie sind kein Abgang. Zeilen mit einem Zugang nach dem 15.05. erkennt die App von selbst und zeigt sie in diesem eigenen Abschnitt, ohne offenen Fall. Hat eine solche Fläche ein älteres Datum, z. B. ein Bio-Zugang mit dem Umstellungsdatum des Vorbewirtschafters, tippst du unter „Nicht in den Shapes“ auf **„Nach Antrag zugegangen“**. Beim Export bleiben diese Zeilen ohne Abgang; nur der Umstellungsstatus wird zum Stichtag fortgeschrieben. Mit **„doch nicht“** wird die Zeile wieder ein normaler Fall.
+
+**Fortschritt:** Oben im Panel steht, wie viele Fälle schon geklärt sind, mit Balken und Prozentzahl. Ein erledigter Fall bekommt einen grünen Haken, ein erledigter Abschnitt den Hinweis „erledigt“ und klappt zu. Abschnitte, die du selbst zu- oder aufgeklappt hast, bleiben so, während du weiterarbeitest. Das Auge zeigt, welche kritischen und neuen Fälle du schon auf der Karte angesehen hast. Sind alle Fälle geklärt, gibt es eine kleine Feier und den Hinweis „bereit für den Export“. Den Stand siehst du auch in der Seitenleiste.
+
+**Rückgängig und Zurücksetzen:**
+
+- **„Rückgängig“** oben im Panel nimmt die letzte Entscheidung zurück, z. B. ein „Passt“, ein Datum oder einen Abgang. Die App springt dabei zu dem Fall zurück, sodass du ihn gleich neu bearbeiten kannst. Das geht mehrmals hintereinander (bis zu 30 Schritte, solange die App offen ist).
+- **„Zurücksetzen“** unten im Panel (oder „Abgleich zurücksetzen“ in der Seitenleiste) verwirft nach einer Rückfrage alle Entscheidungen dieses Abgleichs: Zuordnungen, Umstellungsdaten, Abgänge, Unterflächen und die hier gewählten Kulturen. Die Schlagliste selbst bleibt geladen. Auch das Zurücksetzen lässt sich mit „Rückgängig“ zurücknehmen.
+
+**Für Import exportieren (Excel)** erzeugt die Liste im gleichen Format wie die Vorlage. Sind noch Fälle offen, fragt die App vorher nach.
+
+**Was der Export ändert:** Schlagnummer (nur wenn sie in der Liste die echte Schlagnummer ist) und Bezeichnung (z. B. nach einer Umnummerierung), „ha“ aus der Shape-Datei, Kultur und Kategorie (wenn „Kulturen aus den Shapes übernehmen“ an ist; ohne Kategorie bleiben bei vorhandenen Zeilen beide Spalten unverändert), „Status Feldstück“, „Abgang Fläche“ und „Fläche besichtigt im Jahr“. Diese Spalte kommt aus dem Haken „Besichtigt“ in der Flächentabelle. Neue Flächen mit Umstellungsbeginn hängt der Export als neue Zeilen an, mit leeren Schlüsseln (PK Feld, PK Kultur). Eine **Unterfläche** steht als eigene Zeile direkt unter ihrer Fläche: gleiche Schlagnummer, Bezeichnung mit „– Teilstück“ und Jahr, eigene Größe, eigenes Zugangsdatum und eigener Status, leere Schlüssel. Die Fläche selbst behält nur die restliche Größe. Die Schlüssel und die Kundennummer bleiben immer unverändert. Landschaftselemente kommen nicht in den Export. Zeilen ohne Bezeichnung und Fläche bleiben, wie sie sind.
+
+**Statusbezeichnungen:** Die App übernimmt die Texte, die in deiner Liste schon vorkommen, z. B. „Nichtökologische Erzeugnisse (aus dem 1. Umstellungsjahr)“ und „Ökologische Erzeugnisse“. Fehlende Texte prüfst du im Panel unter „Statusbezeichnungen im externen Programm“. Sie müssen beim Import wörtlich stimmen. Die App merkt sie sich.
+
+Mit Schlagliste zeigt die Vergleichstabelle zusätzlich die Spalte **„Umstellung“**, und im Popup einer Fläche steht ihr Status. Schlagliste und Zuordnungen bleiben beim Betrieb gespeichert. „Schlagliste entfernen“ löscht beides.
 
 ---
 
@@ -360,6 +437,8 @@ Ein Tipp auf einen Termin öffnet die Kontrollmappe (am Handy im Vollbild). Im K
 
 - **Probenahmeprotokoll** und **Cross Check:** Formulare, die Betriebsdaten vorbelegen. Pflichtangaben sind markiert; der Export als PDF landet bei den Dokumenten des Termins.
   - Probenummern lassen sich per **Barcode-Scanner** eintragen.
+  - **Anlagen:** Im Abschnitt mit den Anlagen fügst du Fotos oder Dateien hinzu oder tippst auf **„Dokument scannen“** (wie unter „Dokumente“). Der Scan hängt dann direkt am Protokoll und wird beim Export als zusätzliche Seiten angefügt.
+  - Im exportierten PDF stehen die Eingaben in normaler Schriftgröße in ihren Feldern. Lange Texte werden kleiner gesetzt, damit sie ins Feld passen.
   - **Unterschriften:** direkt im Feld oder mit „Vergrößern“ in einem großen Unterschriftenfeld (am Handy am besten quer halten). Deine eigene Unterschrift aus dem Profil setzt du per Knopf ein.
 - **Warenflussprüfungen:** siehe [Kapitel 13](#13-warenflussprüfung).
 
@@ -427,6 +506,10 @@ Beispiele: Milchkühe → Milch → Schnittkäse → Verkauf. Karkassen (Zukauf)
 
 Passen die Einheiten zweier Stufen nicht zusammen, erscheint ein Hinweis. Umgerechnet wird nicht automatisch.
 
+### Eingesehene Unterlagen
+
+Oben in der Prüfung kreuzt du an, welche Unterlagen du eingesehen hast. Die Auswahl passt zum Bereich, z. B. Schlagkartei und Ernteaufzeichnungen im Pflanzenbau, Bestandsregister und Futtermittelbelege in der Tierhaltung, Rezepturen in der Verarbeitung. Was fehlt, trägst du unter „Sonstiges“ ein. Im Prüftext steht daraus die Zeile „Eingesehene Unterlagen: …“.
+
 ### Prüftext
 
 Unter der Tabelle schreibt die App aus der Berechnung laufend einen **Prüftext**: Zusammenfassung, Befunde mit möglichen Ursachen, Klärungspunkte für den Betrieb und das Ergebnis.
@@ -444,6 +527,8 @@ Löschen: in der Prüfung unten links oder in der Liste über den Papierkorb, je
 ### Speichern
 
 Mit Konto speichert die App von selbst. Der **Speicherstatus** in der Kopfzeile zeigt den Stand, zum Beispiel „Gespeichert“, „Nicht synchron“ oder „Lädt hoch“. Änderungen werden zuerst auf dem Gerät gesichert und bei Verbindung mit der Cloud abgeglichen.
+
+**Zwischen Geräten:** Ein Foto, Scan oder eine Änderung am Termin geht wenige Sekunden nach dem Speichern in die Cloud. Deine anderen Geräte (z. B. der Laptop) werden dabei angestoßen und holen das Neue sofort ab, wenn sie online sind und die App offen ist. Sonst passiert es spätestens, sobald du wieder in die App wechselst. Ist auf dem anderen Gerät gerade ein Protokoll offen, kommt das Neue nach dem Schließen.
 
 ### Ohne Empfang arbeiten
 
@@ -464,8 +549,9 @@ Wurde derselbe Betrieb inzwischen auf einem anderen Gerät geändert, fragt die 
 ## 15. Hinweise und Grenzen
 
 - **Hektar-Angaben:** Einzelne Flächen mit Größe aus der Shape-Datei werden mit bis zu vier Nachkommastellen gezeigt (auf den Quadratmeter genau). Summen und Kennzahlen haben zwei Stellen. Größen, die aus der Form berechnet sind (gezeichnete Flächen, Shape-Dateien ohne Größenangabe), haben zwei Stellen und sind mit * gekennzeichnet.
-- **Shape-Dateien der Bundesländer** sind unterschiedlich aufgebaut. Manche enthalten keine Kulturart (z. B. Thüringen); dann steht dort „Ohne Angabe“.
-- **Jahresvergleich und Fruchtfolge** verbinden Schläge über die Schlagnummer. Ändert sich die Nummer zwischen den Jahren, gilt der Schlag als neu.
+- **Shape-Dateien der Bundesländer** sind unterschiedlich aufgebaut. Manche enthalten keine Kulturart (z. B. Thüringen); dann steht dort „Ohne Angabe“. Bei Thüringen liest die App die FLIK mit aus (Flächentabelle, Suche). Ein Schlag kann dort aus mehreren FLIK-Stücken bestehen, deshalb ist die Schlagnummer nicht eindeutig. Die 6-stelligen Thüringer Kulturcodes kennt die App bisher nur, soweit sie in einem Beispielantrag 2026 vorkamen. Unbekannte Codes erscheinen als Zahl. Im Abgleich lädst du dann den Nutzungsnachweis (PDF) oder wählst die Kultur von Hand aus. Die Shapes bis 2025 enthalten gar keine Kultur; die kommt über den Nutzungsnachweis dazu.
+- **Jahresvergleich und Fruchtfolge** verbinden Schläge über die Schlagnummer. Ändert sich nur die Nummer, erkennt der Jahresvergleich das an der Lage („Umnummeriert“). In der Fruchtfolge gilt der Schlag dann weiter als neu.
+- **Schlagliste:** Die Zuordnung ist ein Vorschlag. Die Übersetzung der Kulturen in den Katalog des externen Programms läuft über Namensregeln; bei „ähnlich“ und „unbekannt“ immer selbst entscheiden. Zweifelsfälle immer selbst prüfen. Die Statusbezeichnungen müssen wörtlich wie im externen Programm eingetragen sein, sonst kann der Import sie nicht zuordnen. Sonderfälle wie eine verkürzte Umstellungszeit rechnet die App nicht. Sie zählt immer 12 bzw. 24 Monate ab dem eingetragenen Datum.
 - **Fruchtfolge-Hinweise** erkennen Kulturen am Namen. Ungewöhnliche Bezeichnungen und Gemenge können falsch eingeordnet werden.
 - **Referenzwerte der Warenflussprüfung** sind Orientierungswerte aus veröffentlichten Quellen (z. B. LfL Bayern, oekolandbau.de); die Quelle steht am Wert. Einzelne Verarbeitungswerte stammen aus allgemeinen Nachschlagewerken. Gibt deine Kontrollstelle eigene Werte vor, trage diese ein.
 - **Stallplaner:** Die Flächenwerte ersetzen nicht den Verordnungstext. Im Zweifel den Originaltext prüfen.

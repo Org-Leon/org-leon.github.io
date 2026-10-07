@@ -244,6 +244,20 @@
           <button type="button" id="compare-layer-add" class="cy-layer-btn" title="Geladene Kartenebene als Jahr hinterlegen"><span class="material-symbols-rounded icon" aria-hidden="true">add</span>Als Jahr</button>
         </div>
       </div>
+      <!-- Schlagliste (Umstellung): nur angemeldet, siehe Abschnitt "Schlagliste" in main.js -->
+      <div class="compare-upload sl-box" id="sl-box">
+        <div class="sl-box-head"><span class="material-symbols-rounded icon" aria-hidden="true">fact_check</span><span>Abgleich Schlagliste <small>Umstellungsstatus</small></span></div>
+        <div id="sl-summary"></div>
+        <div class="dropzone-mini" id="sl-drop">
+          <span id="sl-drop-label">Schlagliste laden (.xlsx)…</span>
+          <input type="file" id="sl-file" accept=".xlsx,.xls">
+        </div>
+        <div class="sl-actions" id="sl-actions" hidden>
+          <button type="button" id="btn-sl-review" class="tool-btn primary"><span class="material-symbols-rounded icon" aria-hidden="true">fact_check</span>Abgleich prüfen</button>
+          <button type="button" id="btn-sl-export" class="tool-btn"><span class="material-symbols-rounded icon" aria-hidden="true">table_view</span>Für Import exportieren (Excel)</button>
+          <div class="sl-links"><button type="button" id="btn-sl-reset" class="sl-remove">Abgleich zurücksetzen</button><button type="button" id="btn-sl-remove" class="sl-remove">Schlagliste entfernen</button></div>
+        </div>
+      </div>
       <div class="compare-upload cy-pair" id="compare-pair" hidden>
         <label class="compare-label">Vergleichen</label>
         <div class="cy-pair-row">
@@ -277,6 +291,7 @@
       <div id="compare-legend">
         <div><span class="legend-swatch" style="background:#6FBF73"></span> Zugang (neu dazugekommen)</div>
         <div><span class="legend-swatch" style="background:#D97757"></span> Abgang (weggefallen)</div>
+        <div><span class="legend-swatch" style="background:#7C8CD8"></span> Umnummeriert (gleiche Fläche, neue Nummer)</div>
         <div><span class="legend-swatch" style="background:#C9A24F"></span> Verändert (Umriss)</div>
         <div><span class="legend-swatch" style="background:#5A6270"></span> Unverändert</div>
         <div style="margin-top:4px; padding-top:4px; border-top:1px solid var(--border);">
@@ -708,6 +723,7 @@
             <th id="compare-th-b">Größe B</th>
             <th>Δ ha</th>
             <th id="compare-th-kultur">Kultur A → B</th>
+            <th id="compare-th-umst" class="sl-col" hidden>Umstellung</th>
           </tr>
         </thead>
         <tbody id="compare-table-body"></tbody>
@@ -931,7 +947,7 @@
         <div class="ue-kpis" id="ff-kpis"></div>
 
         <section class="ue-card ue-anim" style="--i:2">
-          <h3>Leguminosen an der Ackerfläche</h3>
+          <h3>Leguminosen auf der Ackerfläche</h3>
           <div id="ff-stats" class="uf-leg-chart"></div>
           <p class="ue-hint-line">Anteil der Leguminosen (Kleegras, Luzerne, Erbsen, Bohnen …) an der Ackerfläche je Jahr — Grünland und Dauerkulturen zählen nicht zur Ackerfläche.</p>
         </section>
@@ -1736,6 +1752,44 @@
   </div>
 </div>
 
+<!-- ---------- Schlagliste abgleichen (Jahresvergleich › Umstellung) ----------
+     Panel neben der Karte (am Handy unten), siehe "Abgleich auf der Karte" in main.js -->
+<aside id="sl-overlay" class="sl-panel" hidden aria-labelledby="sl-title">
+  <div class="sl-head">
+    <div>
+      <h3 id="sl-title">Schlagliste abgleichen</h3>
+      <p class="betrieb-head-sub" id="sl-sub"></p>
+    </div>
+    <button type="button" id="sl-undo" class="sl-undo-btn" title="Letzte Entscheidung rückgängig machen" disabled><span class="material-symbols-rounded icon" aria-hidden="true">undo</span>Rückgängig</button>
+    <button type="button" id="sl-close" class="sl-close" title="Schließen" aria-label="Schließen"><span class="material-symbols-rounded icon" aria-hidden="true">close</span></button>
+  </div>
+  <div class="sl-scroll">
+    <div id="sl-progress-wrap"></div>
+    <div class="sl-controls">
+      <label>Flächen aus Jahr <select id="sl-jahr"></select></label>
+      <label>Stichtag <input type="date" id="sl-stichtag"></label>
+      <label class="sl-check"><input type="checkbox" id="sl-kultur-uebernehmen" checked> Kulturen aus den Shapes übernehmen</label>
+    </div>
+    <details class="sl-texte">
+      <summary>Statusbezeichnungen im externen Programm</summary>
+      <p class="modal-hint">So steht der Status beim Export in der Spalte „Status Feldstück“ — bitte wörtlich wie im externen Programm.</p>
+      <div class="sl-texte-grid">
+        <label>1. Jahr (konventionell) <input type="text" data-sl-text="konv"></label>
+        <label>2. Jahr (Umstellung) <input type="text" data-sl-text="umst"></label>
+        <label>ab 3. Jahr (ökologisch) <input type="text" data-sl-text="oeko"></label>
+      </div>
+    </details>
+    <div class="sl-legend" aria-label="Legende">
+      <span><i style="background:#5F7A93"></i>zugeordnet</span><span><i style="background:#E8A33D"></i>prüfen</span><span><i style="background:#4C9BE8"></i>neu</span><span><i style="background:#E0507A"></i>Teilstück dazu</span><span><i class="is-dash"></i>weg / nicht mehr da</span>
+    </div>
+    <div id="sl-body"></div>
+  </div>
+  <div class="sl-foot">
+    <button type="button" id="sl-reset2" class="betrieb-btn sl-reset-btn" title="Alle Entscheidungen dieses Abgleichs verwerfen"><span class="material-symbols-rounded icon" aria-hidden="true">restart_alt</span>Zurücksetzen</button>
+    <button type="button" id="sl-export2" class="betrieb-btn primary"><span class="material-symbols-rounded icon" aria-hidden="true">table_view</span>Für Import exportieren (Excel)</button>
+  </div>
+</aside>
+
 <!-- ---------- FeldFolio Plus: Notiz & Fotos an Fläche/Baum ---------- -->
 <div id="notes-modal-overlay" class="modal-overlay" hidden>
   <div class="modal-card">
@@ -1963,6 +2017,8 @@
     </div>
     <div class="wf-summary" id="wf-summary" aria-live="polite"></div>
     <div class="wf-body">
+      <!-- Eingesehene Unterlagen zum Ankreuzen (warenfluss.js, renderDokumente) -->
+      <div id="wf-docs"></div>
       <div id="wf-tables"></div>
       <!-- Prüftext: wird bei jeder Eingabe aus der Berechnung neu geschrieben. -->
       <section id="wf-auto" class="wf-auto" aria-labelledby="wf-auto-title">

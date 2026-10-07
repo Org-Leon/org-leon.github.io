@@ -9,6 +9,7 @@
 //   { id, modul, titel, zeitraum, modus: 'tabelle'|'text', tolErtrag, tolBilanz,
 //     tables: { [tabelle]: [zeilen] }, freitext: string|null, createdAt, updatedAt,
 //     mitBilanz: boolean (Mengenbilanz ein-/ausgeblendet),
+//     dokumente: { [schlüssel]: true } (eingesehene Unterlagen), dokumenteSonst: string,
 //     stufen: [...] nur bei modul 'kette' (mehrstufiger Warenfluss, s. u.) }
 // Zeilen tragen ihre Eingaben plus die übernommene Referenz
 // (refTyp/refMin/refMax/refQuelle/refInfo/refEinheit) — überschreibbar.
@@ -561,6 +562,26 @@ function summaryLine(t, rows) {
   }
 }
 
+// Eingesehene Unterlagen zum Ankreuzen, je Prüfbereich (Reihenfolge = Anzeige).
+// Die angekreuzten erscheinen im Prüftext als "Eingesehene Unterlagen: …".
+export const WF_DOKUMENTE = {
+  pflanzenbau: ['Flächennachweis / Anbauplan', 'Schlagkartei', 'Ernteaufzeichnungen / Wiegescheine', 'Lageraufzeichnungen', 'Saatgutbelege', 'Ausnahmegenehmigung Saatgut', 'Düngemittelbelege', 'Verkaufsbelege', 'Lieferscheine', 'Rechnungen', 'Inventur'],
+  tierhaltung: ['Bestandsregister / HIT', 'Zu- und Abgangsbelege Tiere', 'Futtermittelbelege', 'Futteraufzeichnungen / Rationsplan', 'Milchgeldabrechnungen', 'Eierabrechnungen', 'Schlachtbelege', 'Tierarzneimittel-Belege', 'Lieferscheine', 'Rechnungen', 'Inventur'],
+  imkerei: ['Völkerverzeichnis', 'Standortplan', 'Ernteaufzeichnungen', 'Wachsbelege', 'Futterbelege (Öko-Zucker/-Honig)', 'Verkaufsbelege', 'Lagerbestand'],
+  verarbeitung: ['Rezepturen', 'Produktionsprotokolle', 'Wareneingangsbelege', 'Öko-Zertifikate der Lieferanten', 'Warenausgangsbelege', 'Etiketten', 'Inventur Rohware', 'Inventur Fertigprodukte'],
+  handel: ['Zukaufsbelege', 'Öko-Zertifikate der Lieferanten', 'Verkaufsbelege', 'Lagerbuchhaltung', 'Etiketten', 'Inventur'],
+  kette: ['Erzeugungsaufzeichnungen', 'Rezepturen / Produktionsprotokolle', 'Wareneingangsbelege', 'Öko-Zertifikate der Lieferanten', 'Warenausgangs- / Verkaufsbelege', 'Lieferscheine', 'Rechnungen', 'Inventur'],
+  bestand: ['Bestandsregister / HIT', 'Rinderpässe', 'Zukaufsbelege', 'Verkaufs- / Schlachtbelege', 'Belege Tierkörperbeseitigung', 'Bestandsbuch Tierarzneimittel']
+};
+const dokSchluessel = (name) => name.toLowerCase().replace(/[^a-z0-9äöüß]+/g, '-').replace(/^-|-$/g, '');
+// Zeile für den Prüftext
+export function wfUnterlagenText(chk) {
+  const gewaehlt = (WF_DOKUMENTE[chk.modul] || []).filter(n => (chk.dokumente || {})[dokSchluessel(n)]);
+  const sonst = String(chk.dokumenteSonst || '').trim();
+  const alle = [...gewaehlt, ...(sonst ? [sonst] : [])];
+  return 'Eingesehene Unterlagen: ' + (alle.length ? alle.join(', ') + '.' : '[ ]');
+}
+
 const GRUNDLAGEN = {
   pflanzenbau: 'Flächennachweis/Anbauplan, Ernte- und Lageraufzeichnungen, Saatgutbelege (inkl. Öko-Saatgut-Nachweise bzw. Ausnahmegenehmigungen), Verkaufs- und Lieferbelege, Inventur.',
   tierhaltung: 'Bestandsregister, Zu- und Abgangsbelege der Tiere, Futtermittelbelege und -aufzeichnungen, Milchgeld-/Eierabrechnungen, Schlachtbelege, Inventur.',
@@ -580,6 +601,7 @@ export function generateWarenflussText(chk, ctx) {
   lines.push(`Zeitraum: ${chk.zeitraum || '[Wirtschaftsjahr]'} · Kontrolle am ${ctx.datum || '[Datum]'}${ctx.kontrolleur ? ' · ' + ctx.kontrolleur : ''}`);
   lines.push('');
   lines.push('Grundlagen der Prüfung: ' + GRUNDLAGEN[chk.modul]);
+  lines.push(wfUnterlagenText(chk));
   lines.push('');
 
   tbls.forEach(t => {
@@ -656,6 +678,7 @@ function generateBestandText(chk, ctx) {
   lines.push(`Zeitraum: ${deDatum(b.von)} – ${deDatum(b.bis)} (seit der letzten Jahreskontrolle) · Kontrolle am ${ctx.datum || '[Datum]'}${ctx.kontrolleur ? ' · ' + ctx.kontrolleur : ''}`);
   lines.push('');
   lines.push(`Grundlage der Prüfung: Bestandsregister aus der HI-Tier-Datenbank (HIT) für den Zeitraum ${deDatum(b.von)} bis ${deDatum(b.bis)}, Abgleich mit dem Tierbestand vor Ort.`);
+  lines.push(wfUnterlagenText(chk));
   lines.push('');
   lines.push(`Bestand zur letzten Jahreskontrolle (${deDatum(b.von)}): ${tiere(b.anfang)}.`);
   lines.push('');
@@ -709,6 +732,7 @@ function generateKetteText(chk, ctx) {
   lines.push('');
   const arten = [...new Set(stufen.map(s => STUFE_GRUNDLAGEN[s.art]))];
   lines.push('Grundlagen der Prüfung: ' + (arten.map(a => GRUNDLAGEN[a]).join(' ') || '[…]'));
+  lines.push(wfUnterlagenText(chk));
   lines.push('');
   const verkauft = stufen.some(s => num(s.verkauf));
   lines.push('Warenfluss: ' + stufen.map((s, i) => {
@@ -790,9 +814,21 @@ export function openWarenfluss(chk, { ctx = {}, onChange = () => {}, onDelete = 
     chk.zeitraum = formatZeitraum(ctx.bestand.von, ctx.bestand.bis);
     el('wf-zeitraum').value = chk.zeitraum;
   }
+  renderDokumente();
   renderTables();
   setMode(chk.modus || 'tabelle');
   ov.hidden = false;
+}
+// Eingesehene Unterlagen ankreuzen
+function renderDokumente() {
+  const chk = state.chk;
+  const liste = WF_DOKUMENTE[chk.modul] || [];
+  const n = liste.filter(d => (chk.dokumente || {})[dokSchluessel(d)]).length + (String(chk.dokumenteSonst || '').trim() ? 1 : 0);
+  el('wf-docs').innerHTML = `<details class="wf-docs-box"${n ? '' : ' open'}>
+      <summary><span class="material-symbols-rounded icon" aria-hidden="true">checklist</span>Eingesehene Unterlagen <span class="wf-docs-count" id="wf-docs-count">${n ? n + ' angekreuzt' : 'noch keine'}</span></summary>
+      <div class="wf-docs-grid">${liste.map(d => `<label class="wf-doc"><input type="checkbox" data-wf-dok="${esc(dokSchluessel(d))}"${(chk.dokumente || {})[dokSchluessel(d)] ? ' checked' : ''}><span>${esc(d)}</span></label>`).join('')}</div>
+      <label class="wf-doc-sonst"><span>Sonstiges</span><input type="text" class="wf-input" data-wf-dok-sonst value="${esc(chk.dokumenteSonst || '')}" placeholder="z. B. Pachtverträge, Kontoauszüge"></label>
+    </details>`;
 }
 function closeWarenfluss() {
   const ov = el('warenfluss-overlay');
@@ -1095,6 +1131,17 @@ let wired = false;
 export function initWarenflussUi() {
   if (wired) return;
   wired = true;
+  el('wf-docs').addEventListener('input', (e) => {
+    if (!state) return;
+    const chk = state.chk;
+    const box = e.target.closest('[data-wf-dok]');
+    if (box) { chk.dokumente = { ...(chk.dokumente || {}), [box.dataset.wfDok]: box.checked }; if (!box.checked) delete chk.dokumente[box.dataset.wfDok]; }
+    else if (e.target.matches('[data-wf-dok-sonst]')) chk.dokumenteSonst = e.target.value;
+    else return;
+    const n = Object.keys(chk.dokumente || {}).length + (String(chk.dokumenteSonst || '').trim() ? 1 : 0);
+    el('wf-docs-count').textContent = n ? n + ' angekreuzt' : 'noch keine';
+    touch();
+  });
   const tablesEl = el('wf-tables');
   tablesEl.addEventListener('input', (e) => {
     if (!state) return;

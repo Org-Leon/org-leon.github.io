@@ -24,6 +24,30 @@ async function fillStage(page, n, values) {
 const stored = (page, id) => page.evaluate((evId) => structuredClone(window.__ffTestTk.getEvent(evId).warenfluss || []), id);
 
 test.describe('Warenflussprüfung', () => {
+  test('Eingesehene Unterlagen ankreuzen: erscheinen im Prüftext und bleiben gespeichert', async ({ page }) => {
+    const id = await openNew(page, 'pflanzenbau');
+    const box = page.locator('#wf-docs .wf-docs-box');
+    await expect(box).toHaveAttribute('open', '');
+    await expect(page.locator('#wf-docs-count')).toHaveText('noch keine');
+    await expect(page.locator('#wf-auto-text')).toContainText('Eingesehene Unterlagen: [ ]');
+    await page.locator('.wf-doc', { hasText: 'Schlagkartei' }).locator('input').check();
+    await page.locator('.wf-doc', { hasText: 'Saatgutbelege' }).locator('input').check();
+    await page.locator('[data-wf-dok-sonst]').fill('Pachtverträge');
+    await expect(page.locator('#wf-docs-count')).toHaveText('3 angekreuzt');
+    await expect(page.locator('#wf-auto-text')).toContainText('Eingesehene Unterlagen: Schlagkartei, Saatgutbelege, Pachtverträge.');
+    await page.locator('.wf-doc', { hasText: 'Saatgutbelege' }).locator('input').uncheck();
+    await expect(page.locator('#wf-auto-text')).toContainText('Eingesehene Unterlagen: Schlagkartei, Pachtverträge.');
+    await page.locator('#wf-done').click();
+    const chk = (await stored(page, id))[0];
+    expect(chk.dokumente).toEqual({ schlagkartei: true });
+    expect(chk.dokumenteSonst).toBe('Pachtverträge');
+    // Tierhaltung hat eigene Unterlagen
+    await page.locator('#tk-warenfluss-new').click();
+    await page.locator('[data-wf-new="tierhaltung"]').click();
+    await expect(page.locator('.wf-doc', { hasText: 'Futtermittelbelege' })).toHaveCount(1);
+    await expect(page.locator('.wf-doc', { hasText: 'Schlagkartei' })).toHaveCount(0);
+  });
+
   test('Pflanzenbau: Referenz mit Quelle, Ertrag je ha mit Ampel, Saatgut, Toleranz', async ({ page }) => {
     const id = await openNew(page, 'pflanzenbau');
     await expect(page.locator('#wf-title')).toHaveText('Warenflussprüfung · Pflanzenbau');
