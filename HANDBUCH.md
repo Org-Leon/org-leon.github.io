@@ -449,7 +449,7 @@ Ein Tipp auf einen Termin öffnet die Kontrollmappe (am Handy im Vollbild). Im K
 - **Dokument scannen:** mehrere Seiten aufnehmen (Kamera, Kamera-App oder Galerie), Ecken prüfen, Filter wählen, drehen. „Fertig“ erstellt eine PDF-Datei; danach benennst du das Dokument.
 - **Fotomappe:** mehrere Fotos zu einer PDF-Datei mit Bezeichnung zusammenfassen.
 - **Umbenennen:** der Stift oben links an jedem Anhang.
-- **Ansehen:** Ein Tipp auf einen Anhang öffnet den Dokumenten- und Fotoviewer.
+- **Ansehen:** Ein Tipp auf einen Anhang öffnet den Dokumenten- und Fotoviewer. PDFs und Fotos lassen sich dort auch in einem neuen Tab öffnen. Andere Dateien (z. B. Webseiten oder SVG-Grafiken) kannst du aus Sicherheitsgründen nur herunterladen.
 
 Bei schlechtem Empfang warten Uploads in einer Warteschlange und werden automatisch nachgeholt. Der Status steht an jeder Datei und im Speicherstatus der Kopfzeile. Ein fehlgeschlagener Upload lässt sich per Antippen neu starten.
 

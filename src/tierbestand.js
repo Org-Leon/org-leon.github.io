@@ -80,7 +80,8 @@ export function parseHitLines(lines) {
 }
 // PDF -> Textzeilen (Textstücke gleicher Höhe von links nach rechts) -> parseHitLines.
 export async function parseHitPdf(arrayBuffer, pdfjsLib) {
-  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+  // isEvalSupported:false — Schutz vor präparierten PDFs (pdf.js CVE-2024-4367)
+  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer), isEvalSupported: false, enableXfa: false }).promise;
   const lines = [];
   for (let p = 1; p <= pdf.numPages; p++) {
     const content = await (await pdf.getPage(p)).getTextContent();

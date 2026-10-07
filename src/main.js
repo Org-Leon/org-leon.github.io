@@ -1,6 +1,13 @@
 import { oeffneSyncKanal, isSupabaseConfigured, signUp, signIn, signOut, getSession, saveState, loadState, uploadPhoto, getPhotoUrl, deletePhoto, requestAccess, listPendingAccessRequests, approveAccessRequest, declineAccessRequest, authErrorMessage, requestPasswordReset, updatePassword, verifyPassword, signOutEverywhere, onPasswordRecovery, deleteMyAccount } from './supabase.js';
 import { readLocalState, writeLocalState, deleteLocalState, readLastUser, writeLastUser, addBackup, listBackups, saveQueuedUpload, listQueuedUploads, deleteQueuedUpload, saveFotomappeFoto, listFotomappeFotos, deleteFotomappeFoto } from './offline-store.js';
 import { registerSW } from 'virtual:pwa-register';
+// SheetJS 0.20.3 (von cdn.sheetjs.com, per npm mitgebaut) — die cdnjs-Version 0.18.5
+// hat bekannte Lücken (CVE-2023-30533, CVE-2024-22363). Codepages für alte .xls.
+import * as XLSX from 'xlsx';
+import * as XLSX_CPTABLE from 'xlsx/dist/cpexcel.full.mjs';
+XLSX.set_cptable(XLSX_CPTABLE);
+// Tests erzeugen/lesen Excel-Dateien im Browser über window.XLSX
+if (import.meta.env.DEV) window.XLSX = XLSX;
 import iconFontUrl from './assets/material-symbols-rounded-subset.woff2?url';
 import { BerichtPdf, BRAND, CULTURE_COLORS, formatHa, formatHaExact, haExactFixed, formatPct } from './gesamtbericht.js';
 import { renderFlaechenuebersicht, countUp } from './flaechenuebersicht.js';
@@ -790,7 +797,7 @@ function fnnCodesAnwenden(features, gelernt = fnnGelernt()) {
 const fnnOffen = (features) => features.some(f => { const p = f.properties || {}; return (fnnRohcode(p) && !fnnAmtlich(fnnLand(p), fnnRohcode(p))) || (!fnnKulturFeld(p) && pickField(p, FIELD_CANDIDATES.flaechenid)); });
 async function fnnZeilenAusPdf(arrayBuffer) {
   await ensurePdfJs();
-  const pdf = await window.pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+  const pdf = await window.pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer), ...PDFJS_SICHER }).promise;
   const seiten = [];
   for (let s = 1; s <= pdf.numPages; s++) {
     const inhalt = await (await pdf.getPage(s)).getTextContent();
@@ -12966,6 +12973,9 @@ if (import.meta.env.DEV) {
 // openDocViewer(items, index, { onDelete }) mit items:
 //   { name, type, size?, path? (Storage), blob? (lokal), thumb?, note? }
 const PDFJS_BASE = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
+// Sicherheit: pdf.js 3.x kann beim Rendern präparierter Schriften JavaScript ausführen
+// (CVE-2024-4367) — mit isEvalSupported:false nicht. Gilt für ALLE getDocument-Aufrufe.
+const PDFJS_SICHER = { isEvalSupported: false, enableXfa: false };
 const DOC_CACHE = 'feldfolio-dokumente-v1';
 const dvEl = document.getElementById('docviewer');
 const dvContent = document.getElementById('dv-content');
@@ -13059,7 +13069,7 @@ function updateDocChrome() {
   const dl = document.getElementById('dv-download');
   dl.hidden = !dv.objUrl;
   if (dv.objUrl) { dl.href = dv.objUrl; dl.download = it.name; } else { dl.removeAttribute('href'); }
-  document.getElementById('dv-open').hidden = !dv.objUrl;
+  document.getElementById('dv-open').hidden = !(dv.objUrl && dvOeffnenTyp());
   document.querySelectorAll('#dv-thumbs .dv-thumb').forEach((b, i) => {
     b.classList.toggle('active', i === dv.index);
     b.setAttribute('aria-selected', String(i === dv.index));
@@ -13097,7 +13107,7 @@ async function showDocAt(index) {
     try {
       await ensurePdfJs();
       if (token !== dv.token) return;
-      dv.pdfDoc = await window.pdfjsLib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise;
+      dv.pdfDoc = await window.pdfjsLib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()), ...PDFJS_SICHER }).promise;
       if (token !== dv.token) return;
       await renderDocPdf(token);
     } catch (err) {
@@ -13241,7 +13251,27 @@ document.getElementById('dv-next').addEventListener('click', () => showDocAt(dv.
 document.getElementById('dv-zoom-in').addEventListener('click', () => zoomDoc(1.25));
 document.getElementById('dv-zoom-out').addEventListener('click', () => zoomDoc(1 / 1.25));
 document.getElementById('dv-rotate').addEventListener('click', rotateDoc);
-document.getElementById('dv-open').addEventListener('click', () => { if (dv.objUrl) window.open(dv.objUrl, '_blank', 'noopener'); });
+// "In neuem Tab öffnen": blob:-URLs laufen im Ursprung der App — eine HTML- oder
+// SVG-Datei könnte dort Skripte ausführen (Zugriff auf die Anmeldung). Daher nur
+// PDFs und Rasterbilder öffnen, und zwar mit fest gesetztem Typ (eine als .pdf
+// getarnte HTML-Datei zeigt der Browser dann als PDF, nicht als Webseite).
+// Alles andere nur herunterladen.
+const DV_RASTER_TYPEN = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp', 'image/avif'];
+function dvOeffnenTyp() {
+  if (!dv.blob) return null;
+  if (dv.kind === 'pdf') return 'application/pdf';
+  let t = String(dv.blob.type || '').toLowerCase();
+  if (!t) { const ext = (String((dv.items[dv.index] || {}).name || '').toLowerCase().match(/\.(jpe?g|png|gif|webp|bmp)$/) || [])[1]; if (ext) t = 'image/' + (ext === 'jpg' ? 'jpeg' : ext); }
+  if (dv.kind === 'image' && DV_RASTER_TYPEN.includes(t)) return t;
+  return null;
+}
+document.getElementById('dv-open').addEventListener('click', () => {
+  const typ = dvOeffnenTyp();
+  if (!typ) return;
+  const url = URL.createObjectURL(new Blob([dv.blob], { type: typ }));
+  window.open(url, '_blank', 'noopener');
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+});
 document.getElementById('dv-delete').addEventListener('click', async () => {
   const it = dv.items[dv.index];
   if (!dv.onDelete || !it) return;
@@ -19436,10 +19466,3 @@ if (import.meta.env.DEV) {
   window.__ffTestCrossCheck = formularTestHook('crosscheck');
 }
 
-// ---------- Dev-Tooling: Jahresvergleich-Inputs aus test-shapes/ vorbefüllen ----------
-// Vorerst deaktiviert: test-shapes/ enthält jetzt 16 einzelne Bundesland-
-// Dateien statt eines Jahr-A/B-Paares, dev-prefill.js braucht ein Update auf
-// ein aktuelles Dateipaar, bevor das wieder sinnvoll aktiviert werden kann.
-// if (import.meta.env.DEV) {
-//   import('./dev-prefill.js').then(m => m.prefillCompareInputs());
-// }
