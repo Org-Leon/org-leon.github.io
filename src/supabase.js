@@ -309,3 +309,56 @@ export async function deleteMyAccount() {
   if (error) throw error;
   await supabase.auth.signOut().catch(() => {});
 }
+
+// ---------- Gemeinsame Nutzungscodes (Code -> Kultur je Bundesland) ----------
+// Tabelle "nutzungscodes", siehe supabase/nutzungscodes.sql: Vorschläge der
+// Nutzer, von Admins (@oekop.de) freigegeben oder abgelehnt.
+const CODES_TABLE = 'nutzungscodes';
+// Dev-Testhaken: unter Playwright (navigator.webdriver) nie den echten Server
+// ansprechen — window.__ffTestCodes stubbt, sonst leer/no-op.
+const codesStub = () => (import.meta.env.DEV && (window.__ffTestCodes || navigator.webdriver)
+  ? (window.__ffTestCodes || { laden: async () => [], vorschlagen: async () => {}, entscheiden: async () => {} })
+  : null);
+
+// Alle sichtbaren Zeilen: freigegebene + eigene Vorschläge (Admins: alle).
+export async function ladeNutzungscodes() {
+  if (codesStub()) return codesStub().laden();
+  if (!supabase) return [];
+  const { data, error } = await supabase
+    .from(CODES_TABLE)
+    .select('id, land, code, kultur, quelle, status, vorgeschlagen_von, created_at')
+    .order('created_at', { ascending: true })
+    .limit(5000);
+  if (error) throw error;
+  return data || [];
+}
+
+// rows: [{ land, code, kultur, quelle }] — doppelte (gleicher Nutzer) werden ignoriert
+export async function schlageNutzungscodesVor(rows) {
+  if (codesStub()) return codesStub().vorschlagen(rows);
+  if (!supabase || !rows.length) return;
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error('Nicht angemeldet.');
+  const { error } = await supabase
+    .from(CODES_TABLE)
+    .upsert(rows.map(r => ({ land: r.land, code: r.code, kultur: r.kultur, quelle: r.quelle || 'fnn', vorgeschlagen_von: user.id })),
+      { onConflict: 'land,code,kultur,vorgeschlagen_von', ignoreDuplicates: true });
+  if (error) throw error;
+}
+
+// Admin: eine Kultur für einen Code freigeben (die übrigen Vorschläge für
+// denselben Code werden abgelehnt) bzw. einen Vorschlag ablehnen.
+export async function entscheideNutzungscode({ land, code, kultur, freigeben }) {
+  if (codesStub()) return codesStub().entscheiden({ land, code, kultur, freigeben });
+  if (!supabase) throw new Error('Cloud-Konto ist nicht konfiguriert.');
+  const { data: { user } } = await supabase.auth.getUser();
+  const geprueft = { geprueft_von: user ? user.id : null, geprueft_am: new Date().toISOString() };
+  if (freigeben) {
+    const { error: e1 } = await supabase.from(CODES_TABLE).update({ status: 'abgelehnt', ...geprueft })
+      .eq('land', land).eq('code', code).neq('kultur', kultur).neq('status', 'abgelehnt');
+    if (e1) throw e1;
+  }
+  const { error } = await supabase.from(CODES_TABLE).update({ status: freigeben ? 'freigegeben' : 'abgelehnt', ...geprueft })
+    .eq('land', land).eq('code', code).eq('kultur', kultur);
+  if (error) throw error;
+}

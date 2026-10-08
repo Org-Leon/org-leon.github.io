@@ -888,6 +888,8 @@
 
     <div id="ue-content">
       <div class="ue-kpis" id="ue-kpis"></div>
+      <!-- Fehlende Kulturen: Nutzungscodes ohne Klartext (main.js, renderUeCodes) -->
+      <section class="ue-card ue-codes" id="ue-codes" hidden></section>
 
       <section class="ue-card ue-kultur-card ue-anim" style="--i:2">
         <h3>Kulturarten</h3>
@@ -1663,6 +1665,13 @@
             </div>
             <p class="modal-hint modal-error" id="account-admin-error" hidden></p>
             <div id="account-admin-requests-list"></div>
+            <div class="admin-requests-head admin-codes-head">
+              <span>Nutzungscodes – Vorschläge</span>
+              <button type="button" id="account-admin-codes-refresh" title="Aktualisieren" aria-label="Aktualisieren"><span class="material-symbols-rounded icon">refresh</span></button>
+            </div>
+            <p class="modal-hint">Von Nutzern gefundene Zuordnungen Nutzungscode → Kultur. Freigegebene übersetzen die Flächen aller Nutzer.</p>
+            <p class="modal-hint modal-error" id="account-admin-codes-error" hidden></p>
+            <div id="account-admin-codes-list"></div>
           </div>
         </section>
 

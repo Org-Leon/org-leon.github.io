@@ -1,4 +1,4 @@
-import { oeffneSyncKanal, isSupabaseConfigured, signUp, signIn, signOut, getSession, saveState, loadState, uploadPhoto, getPhotoUrl, deletePhoto, requestAccess, listPendingAccessRequests, approveAccessRequest, declineAccessRequest, authErrorMessage, requestPasswordReset, updatePassword, verifyPassword, signOutEverywhere, onPasswordRecovery, deleteMyAccount } from './supabase.js';
+import { oeffneSyncKanal, isSupabaseConfigured, signUp, signIn, signOut, getSession, saveState, loadState, uploadPhoto, getPhotoUrl, deletePhoto, requestAccess, listPendingAccessRequests, approveAccessRequest, declineAccessRequest, authErrorMessage, requestPasswordReset, updatePassword, verifyPassword, signOutEverywhere, onPasswordRecovery, deleteMyAccount, ladeNutzungscodes, schlageNutzungscodesVor, entscheideNutzungscode } from './supabase.js';
 import { readLocalState, writeLocalState, deleteLocalState, readLastUser, writeLastUser, addBackup, listBackups, saveQueuedUpload, listQueuedUploads, deleteQueuedUpload, saveFotomappeFoto, listFotomappeFotos, deleteFotomappeFoto } from './offline-store.js';
 import { registerSW } from 'virtual:pwa-register';
 // SheetJS 0.20.3 (von cdn.sheetjs.com, per npm mitgebaut) — die cdnjs-Version 0.18.5
@@ -760,14 +760,82 @@ async function parseShapefileZip(file) {
 
 // ---- Nutzungscodes aus dem Nutzungsnachweis (FNN) lernen, siehe fnn.js ----
 // Gelernte Bedeutungen je Bundesland (aus der FLIK, z.B. "BY", "TH") für alle Betriebe merken.
-const FNN_CODES_KEY = 'feldfolio-nutzungscodes';
+// Dazu kommen die von der Verwaltung freigegebenen Codes ALLER Nutzer (Tabelle
+// "nutzungscodes", siehe supabase/nutzungscodes.sql). Eigene Funde gehen dort als
+// Vorschlag hin, damit nach der Freigabe alle die fehlenden Kulturen bekommen.
+const FNN_CODES_KEY = 'feldfolio-nutzungscodes';                    // eigene { land: { code: kultur } }
+const CODES_GETEILT_KEY = 'feldfolio-nutzungscodes-geteilt';        // freigegebene aller Nutzer (Kopie für offline)
+const CODES_AUSSTEHEND_KEY = 'feldfolio-nutzungscodes-ausstehend';  // noch nicht gesendete Vorschläge
+const lsJson = (key, leer) => { try { return JSON.parse(localStorage.getItem(key) || 'null') || leer; } catch { return leer; } };
+const lsSetzen = (key, wert) => { try { localStorage.setItem(key, JSON.stringify(wert)); } catch { /* ohne Speicher */ } };
+// Eigene Funde haben Vorrang (eigener Nachweis), freigegebene füllen die Lücken.
 function fnnGelernt() {
-  try { return JSON.parse(localStorage.getItem(FNN_CODES_KEY) || '{}') || {}; } catch { return {}; }
+  const geteilt = lsJson(CODES_GETEILT_KEY, {}), eigene = lsJson(FNN_CODES_KEY, {});
+  const out = {};
+  new Set([...Object.keys(geteilt), ...Object.keys(eigene)]).forEach(l => { out[l] = { ...(geteilt[l] || {}), ...(eigene[l] || {}) }; });
+  return out;
 }
-function fnnMerken(land, codes) {
-  const g = fnnGelernt();
+function fnnMerken(land, codes, quelle = 'fnn') {
+  const g = lsJson(FNN_CODES_KEY, {});
   g[land] = { ...(g[land] || {}), ...Object.fromEntries(codes) };
-  try { localStorage.setItem(FNN_CODES_KEY, JSON.stringify(g)); } catch { /* ohne Speicher */ }
+  lsSetzen(FNN_CODES_KEY, g);
+  codesVormerken([...codes].map(([code, kultur]) => ({ land, code: String(code), kultur: String(kultur).trim(), quelle })));
+}
+// Vorschläge für die gemeinsame Tabelle sammeln (nur gültiges Bundesland,
+// nicht schon so freigegeben); gesendet wird beim nächsten Abgleich.
+function codesVormerken(rows) {
+  const geteilt = lsJson(CODES_GETEILT_KEY, {});
+  const offen = lsJson(CODES_AUSSTEHEND_KEY, []);
+  rows.filter(r => /^[A-Z]{2}$/.test(r.land) && /^\d{1,8}$/.test(r.code) && r.kultur && (geteilt[r.land] || {})[r.code] !== r.kultur)
+    .forEach(r => { if (!offen.some(o => o.land === r.land && o.code === r.code && o.kultur === r.kultur)) offen.push(r); });
+  lsSetzen(CODES_AUSSTEHEND_KEY, offen);
+  if (offen.length) setTimeout(() => nutzungscodesAbgleichen({ erzwingen: true }), 0);
+}
+// Abgleich mit der gemeinsamen Tabelle: Vorschläge senden, Freigaben holen.
+let codesZeilen = [];          // zuletzt geladene Zeilen (freigegeben + eigene Vorschläge, Admins: alle)
+let codesZuletzt = 0;
+let codesLaeuft = null;
+let codesFehler = '';
+function nutzungscodesAbgleichen({ erzwingen = false } = {}) {
+  if (!accountSession || (typeof navigator !== 'undefined' && navigator.onLine === false)) return Promise.resolve();
+  if (!erzwingen && Date.now() - codesZuletzt < 10 * 60 * 1000) return Promise.resolve();
+  if (codesLaeuft) return codesLaeuft.then(() => (erzwingen ? nutzungscodesAbgleichen({ erzwingen: false }) : undefined));
+  codesLaeuft = (async () => {
+    try {
+      const offen = lsJson(CODES_AUSSTEHEND_KEY, []);
+      if (offen.length) {
+        await schlageNutzungscodesVor(offen);
+        const gesendet = new Set(offen.map(o => o.land + '|' + o.code + '|' + o.kultur));
+        lsSetzen(CODES_AUSSTEHEND_KEY, lsJson(CODES_AUSSTEHEND_KEY, []).filter(o => !gesendet.has(o.land + '|' + o.code + '|' + o.kultur)));
+      }
+      codesZeilen = await ladeNutzungscodes();
+      const geteilt = {};
+      codesZeilen.filter(r => r.status === 'freigegeben').forEach(r => { (geteilt[r.land] = geteilt[r.land] || {})[r.code] = r.kultur; });
+      lsSetzen(CODES_GETEILT_KEY, geteilt);
+      codesZuletzt = Date.now();
+      codesFehler = '';
+      nutzungscodesUeberallAnwenden();
+    } catch (err) {
+      codesFehler = err.message || 'Abgleich der Nutzungscodes fehlgeschlagen.';
+      console.warn('Nutzungscodes:', codesFehler);
+    } finally {
+      codesLaeuft = null;
+      if (document.body.dataset.view === 'uebersicht') renderUeCodes();
+    }
+  })();
+  return codesLaeuft;
+}
+// Bekannte Codes auf alle geladenen Flächen (Karte + Jahresvergleich) anwenden
+function nutzungscodesUeberallAnwenden({ geaendert = false } = {}) {
+  const feats = [...Object.values(layers).flatMap(l => (l.geojson && l.geojson.features) || []), ...compareYears.flatMap(y => (y.fc && y.fc.features) || [])];
+  const n = fnnCodesAnwenden(feats);
+  if (!n && !geaendert) return 0;
+  featureIndex.forEach(e => { e.kultur = pickField(e.props, FIELD_CANDIDATES.kultur); });
+  slGeoCache = null;
+  persistLocalState().catch(() => {});
+  if (document.getElementById('feature-table')) renderFeatureTable();
+  refreshFlaechenuebersichtIfOpen();
+  return n;
 }
 const fnnLand = (p) => (/^DE([A-Z]{2})LI/.exec(String(pickField(p, FIELD_CANDIDATES.flaechenid) || '').toUpperCase()) || [])[1] || '';
 // Feld, in dem die Kultur steht (erstes befülltes Kandidatenfeld)
@@ -8363,7 +8431,97 @@ async function safeGesamtCapture(fn, what) {
 
 // ---- Flächenübersicht (eigene Ansicht, src/flaechenuebersicht.js) ----
 // Dieselben Daten wie die Übersichtsseite der Gesamtübersicht.
+// ---- Fehlende Kulturen (nur Nutzungscode / gar keine Kultur) ----
+// Liste je Code mit Eingabe; Nutzungsnachweis (PDF) laden lernt die Codes.
+// Gefundene Zuordnungen gehen als Vorschlag an die Verwaltung (s. o.).
+let ueCodesInfo = '';
+function ueCodesDaten() {
+  const jeCode = new Map();
+  let ohneKultur = 0;
+  featureIndex.forEach(e => {
+    if (e.isTeilflaechen) return;
+    const p = e.props || {};
+    const code = fnnRohcode(p);
+    if (code) {
+      const land = fnnLand(p);
+      if (fnnAmtlich(land, code)) return;
+      const k = land + '|' + code;
+      const c = jeCode.get(k) || { land, code, n: 0, ha: 0 };
+      c.n++; c.ha += parseHa(pickGroesse(p)) || 0;
+      jeCode.set(k, c);
+    } else if (!fnnKulturFeld(p) && pickField(p, FIELD_CANDIDATES.flaechenid)) ohneKultur++;
+  });
+  return { codes: [...jeCode.values()].sort((a, b) => b.ha - a.ha), ohneKultur };
+}
+const UE_LAND_NAME = { TH: 'Thüringen', ST: 'Sachsen-Anhalt', BY: 'Bayern', SN: 'Sachsen', BB: 'Brandenburg', HE: 'Hessen', NI: 'Niedersachsen', NW: 'NRW', RP: 'Rheinland-Pfalz', BW: 'Baden-Württemberg', MV: 'Mecklenburg-Vorpommern', SH: 'Schleswig-Holstein', SL: 'Saarland' };
+function renderUeCodes() {
+  const box = document.getElementById('ue-codes');
+  if (!box) return;
+  const { codes, ohneKultur } = ueCodesDaten();
+  const meineId = accountSession && accountSession.user && accountSession.user.id;
+  const wartend = codesZeilen.filter(r => r.status === 'vorschlag' && r.vorgeschlagen_von === meineId).length + lsJson(CODES_AUSSTEHEND_KEY, []).length;
+  if (!codes.length && !ohneKultur && !ueCodesInfo) { box.hidden = true; box.innerHTML = ''; return; }
+  // Vorschläge für die Eingabe: bekannte Kulturnamen (amtliche Tabellen + gelernte)
+  const namen = new Set();
+  BUNDESLAND_NC_CONFIGS.forEach(c => Object.values(c.table).forEach(v => namen.add(v)));
+  Object.values(fnnGelernt()).forEach(m => Object.values(m).forEach(v => namen.add(v)));
+  box.hidden = false;
+  box.innerHTML = `<div class="ue-card-head"><h3><span class="material-symbols-rounded icon" aria-hidden="true">pin</span>Fehlende Kulturen</h3></div>
+    <p class="ue-codes-hint">${[codes.length ? `<b>${codes.reduce((s, c) => s + c.n, 0)} Flächen</b> nur mit Nutzungscode (${codes.length} ${codes.length === 1 ? 'Code' : 'Codes'})` : '', ohneKultur ? `<b>${ohneKultur} Flächen</b> ganz ohne Kultur` : ''].filter(Boolean).join(', ') || 'Alle Flächen haben eine Kultur.'}.
+      Lade den Flächen- und Nutzungsnachweis (PDF) oder trage die Kultur zum Code selbst ein. ${accountSession ? 'Jede Zuordnung geht als Vorschlag an die Verwaltung — nach der Freigabe gilt sie für alle Nutzer.' : 'Mit Konto wird jede Zuordnung als Vorschlag für alle Nutzer geteilt.'}</p>
+    <div class="ue-codes-actions">
+      <label class="betrieb-btn"><span class="material-symbols-rounded icon" aria-hidden="true">upload_file</span>Nutzungsnachweis (PDF) laden<input type="file" id="ue-fnn-file" accept=".pdf,application/pdf" hidden></label>
+      ${wartend ? `<span class="ue-codes-wartend"><span class="material-symbols-rounded icon" aria-hidden="true">pending_actions</span>${wartend} ${wartend === 1 ? 'Vorschlag wartet' : 'Vorschläge warten'} auf Freigabe</span>` : ''}
+    </div>
+    ${ueCodesInfo ? `<p class="ue-codes-info" id="ue-codes-info">${escapeHtml(ueCodesInfo)}</p>` : ''}
+    ${codesFehler && accountSession ? `<p class="ue-codes-info is-error">${escapeHtml(codesFehler)}</p>` : ''}
+    ${codes.length ? `<div class="ue-codes-list">${codes.map(c => `<div class="ue-code-row" data-ue-code="${escapeHtml(c.land + '|' + c.code)}">
+        <span class="ue-code-id"><b>${escapeHtml(c.code)}</b><small>${escapeHtml(UE_LAND_NAME[c.land] || c.land || 'Bundesland unbekannt')} · ${c.n} ${c.n === 1 ? 'Fläche' : 'Flächen'} · ${formatHaExact(c.ha)} ha</small></span>
+        <input type="text" class="ue-code-input" list="ue-code-namen" placeholder="Kultur für Code ${escapeHtml(c.code)}" aria-label="Kultur für Code ${escapeHtml(c.code)}">
+        <button type="button" class="betrieb-btn primary" data-ue-code-ok>Übernehmen</button>
+      </div>`).join('')}</div>` : ''}
+    <datalist id="ue-code-namen">${[...namen].sort().map(n => `<option value="${escapeHtml(n)}">`).join('')}</datalist>`;
+}
+document.getElementById('ue-codes').addEventListener('click', (e) => {
+  const ok = e.target.closest('[data-ue-code-ok]');
+  if (!ok) return;
+  const row = ok.closest('[data-ue-code]');
+  const [land, code] = row.dataset.ueCode.split('|');
+  const kultur = row.querySelector('.ue-code-input').value.trim();
+  if (!kultur) { row.querySelector('.ue-code-input').focus(); return; }
+  fnnMerken(land, [[code, kultur]], 'manuell');
+  ueCodesInfo = `Code ${code} → „${kultur}“ übernommen${accountSession && /^[A-Z]{2}$/.test(land) ? ' und als Vorschlag gemeldet' : ''}.`;
+  nutzungscodesUeberallAnwenden({ geaendert: true });
+  renderUeCodes();
+});
+document.getElementById('ue-codes').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.matches('.ue-code-input')) e.target.closest('[data-ue-code]').querySelector('[data-ue-code-ok]').click();
+});
+document.getElementById('ue-codes').addEventListener('change', async (e) => {
+  if (e.target.id !== 'ue-fnn-file') return;
+  const datei = e.target.files[0];
+  e.target.value = '';
+  if (!datei) return;
+  ueCodesInfo = 'Lese Nutzungsnachweis …';
+  renderUeCodes();
+  try {
+    const feats = Object.values(layers).filter(l => !l.isTeilflaechen).flatMap(l => (l.geojson && l.geojson.features) || []);
+    const r = await fnnLernenUndAnwenden(await datei.arrayBuffer(), feats);
+    const teile = [];
+    if (r.gelernt) teile.push(`${r.gelernt} Nutzungscodes erkannt`);
+    if (r.uebersetzt) teile.push(`${r.uebersetzt} Flächen mit Kultur statt Code`);
+    if (r.ergaenzt) teile.push(`${r.ergaenzt} Flächen über die FLIK ergänzt`);
+    ueCodesInfo = `${datei.name}: ${teile.length ? teile.join(', ') : 'nichts Passendes gefunden (Codes bzw. FLIK stimmen nicht mit den Flächen überein)'}.`;
+    nutzungscodesUeberallAnwenden({ geaendert: true });
+  } catch (err) {
+    console.error(err);
+    ueCodesInfo = `${datei.name}: konnte nicht gelesen werden (${err.message || 'unbekannter Fehler'}).`;
+  }
+  renderUeCodes();
+});
+
 function openFlaechenuebersicht({ animate = false } = {}) {
+  renderUeCodes();
   const { rows, teilflaechen } = collectGesamtFlaechen();
   const kulturen = summarizeGesamtKulturen(rows);
   const betrieb = activeZuordnung ? activeZuordnung.betrieb : 'Kein Betrieb zugeordnet';
@@ -9068,7 +9226,66 @@ async function refreshAdminRequests() {
   } catch (err) {
     showAdminError(err.message || 'Anfragen konnten nicht geladen werden.');
   }
+  refreshAdminCodes();
 }
+
+// Verwaltung: Vorschläge für Nutzungscodes (je Bundesland + Code alle genannten Kulturen)
+function adminCodeGruppen(rows) {
+  const gruppen = new Map();
+  rows.forEach(r => {
+    const k = r.land + '|' + r.code;
+    const g = gruppen.get(k) || { land: r.land, code: r.code, freigegeben: null, varianten: new Map() };
+    if (r.status === 'freigegeben') g.freigegeben = r.kultur;
+    if (r.status === 'vorschlag') {
+      const v = g.varianten.get(r.kultur) || { kultur: r.kultur, nutzer: new Set(), quellen: new Set() };
+      v.nutzer.add(r.vorgeschlagen_von || '?'); v.quellen.add(r.quelle);
+      g.varianten.set(r.kultur, v);
+    }
+    gruppen.set(k, g);
+  });
+  return [...gruppen.values()].filter(g => g.varianten.size);
+}
+async function refreshAdminCodes() {
+  const list = document.getElementById('account-admin-codes-list');
+  const err = document.getElementById('account-admin-codes-error');
+  err.hidden = true;
+  try {
+    codesZeilen = await ladeNutzungscodes();
+    const gruppen = adminCodeGruppen(codesZeilen);
+    const freigegeben = new Set(codesZeilen.filter(r => r.status === 'freigegeben').map(r => r.land + '|' + r.code)).size;
+    list.innerHTML = (gruppen.length ? gruppen.map(g => `<div class="admin-code-row">
+        <div class="admin-request-info"><strong>${escapeHtml(UE_LAND_NAME[g.land] || g.land)} · Code ${escapeHtml(g.code)}</strong>
+          ${g.freigegeben ? `<span class="admin-request-date">bisher freigegeben: ${escapeHtml(g.freigegeben)}</span>` : ''}</div>
+        ${[...g.varianten.values()].map(v => `<div class="admin-code-variante">
+          <span>${escapeHtml(v.kultur)} <small>${v.nutzer.size} ${v.nutzer.size === 1 ? 'Nutzer' : 'Nutzer'} · ${[...v.quellen].map(q => (q === 'manuell' ? 'eingetragen' : 'Nutzungsnachweis')).join(', ')}</small></span>
+          <div class="admin-request-actions">
+            <button type="button" data-code-entscheid="1" data-land="${escapeHtml(g.land)}" data-code="${escapeHtml(g.code)}" data-kultur="${escapeHtml(v.kultur)}">Freigeben</button>
+            <button type="button" data-code-entscheid="0" data-land="${escapeHtml(g.land)}" data-code="${escapeHtml(g.code)}" data-kultur="${escapeHtml(v.kultur)}">Ablehnen</button>
+          </div></div>`).join('')}
+      </div>`).join('') : '<p class="modal-hint">Keine offenen Vorschläge.</p>')
+      + `<p class="modal-hint">${freigegeben} ${freigegeben === 1 ? 'Code ist' : 'Codes sind'} für alle freigegeben.</p>`;
+  } catch (e) {
+    err.textContent = e.message || 'Vorschläge konnten nicht geladen werden.';
+    err.hidden = false;
+  }
+}
+document.getElementById('account-admin-codes-list').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-code-entscheid]');
+  if (!btn) return;
+  btn.disabled = true;
+  try {
+    await entscheideNutzungscode({ land: btn.dataset.land, code: btn.dataset.code, kultur: btn.dataset.kultur, freigeben: btn.dataset.codeEntscheid === '1' });
+    await refreshAdminCodes();
+    refreshAdminCount();
+    nutzungscodesAbgleichen({ erzwingen: true });
+  } catch (err) {
+    btn.disabled = false;
+    const el = document.getElementById('account-admin-codes-error');
+    el.textContent = err.message || 'Entscheidung konnte nicht gespeichert werden.';
+    el.hidden = false;
+  }
+});
+document.getElementById('account-admin-codes-refresh').addEventListener('click', refreshAdminCodes);
 
 document.getElementById('account-admin-refresh').addEventListener('click', refreshAdminRequests);
 
@@ -9718,6 +9935,7 @@ document.getElementById('account-menu-signout').addEventListener('click', () => 
 async function refreshAdminCount() {
   let n = 0;
   try { n = (await listPendingAccessRequests()).length; } catch {}
+  try { n += adminCodeGruppen(await ladeNutzungscodes()).length; } catch {}
   ['account-menu-admin-count', 'account-admin-count'].forEach(id => {
     const el = document.getElementById(id);
     el.textContent = n;
@@ -9956,6 +10174,8 @@ function serializeWorkspace() {
 // addTree() die Flächen-Zuordnung sofort korrekt berechnen kann.
 function restoreWorkspace(data) {
   if (!data) return;
+  // inzwischen bekannte Nutzungscodes (eigene oder freigegebene) gleich übersetzen
+  fnnCodesAnwenden([...(data.layers || []), ...(data.vergleichsjahre || []).map(y => ({ geojson: y.fc }))].flatMap(l => (l.geojson && l.geojson.features) || []));
   (data.layers || []).forEach(l => addLayer(l.name, l.geojson));
   if ((data.tierbestand || []).length) {
     tierbestandData = structuredClone(data.tierbestand[0]);
@@ -10463,6 +10683,7 @@ async function runCloudSync() {
   syncErrorMessage = '';
   lastSyncedAt = new Date();
   updateSyncIndicator();
+  nutzungscodesAbgleichen();
   return 'synced';
 }
 
@@ -10597,6 +10818,7 @@ async function startUserState(user) {
   updateSyncIndicator();
   resumeUploadQueue();
   if (accountSession && !accountSession.offline && navigator.onLine) await initialCloudLoad(!rec);
+  nutzungscodesAbgleichen({ erzwingen: true });
 }
 
 async function initialCloudLoad(firstOnThisDevice) {

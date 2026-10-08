@@ -1,6 +1,6 @@
 # FeldFolio – Benutzerhandbuch
 
-Stand: 7. Oktober 2026
+Stand: 8. Oktober 2026
 
 FeldFolio ist ein Werkzeug für die Öko-Kontrolle: Flächen eines Betriebs auf der Karte ansehen und auswerten, Hof und Stall erfassen und die Kontrolle selbst mit Terminen, Protokollen und Dokumenten begleiten. Die App läuft im Browser auf PC, Tablet und Handy und funktioniert vor Ort auch ohne Empfang.
 
@@ -156,6 +156,14 @@ Die Flächenübersicht hat zwei Reiter: **Flächen** und **Fruchtfolge**.
 
 Gezählt werden alle Flächen aus geladenen Shape-Dateien und aus dem Flächenzeichner. Teilflächen-Ebenen zählen nicht mit.
 
+**Fehlende Kulturen:** Haben Flächen nur einen Nutzungscode statt einer Kultur (z. B. in Thüringen bei Codes, die die App noch nicht kennt) oder gar keine Kultur, erscheint oben der Kasten „Fehlende Kulturen“. Er listet jeden unbekannten Code mit Bundesland, Anzahl der Flächen und Hektar.
+
+- **Nutzungsnachweis (PDF) laden:** Die App vergleicht den Flächen- und Nutzungsnachweis mit den Flächen, lernt daraus die Bedeutung der Codes und ergänzt Flächen ohne Kultur über die FLIK.
+- **Selbst eintragen:** Kultur ins Feld neben dem Code schreiben (Vorschläge erscheinen beim Tippen) und **„Übernehmen“** tippen.
+- Die Kultur gilt sofort für alle Flächen mit diesem Code, auch im Jahresvergleich.
+- **Für alle Nutzer:** Mit Konto geht jede gefundene oder eingetragene Zuordnung als Vorschlag an die Verwaltung. Ist sie freigegeben, übersetzt die App diesen Code bei allen Nutzern automatisch. Wie viele deiner Vorschläge noch warten, steht im Kasten. Ohne Konto gilt die Zuordnung nur auf deinem Gerät; der Vorschlag wird nachgereicht, sobald du dich anmeldest.
+- Eine eigene Zuordnung hat auf deinem Gerät Vorrang vor einer freigegebenen.
+
 Export in der Seitenleiste: Gesamtübersicht (PDF) und Flächenliste (Excel).
 
 ### Reiter „Fruchtfolge“
@@ -260,7 +268,7 @@ Die Abschnitte im Einzelnen:
   - **Codes lernen:** Die App liest daraus, welcher Code welche Kultur ist. Sie übernimmt nur Codes, die in den Shapes vorkommen.
   - **Flächen ohne Kultur:** Die App ordnet die Zeilen des Ausdrucks über die FLIK (bei mehreren Flächen mit derselben FLIK zusätzlich über Größe bzw. Schlagnummer) den Flächen zu und übernimmt deren Kultur.
   - Liegt der Nutzungsnachweis als PDF schon im Zip der Shape-Dateien (z. B. Bayern), passiert das beim Laden automatisch.
-  - Gelernte Codes merkt sich die App je Bundesland, auch für andere Betriebe.
+  - Gelernte Codes merkt sich die App je Bundesland, auch für andere Betriebe. Mit Konto gehen sie außerdem als Vorschlag an die Verwaltung und gelten nach der Freigabe für alle Nutzer (siehe [Flächenübersicht](#4-flächenübersicht)).
 - **Nicht in den Shapes:** Diese Listenzeilen haben keine Fläche mehr. Auf der Karte ist ihre Vorjahresform gestrichelt. Du setzt den Haken „Abgang eintragen am“ und prüfst das Datum, oder du ordnest eine Fläche zu.
 - **Nach dem Agrarantrag zugegangen:** Flächen, die erst nach dem 15.05. des Abgleichsjahres zum Betrieb gekommen sind, stehen schon in der Liste, aber noch nicht in den Shapes. Sie sind kein Abgang. Zeilen mit einem Zugang nach dem 15.05. erkennt die App von selbst und zeigt sie in diesem eigenen Abschnitt, ohne offenen Fall. Hat eine solche Fläche ein älteres Datum, z. B. ein Bio-Zugang mit dem Umstellungsdatum des Vorbewirtschafters, tippst du unter „Nicht in den Shapes“ auf **„Nach Antrag zugegangen“**. Beim Export bleiben diese Zeilen ohne Abgang; nur der Umstellungsstatus wird zum Stichtag fortgeschrieben. Mit **„doch nicht“** wird die Zeile wieder ein normaler Fall.
 
@@ -543,6 +551,7 @@ Wurde derselbe Betrieb inzwischen auf einem anderen Gerät geändert, fragt die 
 - **Sync & Gerät:** automatischer Abgleich, Sicherungen des Arbeitsstands.
 - **Abmelden:** wahlweise mit Löschen der Daten auf diesem Gerät (empfohlen auf fremden Geräten) und auf allen Geräten abmelden.
 - **Konto löschen.**
+- **Verwaltung** (nur für Konten der Kontrollstelle): offene Zugangsanfragen freischalten oder ablehnen, und **Nutzungscodes – Vorschläge** prüfen. Je Bundesland und Code stehen dort alle vorgeschlagenen Kulturen, mit der Zahl der Nutzer und der Herkunft (Nutzungsnachweis oder eingetragen). **„Freigeben“** macht eine Kultur für alle gültig und lehnt die anderen Vorschläge für denselben Code ab; **„Ablehnen“** verwirft einen Vorschlag.
 
 ---
 
