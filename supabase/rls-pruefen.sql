@@ -22,6 +22,9 @@
 --   Dashboard     Authentication → "Confirm email" und "Secure email change" an
 --                 (die Admin-Rechte hängen an der bestätigten @oekop.de-Adresse)
 --
+-- Abschnitt 7 zeigt den Inhalt der Server-Funktionen (z. B. check_signup_allowed:
+-- wer darf sich registrieren).
+--
 -- Weicht etwas ab oder fehlt eine Zeile: Ergebnis kopieren und prüfen lassen.
 
 select '1 RLS an?' as bereich, c.relname::text as name,
@@ -36,7 +39,7 @@ union all
 select '3 Speicher-Bucket', id::text, case when public then 'ÖFFENTLICH !!!' else 'privat' end
   from storage.buckets
 union all
-select '4 Trigger ' || t.tgrelid::regclass::text, t.tgname::text, 'ruft ' || p.proname
+select '4 Trigger ' || t.tgrelid::regclass::text, t.tgname::text, pg_get_triggerdef(t.oid)
   from pg_trigger t join pg_proc p on p.oid = t.tgfoid
  where not t.tgisinternal and t.tgrelid in ('auth.users'::regclass, 'public.access_requests'::regclass)
 union all
@@ -49,4 +52,7 @@ select '6 Tabellenrechte ' || table_name, grantee::text, string_agg(privilege_ty
   from information_schema.role_table_grants
  where table_schema = 'public' and grantee in ('anon', 'authenticated')
  group by table_name, grantee
+union all
+select '7 Definition', p.proname::text, pg_get_functiondef(p.oid)
+  from pg_proc p where p.pronamespace = 'public'::regnamespace and p.prokind = 'f'
 order by 1, 2;
