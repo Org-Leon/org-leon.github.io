@@ -157,6 +157,10 @@ test.describe('Jahresvergleich: Umnummerierung und Schlagliste (Umstellung)', ()
     expect(pick(byPk['neu'])).toEqual(['00004', '4 Neuland', 0.9, '01.01.2026', '', 'Konventionell (Test)']);
     expect(byPk['neu'][0]).toBe('99999');
     expect(byPk['neu'][2]).toBe('');
+    // Import Information: New = neue Fläche, Updated = etwas geändert, Not updated = unverändert
+    expect(Object.fromEntries(Object.entries(byPk).map(([k, r]) => [k, r[17]]))).toEqual({
+      'feld-a': 'Not updated', 'feld-b': 'Updated', 'feld-c': 'Updated', 'feld-d': 'Updated', 'feld-e': '', neu: 'New' // unvollständige Zeile bleibt unangetastet
+    });
 
     // Spalte "Umstellung" in der Vergleichstabelle
     await page.locator('#sl-close').click();
@@ -228,6 +232,7 @@ test.describe('Jahresvergleich: Umnummerierung und Schlagliste (Umstellung)', ()
     const [haupt, teil] = rows;
     expect([haupt[1], haupt[3], haupt[4], haupt[13], haupt[15]]).toEqual(['feld-a', '00001', '1 Acker', '01.01.2000', OEKO]);
     expect([teil[1], teil[2], teil[3], teil[4], teil[13], teil[15]]).toEqual(['', '', '00001', '1 Acker – Teilstück 2026', '01.01.2026', 'Nichtökologische Erzeugnisse (aus dem 1. Umstellungsjahr)']);
+    expect([haupt[17], teil[17]]).toEqual(['Updated', 'New']); // Fläche kleiner geworden, Teilstück neu
     expect(teil[10]).toBeGreaterThan(0.5);
     expect(Math.round((haupt[10] + teil[10]) * 10000) / 10000).toBe(3);
 
@@ -329,7 +334,7 @@ test.describe('Jahresvergleich: Umnummerierung und Schlagliste (Umstellung)', ()
     await page.locator('#sl-stichtag').dispatchEvent('change');
     // 30 automatisch (Zugang nach dem 15.05.2026): kein Fall
     const nach = page.locator('.sl-sec.is-nachantrag');
-    await expect(nach.locator('summary')).toContainText('Nach dem Agrarantrag zugegangen (1)');
+    await expect(nach.locator('summary')).toContainText('Ohne Fläche, bleiben unverändert (1)');
     await expect(nach.locator('li')).toContainText('30 Pachtacker');
     const fehlt = page.locator('.sl-sec.is-fehlt .sl-item');
     await expect(fehlt).toHaveCount(2); // 3 Alter Acker, 31 Biowiese
@@ -353,6 +358,32 @@ test.describe('Jahresvergleich: Umnummerierung und Schlagliste (Umstellung)', ()
     await nach.locator('summary').click();
     await nach.locator('li', { hasText: '30 Pachtacker' }).locator('[data-sl-nach-nein]').click();
     await expect(page.locator('.sl-sec.is-fehlt .sl-item', { hasText: '30 Pachtacker' })).toHaveCount(1);
+  });
+
+  test('Abgleich mit mehreren Jahren: Vergleich läuft automatisch, Jahreszahl zeigt nur dieses Jahr', async ({ page }) => {
+    await page.goto('/');
+    await openCompare(page);
+    await page.evaluate(() => window.__ffTestTk.loginFake('test@example.com'));
+    await page.setInputFiles('#compare-file-add', [yearFile(2025), yearFile(2026)]);
+    await page.setInputFiles('#sl-file', await schlaglisteFile(page));
+    await expect(page.locator('#sl-overlay')).toBeVisible();
+    // Vergleich 2025 → 2026 ist ohne Klick gelaufen
+    const knoepfe = page.locator('#compare-view-toggle .cvt-btn');
+    await expect(knoepfe).toHaveText(['2025 → 2026', '2025', '2026']);
+    await expect(knoepfe.first()).toHaveClass(/active/);
+    await expect(page.locator('#compare-summary')).toContainText('Zugänge');
+    // Abgleich-Ansicht: Flächen des Abgleichsjahres
+    await expect(page.locator('#map path.sl-flaeche')).toHaveCount(4);
+    // Jahreszahl: nur dieses Jahr, ohne Abgleich-Ebene
+    await knoepfe.filter({ hasText: /^2025$/ }).click();
+    await expect(page.locator('#map path.sl-flaeche')).toHaveCount(0);
+    await expect.poll(() => page.locator('#map .leaflet-tooltip.feature-label').count()).toBe(3);
+    // Fall im Panel antippen -> zurück in die Abgleich-Ansicht
+    await page.locator('.sl-sec.is-warn [data-sl-focus]').first().click();
+    await expect(knoepfe.first()).toHaveClass(/active/);
+    await expect(page.locator('#map path.sl-flaeche')).toHaveCount(4);
+    // Formulierung: Umstellungsdatum statt Zugang
+    await expect(page.locator('.sl-sec.is-warn .sl-liste').first()).toContainText('Umstellungsdatum 01.01.2000');
   });
 
   test('Schlagliste und Zuordnungen bleiben beim Betrieb gespeichert', async ({ page }) => {

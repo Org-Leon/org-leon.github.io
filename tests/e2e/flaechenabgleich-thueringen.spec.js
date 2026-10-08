@@ -105,11 +105,11 @@ test.describe('Flächenabgleich Thüringen / Sachsen-Anhalt', () => {
     await expect(kultur.locator('.sl-kbadge.is-unbekannt')).toHaveCount(0);
     await expect(kultur.locator('.sl-kat[data-sl-kategorie="Hanf"]')).toHaveValue('Hanf');
     await expect(kultur.locator('.sl-kat[data-sl-kategorie="Erbsen"]')).toHaveValue('Körnerleguminosen');
-    await expect(kulturZeile('Blühstreifen').locator('select').first()).toHaveValue('Grünbrache');
+    await expect(kulturZeile('Blühstreifen').locator('[data-sl-kultur]')).toHaveValue('Grünbrache');
     // Kategorie lässt sich ändern und wird gemerkt
     await kultur.locator('.sl-kat[data-sl-kategorie="Grünbrache"]').selectOption({ label: 'Biotop' });
     await expect(kultur.locator('.sl-kat[data-sl-kategorie="Grünbrache"]')).toHaveValue('Biotop');
-    while (await page.locator('[data-sl-kultur-ok]').count()) await page.locator('[data-sl-kultur-ok]').first().click();
+    while (await page.locator('[data-sl-kultur-ok]:visible').count()) await page.locator('[data-sl-kultur-ok]:visible').first().click();
     await expect(page.locator('.sl-progress')).toHaveClass(/is-done/);
 
     const [download] = await Promise.all([page.waitForEvent('download'), page.locator('#sl-export2').click()]);
@@ -248,7 +248,7 @@ test('Kulturen: unsichere Zuordnung wird durch die Schlagliste bestätigt oder a
   await expect(zeile('Mischkultur').locator('.sl-kliste')).toContainText('Sonstige Körnerleguminosen');
   await zeile('Mischkultur').locator('[data-sl-kultur-liste]').click();
   await expect(zeile('Mischkultur')).toHaveClass(/is-done/);
-  await expect(zeile('Mischkultur').locator('select').first()).toHaveValue('Sonstige Körnerleguminosen');
+  await expect(zeile('Mischkultur').locator('[data-sl-kultur]')).toHaveValue('Sonstige Körnerleguminosen');
   // eindeutige Kultur: kein Vorjahres-Hinweis (wäre nur Fruchtwechsel)
   await expect(zeile('Sojabohnen').locator('.sl-kliste')).toHaveCount(0);
 });

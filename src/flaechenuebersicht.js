@@ -296,7 +296,7 @@ export function renderFlaechenuebersicht(data, { animate = false, onRowClick = n
 
   const notes = [];
   if (data.rows.some(r => r.computed)) notes.push('* Größe aus der Geometrie berechnet (keine Angabe in der Shapedatei).');
-  if (data.teilflaechen) notes.push(`${data.teilflaechen} Teilfläche(n) aus Teilflächen-Ebenen sind nicht mitgezählt, da sie in anderen Flächen liegen.`);
+  if (data.teilflaechen) notes.push(`${data.teilflaechen} Fläche(n) aus Zusatzebenen (Teilflächen, Gewässerrandstreifen) sind nicht mitgezählt, da sie in anderen Flächen liegen.`);
   document.getElementById('ue-notes').textContent = notes.join(' ');
   document.getElementById('ue-notes').hidden = !notes.length;
 }

@@ -283,3 +283,28 @@ test.describe('Kontrolle am Handy', () => {
     cols.forEach(w => expect(w).toBeGreaterThan(300));
   });
 });
+
+// Terminliste aus dem externen Programm (Excel): Titelzeile, Kopfzeile, je Termin
+// eine Zeile. "Audit unangemeldet" ist dort ein Wahrheitswert (WAHR/FALSCH).
+test('Terminimport (Excel): "Audit unangemeldet" als WAHR/FALSCH, "1" oder "Ja" erkannt', async ({ page }) => {
+  await page.route('https://nominatim.openstreetmap.org/**', r => r.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+  await page.goto('/');
+  await page.evaluate(() => window.__ffTestTk.loginFake());
+  await gotoKontrolleKalender(page);
+  const tag = await page.evaluate(() => { const d = new Date(); return `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}.${d.getFullYear()}`; });
+  const b64 = await page.evaluate((tag) => {
+    const aoa = [['Termine'], ['Kunde', 'Auditdatum (von)', 'Audit unangemeldet'],
+      ['Hof Wahr', tag, true], ['Hof Falsch', tag, false], ['Hof Eins', tag, '1'], ['Hof Ja', tag, 'Ja'], ['Hof Leer', tag, '']];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(aoa), 'Termine');
+    return XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
+  }, tag);
+  await page.setInputFiles('#terminkalender-file-input', { name: 'Termine.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer: Buffer.from(b64, 'base64') });
+  await expect(page.locator('.tk-card')).toHaveCount(5);
+  // unangemeldet = Karte hervorgehoben, in der Kontrollmappe das Abzeichen "Unangemeldet"
+  const karte = (name) => page.locator('.tk-card', { hasText: name });
+  for (const name of ['Hof Wahr', 'Hof Eins', 'Hof Ja']) await expect(karte(name)).toHaveClass(/tk-card-urgent/);
+  for (const name of ['Hof Falsch', 'Hof Leer']) await expect(karte(name)).not.toHaveClass(/tk-card-urgent/);
+  await karte('Hof Wahr').click();
+  await expect(page.locator('#kontrollmappe .tk-badges')).toContainText('Unangemeldet');
+});

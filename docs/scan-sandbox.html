@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<!-- Eigener Rahmen nur für OpenCV.js (Dokumentenscanner), unsichtbar eingebunden von
+     ensureScanLibs() in src/main.js. OpenCV erzeugt intern Code zur Laufzeit und braucht
+     dafür 'unsafe-eval' — die Hauptseite kommt so ohne aus. Dieser Rahmen darf nichts
+     außer genau dieser einen Bibliothek laden und keine Verbindungen aufbauen. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src https://docs.opencv.org/4.7.0/opencv.js 'unsafe-eval'; connect-src data:">
+<title>FeldFolio – Scanner-Bibliothek</title>
+</head>
+<body>
+<script src="https://docs.opencv.org/4.7.0/opencv.js"></script>
+</body>
+</html>

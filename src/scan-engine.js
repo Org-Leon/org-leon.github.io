@@ -120,6 +120,34 @@ export function defaultQuad() {
 //      "wegwischen", Canny mit automatischen Schwellen (Median).
 //   2. Helligkeit: Otsu-Schwelle — helles Papier auf dunklerem Grund.
 // Rückgabe: 4 Ecken normiert auf 0..1 (tl, tr, br, bl) oder null.
+// ---- Bild <-> OpenCV-Matrix ----
+// OpenCV läuft in einem eigenen Rahmen (scan-sandbox.html, siehe ensureScanLibs
+// in main.js). cv.imread()/cv.imshow() prüfen "canvas instanceof HTMLCanvasElement"
+// — das schlägt für eine Zeichenfläche aus DIESEM Fenster fehl. Daher hier
+// dieselbe Umwandlung ohne diese Prüfung.
+function matVonCanvas(cv, canvas) {
+  const ctx = canvas.getContext('2d');
+  return cv.matFromImageData(ctx.getImageData(0, 0, canvas.width, canvas.height));
+}
+function matAufCanvas(cv, mat, canvas) {
+  const img = new cv.Mat();
+  try {
+    const depth = mat.type() % 8;
+    const scale = depth <= cv.CV_8S ? 1 : depth <= cv.CV_32S ? 1 / 256 : 255;
+    const shift = depth === cv.CV_8S || depth === cv.CV_16S ? 128 : 0;
+    mat.convertTo(img, cv.CV_8U, scale, shift);
+    const typ = img.type();
+    if (typ === cv.CV_8UC1) cv.cvtColor(img, img, cv.COLOR_GRAY2RGBA);
+    else if (typ === cv.CV_8UC3) cv.cvtColor(img, img, cv.COLOR_RGB2RGBA);
+    else if (typ !== cv.CV_8UC4) throw new Error('Bildformat wird nicht unterstützt.');
+    canvas.width = img.cols;
+    canvas.height = img.rows;
+    canvas.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(img.data), img.cols, img.rows), 0, 0);
+  } finally {
+    img.delete();
+  }
+}
+
 export function detectDocumentQuad(canvas) {
   const cv = window.cv;
   const W = canvas.width, H = canvas.height;
@@ -161,7 +189,7 @@ export function detectDocumentQuad(canvas) {
   };
 
   try {
-    const src = track(cv.imread(canvas));
+    const src = track(matVonCanvas(cv, canvas));
     const gray = track(new cv.Mat());
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
     cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
@@ -278,7 +306,7 @@ export function targetSizeForQuad(quad, maxLongSide = 2480) {
 export function warpDocument(sourceCanvas, quadPx, maxLongSide = 2480) {
   const cv = window.cv;
   const size = targetSizeForQuad(quadPx, maxLongSide);
-  const src = cv.imread(sourceCanvas);
+  const src = matVonCanvas(cv, sourceCanvas);
   const dst = new cv.Mat();
   const from = cv.matFromArray(4, 1, cv.CV_32FC2, quadPx.flatMap(p => [p.x, p.y]));
   // Ecken minimal nach außen abbilden (≈0,6 %): die erkannte Kante liegt
@@ -290,7 +318,7 @@ export function warpDocument(sourceCanvas, quadPx, maxLongSide = 2480) {
   try {
     cv.warpPerspective(src, dst, M, new cv.Size(size.width, size.height), cv.INTER_CUBIC, cv.BORDER_REPLICATE, new cv.Scalar());
     const out = document.createElement('canvas');
-    cv.imshow(out, dst);
+    matAufCanvas(cv, dst, out);
     out.dataset.a4 = size.a4 ? '1' : '';
     return out;
   } finally {
@@ -350,7 +378,7 @@ function sharpen(cv, mat) {
 export function applyScanFilter(canvas, mode) {
   if (mode === 'color') return canvas;
   const cv = window.cv;
-  const src = cv.imread(canvas);
+  const src = matVonCanvas(cv, canvas);
   const rgb = new cv.Mat();
   cv.cvtColor(src, rgb, cv.COLOR_RGBA2RGB);
   const doc = normalizeIllumination(cv, rgb);
@@ -363,7 +391,7 @@ export function applyScanFilter(canvas, mode) {
   }
   if (mode !== 'bw') sharpen(cv, result);
   const out = document.createElement('canvas');
-  cv.imshow(out, result);
+  matAufCanvas(cv, result, out);
   out.dataset.a4 = canvas.dataset.a4 || '';
   [src, rgb, doc].forEach(m => m.delete());
   if (result !== doc) result.delete();

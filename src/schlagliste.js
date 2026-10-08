@@ -31,8 +31,16 @@ export function slStatusTexteLernen(sl, stichtag) {
     if (!st || !z.status || z.abgang) return;
     zaehl[st.key].set(z.status, (zaehl[st.key].get(z.status) || 0) + 1);
   });
+  // Eine Liste hinkt dem Stichtag hinterher (Zeile noch mit dem Text des 1. Jahres,
+  // obwohl sie inzwischen im 2. ist) — nie voraus. Ein Text gehört daher zu der Stufe,
+  // deren Standardtext er ist, sonst zur FRÜHESTEN Stufe, in der er vorkommt.
+  const reihenfolge = ['konv', 'umst', 'oeko'];
+  const stufeVon = (text) => reihenfolge.find(k => SL_STATUS_STANDARD[k] === text) || reihenfolge.find(k => zaehl[k].has(text));
   const out = {};
-  Object.entries(zaehl).forEach(([k, m]) => { const best = [...m.entries()].sort((a, b) => b[1] - a[1])[0]; if (best) out[k] = best[0]; });
+  reihenfolge.forEach(k => {
+    const best = [...zaehl[k].entries()].filter(([text]) => stufeVon(text) === k).sort((a, b) => b[1] - a[1])[0];
+    if (best) out[k] = best[0];
+  });
   return out;
 }
 export const SL_STUFEN = {
@@ -186,18 +194,23 @@ export function slBewerte(z, f, umnummeriert, { nrVerlaesslich = true } = {}) {
   else if (z.bezNr && z.bezNr === fnr) { p += 30; gruende.push('Nummer aus Bezeichnung'); }
   else if (fnr && zNummern.includes(fnr)) { p += 25; gruende.push('Nummer aus Bezeichnung'); }
   else if (umnummeriert && (umnummeriert.get(z.nr) === fnr || umnummeriert.get(z.bezNr) === fnr)) { p += 40; gruende.push('umnummeriert (Vorjahr)'); }
+  // Bayern: Liste nennt vorn in der Bezeichnung die Feldstücknummer, die Fläche ist ein Schlag davon ("15/2")
+  else if (f.fsnr && z.bezNr && z.bezNr === ohneNullen(f.fsnr)) { p += 30; gruende.push('Feldstück-Nr. aus Bezeichnung'); }
   const sim = slNameAehnlich(z.name, f.name);
   if (sim >= 0.85) { p += 30; gruende.push('Name gleich'); } else if (sim >= 0.6) { p += 15; gruende.push('Name ähnlich'); }
   let haGleich = false;
   if (z.ha !== null && f.ha !== null && f.ha !== undefined) {
     const diff = Math.abs(z.ha - f.ha), rel = diff / Math.max(z.ha, f.ha, 0.0001);
-    if (diff <= 0.01 || rel <= 0.005) { p += 25; gruende.push('Fläche gleich'); haGleich = true; }
+    // 0,01 ha absolut nur bis 5 % — sonst wären winzige Streifen (0,02 ↔ 0,01 ha) "gleich"
+    if ((diff <= 0.01 && rel <= 0.05) || rel <= 0.005) { p += 25; gruende.push('Fläche gleich'); haGleich = true; }
     else if (rel <= 0.05) { p += 12; gruende.push('Fläche ähnlich'); }
     else if (rel > 0.2) { p -= 20; gruende.push('Fläche weicht stark ab'); }
     else gruende.push('Fläche weicht ab');
   }
+  // gleiche Kultur (im Katalog) — hilft, mehrere Schläge eines Feldstücks auseinanderzuhalten
+  if (z.kultur && f.kulturKat && z.kultur.trim().toLowerCase() === f.kulturKat.trim().toLowerCase()) { p += 8; gruende.push('Kultur gleich'); }
   // Name bzw. Nummer und Größe passen beide genau: eindeutig genug
-  const nummerPasst = gruende.some(g => /^(Nummer|Teilschlag|umnummeriert)/.test(g));
+  const nummerPasst = gruende.some(g => /^(Nummer|Teilschlag|umnummeriert|Feldstück-Nr)/.test(g));
   if ((sim >= 0.85 || nummerPasst) && haGleich) p += 20;
   // anderes Bundesland (FLIK der Fläche vs. Spalte "Bundesland") -> sehr unwahrscheinlich
   const fLand = slFlikLand(f.flik);
@@ -263,7 +276,8 @@ export function slAbgleich(sl, feats, { manuell = {}, umnummeriert = null, zurPr
 // "… – Teilstück JJJJ", leere Schlüssel); die Fläche selbst behält nur den Rest.
 export const slTeilstueckName = (bez, beginn) => `${bez} – Teilstück ${String(beginn || '').slice(0, 4)}`.trim();
 export function slExportZeilen(sl, abgleich, opts) {
-  const { featByKey, stichtag, statusTexte, zugangNeu = {}, abgangAm = {}, besichtigt = new Set(), unterflaechen = {}, kulturFuer = null } = opts;
+  // abzug: { [zeilenIdx]: ha } — Teilstücke, die als eigene Listenzeile geführt werden, aber in der Fläche enthalten sind
+  const { featByKey, stichtag, statusTexte, zugangNeu = {}, abgangAm = {}, besichtigt = new Set(), unterflaechen = {}, kulturFuer = null, abzug = {} } = opts;
   const setzeKultur = (row, key, zeileInfo) => {
     const k = kulturFuer && kulturFuer(key, zeileInfo);
     if (!k || !k.kultur) return;
@@ -278,10 +292,31 @@ export function slExportZeilen(sl, abgleich, opts) {
   const jahr = stichtag.slice(0, 4);
   const rund = (ha) => Math.round(ha * 10000) / 10000;
   const unter = (key) => { const u = unterflaechen[key]; return u && u.beginn && u.ha > 0 ? u : null; };
+  // Spalte "Import Information" für den Wiederimport:
+  //   New = neue Zeile (neue Fläche, Teilstück), Updated = an einer bestehenden Zeile
+  //   hat sich irgendeine Spalte geändert, Not updated = nichts geändert.
+  // Schreibweise wie in der Liste, falls dort schon vorhanden.
+  const infoWert = (re, standard) => {
+    if (c.importInfo === undefined) return standard;
+    const r = sl.rows.find(x => re.test(String(x[c.importInfo] || '').trim()));
+    return r ? String(r[c.importInfo]).trim() : standard;
+  };
+  const INFO = { neu: infoWert(/^new$/i, 'New'), geaendert: infoWert(/^updated$/i, 'Updated'), gleich: infoWert(/^nots*updated$/i, 'Not updated') };
+  const gleicherWert = (a, b) => {
+    const x = a === undefined || a === null ? '' : a, y = b === undefined || b === null ? '' : b;
+    const nx = typeof x === 'number' ? x : null, ny = typeof y === 'number' ? y : null;
+    if (nx !== null || ny !== null) {
+      const zx = nx !== null ? nx : Number(String(x).replace(',', '.')), zy = ny !== null ? ny : Number(String(y).replace(',', '.'));
+      if (String(x).trim() !== '' && String(y).trim() !== '' && Number.isFinite(zx) && Number.isFinite(zy)) return Math.abs(zx - zy) < 1e-9;
+    }
+    return String(x).trim() === String(y).trim();
+  };
+  const geaendert = (row, orig) => sl.header.some((_, i) => i !== c.importInfo && !gleicherWert(row[i], orig[i]));
   // Zeile für eine Unterfläche aus der Zeile ihrer Fläche ableiten
   const teilstueckZeile = (row, u, key) => {
     const t = [...row];
-    ['pkFeld', 'pkKultur', 'abgang', 'importInfo', 'flik'].forEach(k => setze(t, k, ''));
+    ['pkFeld', 'pkKultur', 'abgang', 'flik'].forEach(k => setze(t, k, ''));
+    setze(t, 'importInfo', INFO.neu);
     setze(t, 'bez', slTeilstueckName(c.bez === undefined ? '' : row[c.bez], u.beginn));
     setze(t, 'ha', rund(u.ha));
     setze(t, 'zugang', slDeAusIso(u.beginn));
@@ -302,16 +337,19 @@ export function slExportZeilen(sl, abgleich, opts) {
       if (f.nummer && abgleich.nrVerlaesslich !== false) setze(row, 'schlagnr', fmtNr(fnr));
       // Nummer vorn in der Bezeichnung = alte Schlagnummer? Dann mit umnummerieren.
       const bezNr = e.z.bezNr && e.z.nr && e.z.bezNr === e.z.nr && fnr ? fnr : e.z.bezNr;
-      const name = f.name && slNameAehnlich(e.z.name, f.name) < 1 ? f.name : e.z.name;
+      // Name der Liste behalten, solange er dem der Fläche ähnelt oder ihn enthält
+      // ("Acker_Abdrift 2025", Schreibweise) — nur ein klar anderer Name wird übernommen
+      const name = f.name && slNameAehnlich(e.z.name, f.name) < 0.6 ? f.name : e.z.name;
       if (bezNr !== e.z.bezNr || name !== e.z.name) setze(row, 'bez', (bezNr ? bezNr + ' ' : '') + name);
       const u = unter(e.key);
-      if (f.ha !== null && f.ha !== undefined) setze(row, 'ha', rund(u ? f.ha - u.ha : f.ha));
+      if (f.ha !== null && f.ha !== undefined) setze(row, 'ha', rund((u ? f.ha - u.ha : f.ha) - (abzug[e.idx] || 0)));
       if (besichtigt.has(e.key)) setze(row, 'besichtigt', jahr);
       setzeKultur(row, e.key, e.z);
     }
     if (abgangAm[e.idx]) setze(row, 'abgang', slDeAusIso(abgangAm[e.idx]));
     const st = statusText(e.z.zugang);
     if (st && !abgangAm[e.idx]) setze(row, 'status', st);
+    setze(row, 'importInfo', geaendert(row, sl.rows[e.idx]) ? INFO.geaendert : INFO.gleich);
     const u = e.key && e.art !== 'pruefen' ? unter(e.key) : null;
     if (u) out.push(teilstueckZeile(row, u, e.key));
   });
@@ -324,7 +362,8 @@ export function slExportZeilen(sl, abgleich, opts) {
     ['kunde', 'land', 'bundesland'].forEach(k => setze(row, k, c[k] === undefined ? '' : vorlage[c[k]] || ''));
     if (abgleich.nrVerlaesslich !== false) setze(row, 'schlagnr', fmtNr(ohneNullen(f.nummer)));
     // Bezeichnung wie in der Liste üblich: Nummer + Name, sonst Nummer + FLIK-Kern
-    setze(row, 'bez', [ohneNullen(f.nummer), f.name || slFlikKern(f.flik)].filter(Boolean).join(' '));
+    // Bayern: die Liste nennt vorn die Feldstücknummer ("3 Name"), nicht "3/2"
+    setze(row, 'bez', [ohneNullen(f.fsnr || f.nummer), f.name || slFlikKern(f.flik)].filter(Boolean).join(' '));
     setze(row, 'flik', f.flik || '');
     setze(row, 'kultur', '');
     setzeKultur(row, f.key, null);
@@ -333,6 +372,7 @@ export function slExportZeilen(sl, abgleich, opts) {
     setze(row, 'zugang', slDeAusIso(beginn));
     setze(row, 'status', statusText(beginn) || '');
     if (besichtigt.has(f.key)) setze(row, 'besichtigt', jahr);
+    setze(row, 'importInfo', INFO.neu);
     out.push(row);
     if (u) out.push(teilstueckZeile(row, u, f.key));
   });

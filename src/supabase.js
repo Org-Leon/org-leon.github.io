@@ -79,14 +79,44 @@ export async function saveState(data) {
 // "es gibt Neues" (keine Daten) — die anderen Geräte holen dann sofort ab
 // statt auf den nächsten 30-s-Takt zu warten. Broadcast braucht keine
 // Datenbank-Einrichtung. Ohne Supabase (Tests, lokal) -> null.
+//
+// PRIVATER Kanal: Der Server prüft per Regel (supabase/sync-kanal.sql), dass nur
+// der angemeldete Nutzer selbst in "ff-sync-<seine id>" senden und mithören darf.
+// Sind die Regeln auf dem Server noch nicht eingerichtet, scheitert der Beitritt —
+// dann (und nur dann) fällt die App auf den bisherigen öffentlichen Kanal zurück,
+// damit der schnelle Abgleich nicht ausfällt. Übertragen wird in beiden Fällen
+// nur das Signal "es gibt Neues", nie Daten.
 export function oeffneSyncKanal(userId, onPing) {
   if (!supabase || !userId) return null;
-  const kanal = supabase.channel('ff-sync-' + userId, { config: { broadcast: { self: false } } });
-  kanal.on('broadcast', { event: 'geaendert' }, (msg) => onPing(msg && msg.payload));
-  kanal.subscribe();
+  // Tests (Playwright, Dev-Server) bauen keine echte Verbindung zum Server auf
+  if (import.meta.env.DEV && navigator.webdriver) return null;
+  const thema = 'ff-sync-' + userId;
+  let kanal = null;
+  let geschlossen = false;
+  const oeffne = (privat) => {
+    const k = supabase.channel(thema, { config: { private: privat, broadcast: { self: false } } });
+    let warVerbunden = false;
+    k.on('broadcast', { event: 'geaendert' }, (msg) => onPing(msg && msg.payload));
+    k.subscribe((status) => {
+      if (status === 'SUBSCRIBED') { warVerbunden = true; return; }
+      // Beitritt zum privaten Kanal von Anfang an abgelehnt (Regeln fehlen) -> öffentlich.
+      // Ein späterer Verbindungsabbruch (warVerbunden) ist kein Grund: der Client verbindet neu.
+      if (privat && !warVerbunden && !geschlossen && kanal === k && (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT')) {
+        console.warn('Sync-Kanal: privater Kanal nicht verfügbar (supabase/sync-kanal.sql eingerichtet?) — nutze den öffentlichen.');
+        supabase.removeChannel(k);
+        kanal = oeffne(false);
+      }
+    });
+    return k;
+  };
+  (async () => {
+    // Anmeldung an Realtime weitergeben — nötig für die Rechteprüfung privater Kanäle
+    try { await supabase.realtime.setAuth(); } catch { /* ohne Sitzung: Beitritt scheitert, s. o. */ }
+    if (!geschlossen) kanal = oeffne(true);
+  })();
   return {
-    senden: (payload = {}) => { kanal.send({ type: 'broadcast', event: 'geaendert', payload }).catch(() => {}); },
-    schliessen: () => { supabase.removeChannel(kanal); }
+    senden: (payload = {}) => { if (kanal) kanal.send({ type: 'broadcast', event: 'geaendert', payload }).catch(() => {}); },
+    schliessen: () => { geschlossen = true; if (kanal) supabase.removeChannel(kanal); }
   };
 }
 
@@ -106,7 +136,7 @@ export async function loadState() {
 
 // crypto.randomUUID() ist nur in "sicheren Kontexten" verfügbar (HTTPS oder
 // localhost) — ruft man die App über die lokale Netzwerk-IP per HTTP auf
-// (z.B. vom Handy aus, siehe vite.config.js host:true), fehlt die Funktion
+// (z.B. vom Handy aus, mit "npm run dev:lan"), fehlt die Funktion
 // und der Foto-Upload bricht mit "crypto.randomUUID is not a function" ab.
 // crypto.getRandomValues() bleibt dagegen immer verfügbar, daher hier ein
 // eigener RFC4122-v4-Fallback statt der Bequemlichkeitsfunktion.

@@ -73,3 +73,33 @@
    beschreiben, was die App tatsächlich tut — Beschriftungen wörtlich wie in
    der Oberfläche. Reine interne Änderungen (Refactoring, Tests) brauchen
    keinen Eintrag.
+
+6. **Sicherheitsregeln (Content-Security-Policy, Prüfsummen)**: Die Seite
+   läuft mit einer strengen CSP, die `cspPlugin()` in `vite.config.js` als
+   Meta-Tag setzt (Dev und Build) — **ohne `unsafe-inline` und ohne
+   `unsafe-eval` für Skripte**. Daraus folgt:
+   - **Neue externe Quelle** (Kartenserver, API, Bibliothek, Schrift)? In
+     `cspPlugin()` eintragen, sonst blockiert der Browser sie. `npm test`
+     prüft das (`tests/e2e/csp.spec.js` klickt durch die Ansichten und meldet
+     jeden Verstoß) — bei neuen Ansichten/Nachladern den Test erweitern.
+   - **Kein eingebettetes JavaScript im HTML**: keine `onclick="…"`-Attribute
+     (auch nicht in per `innerHTML` erzeugtem HTML), keine neuen
+     `<script>`-Blöcke. Stattdessen `addEventListener`/Delegation. Das eine
+     vorhandene Inline-Skript (Theme in `index.html`) ist über seine Prüfsumme
+     erlaubt, die das Plugin selbst berechnet.
+   - **Kein `eval`/`new Function`**, auch nicht über Bibliotheken. Deshalb
+     kommt Turf per npm (`src/geo.js`, Turf 7 mit den Aufrufen von 6.5) und
+     OpenCV läuft in einem eigenen Rahmen (`public/scan-sandbox.html`, eigene
+     enge Policy; `cv.imread`/`cv.imshow` dort nicht nutzen, sondern
+     `matVonCanvas`/`matAufCanvas` in `src/scan-engine.js`).
+   - **Bibliotheken von cdnjs** nur mit `integrity`-Prüfsumme (siehe
+     Kommentar in `index.html`; Prüfsummen von
+     `https://api.cdnjs.com/libraries/<name>/<version>?fields=sri`). Die CSP
+     erlaubt genau die in `index.html` eingebundenen Dateien, nicht den ganzen
+     Host. Neue Bibliotheken bevorzugt per npm mitbauen.
+   - **Dev-Server**: `npm run dev` ist nur auf diesem Rechner erreichbar und
+     liefert `test-shapes/` (echte Betriebsdaten) nicht aus. Für Tests vom
+     Handy im selben WLAN `npm run dev:lan` — nicht in fremden Netzen.
+   - **Server-Regeln** (RLS, Trigger) liegen als SQL in `supabase/`; der
+     öffentliche Schlüssel steckt in der App, den Schutz leisten allein diese
+     Regeln. `supabase/rls-pruefen.sql` zeigt den Ist-Zustand.

@@ -1,6 +1,8 @@
 import { oeffneSyncKanal, isSupabaseConfigured, signUp, signIn, signOut, getSession, saveState, loadState, uploadPhoto, getPhotoUrl, deletePhoto, requestAccess, listPendingAccessRequests, approveAccessRequest, declineAccessRequest, authErrorMessage, requestPasswordReset, updatePassword, verifyPassword, signOutEverywhere, onPasswordRecovery, deleteMyAccount, ladeNutzungscodes, schlageNutzungscodesVor, entscheideNutzungscode } from './supabase.js';
 import { readLocalState, writeLocalState, deleteLocalState, readLastUser, writeLastUser, addBackup, listBackups, saveQueuedUpload, listQueuedUploads, deleteQueuedUpload, saveFotomappeFoto, listFotomappeFotos, deleteFotomappeFoto } from './offline-store.js';
 import { registerSW } from 'virtual:pwa-register';
+// Turf 7 mit den Aufrufen von Turf 6.5 (src/geo.js) — ohne eval, daher CSP-tauglich
+import { turf } from './geo.js';
 // SheetJS 0.20.3 (von cdn.sheetjs.com, per npm mitgebaut) — die cdnjs-Version 0.18.5
 // hat bekannte Lücken (CVE-2023-30533, CVE-2024-22363). Codepages für alte .xls.
 import * as XLSX from 'xlsx';
@@ -156,7 +158,7 @@ let highlightedEntry = null;
 // ncode_aktu/Nutzung/SC_HA_CODE/KTA_AJ/NCODE) ohne Klartext-Zuordnung existiert,
 // wird der Code selbst angezeigt statt einer erfundenen Übersetzung.
 const FIELD_CANDIDATES = {
-  nummer: ['NUMMER', 'SCHLAG_NR', 'SCHLAGNR', 'SCHLAG_ID', 'TF_ID', 'SCHLAG', 'FSNr', 'schlagnr_a', 'schlag_nr', 'GEOWD_ID', 'ID', 'NR'],
+  nummer: ['FS_SCHLAG', 'NUMMER', 'SCHLAG_NR', 'SCHLAGNR', 'SCHLAG_ID', 'TF_ID', 'SCHLAG', 'FSNr', 'schlagnr_a', 'schlag_nr', 'GEOWD_ID', 'ID', 'NR'],
   name: ['NAME', 'Name', 'BEZEICHNUNG', 'FLAECHENNAME', 'SCHLAGNAME', 'SCHLAGBEZ', 'SCHLAG_BEZ', 'TF_BEZ', 'lage_bez', 'LAGE_BEZ', 'bez'],
   kultur: ['NUTZ_BEZ', 'CODE_BEZ', 'KULTURART', 'FRUCHTART', 'NUTZUNG', 'Nutzung', 'NC', 'nutz_code', 'ncode_aktu', 'SC_HA_CODE', 'KTA_AJ', 'NCODE', 'KULTUR_FNN'],
   // Zusätzlicher, von Nummer/Name unabhängiger amtlicher Flächenidentifikator
@@ -2149,35 +2151,41 @@ function mergeFeldstueckNutzung(results) {
 
   const keyOf = (props) => String(props.FID ?? props.Fid ?? props.fid ?? '') + '|' + String(props.FSNr ?? props.Fsnr ?? props.fsnr ?? '');
 
-  const nutzung = results[nutzIdx];
-  const nutzByKey = new Map();
-  (nutzung.fc.features || []).forEach(f => {
-    const props = f.properties || {};
-    const key = keyOf(props);
-    if (!nutzByKey.has(key)) nutzByKey.set(key, props);
-  });
-
+  // Ein Feldstück kann mehrere Nutzungen (Schläge) haben, jede mit eigener
+  // Geometrie, Fläche und Kultur — die Schlagliste führt genau diese Schläge.
+  // Ergebnis daher je SCHLAG eine Fläche (Geometrie + Flaeche + Nutzung der
+  // Nutzung, Name/FLIK/Feldstücksgröße vom Feldstück). Nummer: Feldstücknummer,
+  // bei mehreren Schlägen "FSNr/Schlag" (wie in iBALIS), damit sie eindeutig bleibt.
+  // Feldstücke ohne Nutzung bleiben, wie sie sind.
   const feldstueck = results[feldIdx];
-  const mergedFeatures = (feldstueck.fc.features || []).map(f => {
-    const props = { ...(f.properties || {}) };
-    const nutzProps = nutzByKey.get(keyOf(props));
-    if (nutzProps) Object.assign(props, nutzProps);
-    // Nutzung enthält bislang nur den rohen Nutzungscode (z.B. "115") — in
-    // die Kulturart im Klartext übersetzen, roh-Code als NutzungCode für
-    // Nachvollziehbarkeit zusätzlich aufheben. Unbekannte Codes (z.B. neu
-    // hinzugekommene, noch nicht in der Liste erfasste) bleiben unverändert
-    // als Code stehen statt eine erfundene Übersetzung zu zeigen.
+  const fsByKey = new Map((feldstueck.fc.features || []).map(f => [keyOf(f.properties || {}), f]));
+  const nutzungen = (results[nutzIdx].fc.features || []).filter(f => fsByKey.has(keyOf(f.properties || {})) || f.geometry);
+  const schlaegeJeFs = new Map();
+  nutzungen.forEach(f => { const k = keyOf(f.properties || {}); schlaegeJeFs.set(k, (schlaegeJeFs.get(k) || 0) + 1); });
+  const kultur = (props) => {
+    // Nutzung enthält nur den Code (z.B. "115") — in Klartext übersetzen, Code
+    // als NutzungCode aufheben. Unbekannte Codes bleiben als Code stehen.
     if (props.Nutzung) {
       const klartext = bayernNutzungscodeKlartext(props.Nutzung);
-      if (klartext) {
-        props.NutzungCode = props.Nutzung;
-        props.Nutzung = klartext;
-      }
+      if (klartext) { props.NutzungCode = props.Nutzung; props.Nutzung = klartext; }
     }
-    return { ...f, properties: props };
+  };
+  const schlagFeatures = nutzungen.map(f => {
+    const np = f.properties || {};
+    const fs = fsByKey.get(keyOf(np));
+    const fp = fs ? (fs.properties || {}) : {};
+    const props = { ...fp, ...np };
+    if (fp.Name !== undefined) props.Name = fp.Name;          // Name gibt es nur am Feldstück
+    if (fp.LFlaeche !== undefined) props.FS_Flaeche = fp.LFlaeche;
+    delete props.LFlaeche;                                     // Größe = die des Schlags (Flaeche)
+    const fsnr = String(np.FSNr ?? fp.FSNr ?? '').trim();
+    const schlag = String(np.Schlag ?? '').trim();
+    if (fsnr) props.FS_SCHLAG = schlaegeJeFs.get(keyOf(np)) > 1 && schlag ? fsnr + '/' + schlag : fsnr;
+    kultur(props);
+    return { ...f, geometry: f.geometry || (fs && fs.geometry), properties: props };
   });
-
-  const merged = { name: feldstueck.name, fc: { type: 'FeatureCollection', features: mergedFeatures } };
+  const ohneNutzung = (feldstueck.fc.features || []).filter(f => !schlaegeJeFs.has(keyOf(f.properties || {}))).map(f => ({ ...f, properties: { ...(f.properties || {}) } }));
+  const merged = { name: feldstueck.name, fc: { type: 'FeatureCollection', features: [...schlagFeatures, ...ohneNutzung] } };
   const rest = results.filter((_, i) => i !== feldIdx && i !== nutzIdx);
   return [merged, ...rest];
 }
@@ -2301,7 +2309,9 @@ function addLayer(name, geojson) {
   // aus, da meist nur die Parzellen selbst von Interesse sind. Über den
   // Sichtbarkeits-Schalter in der Ebenenliste bzw. die Checkbox in der
   // Tabelle bleiben sie optional zuschaltbar.
-  const isTeilflaechen = /teilfl(ä|ae)che/i.test(name);
+  // Zusatzebenen (Teilflächen, bayerische Gewässerrandstreifen) liegen in
+  // anderen Flächen und zählen nicht mit (Tabelle, Übersicht, Exporte).
+  const isTeilflaechen = /teilfl(ä|ae)che|gew(ä|ae)sserrand/i.test(name);
   const startVisible = !isTeilflaechen;
 
   // Labelanker (Nummer + Name je Fläche, wie im Jahresvergleich) können erst
@@ -2625,7 +2635,7 @@ function renderFeatureTable() {
     const num = parseFloat(String(entry.groesse).replace(',', '.'));
     const groesseText = isFinite(num) ? formatHaExact(num) + ' ha' : (entry.groesse || '–');
     const routeCell = entry.center
-      ? `<a class="table-route-link" href="${googleMapsDirectionsUrl(entry.center.lat, entry.center.lng)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Route <span class="material-symbols-rounded icon">open_in_new</span></a>`
+      ? `<a class="table-route-link" href="${googleMapsDirectionsUrl(entry.center.lat, entry.center.lng)}" target="_blank" rel="noopener" data-kein-zeilenklick>Route <span class="material-symbols-rounded icon">open_in_new</span></a>`
       : '–';
     const counts = treeCounts.get(entry.id);
     const treesCell = counts && counts.size
@@ -2640,16 +2650,18 @@ function renderFeatureTable() {
       groesse: `<td class="groesse-cell">${groesseText}</td>`,
       kultur: `<td>${escapeHtml(entry.kultur || '–')}</td>`,
       baeume: `<td>${treesCell}</td>`,
-      besichtigt: `<td class="besichtigt-cell"><label class="besichtigt-toggle" onclick="event.stopPropagation()" title="Besichtigt"><input type="checkbox" class="besichtigt-checkbox" aria-label="Fläche ${escapeHtml(entry.nummer || '')} besichtigt" ${entry.besichtigt ? 'checked' : ''}><span class="besichtigt-mark material-symbols-rounded icon" aria-hidden="true">check</span></label></td>`,
-      notiz: `<td><button class="notes-btn${hasNotes ? ' has-notes' : ''}" data-action="notes" data-idx="${entry.idx}" onclick="event.stopPropagation()" title="Notiz &amp; Fotos"><span class="material-symbols-rounded icon">sticky_note_2</span></button></td>`,
-      kulturplan: `<td><button class="notes-btn${hasKulturplan ? ' has-notes' : ''}" data-action="kulturplan" data-idx="${entry.idx}" onclick="event.stopPropagation()" title="Anbauplanung"><span class="material-symbols-rounded icon">eco</span></button></td>`,
+      besichtigt: `<td class="besichtigt-cell"><label class="besichtigt-toggle" data-kein-zeilenklick title="Besichtigt"><input type="checkbox" class="besichtigt-checkbox" aria-label="Fläche ${escapeHtml(entry.nummer || '')} besichtigt" ${entry.besichtigt ? 'checked' : ''}><span class="besichtigt-mark material-symbols-rounded icon" aria-hidden="true">check</span></label></td>`,
+      notiz: `<td><button class="notes-btn${hasNotes ? ' has-notes' : ''}" data-action="notes" data-idx="${entry.idx}" data-kein-zeilenklick title="Notiz &amp; Fotos"><span class="material-symbols-rounded icon">sticky_note_2</span></button></td>`,
+      kulturplan: `<td><button class="notes-btn${hasKulturplan ? ' has-notes' : ''}" data-action="kulturplan" data-idx="${entry.idx}" data-kein-zeilenklick title="Anbauplanung"><span class="material-symbols-rounded icon">eco</span></button></td>`,
       route: `<td>${routeCell}</td>`
     };
     return `<tr data-idx="${entry.idx}"${mitBesichtigt && entry.besichtigt ? ' class="is-besichtigt"' : ''}>${cols.map(c => cells[c]).join('')}</tr>`;
   }).join('');
 
   tbody.querySelectorAll('tr[data-idx]').forEach(tr => {
-    tr.addEventListener('click', () => selectFeatureFromTable(parseInt(tr.getAttribute('data-idx'), 10)));
+    // Route-Link, Besichtigt-Haken, Notiz- und Anbauplan-Knopf wählen die Zeile nicht aus
+    // (statt eingebetteter onclick-Attribute, die eine Content-Security-Policy blockiert)
+    tr.addEventListener('click', (e) => { if (e.target.closest('[data-kein-zeilenklick]')) return; selectFeatureFromTable(parseInt(tr.getAttribute('data-idx'), 10)); });
   });
   tbody.querySelectorAll('.besichtigt-checkbox').forEach(cb => {
     cb.addEventListener('change', () => {
@@ -3162,11 +3174,9 @@ function updateCompareRunEnabled() {
 function renderCompareToggle() {
   const toggle = document.getElementById('compare-view-toggle');
   const years = compareYearsSorted().filter(y => y.jahr);
-  if (compareViewMode === 'verlauf' && years.length < 2) compareViewMode = 'diff';
-  if (compareViewMode !== 'diff' && compareViewMode !== 'verlauf' && !compareYearById(compareViewMode)) compareViewMode = 'diff';
+  if (compareViewMode !== 'diff' && !compareYearById(compareViewMode)) compareViewMode = 'diff';
   const diffLabel = compareResult ? `${compareResult.a.jahr} → ${compareResult.b.jahr}` : 'Vergleich';
   toggle.innerHTML = `<button class="cvt-btn${compareViewMode === 'diff' ? ' active' : ''}" data-mode="diff"${compareResult ? '' : ' disabled title="Erst zwei Jahre vergleichen"'}>${escapeHtml(diffLabel)}</button>`
-    + (years.length >= 2 ? `<button class="cvt-btn${compareViewMode === 'verlauf' ? ' active' : ''}" data-mode="verlauf" title="Änderungen über alle hinterlegten Jahre">Verlauf</button>` : '')
     + years.map(y => `<button class="cvt-btn${compareViewMode === y.id ? ' active' : ''}" data-mode="${y.id}" title="Nur ${escapeHtml(y.jahr)} anzeigen">${escapeHtml(y.jahr)}</button>`).join('');
 }
 // Geladene Kartenebene als Jahr übernehmen (bisheriger Weg "Jahr B = Ebene").
@@ -3232,7 +3242,7 @@ async function loadCompareFile(file) {
       // Für den Vergleich zählt nur die Parzellen-Ebene — Teilflächen o.ä. werden ignoriert.
       // Flächenebenen: Parzellen/Feldstücke bevorzugt, sonst Antrags-/Hauptnutzungsflächen, sonst die
       // einzige (bzw. größte) Polygon-Ebene. Teilflächen, Hinweispunkte, Landschaftselemente nicht.
-      const poly = results.filter(r => !/teilfl|hinweis|landschaft/i.test(r.name) && (r.fc.features || []).some(f => f.geometry && /Polygon/.test(f.geometry.type)));
+      const poly = results.filter(r => !/teilfl|hinweis|landschaft|gew(ä|ae)sserrand/i.test(r.name) && (r.fc.features || []).some(f => f.geometry && /Polygon/.test(f.geometry.type)));
       chosen = results.find(r => /parzelle/i.test(r.name)) || results.find(r => /feldst(ü|ue)ck/i.test(r.name))
         || poly.find(r => /hauptnutzung|schlag|antrag/i.test(r.name)) || (poly.length === 1 ? poly[0] : null);
       if (!chosen) {
@@ -3343,7 +3353,7 @@ function parseHa(v) {
   return isFinite(n) ? n : null;
 }
 
-function runComparison() {
+function runComparison({ auto = false } = {}) {
   markToolHintDone('compare');
   let A = compareYearById(document.getElementById('compare-sel-a').dataset.value);
   let B = compareYearById(document.getElementById('compare-sel-b').dataset.value);
@@ -3433,8 +3443,19 @@ function runComparison() {
   renderCompareTable(records);
   renderCompareToggle();
   updateCompareTableHeaders();
-  showCompareView(true);
-  compareTablePanel.open();
+  showCompareView(!auto);
+  if (!auto) compareTablePanel.open();
+}
+// Abgleich mit mehreren Jahren: Abgleichsjahr automatisch mit seinem Vorjahr vergleichen
+function slVergleichSicherstellen() {
+  const y = slJahr();
+  const vor = y && slVorjahr(y);
+  if (!vor) return;
+  if (compareResult && compareResult.a === vor && compareResult.b === y) return;
+  document.getElementById('compare-sel-a').dataset.value = vor.id;
+  document.getElementById('compare-sel-b').dataset.value = y.id;
+  renderCompareYears();
+  runComparison({ auto: true });
 }
 
 // Aktuelle Ansicht (Vergleich oder einzelnes Jahr) auf die Karte bringen.
@@ -3442,12 +3463,16 @@ function showCompareView(fitView) {
   if (compareGeoLayer) map.removeLayer(compareGeoLayer);
   compareGeoLayer = L.featureGroup().addTo(map);
   if (!compareHiddenLayerIds.length) hideMapLayersForCompare();
-  document.getElementById('cmp-verlauf-legende')?.remove();
-  if (compareViewMode === 'diff') {
+  const abgleichOffen = schlaglisteData && !document.getElementById('sl-overlay').hidden;
+  if (abgleichOffen) {
+    // Abgleich offen: "Vergleich" zeigt die Abgleich-Ebene, eine Jahreszahl NUR dieses Jahr
+    const nurJahr = compareViewMode !== 'diff';
+    [slMapLayer, slFocusLayer].forEach(l => { if (l) { if (nurJahr) map.removeLayer(l); else l.addTo(map); } });
+    if (!nurJahr) { map.removeLayer(compareGeoLayer); return; }
+  } else if (compareViewMode === 'diff') {
     if (compareRecords.length) renderCompareMapLayers(compareRecords, fitView);
     return;
   }
-  if (compareViewMode === 'verlauf') { renderCompareVerlauf(fitView); return; }
   const y = compareYearById(compareViewMode);
   if (!y) return;
   if (compareResult && (compareResult.a === y || compareResult.b === y)) {
@@ -3680,87 +3705,6 @@ function renderCompareMapLayers(records, fitView) {
   }
 }
 
-// ---- Verlauf über alle hinterlegten Jahre ----
-// Grundlage ist das neueste Jahr. Je Jahreswechsel werden die Stücke gezeigt,
-// die zur Betriebsfläche dazugekommen (gefüllt) bzw. weggefallen (gestrichelt)
-// sind — jeweils in der Farbe des Jahres. Klick auf eine Fläche: ihre Geschichte.
-const VERLAUF_FARBEN = ['#2EE6B8', '#4C9BE8', '#E8A33D', '#C77DFF', '#E0507A', '#8CB26B'];
-let verlaufCache = null;
-function verlaufUnion(y) {
-  let u = null;
-  (y.fc.features || []).forEach(f => { if (!f.geometry || !/Polygon/.test(f.geometry.type)) return; try { u = u ? turf.union(u, f) : f; } catch { /* ungültig */ } });
-  return u;
-}
-function verlaufDaten() {
-  const years = compareYearsSorted().filter(y => y.jahr);
-  const key = years.map(y => y.id + ':' + (y.fc.features || []).length).join('|');
-  if (verlaufCache && verlaufCache.key === key) return verlaufCache.data;
-  const unions = years.map(verlaufUnion);
-  const schritte = [];
-  for (let i = 1; i < years.length; i++) {
-    const a = unions[i - 1], b = unions[i];
-    let dazu = null, weg = null;
-    try { dazu = a && b ? slEchteTeile(turf.difference(b, a)) : null; } catch { /* */ }
-    try { weg = a && b ? slEchteTeile(turf.difference(a, b)) : null; } catch { /* */ }
-    schritte.push({ von: years[i - 1], nach: years[i], farbe: VERLAUF_FARBEN[(i - 1) % VERLAUF_FARBEN.length], dazu, weg, dazuHa: slHaVon(dazu), wegHa: slHaVon(weg) });
-  }
-  verlaufCache = { key, data: { years, schritte } };
-  return verlaufCache.data;
-}
-// Geschichte einer Fläche des neuesten Jahres: gleiche Nummer, sonst größte Überdeckung
-function verlaufGeschichte(f, years) {
-  const nr = pickField(f.properties || {}, FIELD_CANDIDATES.nummer);
-  return years.map(y => {
-    const feats = (y.fc.features || []).filter(g => g.geometry);
-    let g = nr ? feats.find(x => pickField(x.properties || {}, FIELD_CANDIDATES.nummer) === nr) : null;
-    if (!g) {
-      let best = 0;
-      feats.forEach(x => { try { const a = turf.area(turf.intersect(f, x) || { type: 'Feature', geometry: { type: 'Polygon', coordinates: [] } }); if (a > best) { best = a; g = x; } } catch { /* */ } });
-      if (best < 100) g = null;
-    }
-    if (!g) return { jahr: y.jahr, fehlt: true };
-    const p = g.properties || {};
-    return { jahr: y.jahr, nr: pickField(p, FIELD_CANDIDATES.nummer), ha: parseHa(pickGroesse(p)), kultur: pickField(p, FIELD_CANDIDATES.kultur) };
-  });
-}
-function verlaufPopup(f, years) {
-  const h = verlaufGeschichte(f, years);
-  const p = f.properties || {};
-  let vorher = null;
-  const zeilen = h.map(e => {
-    if (e.fehlt) { vorher = null; return `<tr><td>${escapeHtml(e.jahr)}</td><td colspan="3" class="cmp-hist-leer">nicht im Betrieb</td></tr>`; }
-    const d = vorher !== null && e.ha !== null ? e.ha - vorher : null;
-    vorher = e.ha;
-    return `<tr><td>${escapeHtml(e.jahr)}</td><td>${escapeHtml(e.nr || '–')}</td><td>${e.ha !== null ? formatHaExact(e.ha) + ' ha' : '–'}${d !== null && Math.abs(d) > 0.01 ? ` <b class="${d > 0 ? 'is-plus' : 'is-minus'}">${d > 0 ? '+' : '−'}${formatHaExact(Math.abs(d))}</b>` : ''}</td><td>${escapeHtml(e.kultur || '–')}</td></tr>`;
-  }).join('');
-  return `<b>${escapeHtml(pickField(p, FIELD_CANDIDATES.nummer) || '–')}</b> ${escapeHtml(pickField(p, FIELD_CANDIDATES.name) || '')}<table class="cmp-hist"><tr><th>Jahr</th><th>Nr.</th><th>Größe</th><th>Kultur</th></tr>${zeilen}</table>`;
-}
-function renderCompareVerlauf(fitView) {
-  const { years, schritte } = verlaufDaten();
-  const letzte = years[years.length - 1];
-  (letzte.fc.features || []).forEach(f => {
-    if (!f.geometry) return;
-    const p = f.properties || {};
-    const lyr = L.geoJSON(f, { style: { color: '#5F7A93', weight: 1.2, fillColor: '#5F7A93', fillOpacity: 0.12 } });
-    lyr.bindPopup(() => verlaufPopup(f, years), { maxWidth: 360 });
-    lyr.addTo(compareGeoLayer);
-    addFeatureLabel(f, featureLabelHtml(pickField(p, FIELD_CANDIDATES.nummer), pickField(p, FIELD_CANDIDATES.name)), compareGeoLayer);
-  });
-  schritte.forEach(s => {
-    if (s.weg) L.geoJSON(s.weg, { interactive: false, style: { color: s.farbe, weight: 2, dashArray: '5,4', fillColor: s.farbe, fillOpacity: 0.15, className: 'cmp-verlauf-weg' } }).addTo(compareGeoLayer);
-    if (s.dazu) L.geoJSON(s.dazu, { interactive: false, style: { color: s.farbe, weight: 2, fillColor: s.farbe, fillOpacity: 0.55, className: 'cmp-verlauf-dazu' } }).addTo(compareGeoLayer);
-  });
-  // Legende über der Karte
-  const leg = document.createElement('div');
-  leg.id = 'cmp-verlauf-legende';
-  leg.className = 'cmp-verlauf-legende';
-  leg.innerHTML = `<b>Verlauf ${escapeHtml(years[0].jahr)} – ${escapeHtml(letzte.jahr)}</b>` + schritte.map(s =>
-    `<div><i style="background:${s.farbe}"></i>${escapeHtml(s.von.jahr)} → ${escapeHtml(s.nach.jahr)}: <span class="is-plus">+${formatHaExact(s.dazuHa)} ha</span> · <span class="is-minus">−${formatHaExact(s.wegHa)} ha</span></div>`).join('')
-    + '<small>gefüllt = dazugekommen, gestrichelt = weggefallen · Fläche antippen: Geschichte</small>';
-  document.getElementById('map-wrap').appendChild(leg);
-  if (fitView !== false && compareGeoLayer.getLayers().length) map.fitBounds(compareGeoLayer.getBounds(), { padding: [30, 30] });
-}
-
 // Isolierte Ansicht nur eines Jahres — zeigt ausschließlich die Flächen, die in
 // diesem Jahr existieren (bei "Nur Jahr A" fehlen z.B. die erst später
 // hinzugekommenen "Zugang"-Flächen, weil es sie in Jahr A schlicht noch nicht
@@ -3819,11 +3763,14 @@ function slFlaechen(y) {
     if (seen.has(key)) key += '#' + i;
     seen.add(key);
     const flik = pickField(p, FIELD_CANDIDATES.flaechenid), kultur = pickField(p, FIELD_CANDIDATES.kultur);
+    // Bayern: Feldstücknummer (in der Liste vorn in der Bezeichnung) und Kultur im Katalog
+    const fsnr = p.FSNr !== undefined && p.FSNr !== null ? String(p.FSNr).trim() : '';
+    const kulturKat = kultur ? (kulturZuordnen(kultur, slKulturGemerkt()).name || '') : '';
     // Landschaftselement (Hecke, Baumreihe …): gehört zum Schlag, kein eigener Umstellungsfall.
     // Vom Kontrolleur ausgeblendete Flächen (z. B. nicht erkanntes Feldgehölz) zählen genauso.
     const leAuto = LANDSCHAFTSELEMENT_RE.test(kultur) || LANDSCHAFTSELEMENT_FLIK_RE.test(flik);
     const leManuell = !leAuto && !!((schlaglisteData && schlaglisteData.ausgeblendet) || {})[key];
-    return { key, nummer, name: pickField(p, FIELD_CANDIDATES.name), ha: parseHa(pickGroesse(p)), flik, kultur, le: leAuto || leManuell, leManuell, feature: f };
+    return { key, nummer, fsnr, kulturKat, name: pickField(p, FIELD_CANDIDATES.name), ha: parseHa(pickGroesse(p)), flik, kultur, le: leAuto || leManuell, leManuell, feature: f };
   });
 }
 // Umnummerierungen zum Vorjahr (geometrisch) als Hilfe für den Abgleich
@@ -3844,7 +3791,34 @@ function slBerechne() {
   const feats = slFlaechen(y);
   const sl = { header: schlaglisteData.header, rows: schlaglisteData.rows, col: slParse([schlaglisteData.header, ...schlaglisteData.rows]).col };
   const abgleich = slAbgleich(sl, feats, { manuell: schlaglisteData.manuell, zurPruefung: schlaglisteData.zurPruefung || {}, umnummeriert: y ? slUmnummeriert(y) : null });
-  return { y, feats, sl, abgleich, featByKey: new Map(feats.map(f => [f.key, f])) };
+  const ctx = { y, feats, sl, abgleich, featByKey: new Map(feats.map(f => [f.key, f])) };
+  ctx.teile = slTeileErkennen(ctx);
+  slTeileAktuell = ctx.teile;
+  return ctx;
+}
+// Teilstücke, die in der Liste als eigene Zeile stehen (z. B. "23 … Teilstück 2026",
+// eigener Zugang), in den Shapes aber Teil einer Fläche sind: Zeile ohne Fläche,
+// gleiche Nummer vorn in der Bezeichnung wie eine zugeordnete Zeile, und beide
+// zusammen ergeben genau die Größe der Fläche. -> kein Abgang, die Hauptzeile
+// bekommt beim Export nur den Rest. Ergebnis: Map teilIdx -> { haupt, f }
+let slTeileAktuell = new Map();
+function slTeileErkennen(ctx) {
+  const d = schlaglisteData;
+  const teile = new Map();
+  const zugeordnet = ctx.abgleich.zeilen.filter(e => e.key && (e.art === 'sicher' || e.art === 'manuell' || e.art === 'pruefen'));
+  const ohne = ctx.abgleich.zeilen.filter(e => (e.art === 'fehlt' || e.art === 'abgang') && e.z.bezNr && e.z.ha
+    && !d.abgangAm[e.idx] && (d.nachAntrag || {})[e.idx] === undefined);
+  const passt = (soll, ist) => Math.abs(soll - ist) <= Math.max(0.002, ist * 0.002);
+  zugeordnet.forEach(h => {
+    const f = ctx.featByKey.get(h.key);
+    if (!f || f.ha === null || f.ha === undefined || h.z.ha === null) return;
+    const kandidaten = ohne.filter(t => t.z.bezNr === h.z.bezNr && !teile.has(t.idx));
+    if (!kandidaten.length || passt(h.z.ha, f.ha)) return;
+    const einer = kandidaten.find(t => passt(h.z.ha + t.z.ha, f.ha));
+    const gewaehlt = einer ? [einer] : (passt(h.z.ha + kandidaten.reduce((s, t) => s + t.z.ha, 0), f.ha) ? kandidaten : []);
+    gewaehlt.forEach(t => teile.set(t.idx, { haupt: h, f }));
+  });
+  return teile;
 }
 // Status einer Zeile / neuen Fläche am Stichtag
 function slStatusInfo(beginn) {
@@ -3877,7 +3851,9 @@ function slNachAntrag(e) {
   if (!d || !(e.art === 'fehlt' || e.art === 'abgang')) return null;
   const m = (d.nachAntrag || {})[e.idx];
   if (m === true) return 'markiert';
+  if (m === 'gleich') return 'gleich';
   if (m === false) return null;
+  if (slTeileAktuell.has(e.idx)) return 'teil';
   const jahr = d.jahr || (slJahr() || {}).jahr;
   return jahr && e.z.zugang && e.z.zugang > `${jahr}-${SL_ANTRAG_STICHTAG}` ? 'auto' : null;
 }
@@ -4063,12 +4039,20 @@ function slGeoAnalyse(y, feats) {
       }
       info.vorgaenger = v;
       info.vorgaengerNr = vnr;
-      if (v) {
-        const w = slEchteTeile(turf.difference(v, g));
-        if (w) { info.wegGeom = w; info.wegHa = slHaVon(w); }
-      }
     } catch (err) { console.warn('Geometrievergleich (Schlagliste):', err.message); }
     data.byKey.set(f.key, info);
+  });
+  // "weggefallen" = Teil des Vorgängers, den KEINE der Flächen mit diesem Vorgänger mehr
+  // abdeckt. Wurde eine Fläche geteilt (3 -> 3/1, 3/2, 3/3), ist der Rest nicht weg.
+  const jeVorgaenger = new Map();
+  feats.forEach(f => { const i = data.byKey.get(f.key); if (i && i.vorgaenger && f.feature) jeVorgaenger.set(i.vorgaenger, [...(jeVorgaenger.get(i.vorgaenger) || []), f]); });
+  jeVorgaenger.forEach((gruppe, v) => {
+    try {
+      let rest = v;
+      gruppe.forEach(f => { if (rest) rest = turf.difference(rest, f.feature); });
+      const w = rest ? slEchteTeile(rest) : null;
+      gruppe.forEach(f => { const i = data.byKey.get(f.key); i.geteilt = gruppe.length > 1; if (w) { i.wegGeom = w; i.wegHa = slHaVon(w); } });
+    } catch (err) { console.warn('Geometrievergleich (Schlagliste):', err.message); }
   });
   return data;
 }
@@ -4092,6 +4076,46 @@ function slFaelle(ctx, geo) {
   // Kulturen ohne eindeutige Zuordnung zum Katalog des externen Programms
   slKulturen(ctx).forEach(k => { if (k.offen || k.bestaetigt) faelle.push({ id: 'c:' + k.quelle, typ: 'kultur', quelle: k.quelle, erledigt: !k.offen }); });
   return faelle;
+}
+// Geteilt? Eine Listenzeile ist in mehrere Flächen aufgegangen (z. B. Feldstück 3
+// -> Schläge 3/1 + 3/2): die Flächen gehören zur Zeile (gleiche Feldstücknummer,
+// gleiche FLIK oder derselbe Vorgänger im Vorjahr), sind noch frei, und ihre
+// Summe ergibt die Größe der Zeile. Nur ein VORSCHLAG — der Kontrolleur bestätigt.
+// Ergebnis: Zeilen-Index -> { teile: [Fläche, größte zuerst], summe }
+function slTeilungen(ctx, geo) {
+  const d = schlaglisteData;
+  const out = new Map();
+  const frei = new Set(ctx.abgleich.neu.filter(f => !f.le).map(f => f.key));
+  const passt = (soll, ist) => Math.abs(soll - ist) <= Math.max(0.01, soll * 0.005);
+  ctx.abgleich.zeilen.forEach(e => {
+    if (!['pruefen', 'fehlt'].includes(e.art) || !e.z.ha) return;
+    if (d.abgangAm[e.idx] || slNachAntrag(e)) return;
+    if (e.art === 'pruefen' && e.key && passt(e.z.ha, ctx.featByKey.get(e.key).ha || 0)) return; // passt schon allein
+    const vorF = slVorjahrFlaeche(ctx, geo, e);
+    const kand = ctx.feats.filter(f => !f.le && f.ha && (frei.has(f.key) || f.key === e.key) && (
+      (f.fsnr && e.z.bezNr && slOhneNullen(f.fsnr) === e.z.bezNr) || slFlikPasst(e.z, f) === 'gleich'
+      || (vorF && (geo.byKey.get(f.key) || {}).vorgaenger === vorF)));
+    if (kand.length < 2 || kand.length > 8) return;
+    let best = null;
+    for (let m = 3; m < (1 << kand.length); m++) {
+      const teile = kand.filter((_, i) => m & (1 << i));
+      if (teile.length < 2) continue;
+      const summe = teile.reduce((sum, f) => sum + f.ha, 0);
+      const diff = Math.abs(summe - e.z.ha);
+      if (passt(e.z.ha, summe) && (!best || diff < best.diff)) best = { teile, summe, diff };
+    }
+    if (best) out.set(e.idx, { teile: best.teile.slice().sort((a, b) => b.ha - a.ha), summe: best.summe });
+  });
+  return out;
+}
+// Übernommene Teilungen: schlaglisteData.teilVon = { [flächenKey]: zeilenIdx } — die
+// Zeile selbst ist der größten Fläche zugeordnet (manuell), die übrigen Teile werden
+// neue Zeilen mit dem Umstellungsdatum der Zeile. Gilt nur, solange die Zeile zugeordnet ist.
+function slTeilVon(ctx, key) {
+  const idx = (schlaglisteData.teilVon || {})[key];
+  if (idx === undefined) return null;
+  const e = ctx.abgleich.zeilen[idx];
+  return e && e.art === 'manuell' ? e : null;
 }
 // Zusammengelegt? Mehrere Listenzeilen mit gleicher FLIK ergeben zusammen genau
 // die Größe einer Fläche (z.B. zwei Teilschläge 2026 als ein Schlag beantragt).
@@ -4186,6 +4210,19 @@ const SL_KULTUR_LABEL = { gleich: 'gleich', regel: 'Regel', aehnlich: 'ähnlich 
 const slKulturBadge = (zu) => `<span class="sl-kbadge is-${zu.sicherheit}">${SL_KULTUR_LABEL[zu.sicherheit]}</span>`;
 const slKulturText = (f) => { const zu = slKulturVon(f); return zu && zu.name ? ` <span class="sl-kultur" title="${escapeHtml(f.kultur)}">→ ${escapeHtml(zu.name)}</span>` : ''; };
 const SL_KATALOG_OPTIONEN = INTACT_KULTUREN.slice().sort((a, b) => a.name.localeCompare(b.name, 'de'));
+// Je Feldblock (FLIK-Kern) die Listenzeile, deren Umstellungsdatum als Vorschlag für
+// weitere Flächen dieses Feldblocks dient: die GRÖSSTE zugehörige Zeile (auch ein noch
+// offener Zweifelsfall) — nicht ein kleines Teilstück mit eigenem, späterem Datum.
+function slFeldblockDaten(ctx) {
+  const m = new Map();
+  ctx.abgleich.zeilen.filter(e => e.key && e.z.zugang).forEach(e => {
+    const kern = slFlikKern(ctx.featByKey.get(e.key).flik);
+    if (!kern) return;
+    const bisher = m.get(kern);
+    if (!bisher || (e.z.ha || 0) > (bisher.z.ha || 0)) m.set(kern, e);
+  });
+  return m;
+}
 // Umstellungsdatum der Listenzeile, die zur Vorjahresfläche mit dieser Nummer gehört
 function slDatumVonNummer(ctx, nr) {
   if (!nr) return null;
@@ -4202,6 +4239,7 @@ function slChips(geo, f) {
   if (g.wegGeom) out.push(`<span class="sl-chip is-minus" title="Stück der Fläche aus ${escapeHtml(vj)}, das jetzt fehlt">−${formatHaExact(g.wegHa)} ha weg</span>`);
   if (g.ganzNeu) out.push(`<span class="sl-chip is-plus" title="Fläche gehörte ${escapeHtml(vj)} zu keiner Fläche des Betriebs">neu seit ${escapeHtml(vj)}</span>`);
   if (g.umnummeriert) out.push(`<span class="sl-chip">Nr. ${escapeHtml(g.vorgaengerNr)} → ${escapeHtml(slOhneNullen(f.nummer))}</span>`);
+  if (g.geteilt && g.vorgaengerNr) out.push(`<span class="sl-chip" title="Mehrere Flächen liegen auf der Fläche Nr. ${escapeHtml(g.vorgaengerNr)} aus ${escapeHtml(vj)}">geteilt aus Nr. ${escapeHtml(g.vorgaengerNr)}</span>`);
   return out.join('');
 }
 const slAuge = (id) => ((schlaglisteData.angesehen || {})[id] ? '<span class="sl-eye" title="Auf der Karte angesehen"><span class="material-symbols-rounded icon" aria-hidden="true">visibility</span></span>' : '');
@@ -4216,6 +4254,9 @@ function openSchlaglisteReview() {
   document.body.classList.add('sl-review-open');
   if (compareGeoLayer) map.removeLayer(compareGeoLayer);
   if (!compareHiddenLayerIds.length) hideMapLayersForCompare();
+  compareViewMode = 'diff';
+  slVergleichSicherstellen();
+  renderCompareToggle();
   slVorherErledigt = null;
   slWarFertig = false;
   renderSchlaglisteReview(!warOffen);
@@ -4244,7 +4285,7 @@ function slZeileHtml(e, sl) {
   const z = e.z;
   const nr = sl.col.schlagnr !== undefined ? String(sl.rows[e.idx][sl.col.schlagnr] || '') : '';
   return `<div class="sl-liste"><span class="sl-tag">Liste</span><b>${escapeHtml(nr || '–')}</b> ${escapeHtml(z.bez || '–')} · ${slFmtHa(z.ha)}
-    <span class="sl-meta">${z.zugang ? 'Zugang ' + slDeAusIso(z.zugang) : 'ohne Zugangsdatum'}</span> ${slBadge(slStatusInfo(z.zugang))}</div>`;
+    <span class="sl-meta">${z.zugang ? 'Umstellungsdatum ' + slDeAusIso(z.zugang) : 'ohne Umstellungsdatum'}</span> ${slBadge(slStatusInfo(z.zugang))}</div>`;
 }
 function slAuswahl(e, ctx, freieKeys, leerText = '— keine Fläche (nicht im Betrieb) —') {
   const vorschlaege = ctx.abgleich.vorschlaege(e.idx);
@@ -4380,6 +4421,25 @@ function renderSchlaglisteReview(fitMap = false) {
       ${erledigt ? '' : `<button type="button" class="betrieb-btn primary" data-sl-zusammen="${e.idx}">Als zusammengelegt übernehmen</button>`}</p>`;
   };
 
+  const teilungen = slTeilungen(ctx, geo);
+  const teilVonKandidat = new Map();  // Fläche -> Zeile, zu deren vorgeschlagener Teilung sie gehört
+  teilungen.forEach((t, idx) => t.teile.forEach(f => teilVonKandidat.set(f.key, abgleich.zeilen[idx])));
+  const teilungHtml = (e) => {
+    const t = teilungen.get(e.idx);
+    if (!t) return '';
+    const rest = t.teile.length - 1;
+    return `<p class="sl-krit sl-zus sl-teilung"><span class="material-symbols-rounded icon" aria-hidden="true">call_split</span><span><b>Geteilt?</b> ${escapeHtml(slZeileName(e.z))} (${slFmtHa(e.z.ha)})
+      = ${t.teile.map(f => `${escapeHtml(f.nummer || '–')} (${slFmtHa(f.ha)})`).join(' + ')} = ${formatHaExact(t.summe)} ha.
+      Die Zeile bekommt die größte Fläche (${escapeHtml(t.teile[0].nummer || '–')}), ${rest === 1 ? 'die andere wird eine neue Zeile' : `die ${rest} anderen werden neue Zeilen`} mit demselben Umstellungsdatum.</span>
+      <button type="button" class="betrieb-btn primary" data-sl-teilung="${e.idx}">Als Teilung übernehmen</button></p>`;
+  };
+  // schon übernommene Teilung an der Zeile
+  const geteiltInfo = (e) => {
+    const teile = ctx.feats.filter(f => slTeilVon(ctx, f.key) === e);
+    return teile.length ? `<div class="sl-unter is-ok"><span class="material-symbols-rounded icon" aria-hidden="true">call_split</span>
+        Geteilt: zusätzlich ${teile.map(f => `<b>${escapeHtml(f.nummer || '–')}</b> (${slFmtHa(f.ha)})`).join(', ')} als neue ${teile.length === 1 ? 'Zeile' : 'Zeilen'}
+        <button type="button" class="sl-undo" data-sl-teilung-weg="${e.idx}">Teilung lösen</button></div>` : '';
+  };
   // 2) Zweifelsfälle
   const pruefenHtml = pruefen.map(e => {
     const f = e.key && featByKey.get(e.key);
@@ -4387,6 +4447,7 @@ function renderSchlaglisteReview(fitMap = false) {
       <div class="sl-match"><span class="sl-tag is-shape">${escapeHtml(y.jahr)}</span>${slAuswahl(e, ctx, freieKeys)}
         <button type="button" class="betrieb-btn primary sl-ok" data-sl-ok="${e.idx}"><span class="material-symbols-rounded icon" aria-hidden="true">check</span>Passt</button>${slKarteBtn('p:' + e.idx)}</div>
       <p class="sl-why">${escapeHtml(e.gruende.join(' · ') || 'nur schwache Übereinstimmung')}${slHaDiff(e.z.ha, f && f.ha)} ${slChips(geo, f)} ${slAuge('p:' + e.idx)}</p>
+      ${teilungHtml(e)}
       ${zusammenHtml(e)}`);
   }).join('') + manuell.map(e => {
     // schon entschieden: bleibt hier stehen (abgehakt), mit "ändern" zurück in die Prüfung
@@ -4394,7 +4455,8 @@ function renderSchlaglisteReview(fitMap = false) {
     return item('p:' + e.idx, `${slZeileHtml(e, sl)}
       <div class="sl-unter is-ok"><span class="material-symbols-rounded icon" aria-hidden="true">task_alt</span>
         ${f ? `zugeordnet: <b>${escapeHtml(f.nummer || '–')}</b> ${escapeHtml(f.name || '')} · ${slFmtHa(f.ha)}` : `keine Fläche — Abgang ${d.abgangAm[e.idx] ? 'am ' + slDeAusIso(d.abgangAm[e.idx]) : ''}`}
-        ${f ? slKarteBtn('p:' + e.idx) : ''}<button type="button" class="sl-undo" data-sl-reset="${e.idx}">ändern</button></div>`);
+        ${f ? slKarteBtn('p:' + e.idx) : ''}<button type="button" class="sl-undo" data-sl-reset="${e.idx}">ändern</button></div>
+      ${geteiltInfo(e)}`);
   }).join('');
 
   // 3) Neu in den Shapes (ohne Landschaftselemente)
@@ -4402,10 +4464,7 @@ function renderSchlaglisteReview(fitMap = false) {
   const leFlaechen = abgleich.neu.filter(f => f.le);
   // gleicher Feldblock (FLIK) wie eine zugeordnete Fläche -> deren Umstellungsdatum
   const feldblockDatum = new Map();
-  abgleich.zeilen.filter(e => e.key && e.art !== 'pruefen' && e.z.zugang).forEach(e => {
-    const kern = slFlikKern(featByKey.get(e.key).flik);
-    if (kern && !feldblockDatum.has(kern)) feldblockDatum.set(kern, { datum: e.z.zugang, name: slZeileName(e.z) });
-  });
+  slFeldblockDaten(ctx).forEach((e, kern) => feldblockDatum.set(kern, { datum: e.z.zugang, name: slZeileName(e.z) }));
   // häufigstes Zugangsdatum der Liste je Bundesland (Vorschlag für ganz neue Flächen)
   const haeufigJeLand = new Map();
   abgleich.zeilen.filter(e => e.z.zugang).forEach(e => {
@@ -4419,11 +4478,14 @@ function renderSchlaglisteReview(fitMap = false) {
     return [...m.entries()].sort((a, b) => b[1] - a[1])[0][0];
   };
   const vorschlagFuer = (f) => {
+    // Teil einer (vorgeschlagenen oder übernommenen) Teilung: Datum der geteilten Zeile
+    const tz = slTeilVon(ctx, f.key) || teilVonKandidat.get(f.key);
+    if (tz && tz.z.zugang) return { art: 'teilung', datum: tz.z.zugang, text: `${slTeilVon(ctx, f.key) ? 'Aus der Teilung von' : 'Vermutlich aus der Teilung von'} ${slZeileName(tz.z)} (Umstellungsdatum ${slDeAusIso(tz.z.zugang)})${slTeilVon(ctx, f.key) ? '' : ' — dort „Als Teilung übernehmen“'}` };
     const fb = feldblockDatum.get(slFlikKern(f.flik));
-    if (fb) return { art: 'feldblock', datum: fb.datum, text: `Gleicher Feldblock wie ${fb.name} (Zugang ${slDeAusIso(fb.datum)})` };
+    if (fb) return { art: 'feldblock', datum: fb.datum, text: `Gleicher Feldblock wie ${fb.name} (Umstellungsdatum ${slDeAusIso(fb.datum)})` };
     const g = geo.byKey.get(f.key);
     const herkunft = g && g.vorgaenger && g.anteilNeu < 0.9 ? slDatumVonNummer(ctx, g.vorgaengerNr) : null;
-    if (herkunft) return { art: 'vorjahr', datum: herkunft.datum, text: `War ${geo.vor.jahr} Teil von Nr. ${g.vorgaengerNr} (${herkunft.name}, Zugang ${slDeAusIso(herkunft.datum)})` };
+    if (herkunft) return { art: 'vorjahr', datum: herkunft.datum, text: `War ${geo.vor.jahr} Teil von Nr. ${g.vorgaengerNr} (${herkunft.name}, Umstellungsdatum ${slDeAusIso(herkunft.datum)})` };
     return null;
   };
   const offeneNeu = neuOhneLe.filter(f => !d.zugangNeu[f.key]);
@@ -4434,7 +4496,7 @@ function renderSchlaglisteReview(fitMap = false) {
   ohneVorschlag.forEach(f => { const dt = haeufigFuer(f); if (dt) { const k = slFlikLand(f.flik) + '|' + dt; haeufigGruppen.set(k, [...(haeufigGruppen.get(k) || []), f.key]); } });
   const sammel = (mitFeldblock.length ? `<button type="button" class="betrieb-btn sl-bulk" data-sl-bulk="feldblock"><span class="material-symbols-rounded icon" aria-hidden="true">done_all</span>Feldblock-Datum für alle ${mitFeldblock.length} übernehmen</button>` : '')
     + [...haeufigGruppen.entries()].map(([k, keys]) => { const [land, dt] = k.split('|');
-      return `<button type="button" class="betrieb-btn sl-bulk" data-sl-bulk-datum="${dt}" data-sl-bulk-keys="${escapeHtml(keys.join(','))}" title="Häufigstes Zugangsdatum der Liste${land ? ' in ' + escapeHtml(landText[land] || land) : ''}"><span class="material-symbols-rounded icon" aria-hidden="true">event_available</span>${slDeAusIso(dt)}${land ? ' (' + escapeHtml(land) + ')' : ''} für ${keys.length} ohne Vorschlag</button>`; }).join('');
+      return `<button type="button" class="betrieb-btn sl-bulk" data-sl-bulk-datum="${dt}" data-sl-bulk-keys="${escapeHtml(keys.join(','))}" title="Häufigstes Umstellungsdatum der Liste${land ? ' in ' + escapeHtml(landText[land] || land) : ''}"><span class="material-symbols-rounded icon" aria-hidden="true">event_available</span>${slDeAusIso(dt)}${land ? ' (' + escapeHtml(land) + ')' : ''} für ${keys.length} ohne Vorschlag</button>`; }).join('');
   const neuHtml = (sammel ? `<div class="sl-bulkbar">${sammel}</div>` : '') + neuOhneLe.map(f => {
     const id = 'n:' + f.key;
     const b = d.zugangNeu[f.key] || '';
@@ -4442,7 +4504,7 @@ function renderSchlaglisteReview(fitMap = false) {
     const vorschlag = vorschlagFuer(f);
     const istNeuland = !vorschlag && (!g || !geo.vor || g.anteilNeu >= 0.9);
     const info = vorschlag
-      ? `<p class="sl-why"><span class="material-symbols-rounded icon sl-inline-icon" aria-hidden="true">${vorschlag.art === 'feldblock' ? 'grid_view' : 'call_split'}</span>${escapeHtml(vorschlag.text)}.
+      ? `<p class="sl-why${vorschlag.art === 'teilung' ? ' sl-teil-hinweis' : ''}"><span class="material-symbols-rounded icon sl-inline-icon" aria-hidden="true">${vorschlag.art === 'feldblock' ? 'grid_view' : 'call_split'}</span>${escapeHtml(vorschlag.text)}.
           ${vorschlag.datum !== b ? `<button type="button" class="betrieb-btn sl-uebernehmen" data-sl-datum="${escapeHtml(f.key)}" data-sl-datum-wert="${vorschlag.datum}">Datum übernehmen</button>` : ''}</p>`
       : istNeuland && geo.vor ? `<p class="sl-krit"><span class="material-symbols-rounded icon" aria-hidden="true">warning</span><span><b>Neue Fläche</b> — ${escapeHtml(geo.vor.jahr)} noch nicht im Betrieb. Umstellungsbeginn eintragen.</span></p>`
       : '';
@@ -4464,10 +4526,9 @@ function renderSchlaglisteReview(fitMap = false) {
       <div class="sl-liste"><span class="sl-tag is-shape">${escapeHtml(y.jahr)}</span>${escapeHtml(k.quelle)} <span class="sl-meta">${k.anzahl}× · ${formatHaExact(k.ha)} ha</span> ${slKulturBadge(k.zu)}</div>
       ${k.liste && k.liste.length ? `<p class="sl-why sl-kliste"><span class="sl-tag">Liste</span>Bisher: ${k.liste.map(l => `<b>${escapeHtml(l.name)}</b> (${l.zeilen.map(escapeHtml).join(', ')})${l.name !== k.zu.name && kulturEintrag(l.name) ? ` <button type="button" class="sl-undo" data-sl-kultur-liste="${escapeHtml(k.quelle)}" data-sl-kultur-name="${escapeHtml(l.name)}">übernehmen</button>` : ''}`).join(' · ')}</p>` : ''}
       <div class="sl-match">
-        <select class="sl-select" data-sl-kultur="${escapeHtml(k.quelle)}" aria-label="Kultur im externen Programm">
-          <option value="">— keine Zuordnung —</option>${SL_KATALOG_OPTIONEN.map(e => `<option value="${escapeHtml(e.name)}"${e.name === k.zu.name ? ' selected' : ''}>${escapeHtml(e.v)}</option>`).join('')}
-        </select>
-        ${k.kulturOffen && k.zu.name ? `<button type="button" class="betrieb-btn primary" data-sl-kultur-ok="${escapeHtml(k.quelle)}"><span class="material-symbols-rounded icon" aria-hidden="true">check</span>Passt</button>` : ''}
+        <input type="search" class="sl-select sl-kultur-suche" data-sl-kultur="${escapeHtml(k.quelle)}" list="sl-katalog" value="${escapeHtml(k.zu.name || '')}" data-sl-kultur-vorher="${escapeHtml(k.zu.name || '')}" placeholder="Kultur suchen …" autocomplete="off" aria-label="Kultur im externen Programm (suchen)">
+        <button type="button" class="betrieb-btn primary" data-sl-kultur-ok="${escapeHtml(k.quelle)}"${k.kulturOffen && k.zu.name ? '' : ' hidden'}><span class="material-symbols-rounded icon" aria-hidden="true">check</span>Passt</button>
+        <span class="sl-kultur-fehler" hidden>Nicht im Katalog — bitte aus der Liste wählen</span>
       </div>
       ${k.zu.name && d.kulturUebernehmen !== false ? `<div class="sl-match"><label class="sl-date">Kategorie
         <select class="sl-select sl-kat" data-sl-kategorie="${escapeHtml(k.zu.name)}" aria-label="Kategorie für ${escapeHtml(k.zu.name)}">
@@ -4487,29 +4548,47 @@ function renderSchlaglisteReview(fitMap = false) {
       <label class="betrieb-btn sl-bulk"><span class="material-symbols-rounded icon" aria-hidden="true">upload_file</span>Nutzungsnachweis (PDF) laden<input type="file" id="sl-fnn-file" accept=".pdf,application/pdf" hidden></label>
       ${d.fnnInfo ? `<p class="sl-why" id="sl-fnn-info">${escapeHtml(d.fnnInfo)}</p>` : ''}
     </div>`;
-  const kulturHtml = fnnHtml + kulturOffen.map(kulturZeile).join('')
+  const kulturHtml = fnnHtml + `<datalist id="sl-katalog">${SL_KATALOG_OPTIONEN.map(e => `<option value="${escapeHtml(e.name)}">${escapeHtml(e.v !== e.name ? e.v : '')}</option>`).join('')}</datalist>` + kulturOffen.map(kulturZeile).join('')
     + (kulturEindeutig.length ? `<details class="sl-kfold"><summary>Eindeutig zugeordnet (${kulturEindeutig.length})</summary>${kulturEindeutig.map(kulturZeile).join('')}</details>` : '');
 
   // 4) Nicht mehr in den Shapes
   const nachAntrag = fehlt.filter(e => slNachAntrag(e));
   const fehltEcht = fehlt.filter(e => !slNachAntrag(e));
   const antragDatum = `15.05.${y.jahr}`;
-  const nachAntragHtml = nachAntrag.length ? `<ul class="sl-unv sl-nachantrag">${nachAntrag.map(e => `<li data-sl-fall="a:${e.idx}">${escapeHtml(slZeileName(e.z))} · ${slFmtHa(e.z.ha)}${e.z.zugang ? ` · Zugang ${slDeAusIso(e.z.zugang)}` : ''} ${e.z.zugang ? slBadge(slStatusInfo(e.z.zugang)) : ''}
-      <span class="sl-meta">${slNachAntrag(e) === 'auto' ? 'Zugang nach dem ' + antragDatum : 'markiert'}</span>
+  const nachAntragGrund = { auto: 'Umstellungsdatum nach dem ' + antragDatum, markiert: 'nach Antrag zugegangen', gleich: 'unverändert gelassen' };
+  const grundText = (e) => {
+    const g = slNachAntrag(e);
+    if (g !== 'teil') return nachAntragGrund[g];
+    const t = ctx.teile.get(e.idx);
+    return `Teilstück von ${slZeileName(t.haupt.z)} — in Fläche ${t.f.nummer || '–'} (${formatHaExact(t.f.ha)} ha) enthalten`;
+  };
+  const nachAntragHtml = nachAntrag.length ? `<ul class="sl-unv sl-nachantrag">${nachAntrag.map(e => `<li data-sl-fall="a:${e.idx}">${escapeHtml(slZeileName(e.z))} · ${slFmtHa(e.z.ha)}${e.z.zugang ? ` · Umstellungsdatum ${slDeAusIso(e.z.zugang)}` : ''} ${e.z.zugang ? slBadge(slStatusInfo(e.z.zugang)) : ''}
+      <span class="sl-meta">${escapeHtml(grundText(e))}</span>
       <button type="button" class="sl-undo" data-sl-nach-nein="${e.idx}">doch nicht</button></li>`).join('')}</ul>` : '';
+  // Zeilen mit Fläche, in die eine Zeile ohne Fläche aufgehen kann
+  const zusammenZiele = abgleich.zeilen.filter(x => x.key && x.art !== 'unvollstaendig');
+  const zusammenMit = d.zusammenMit || {};
   const fehltHtml = fehltEcht.map(e => {
     const id = 'f:' + e.idx;
     const am = d.abgangAm[e.idx] || '';
-    const warDa = geo.vor && (geo.vorByNr.get(e.z.nr) || geo.vorByNr.get(e.z.bezNr));
+    const warDa = slVorjahrFlaeche(ctx, geo, e);
+    const ziel = zusammenMit[e.idx] !== undefined ? abgleich.zeilen[zusammenMit[e.idx]] : null;
     return item(id, `${slZeileHtml(e, sl)}
       ${warDa ? `<p class="sl-why">${escapeHtml(geo.vor.jahr)} noch auf der Karte (gestrichelt) ${slKarteBtn(id)} ${slAuge(id)}</p>` : ''}
+      ${teilungHtml(e)}
       ${zusammenHtml(e)}
-      <div class="sl-match">
+      ${ziel ? `<div class="sl-unter is-ok"><span class="material-symbols-rounded icon" aria-hidden="true">merge</span>
+          Zusammengefügt mit <b>${escapeHtml(slZeileName(ziel.z))}</b> — Abgang am ${slDeAusIso(am)}
+          <button type="button" class="sl-undo" data-sl-zusammen-weg="${e.idx}">lösen</button></div>` : `<div class="sl-match">
         <label class="sl-check"><input type="checkbox" data-sl-abgang="${e.idx}"${am ? ' checked' : ''}> Abgang eintragen am</label>
-        <button type="button" class="betrieb-btn sl-nach" data-sl-nach="${e.idx}" title="Fläche ist nach dem Agrarantrag (${antragDatum}) zugegangen und noch nicht in den Shapes — Zeile bleibt ohne Abgang"><span class="material-symbols-rounded icon" aria-hidden="true">event_upcoming</span>Nach Antrag zugegangen</button>
         <input type="date" class="sl-date-input" data-sl-abgang-am="${e.idx}" value="${am || slStichtag()}"${am ? '' : ' disabled'}>
+      </div>
+      <div class="sl-match">
+        <button type="button" class="betrieb-btn" data-sl-gleich="${e.idx}" title="Zeile bleibt beim Export, wie sie ist (kein Abgang)"><span class="material-symbols-rounded icon" aria-hidden="true">block</span>Unverändert lassen</button>
+        <button type="button" class="betrieb-btn sl-nach" data-sl-nach="${e.idx}" title="Fläche ist nach dem Agrarantrag (${antragDatum}) zugegangen und noch nicht in den Shapes — Zeile bleibt ohne Abgang"><span class="material-symbols-rounded icon" aria-hidden="true">event_upcoming</span>Nach Antrag zugegangen</button>
+        ${zusammenZiele.length ? `<select class="sl-select" data-sl-zusammen-mit="${e.idx}" aria-label="Mit einer anderen Zeile zusammenfügen"><option value="">… mit Zeile zusammenfügen</option>${zusammenZiele.map(x => `<option value="${x.idx}">${escapeHtml(slZeileName(x.z) + ' · ' + slFmtHa(x.z.ha))}</option>`).join('')}</select>` : ''}
         ${freieKeys.length ? slAuswahl({ ...e, key: null }, ctx, freieKeys, '… oder Fläche zuordnen') : ''}
-      </div>`);
+      </div>`}`);
   }).join('');
 
   // 5) Automatisch zugeordnet
@@ -4528,8 +4607,8 @@ function renderSchlaglisteReview(fitMap = false) {
     + sec('is-neu', 'add_circle', `Neu in den Shapes (${neuOhneLe.length})`, liste('neu'), 'Nicht in der Schlagliste. Umstellungsbeginn eintragen — dann kommen sie beim Export als neue Zeile dazu. Teilstücke eines schon zugeordneten Feldblocks (gleiche FLIK) bekommen dessen Datum vorgeschlagen. Ist es eine umbenannte Fläche, die passende Listenzeile zuordnen.', neuHtml)
     + sec('is-kultur', 'eco', `Kulturen (${kulturen.length})`, liste('kultur'), 'Kulturen aus den Shapes, übersetzt in den Kulturkatalog des externen Programms. „ähnlich“ und „unbekannt“ bitte prüfen — die Wahl merkt sich die App auch für andere Betriebe.', kulturHtml, kulturOffen.length > 0 || ohneKultur > 0, ohneKultur > 0)
     + sec('is-le', 'park', `Landschaftselemente und ausgeblendet (${leFlaechen.length})`, null, 'Hecken, Baumreihen, Feldgehölze u. ä. gehören zum Schlag — kein eigener Umstellungsfall, kommen nicht in den Export. Erkennt die App ein solches Element nicht, blendest du es unter „Neu in den Shapes“ mit „Ausblenden“ aus.', leHtml, false)
-    + sec('is-fehlt', 'remove_circle', `Nicht in den Shapes ${escapeHtml(y.jahr)} (${fehltEcht.length})`, liste('fehlt'), `Diese Zeilen der Liste haben keine Fläche mehr. Abgang eintragen oder einer Fläche zuordnen. Ist die Fläche erst nach dem Agrarantrag (${antragDatum}) zum Betrieb gekommen — z. B. ein Bio-Zugang mit dem Umstellungsdatum des Vorbewirtschafters —, „Nach Antrag zugegangen“ wählen.`, fehltHtml)
-    + sec('is-nachantrag', 'event_upcoming', `Nach dem Agrarantrag zugegangen (${nachAntrag.length})`, null, `In der Liste, aber noch nicht in den Shapes ${escapeHtml(y.jahr)}: zugegangen nach dem ${antragDatum}. Kein Abgang — die Zeilen bleiben beim Export unverändert (nur der Umstellungsstatus wird zum Stichtag fortgeschrieben). Zeilen mit Zugang nach dem ${antragDatum} erkennt die App von selbst.`, nachAntragHtml, false)
+    + sec('is-fehlt', 'remove_circle', `Nicht in den Shapes ${escapeHtml(y.jahr)} (${fehltEcht.length})`, liste('fehlt'), `Diese Zeilen der Liste haben keine Fläche in den Shapes. Abgang eintragen, unverändert lassen, mit einer anderen Zeile zusammenfügen (diese Zeile bekommt dann den Abgang) oder einer Fläche zuordnen. Ist die Fläche erst nach dem Agrarantrag (${antragDatum}) zum Betrieb gekommen — z. B. ein Bio-Zugang mit dem Umstellungsdatum des Vorbewirtschafters —, „Nach Antrag zugegangen“ wählen.`, fehltHtml)
+    + sec('is-nachantrag', 'event_upcoming', `Ohne Fläche, bleiben unverändert (${nachAntrag.length})`, null, `In der Liste, aber nicht in den Shapes ${escapeHtml(y.jahr)} — kein Abgang, die Zeilen bleiben beim Export unverändert (nur der Umstellungsstatus wird zum Stichtag fortgeschrieben). Zeilen mit Umstellungsdatum nach dem ${antragDatum} (nach dem Agrarantrag) erkennt die App von selbst.`, nachAntragHtml, false)
     + sec('is-ok', 'task_alt', `Automatisch zugeordnet (${sicher.length})`, null, '', sicherHtml, false)
     + sec('', 'block', `Unvollständige Zeilen (${unv.length})`, null, '', unvHtml, false);
 
@@ -4547,7 +4626,7 @@ function renderSchlaglisteReview(fitMap = false) {
 // ---- Rückgängig / Zurücksetzen ----
 // Vor jeder Entscheidung im Panel wird der Stand gemerkt (slVorAenderung);
 // slSpeichern legt ihn auf den Stapel, wenn sich wirklich etwas geändert hat.
-const SL_ENTSCHEIDUNGEN = ['manuell', 'ausgeblendet', 'nachAntrag', 'zugangNeu', 'abgangAm', 'zurPruefung', 'unterflaechen', 'teilstueckOk', 'angesehen', 'kulturen', 'kategorien', 'kulturUebernehmen', 'stichtag', 'fnnInfo'];
+const SL_ENTSCHEIDUNGEN = ['manuell', 'ausgeblendet', 'nachAntrag', 'zusammenMit', 'teilVon', 'zugangNeu', 'abgangAm', 'zurPruefung', 'unterflaechen', 'teilstueckOk', 'angesehen', 'kulturen', 'kategorien', 'kulturUebernehmen', 'stichtag', 'fnnInfo'];
 let slUndoStapel = [];
 let slVorAenderung = null;
 function slSchnappschuss(fallId = null) {
@@ -4603,7 +4682,7 @@ function slZuruecksetzen() {
       localStorage.setItem(key, JSON.stringify(g));
     });
   } catch { /* ohne Speicher */ }
-  Object.assign(d, { manuell: {}, ausgeblendet: {}, nachAntrag: {}, zugangNeu: {}, abgangAm: {}, zurPruefung: {}, unterflaechen: {}, teilstueckOk: {}, angesehen: {}, kulturen: {}, kategorien: {} });
+  Object.assign(d, { manuell: {}, ausgeblendet: {}, nachAntrag: {}, zusammenMit: {}, teilVon: {}, zugangNeu: {}, abgangAm: {}, zurPruefung: {}, unterflaechen: {}, teilstueckOk: {}, angesehen: {}, kulturen: {}, kategorien: {} });
   slGeoCache = null;
   delete d.fnnInfo;
   slFokus = null;
@@ -4624,7 +4703,8 @@ function slPanelPadding() {
 }
 function renderSlMap(ctx, geo, fit) {
   if (slMapLayer) map.removeLayer(slMapLayer);
-  slMapLayer = L.featureGroup().addTo(map);
+  slMapLayer = L.featureGroup();
+  if (compareViewMode === 'diff') slMapLayer.addTo(map);
   const d = schlaglisteData;
   const zeileByKey = new Map(ctx.abgleich.zeilen.filter(e => e.key).map(e => [e.key, e]));
   const neuKeys = new Set(ctx.abgleich.neu.map(f => f.key));
@@ -4656,9 +4736,10 @@ function renderSlMap(ctx, geo, fit) {
       tl.addTo(slMapLayer);
     }
   });
-  // Listenzeilen ohne Fläche: Vorjahresform gestrichelt
+  // Listenzeilen ohne Fläche: Vorjahresform gestrichelt — nur wenn der Abgleich
+  // die Zeile im Vorjahr sicher zugeordnet hat (sonst gar nicht auf der Karte)
   ctx.abgleich.zeilen.filter(e => e.art === 'fehlt' || e.art === 'abgang').forEach(e => {
-    const v = geo.vor && (geo.vorByNr.get(e.z.nr) || geo.vorByNr.get(e.z.bezNr));
+    const v = slVorjahrFlaeche(ctx, geo, e);
     if (!v) return;
     const lyr = L.geoJSON(v, { style: { color: SL_FARBEN.fehlt, weight: 1.6, dashArray: '4,4', fillColor: SL_FARBEN.fehlt, fillOpacity: 0.06, className: 'sl-fehlt' } });
     lyr.on('click', klick('f:' + e.idx));
@@ -4667,6 +4748,21 @@ function renderSlMap(ctx, geo, fit) {
   });
   if (fit && slMapLayer.getLayers().length) map.fitBounds(slMapLayer.getBounds(), slPanelPadding());
   if (slFokus) slZeigeFokus(slFokus, false);
+}
+// Vorjahresfläche einer Listenzeile ohne Fläche: dieselbe Zuordnung wie im
+// Abgleich, nur gegen die Flächen des Vorjahres — und nur, wenn sie sicher ist.
+let slVorCache = null;
+function slVorjahrFlaeche(ctx, geo, e) {
+  if (!geo.vor) return null;
+  const d = schlaglisteData;
+  const key = geo.vor.id + '|' + (geo.vor.fc.features || []).length + '|' + d.rows.length + '|' + d.fileName;
+  if (!slVorCache || slVorCache.key !== key) {
+    const vorFeats = slFlaechen(geo.vor);
+    const ab = slAbgleich(ctx.sl, vorFeats, {});
+    const byKey = new Map(vorFeats.map(f => [f.key, f.feature]));
+    slVorCache = { key, map: new Map(ab.zeilen.filter(z => z.art === 'sicher' && z.key).map(z => [z.idx, byKey.get(z.key)])) };
+  }
+  return slVorCache.map.get(e.idx) || null;
 }
 // Geometrien eines Falls (für Hervorhebung und Zoom)
 function slFallGeometrien(id) {
@@ -4685,7 +4781,7 @@ function slFallGeometrien(id) {
     if (e && e.key && fl(e.key)) out.push(fl(e.key).feature);
   } else if (typ === 'f') {
     const e = ctx.abgleich.zeilen[Number(rest)];
-    const v = e && geo.vor && (geo.vorByNr.get(e.z.nr) || geo.vorByNr.get(e.z.bezNr));
+    const v = e && slVorjahrFlaeche(ctx, geo, e);
     if (v) out.push(v);
   }
   return out;
@@ -4700,6 +4796,7 @@ function slZeigeFokus(id, fliegen = true) {
 }
 function slFocus(id, { vonKarte = false } = {}) {
   const d = schlaglisteData;
+  if (compareViewMode !== 'diff') { compareViewMode = 'diff'; renderCompareToggle(); showCompareView(false); }
   slFokus = id;
   const gezeigt = slZeigeFokus(id, !vonKarte);
   const wasNew = gezeigt && !(d.angesehen || {})[id];
@@ -4748,7 +4845,30 @@ function slSpeichern() {
   persistLocalState().catch(() => {});
   renderSchlaglisteReview();
 }
+// Teilung einer Zeile zurücknehmen: die übrigen Teile sind wieder "neu" ohne Datum
+function slTeilungLoesen(idx) {
+  const d = schlaglisteData;
+  Object.entries(d.teilVon || {}).forEach(([key, i]) => { if (i === idx) { delete d.teilVon[key]; delete d.zugangNeu[key]; } });
+}
 const slOverlay = document.getElementById('sl-overlay');
+// Kultur-Suchfeld: Auswahl ändert noch nichts — "Passt" erscheint, erst das übernimmt.
+function slKulturFehler(inp, an) {
+  const zeile = inp.closest('.sl-match');
+  const f = zeile && zeile.querySelector('.sl-kultur-fehler');
+  if (f) f.hidden = !an;
+  inp.classList.toggle('is-invalid', an);
+}
+slOverlay.addEventListener('input', (e) => {
+  const inp = e.target.closest('[data-sl-kultur]');
+  if (!inp) return;
+  slKulturFehler(inp, false);
+  const ok = inp.closest('.sl-match').querySelector('[data-sl-kultur-ok]');
+  const offen = !inp.closest('.sl-item').classList.contains('is-done');
+  if (ok) ok.hidden = !(inp.value.trim() && (offen || inp.value.trim() !== inp.dataset.slKulturVorher));
+});
+slOverlay.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.matches('[data-sl-kultur]')) { e.preventDefault(); e.target.closest('.sl-match').querySelector('[data-sl-kultur-ok]')?.click(); }
+});
 slOverlay.addEventListener('click', (e) => {
   const d = schlaglisteData;
   if (!d) return;
@@ -4771,6 +4891,37 @@ slOverlay.addEventListener('click', (e) => {
   if (nach) {
     const idx = Number(nach.dataset.slNach);
     d.nachAntrag = { ...(d.nachAntrag || {}), [idx]: true };
+    delete d.abgangAm[idx];
+    return slSpeichern();
+  }
+  const teilung = t.closest('[data-sl-teilung]');
+  if (teilung) {
+    const idx = Number(teilung.dataset.slTeilung);
+    const ctx = slBerechne();
+    const tl = slTeilungen(ctx, slGeoAnalyse(ctx.y, ctx.feats)).get(idx);
+    if (!tl) return;
+    const e = ctx.abgleich.zeilen[idx];
+    d.manuell[idx] = tl.teile[0].key;
+    if (d.zurPruefung) delete d.zurPruefung[idx];
+    delete d.abgangAm[idx];
+    d.teilVon = { ...(d.teilVon || {}) };
+    tl.teile.slice(1).forEach(f => { d.teilVon[f.key] = idx; if (e.z.zugang) d.zugangNeu[f.key] = e.z.zugang; });
+    return slSpeichern();
+  }
+  const teilungWeg = t.closest('[data-sl-teilung-weg]');
+  if (teilungWeg) { slTeilungLoesen(Number(teilungWeg.dataset.slTeilungWeg)); delete d.manuell[Number(teilungWeg.dataset.slTeilungWeg)]; return slSpeichern(); }
+  const gleich = t.closest('[data-sl-gleich]');
+  if (gleich) {
+    const idx = Number(gleich.dataset.slGleich);
+    d.nachAntrag = { ...(d.nachAntrag || {}), [idx]: 'gleich' };
+    delete d.abgangAm[idx];
+    return slSpeichern();
+  }
+  const zusWeg = t.closest('[data-sl-zusammen-weg]');
+  if (zusWeg) {
+    const idx = Number(zusWeg.dataset.slZusammenWeg);
+    d.zusammenMit = { ...(d.zusammenMit || {}) };
+    delete d.zusammenMit[idx];
     delete d.abgangAm[idx];
     return slSpeichern();
   }
@@ -4799,7 +4950,7 @@ slOverlay.addEventListener('click', (e) => {
   if (bulk) {
     const ctx = slBerechne();
     const datumJeKern = new Map();
-    ctx.abgleich.zeilen.filter(e => e.key && e.art !== 'pruefen' && e.z.zugang).forEach(e => { const k = slFlikKern(ctx.featByKey.get(e.key).flik); if (k && !datumJeKern.has(k)) datumJeKern.set(k, e.z.zugang); });
+    slFeldblockDaten(ctx).forEach((e, k) => datumJeKern.set(k, e.z.zugang));
     ctx.abgleich.neu.filter(f => !f.le && !d.zugangNeu[f.key]).forEach(f => { const dt = datumJeKern.get(slFlikKern(f.flik)); if (dt) d.zugangNeu[f.key] = dt; });
     return slSpeichern();
   }
@@ -4826,8 +4977,10 @@ slOverlay.addEventListener('click', (e) => {
   if (kulturListe) { slKulturMerken(kulturListe.dataset.slKulturListe, kulturListe.dataset.slKulturName); return slSpeichern(); }
   const kulturOk = t.closest('[data-sl-kultur-ok]');
   if (kulturOk) {
-    const sel = slOverlay.querySelector(`[data-sl-kultur="${CSS.escape(kulturOk.dataset.slKulturOk)}"]`);
-    if (sel && sel.value) slKulturMerken(kulturOk.dataset.slKulturOk, sel.value);
+    const inp = slOverlay.querySelector(`[data-sl-kultur="${CSS.escape(kulturOk.dataset.slKulturOk)}"]`);
+    const name = inp ? inp.value.trim() : '';
+    if (name && !kulturEintrag(name)) { slKulturFehler(inp, true); return; }
+    if (name) slKulturMerken(kulturOk.dataset.slKulturOk, name);
     return slSpeichern();
   }
   const uebernehmen = t.closest('[data-sl-datum]');
@@ -4853,6 +5006,7 @@ slOverlay.addEventListener('click', (e) => {
   if (reset) {
     // zurück in die Prüfung: Zuordnung als Vorschlag stehen lassen
     const idx = Number(reset.dataset.slReset);
+    slTeilungLoesen(idx);
     delete d.manuell[idx];
     d.zurPruefung = { ...(d.zurPruefung || {}), [idx]: true };
     return slSpeichern();
@@ -4881,7 +5035,14 @@ slOverlay.addEventListener('change', (e) => {
     return; // Zweifelsfall: erst mit "Passt" übernehmen
   }
   if (t.matches('[data-sl-unter-datum]')) return; // erst mit "Unterfläche anlegen"
-  if (t.matches('[data-sl-kultur]')) { if (t.value) slKulturMerken(t.dataset.slKultur, t.value); return slSpeichern(); }
+  if (t.matches('[data-sl-zusammen-mit]')) {
+    if (t.value === '') return;
+    const idx = Number(t.dataset.slZusammenMit);
+    d.zusammenMit = { ...(d.zusammenMit || {}), [idx]: Number(t.value) };
+    d.abgangAm[idx] = d.abgangAm[idx] || slStichtag();
+    return slSpeichern();
+  }
+  if (t.matches('[data-sl-kultur]')) return; // erst mit "Passt" übernehmen (input-Handler zeigt den Knopf)
   if (t.matches('[data-sl-kategorie]')) { if (t.value) slKategorieMerken(t.dataset.slKategorie, t.value); return slSpeichern(); }
   if (t.id === 'sl-kultur-uebernehmen') { d.kulturUebernehmen = t.checked; return slSpeichern(); }
   if (t.id === 'sl-fnn-file') {
@@ -4906,13 +5067,15 @@ slOverlay.addEventListener('change', (e) => {
   }
   if (t.id === 'sl-jahr') {
     if (t.value !== d.jahr && (Object.keys(d.manuell).length || Object.keys(d.zugangNeu).length || Object.keys(d.unterflaechen || {}).length) && !confirm('Für ein anderes Jahr gelten die bisherigen manuellen Zuordnungen nicht mehr. Wechseln?')) { t.value = d.jahr; return; }
-    Object.assign(d, { jahr: t.value, manuell: {}, ausgeblendet: {}, nachAntrag: {}, zugangNeu: {}, zurPruefung: {}, unterflaechen: {}, teilstueckOk: {}, angesehen: {} });
+    Object.assign(d, { jahr: t.value, manuell: {}, ausgeblendet: {}, nachAntrag: {}, zusammenMit: {}, teilVon: {}, zugangNeu: {}, zurPruefung: {}, unterflaechen: {}, teilstueckOk: {}, angesehen: {} });
     slFokus = null;
     slUndoStapel = [];
     Object.keys(slSecZustand).forEach(k => delete slSecZustand[k]);
     slVorAenderung = null;
     persistLocalState().catch(() => {});
     slVorherErledigt = null;
+    compareViewMode = 'diff';
+    slVergleichSicherstellen();
     return renderSchlaglisteReview(true);
   }
   if (t.id === 'sl-stichtag') { d.stichtag = t.value || slHeute(); return slSpeichern(); }
@@ -4945,6 +5108,7 @@ function exportSchlagliste() {
   const aoa = slExportZeilen(ctx.sl, ctx.abgleich, {
     featByKey: ctx.featByKey, stichtag: slStichtag(), statusTexte: d.statusTexte,
     zugangNeu: d.zugangNeu, abgangAm: d.abgangAm, besichtigt, unterflaechen: d.unterflaechen || {},
+    abzug: [...ctx.teile.entries()].reduce((a, [idx, t]) => { a[t.haupt.idx] = (a[t.haupt.idx] || 0) + (ctx.abgleich.zeilen[idx].z.ha || 0); return a; }, {}),
     kulturFuer: d.kulturUebernehmen === false ? null : (key, zeile) => {
       const zu = slKulturVon(ctx.featByKey.get(key));
       if (!zu || !zu.name) return null;
@@ -11447,7 +11611,8 @@ function parseXlsxFile(arrayBuffer) {
       date,
       bestaetigt: String(row['Bestätigungsstatus'] || '').trim() === 'Termine bestätigt',
       prioritaet: String(row['Priorität'] || '').trim(),
-      unangemeldet: String(row['Audit unangemeldet'] || '').trim() === '1',
+      // Intact exportiert hier einen Wahrheitswert (WAHR/FALSCH); ältere Exporte "1"/"Ja"
+      unangemeldet: row['Audit unangemeldet'] === true || /^(1|true|wahr|ja|x)$/i.test(String(row['Audit unangemeldet'] ?? '').trim()),
       telefon: String(row['Telefon'] || '').trim(),
       mobil: String(row['Mobil'] || '').trim(),
       email: String(row['E-Mail'] || '').trim(),
@@ -13198,6 +13363,11 @@ const PDFJS_BASE = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
 // Sicherheit: pdf.js 3.x kann beim Rendern präparierter Schriften JavaScript ausführen
 // (CVE-2024-4367) — mit isEvalSupported:false nicht. Gilt für ALLE getDocument-Aufrufe.
 const PDFJS_SICHER = { isEvalSupported: false, enableXfa: false };
+// Prüfsummen von https://api.cdnjs.com/libraries/pdf.js/3.11.174?fields=sri
+const PDFJS_SRI = {
+  lib: 'sha512-q+4liFwdPC/bNdhUpZx6aXDx/h77yEQtn4I1slHydcbZK34nLaR3cAeYSJshoxIOq3mjEf7xJE8YWIUHMn+oCQ==',
+  worker: 'sha512-BbrZ76UNZq5BhH7LL7pn9A4TKQpQeNCHOo65/akfelcIBbcVvYWOFQKPXIrykE3qZxYjmDX573oa4Ywsc7rpTw=='
+};
 const DOC_CACHE = 'feldfolio-dokumente-v1';
 const dvEl = document.getElementById('docviewer');
 const dvContent = document.getElementById('dv-content');
@@ -13345,8 +13515,12 @@ let pdfJsPromise = null;
 function ensurePdfJs() {
   if (window.pdfjsLib) return Promise.resolve();
   if (!pdfJsPromise) {
-    pdfJsPromise = loadScript(PDFJS_BASE + 'pdf.min.js').then(() => {
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_BASE + 'pdf.worker.min.js';
+    // Beide Dateien mit Prüfsumme (wie die <script>-Tags in index.html). Der Worker
+    // lässt sich nicht per Attribut prüfen -> geprüft laden und aus dem Inhalt starten.
+    pdfJsPromise = loadScript(PDFJS_BASE + 'pdf.min.js', PDFJS_SRI.lib).then(async () => {
+      const res = await fetch(PDFJS_BASE + 'pdf.worker.min.js', { integrity: PDFJS_SRI.worker });
+      if (!res.ok) throw new Error('pdf.js-Worker konnte nicht geladen werden.');
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(new Blob([await res.blob()], { type: 'text/javascript' }));
     });
     pdfJsPromise.catch(() => { pdfJsPromise = null; });
   }
@@ -13587,27 +13761,46 @@ const SCAN_FILTER_STORAGE_KEY = 'feldfolio-scan-filter';
 const SCAN_CORNER_KEYS = ['topLeftCorner', 'topRightCorner', 'bottomRightCorner', 'bottomLeftCorner'];
 
 let scanLibsPromise = null;
-function loadScript(src) {
+function loadScript(src, integrity) {
   return new Promise((resolve, reject) => {
     const s = document.createElement('script');
+    if (integrity) { s.integrity = integrity; s.crossOrigin = 'anonymous'; s.referrerPolicy = 'no-referrer'; }
     s.src = src;
     s.onload = resolve;
     s.onerror = () => { s.remove(); reject(new Error(`Skript konnte nicht geladen werden: ${src}`)); };
     document.head.appendChild(s);
   });
 }
+// OpenCV.js erzeugt intern Code zur Laufzeit (new Function) — das verbietet die
+// Content-Security-Policy der Seite (kein 'unsafe-eval'). Es läuft deshalb in
+// einem unsichtbaren eigenen Rahmen (public/scan-sandbox.html) mit eigener,
+// enger Policy; die Seite greift von außen auf dessen `cv` zu.
+// SCAN_OPENCV_URL muss der Adresse in scan-sandbox.html entsprechen.
+function ladeOpenCvRahmen() {
+  return new Promise((resolve, reject) => {
+    const rahmen = document.createElement('iframe');
+    rahmen.src = 'scan-sandbox.html';
+    rahmen.hidden = true;
+    rahmen.title = 'Scanner-Bibliothek';
+    rahmen.setAttribute('aria-hidden', 'true');
+    rahmen.tabIndex = -1;
+    const fehler = () => { rahmen.remove(); reject(new Error('Die Scanner-Bibliothek konnte nicht geladen werden.')); };
+    rahmen.addEventListener('error', fehler);
+    rahmen.addEventListener('load', () => {
+      let cv = null;
+      try { cv = rahmen.contentWindow.cv; } catch { /* kein Zugriff */ }
+      if (!cv) return fehler();
+      // `cv` ist sofort da, die WASM-Runtime wird danach initialisiert —
+      // erst ab onRuntimeInitialized sind cv.Mat & Co. nutzbar.
+      const fertig = () => { window.cv = cv; resolve(); };
+      if (cv.Mat) fertig(); else cv.onRuntimeInitialized = fertig;
+    });
+    document.body.appendChild(rahmen);
+  });
+}
 function ensureScanLibs() {
   if (!scanLibsPromise) {
-    scanLibsPromise = (async () => {
-      await loadScript(SCAN_OPENCV_URL);
-      // OpenCV.js definiert `cv` synchron beim Laden, initialisiert die
-      // WASM-Runtime aber asynchron danach — erst ab onRuntimeInitialized
-      // sind cv.imread() & Co. nutzbar.
-      await new Promise((resolve) => {
-        if (window.cv && window.cv.Mat) resolve();
-        else window.cv['onRuntimeInitialized'] = resolve;
-      });
-    })();
+    scanLibsPromise = ladeOpenCvRahmen();
     // Fehlgeschlagen (z. B. offline): beim nächsten Öffnen erneut versuchen.
     scanLibsPromise.catch(() => { scanLibsPromise = null; });
   }
