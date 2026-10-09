@@ -222,7 +222,7 @@ test.describe('Seitenleiste: einheitliche Umschalter', () => {
 // einklappbare Ebenen mit Symbol-Aktionen, Segment-Umschalter überall,
 // Kurzhinweis nur bis zur ersten Nutzung.
 test.describe('Seitenleiste: Vereinheitlichung', () => {
-  test('Kontrolle steht gesondert als breite Kachel über den Werkzeugen', async ({ page }) => {
+  test('Dashboard und Betrieb stehen nebeneinander als gesonderte Kacheln über den Werkzeugen', async ({ page }) => {
     await page.goto('/');
     await page.evaluate(() => window.__ffTestTk.loginFake());
     const tk = page.locator('#kontrolle-switcher');
@@ -230,13 +230,17 @@ test.describe('Seitenleiste: Vereinheitlichung', () => {
     await expect(tk).toHaveClass(/segment-btn-wide/);
     const first = await page.locator('#view-switcher .segment-btn').first().getAttribute('data-view');
     expect(first).toBe('kontrolle');
-    const [tkBox, karteBox, gridBox] = await Promise.all([
+    const [tkBox, betriebBox, karteBox, gridBox] = await Promise.all([
       tk.boundingBox(),
+      page.locator('#betrieb-switcher').boundingBox(),
       page.locator('.segment-btn[data-view="viewer"]').boundingBox(),
       page.locator('#view-switcher').boundingBox()
     ]);
-    expect(tkBox.width).toBeGreaterThan(gridBox.width - 2); // volle Breite
-    expect(tkBox.y + tkBox.height).toBeLessThanOrEqual(karteBox.y); // darüber
+    expect(Math.abs(tkBox.y - betriebBox.y)).toBeLessThan(1);              // in einer Reihe
+    expect(betriebBox.x).toBeGreaterThan(tkBox.x + tkBox.width - 1);       // Betrieb rechts daneben
+    expect(Math.abs(tkBox.width - betriebBox.width)).toBeLessThan(1);      // gleich breit
+    expect(tkBox.width + betriebBox.width).toBeGreaterThan(gridBox.width - 20); // zusammen ganze Breite
+    expect(tkBox.y + tkBox.height).toBeLessThanOrEqual(karteBox.y);       // darüber
   });
 
   test('Ebenen: in "Karte" offen, in Werkzeugen eingeklappt, Aktionen als Symbole', async ({ page }) => {

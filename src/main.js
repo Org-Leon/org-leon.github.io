@@ -12093,6 +12093,7 @@ function setKontrolleTab(tab) {
   document.getElementById('kontrolle-subnav').hidden = istBetrieb;
   document.getElementById('kontrolle-import').hidden = istBetrieb;
   document.getElementById('kontrolle-betrieb-hinweis').hidden = !istBetrieb;
+  document.body.dataset.koBereich = istBetrieb ? 'betrieb' : 'dashboard'; // fürs Symbol in der Kopfzeile (design-feldbuch.css)
   if (document.body.dataset.view === 'kontrolle') {
     document.getElementById('kontrolle-switcher').classList.toggle('active', !istBetrieb);
     document.getElementById('betrieb-switcher').classList.toggle('active', istBetrieb);

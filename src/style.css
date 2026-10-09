@@ -386,7 +386,9 @@
      App), keine knallige Vollfläche. */
   #view-switcher {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    /* 6 Spalten: Werkzeug-Kacheln je 2 (drei pro Reihe), Dashboard und
+       Betrieb je 3 (nebeneinander über den Werkzeugen) */
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 6px;
     margin: 14px 14px 0;
     /* flex-shrink:0 ist Pflicht, nicht nur Stilfrage: overflow:hidden (für die
@@ -398,6 +400,7 @@
     flex-shrink: 0;
   }
   .segment-btn {
+    grid-column: span 2;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -426,26 +429,32 @@
     box-shadow: inset 0 -3px 0 var(--accent);
   }
   .segment-btn.active .icon { color: var(--accent); }
-  /* Terminkalender: gesonderte, breite Kachel über allen Werkzeugen —
-     waagerecht, mit Untertitel, eigener Akzentkante links. */
+  /* Dashboard und Betrieb: gesonderte Kacheln nebeneinander über allen
+     Werkzeugen — waagerecht, mit Untertitel, eigener Akzentkante links. */
   .segment-btn.segment-btn-wide {
-    grid-column: 1 / -1;
+    grid-column: span 3;
     flex-direction: row;
     justify-content: flex-start;
-    gap: 12px;
-    min-height: 56px;
+    gap: 8px;
+    min-height: 60px;
     margin-bottom: 4px;
-    padding: 8px 12px;
+    padding: 8px 8px 8px 10px;
     text-align: left;
     border-left: 4px solid var(--accent);
     background: linear-gradient(90deg, var(--accent-tint), var(--panel-2) 70%);
     color: var(--text);
   }
-  .segment-btn-wide > .icon { font-size: 26px; color: var(--accent); }
+  /* innen: Symbol + Titel oben, Untertitel darunter über die volle Breite */
+  .segment-btn.segment-btn-wide { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-areas: 'icon label' 'sub sub'; align-items: center; align-content: center; column-gap: 6px; row-gap: 3px; }
+  .segment-btn-wide > .icon { grid-area: icon; font-size: 22px; color: var(--accent); }
+  .segment-btn-wide .segment-text { display: contents; }
+  .segment-btn-wide .segment-label { grid-area: label; }
+  .segment-btn-wide .segment-sub { grid-area: sub; }
   .segment-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
   .segment-btn-wide .segment-label { font-size: 13px; font-weight: 600; }
-  .segment-sub { font-size: 11px; font-weight: 400; color: var(--muted); }
-  .segment-chevron { font-size: 20px !important; color: var(--muted) !important; }
+  /* Untertitel höchstens zwei Zeilen (lange Betriebsnamen werden gekürzt) */
+  .segment-sub { font-size: 10.5px; font-weight: 400; line-height: 1.25; color: var(--muted); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+  .segment-chevron { display: none; } /* nebeneinander zu schmal für den Pfeil */
   .segment-btn-wide.active { box-shadow: inset 0 -3px 0 var(--accent); }
 
   /* ---------- Einheitlicher Segment-Umschalter (Auswahl aus mehreren) ----------

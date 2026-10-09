@@ -30,7 +30,7 @@ FeldFolio ist ein Werkzeug für die Öko-Kontrolle: Flächen eines Betriebs auf 
 ### Aufbau der App
 
 - **Kopfzeile:** links das Menü (am Handy) und der Name der aktuellen Funktion, in der Mitte die Flächensuche, rechts Speicherstatus, Betrieb, Hell-/Dunkelmodus und Konto.
-- **Funktionsauswahl:** die Kacheln oben in der Seitenleiste (Karte, Flächenübersicht, Jahresvergleich, Flächenzeichner, Obstbaumkataster, Bienenflugkarte, Hofplan, Stallplaner, Tierbestand). Mit Konto kommen darüber die breiten Kacheln **Dashboard** und **Betrieb** dazu. Angemeldet startet die App im Dashboard.
+- **Funktionsauswahl:** die Kacheln oben in der Seitenleiste (Karte, Flächenübersicht, Jahresvergleich, Flächenzeichner, Obstbaumkataster, Bienenflugkarte, Hofplan, Stallplaner, Tierbestand). Mit Konto kommen darüber nebeneinander die Kacheln **Dashboard** und **Betrieb** dazu. Angemeldet startet die App im Dashboard.
 - **Seitenleiste:** zeigt die Einstellungen und Exporte der gewählten Funktion. Am Handy ist sie eine Schublade, die du über das Menü öffnest.
 - **Hauptbereich:** die Karte oder die jeweilige Ansicht.
 
@@ -38,7 +38,7 @@ Ein Tipp auf die bereits aktive Kachel führt zurück zur Karte.
 
 ### Design (Test)
 
-Über das Paletten-Symbol in der Kopfzeile (am Handy: in der Schublade unten „Design wechseln (Test)“) schaltest du zwischen dem Standard-Design und dem Test-Design „Feldbuch“ um. Das Feldbuch-Design zeigt dieselben Funktionen in anderer Gestaltung: Papier und Tinte, harte Kanten, Linien wie in einem Kontrollbogen. Hell und Dunkel gibt es in beiden Designs. Die Wahl bleibt auf dem Gerät gespeichert. Beschriftungen und Abläufe sind gleich; die Bilder und Beschreibungen in diesem Handbuch gelten für beide.
+Über das Paletten-Symbol in der Kopfzeile (am Handy: in der Schublade unten „Design wechseln (Test)“) schaltest du zwischen dem Standard-Design und dem Test-Design „Feldbuch“ um. Das Feldbuch-Design zeigt dieselben Funktionen als alte Akte mit Feldkarte: Aktenpapier, die Seitenleiste als Mappe mit Registerkarten, Abschnitte als Blätter, Hinweise als Stempel. Die Karte erscheint wie eine vergilbte Flurkarte mit Flurnamen in Kursivschrift. Die Symbole sind fein gezeichnet; einige Funktionen haben eigene Symbole (z. B. Kompass für die Karte, Füllfeder für den Flächenzeichner, Archivkasten für das Dashboard). In Kartenexporten (PDF) fehlt die Tönung. Hell und Dunkel gibt es in beiden Designs. Die Wahl bleibt auf dem Gerät gespeichert. Beschriftungen und Abläufe sind gleich; die Bilder und Beschreibungen in diesem Handbuch gelten für beide.
 
 ### Mit und ohne Konto
 
@@ -428,7 +428,7 @@ Die Zuordnung ist dieselbe wie im Stallplaner beim Abteil unter „Tiere“. Die
 
 ## 12. Dashboard und Betrieb
 
-Beides gibt es mit Konto. In der Seitenleiste stehen dafür oben zwei breite Kacheln:
+Beides gibt es mit Konto. In der Seitenleiste stehen dafür oben zwei Kacheln nebeneinander:
 
 - **Dashboard** mit den Reitern **Übersicht**, **Kalender** und **Dokumente**. Angemeldet ist die Übersicht die erste Seite: beim Start der App und direkt nach dem Anmelden.
 - **Betrieb** für die Seite des gewählten Betriebs. Unter dem Namen der Kachel steht, welcher Betrieb gerade gewählt ist.

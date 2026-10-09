@@ -41,6 +41,12 @@ const ICON_NAMES = [
   'upload_file', 'view_agenda', 'view_week', 'vertical_align_top', 'visibility', 'visibility_off',
   'warning', 'water_drop', 'window', 'zoom_in', 'zoom_out'
 ];
+// Nur im Test-Design "Feldbuch" (design-feldbuch.css): Symbole passend zu
+// Akte und Feldkarte, die dort per CSS an die Stelle der normalen treten.
+const FELDBUCH_ICON_NAMES = [
+  'explore', 'landscape', 'ink_pen', 'nature', 'cottage', 'fence',
+  'inventory_2', 'agriculture', 'menu_book', 'event_note'
+];
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const srcFont = path.join(__dirname, '..', 'node_modules', 'material-symbols', 'material-symbols-rounded.woff2');
@@ -62,3 +68,15 @@ await writeFile(outFont, subsetBuffer);
 
 console.log(`Subset geschrieben: ${outFont}`);
 console.log(`Original: ${(buffer.length / 1024).toFixed(0)} KB -> Subset: ${(subsetBuffer.length / 1024).toFixed(1)} KB (${ICON_NAMES.length} Icons)`);
+
+// Zweite Datei fürs Test-Design "Feldbuch": Stil "Sharp" (eckig) mit dünnem
+// Strich, wirkt wie gestochen — dieselben Namen plus die Themen-Symbole. Lädt
+// der Browser nur, wenn das Feldbuch-Design aktiv ist.
+const sharpSrc = path.join(__dirname, '..', 'node_modules', 'material-symbols', 'material-symbols-sharp.woff2');
+const sharpOut = path.join(outDir, 'material-symbols-sharp-feldbuch.woff2');
+const sharpBuffer = await subsetFont(await readFile(sharpSrc), [...ICON_NAMES, ...FELDBUCH_ICON_NAMES].join(' '), {
+  targetFormat: 'woff2',
+  variationAxes: { FILL: 0, wght: 300, GRAD: 0, opsz: 24 }
+});
+await writeFile(sharpOut, sharpBuffer);
+console.log(`Feldbuch-Subset geschrieben: ${sharpOut} (${(sharpBuffer.length / 1024).toFixed(1)} KB)`);

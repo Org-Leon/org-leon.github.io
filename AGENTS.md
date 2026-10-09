@@ -68,7 +68,12 @@
    **Bei einem neuen Icon-Namen** die Liste `ICON_NAMES` in
    `scripts/subset-icons.mjs` ergänzen und `node scripts/subset-icons.mjs`
    erneut ausführen — sonst zeigt das neue Icon nur den Rohtext statt der
-   Glyphe. `material-symbols` (die volle Font, Quelle fürs Subsetting) und
+   Glyphe. Dasselbe Skript erzeugt eine zweite Datei fürs Test-Design
+   „Feldbuch“ (`src/assets/material-symbols-sharp-feldbuch.woff2`, Stil
+   „Sharp“ mit dünnem Strich) aus `ICON_NAMES` plus `FELDBUCH_ICON_NAMES` —
+   dort stehen die Themen-Symbole, die `src/design-feldbuch.css` per `--ikon`
+   an die Stelle der normalen setzt (HTML bleibt unverändert).
+   `material-symbols` (die volle Font, Quelle fürs Subsetting) und
    `subset-font` (das Subsetting-Werkzeug) sind reine Dev-Dependencies.
 
 5. **Benutzerhandbuch aktuell halten**: `HANDBUCH.md` (Repo-Wurzel) ist die

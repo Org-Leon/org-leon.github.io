@@ -1,18 +1,35 @@
-/* ---------- Design "Feldbuch" (Test) ----------
+/* ---------- Design "Feldbuch" (Test): Akte und Feldkarte ----------
    Alternative Gestaltung, umschaltbar über <html data-design="feldbuch">
    (Knopf in der Kopfzeile bzw. ?design=feldbuch; siehe main.js "Design").
    Das Standard-Design in style.css bleibt unverändert — diese Datei legt
    sich nur darüber.
 
-   Idee: das Feldbuch eines Vermessers statt "App mit runden Karten" —
-   Papier und Tinte, harte Kanten, Linien wie in einem Kontrollbogen,
-   Serifenschrift für Titel und Zahlen, Schreibmaschinen-Schrift für
-   Beschriftungen, Stempel statt Pillen, harte Druckschatten.
+   Idee: FeldFolio als alte Akte mit eingelegter Feldkarte. Aktenpapier und
+   Aktendeckel statt App-Kacheln, die Seitenleiste ist die Mappe mit
+   Registerkarten, Abschnitte sind Blätter mit Doppellinie, Hinweise sind
+   rote Stempel. Die Karte sieht aus wie eine vergilbte Flurkarte: getönte
+   Kacheln, leicht abgedunkelter Rand, Flurnamen in Kursivschrift; auf
+   Seiten ohne Karte liegen Höhenlinien schwach im Papier.
+
+   Symbole: eigene Icon-Schrift (Material Symbols "Sharp", dünner Strich —
+   wie gestochen, siehe scripts/subset-icons.mjs) und für die Navigation
+   Symbole passend zum Thema (Kompass, Füllfeder, Archivkasten …). Getauscht
+   wird nur per CSS (--ikon, siehe unten "Symbole"), das HTML bleibt gleich.
+
+   Schrift — drei Rollen, sonst nichts:
+     Titel    Fraunces (--f-titel): Überschriften, Namen, Kennzahlen;
+              kursiv für Erläuterungen und Flurnamen auf der Karte
+     Text     IBM Plex Sans (--f-text): Fließtext, Listen, Knöpfe, Eingaben, Links
+     Etikett  IBM Plex Mono (--f-etikett), klein und in Versalien:
+              Beschriftungen, Register, Datum und Uhrzeit, Stempel, Tabellenköpfe
+   Neue Regeln bitte einer dieser Rollen zuordnen statt eigene Schriftgrößen
+   und -familien zu erfinden.
 
    Technik: Alle Regeln stehen in einem :is(...)-Block. Das zweite Argument
    (#ff-design) trifft nie, hebt aber die Spezifität auf ID-Niveau — damit
    gewinnen die Regeln hier auch gegen ID-Regeln in style.css. Verschachtelung
-   (CSS Nesting) wird im Build für ältere Browser aufgelöst. */
+   (CSS Nesting) wird im Build für ältere Browser aufgelöst. Textur und
+   Höhenlinien sind kleine SVGs als data-URL (keine Downloads). */
 
 /* Schriften des Designs, selbst ausgeliefert aus npm (@fontsource, SIL Open Font
    License) statt von Google Fonts — keine IP-Adresse an Google (DSGVO). Eigene
@@ -83,113 +100,164 @@
   unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 
+/* Kursivschnitt von Fraunces für Erläuterungen und Flurnamen (nur dieses Design) */
+@font-face {
+  font-family: 'Fraunces';
+  font-style: italic;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('../node_modules/@fontsource-variable/fraunces/files/fraunces-latin-opsz-italic.woff2') format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Fraunces';
+  font-style: italic;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url('../node_modules/@fontsource-variable/fraunces/files/fraunces-latin-ext-opsz-italic.woff2') format('woff2-variations');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* Symbole des Designs: Material Symbols "Sharp", dünner Strich (scripts/subset-icons.mjs) */
+@font-face {
+  font-family: 'FF Symbole Feldbuch';
+  font-style: normal;
+  font-weight: 400;
+  font-display: block;
+  src: url('./assets/material-symbols-sharp-feldbuch.woff2') format('woff2');
+}
+
 :is(:root[data-design="feldbuch"], #ff-design) {
-  /* Tinte (dunkel) */
-  --bg: #131714;
-  --panel: #191E1A;
-  --panel-2: #212821;
-  --border: #37423A;
-  --text: #ECE6D6;
-  --muted: #98A08F;
-  --accent: #C8DB6E;
-  --accent-dim: #46552A;
-  --accent-tint: #2D3721;
-  --on-accent: #ECE6D6;
-  --warn: #EE7B57;
-  --ink: #ECE6D6;          /* Linienfarbe für kräftige Regeln */
-  --paper: #131714;        /* Schrift auf Tinte-Flächen */
-  --stamp: #EE7B57;
-  --grid: rgba(236, 230, 214, 0.035);
+  /* ---- Farben: Archiv bei Lampenlicht (dunkel) ---- */
+  --bg: #1B1914;
+  --panel: #24211A;
+  --panel-2: #2E2A21;
+  --folder: #29251C;        /* Aktendeckel (Seitenleiste) */
+  --border: #4A4434;
+  --text: #EDE3CA;
+  --muted: #A99E83;
+  --accent: #B5C87E;        /* Grün der Feldkarte */
+  --accent-dim: #4C5A2E;
+  --accent-tint: #33361F;
+  --on-accent: #1B1914;
+  --warn: #E58A68;
+  --ink: #EDE3CA;           /* Tinte: kräftige Linien, Rahmen */
+  --paper: #1B1914;         /* Schrift auf Tinte-Flächen */
+  --stamp: #E58A68;         /* Stempelrot */
+  --vignette: rgba(0, 0, 0, 0.26);
+  --papier-textur: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'180'%20height%3D'180'%3E%3Cfilter%20id%3D'p'%3E%3CfeTurbulence%20type%3D'fractalNoise'%20baseFrequency%3D'.85'%20numOctaves%3D'3'%20stitchTiles%3D'stitch'%2F%3E%3CfeColorMatrix%20values%3D'0%200%200%200%20.93%200%200%200%200%20.89%200%200%200%200%20.79%200%200%200%20.06%200'%2F%3E%3C%2Ffilter%3E%3Crect%20width%3D'180'%20height%3D'180'%20filter%3D'url(%23p)'%2F%3E%3C%2Fsvg%3E");
+  --hoehenlinien: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'420'%20height%3D'300'%20viewBox%3D'0%200%20420%20300'%3E%20%3Cg%20fill%3D'none'%20stroke%3D'%23EDE3CA'%20stroke-opacity%3D'.05'%20stroke-width%3D'1'%3E%20%3Cpath%20d%3D'M0%2040%20C70%2010%20140%2070%20210%2040%20S350%2070%20420%2040'%2F%3E%20%3Cpath%20d%3D'M0%2070%20C70%2045%20140%20100%20210%2070%20S350%2095%20420%2070'%2F%3E%20%3Cpath%20d%3D'M0%20102%20C80%2082%20130%20132%20210%20102%20S340%20122%20420%20102'%2F%3E%20%3Cpath%20d%3D'M120%20210%20C120%20170%20190%20160%20225%20190%20S270%20255%20215%20262%20S120%20250%20120%20210Z'%2F%3E%20%3Cpath%20d%3D'M145%20212%20C147%20188%20188%20182%20207%20199%20S232%20240%20202%20244%20S145%20235%20145%20212Z'%2F%3E%20%3Cpath%20d%3D'M168%20213%20C170%20200%20190%20198%20198%20207%20S206%20228%20192%20229%20S168%20224%20168%20213Z'%2F%3E%20%3Cpath%20d%3D'M0%20285%20C90%20270%20150%20300%20230%20280%20S330%20300%20420%20285'%2F%3E%20%3C%2Fg%3E%3C%2Fsvg%3E");
+  --karten-filter: sepia(.5) saturate(.55) brightness(.72) contrast(1.08);
+
+  /* ---- Schrift: drei Rollen ---- */
   --serif: 'Fraunces', 'Iowan Old Style', Georgia, serif;
   --sans: 'FF Plex Sans', -apple-system, 'Segoe UI', sans-serif;
   --mono: 'FF Plex Mono', 'SF Mono', Menlo, Consolas, monospace;
+  --f-titel: var(--serif);
+  --f-text: var(--sans);
+  --f-etikett: var(--mono);
   --shadow-hard: 3px 3px 0 var(--ink);
 
-  /* Papier (hell) */
+  /* ---- Farben: Aktenpapier (hell) ---- */
   &[data-theme="light"] {
-    --bg: #EFE9DB;
-    --panel: #F8F4EA;
-    --panel-2: #E6DFCE;
-    --border: #C5BBA4;
-    --text: #1D2A22;
-    --muted: #6A6959;
-    --accent: #1F5A3C;
-    --accent-dim: #1F5A3C;
-    --accent-tint: #DCE3BE;
-    --on-accent: #F8F4EA;
-    --warn: #B43E27;
-    --ink: #1D2A22;
-    --paper: #F8F4EA;
-    --stamp: #B43E27;
-    --grid: rgba(29, 42, 34, 0.045);
+    --bg: #E6DBC1;
+    --panel: #F5EEDC;
+    --panel-2: #ECE2C9;
+    --folder: #DCC898;      /* Manila-Aktendeckel */
+    --border: #C2AE84;
+    --text: #2D2920;
+    --muted: #6D634E;
+    --accent: #3D5E39;
+    --accent-dim: #3D5E39;
+    --accent-tint: #DFE0BD;
+    --on-accent: #F5EEDC;
+    --warn: #A33A28;
+    --ink: #2D2920;
+    --paper: #F5EEDC;
+    --stamp: #A33A28;
+    --vignette: rgba(92, 62, 18, 0.12);
+    --papier-textur: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'180'%20height%3D'180'%3E%3Cfilter%20id%3D'p'%3E%3CfeTurbulence%20type%3D'fractalNoise'%20baseFrequency%3D'.85'%20numOctaves%3D'3'%20stitchTiles%3D'stitch'%2F%3E%3CfeColorMatrix%20values%3D'0%200%200%200%20.32%200%200%200%200%20.25%200%200%200%200%20.14%200%200%200%20.10%200'%2F%3E%3C%2Ffilter%3E%3Crect%20width%3D'180'%20height%3D'180'%20filter%3D'url(%23p)'%2F%3E%3C%2Fsvg%3E");
+    --hoehenlinien: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'420'%20height%3D'300'%20viewBox%3D'0%200%20420%20300'%3E%20%3Cg%20fill%3D'none'%20stroke%3D'%232D2920'%20stroke-opacity%3D'.07'%20stroke-width%3D'1'%3E%20%3Cpath%20d%3D'M0%2040%20C70%2010%20140%2070%20210%2040%20S350%2070%20420%2040'%2F%3E%20%3Cpath%20d%3D'M0%2070%20C70%2045%20140%20100%20210%2070%20S350%2095%20420%2070'%2F%3E%20%3Cpath%20d%3D'M0%20102%20C80%2082%20130%20132%20210%20102%20S340%20122%20420%20102'%2F%3E%20%3Cpath%20d%3D'M120%20210%20C120%20170%20190%20160%20225%20190%20S270%20255%20215%20262%20S120%20250%20120%20210Z'%2F%3E%20%3Cpath%20d%3D'M145%20212%20C147%20188%20188%20182%20207%20199%20S232%20240%20202%20244%20S145%20235%20145%20212Z'%2F%3E%20%3Cpath%20d%3D'M168%20213%20C170%20200%20190%20198%20198%20207%20S206%20228%20192%20229%20S168%20224%20168%20213Z'%2F%3E%20%3Cpath%20d%3D'M0%20285%20C90%20270%20150%20300%20230%20280%20S330%20300%20420%20285'%2F%3E%20%3C%2Fg%3E%3C%2Fsvg%3E");
+    --karten-filter: sepia(.55) saturate(.72) contrast(.94) brightness(1.03);
   }
 
-  /* ---- Grundton: Schrift, Kanten ---- */
-  & body { font-family: var(--sans); background: var(--bg); color: var(--text); }
+  /* ---- Grundton ---- */
+  & body { font-family: var(--f-text); background: var(--bg) var(--papier-textur); color: var(--text); }
   & *:not(.leaflet-pane *):not(#scan-modal-overlay *):not(svg *) { border-radius: 0 !important; }
-  /* was rund bleiben muss: Punkte/Statuslichter */
+  /* was rund bleiben muss: Schalter, Punkte/Statuslichter */
   & .ff-switch, & .ff-switch::before, & .ff-switch::after { border-radius: 999px !important; }
-  & .save-dot, & .wf-dot, & .kb-auftrag i, & .tb-legend, & .kb-fl-dot, & .fruit-dot, & .legend-swatch { border-radius: 50% !important; }
-  & h1, & h2, & h3 { font-family: var(--serif); font-weight: 600; letter-spacing: -0.01em; }
+  & .save-dot, & .wf-dot, & .kb-auftrag i, & .tb-legend, & .kb-fl-dot, & .fruit-dot, & .legend-swatch, & .account-sync-dot { border-radius: 50% !important; }
   & ::selection { background: var(--accent); color: var(--paper); }
 
-  /* Kleine Beschriftungen: Schreibmaschine statt gesperrter Grotesk */
-  & .compare-label, & .kb-section-label, & .ko-day-label, & .tool-footer-title, & .ue-kpi-label,
+  /* Titel-Schrift */
+  & h1, & h2, & h3, & .account-h4 { font-family: var(--f-titel); font-weight: 600; letter-spacing: -0.01em; font-optical-sizing: auto; }
+  /* Erläuterungen: kursiv in der Titel-Schrift */
+  & #brand-caption, & .segment-btn-wide .segment-sub, & .betrieb-head-sub, & .ko-dash-hinweis {
+    font-family: var(--f-titel); font-style: italic; font-weight: 400; letter-spacing: 0; text-transform: none;
+  }
+  /* Etiketten: Schreibmaschine, klein, Versalien */
+  & .compare-label, & .kb-section-label, & .ko-day-label, & .tool-footer-title, & .ue-kpi-label, & .ue-kpi-sub, & .ko-kpi-label,
   & .account-label, & .fotomappe-label, & .tb-form label > span, & .wf-field > span, & .wf-field > label,
-  & .kb-termin-label, & .wf-sfield-label, & .wf-stage-sub, & #tiere-view h4, & .tk-attachments-head {
-    font-family: var(--mono); font-weight: 500; font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted);
+  & .kb-termin-label, & .wf-sfield-label, & .wf-stage-sub, & #tiere-view h4, & .tk-attachments-head,
+  & .ue-head p, & .ko-header p, & .kb-hero-text p, & #save-status, & .ko-agenda-time, & .kb-hist-date, & .kb-pick-date,
+  & .tk-day-head, & .ko-w-kw-zahl, & .admin-requests-head > span:first-child, & .fb-nr, & .tk-card-time {
+    font-family: var(--f-etikett); font-weight: 500; font-size: 10.5px; line-height: 1.3; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted);
   }
+  & #save-status, & .tk-day-head { color: var(--text); }
+  & kbd, & #tabbar kbd { font-family: var(--f-etikett); font-size: 10px; letter-spacing: 0.04em; border: 1px solid var(--border); background: transparent; }
 
-  /* ---- Kopfzeile ---- */
-  & #tabbar { background: var(--bg); border-bottom: 2px solid var(--ink); box-shadow: none; }
+  /* ---- Kopfzeile: Aktendeckel-Kante ---- */
+  & #tabbar { background: var(--bg) var(--papier-textur); border-bottom: 3px double var(--ink); box-shadow: none; }
   & #tabbar-left { border-right: 1px solid var(--border); }
-  & #current-view-title { font-family: var(--serif); font-weight: 600; font-size: 15px; }
+  & #current-view-title { font-family: var(--f-titel); font-weight: 600; font-size: 16px; }
   & #tabbar .tabbar-search, & #flaechen-suche, & #tabbar input[type="search"] {
-    background: transparent; border: none; border-bottom: 1.5px solid var(--ink); box-shadow: none;
+    background: transparent; border: none; border-bottom: 1.5px solid var(--ink); box-shadow: none; font-family: var(--f-text);
   }
-  & #tabbar kbd, & .tabbar-search kbd { font-family: var(--mono); border: 1px solid var(--border); background: transparent; }
-  & #btn-betrieb { border: 1px solid transparent; }
+  & #btn-betrieb { border: 1px solid transparent; font-family: var(--f-text); }
   & #btn-betrieb:hover, & #btn-betrieb.active:hover { border-color: var(--ink); background: transparent; }
   & .betrieb-avatar, & .kb-avatar, & .account-avatar, & .betrieb-row-avatar {
-    background: var(--ink); color: var(--paper); font-family: var(--serif); font-weight: 700;
+    background: var(--ink); color: var(--paper); font-family: var(--f-titel); font-weight: 700;
   }
-  & #save-status { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
 
-  /* ---- Seitenleiste ---- */
-  & #sidebar { background: var(--bg); border-right: 2px solid var(--ink); }
-  /* Funktionswahl: Registerkarten eines Ordners statt runder Kacheln */
-  & #view-switcher { gap: 0; border-top: 1px solid var(--ink); border-left: 1px solid var(--ink); }
+  /* ---- Seitenleiste: die Mappe ---- */
+  & #sidebar {
+    background: var(--folder) var(--papier-textur); border-right: 1px solid var(--ink);
+    box-shadow: inset -5px 0 0 var(--panel-2), inset -6px 0 0 var(--border); /* Heftrand */
+  }
+  /* Funktionswahl: Registerkarten */
+  & #view-switcher { gap: 0; border-top: 1px solid var(--ink); border-left: 1px solid var(--ink); background: var(--panel); }
   & .segment-btn {
     background: transparent; border: none; border-right: 1px solid var(--ink); border-bottom: 1px solid var(--ink);
-    color: var(--text); font-family: var(--mono); font-size: 10.5px; font-weight: 400; letter-spacing: 0.01em; box-shadow: none;
-    transition: background-color .1s, color .1s;
+    color: var(--text); box-shadow: none; transition: background-color .1s, color .1s;
   }
+  & .segment-btn .segment-label { font-family: var(--f-etikett); font-weight: 500; font-size: 10.5px; line-height: 1.3; letter-spacing: 0.06em; text-transform: uppercase; font-size: 9.5px; }
   & .segment-btn .icon { color: var(--accent); }
-  & .segment-btn:hover { background: var(--panel-2); border-color: var(--ink); }
-  & .segment-btn.active { background: var(--ink); color: var(--paper); font-weight: 500; box-shadow: none; border-color: var(--ink); }
+  & .segment-btn:hover { background: var(--accent-tint); border-color: var(--ink); }
+  & .segment-btn.active { background: var(--ink); color: var(--paper); box-shadow: none; border-color: var(--ink); }
   & .segment-btn.active .icon { color: var(--paper); }
-  & .segment-btn.segment-btn-wide { margin-bottom: 0; border-left: none; background: var(--accent-tint); background-image: none; }
-  & .segment-btn-wide .segment-label { font-family: var(--serif); font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
-  & .segment-btn-wide .segment-sub { font-family: var(--mono); font-size: 10px; }
+  /* Dashboard und Betrieb: Reiter der Mappe */
+  & .segment-btn.segment-btn-wide { margin-bottom: 0; border-left: none; background: var(--panel-2); background-image: none; }
+  & .segment-btn-wide .segment-label { font-family: var(--f-titel); font-size: 16px; font-weight: 600; letter-spacing: -0.01em; text-transform: none; }
+  & .segment-btn-wide .segment-sub { font-size: 11px; line-height: 1.25; color: var(--muted); -webkit-line-clamp: 3; line-clamp: 3; }
   & .segment-btn.segment-btn-wide.active { background: var(--ink); box-shadow: none; }
-  & .segment-btn.segment-btn-wide.active .segment-sub { color: var(--paper); opacity: .7; }
-  & #brand-caption { font-family: var(--serif); font-style: italic; font-weight: 400; font-size: 13px; color: var(--muted); }
-  & .tool-hint { background: transparent; border: none; border-left: 3px solid var(--accent); color: var(--text); padding-left: 10px; }
+  & .segment-btn.segment-btn-wide.active .segment-sub { color: var(--paper); opacity: .75; }
+  & #brand-caption { font-size: 13px; color: var(--muted); }
+  & .tool-hint { background: transparent; border: none; border-left: 3px solid var(--accent); color: var(--text); padding-left: 10px; font-family: var(--f-text); }
   & .tool-hint .icon { display: none; }
-  & .ko-subnav-btn { border: none; border-bottom: 1px solid var(--border); font-family: var(--sans); }
-  & .ko-subnav-btn.active { background: transparent; color: var(--text); font-weight: 700; box-shadow: inset 4px 0 0 var(--accent); }
-  & .ko-subnav-count { font-family: var(--mono); background: var(--ink) !important; color: var(--paper); }
+  & .ko-subnav-btn { border: none; border-bottom: 1px solid var(--border); font-family: var(--f-text); background: transparent; }
+  & .ko-subnav-btn.active { background: var(--panel); color: var(--text); font-weight: 600; box-shadow: inset 4px 0 0 var(--accent); }
+  & .ko-subnav-count { font-family: var(--f-etikett); background: var(--ink) !important; color: var(--paper); }
 
   /* ---- Knöpfe: rechteckig, Tinte, harter Druckschatten ---- */
   & .betrieb-btn, & .tool-btn, & .export-btn, & .tk-attachment-btn, & .ue-empty-btn, & #topbar button,
   & .kb-tile-new, & .wf-add-row, & .wf-add-section, & .cy-layer-btn, & .wf-section-toggle, & .pp-signature-big,
-  & .pp-signature-clear, & .pp-signature-own, & .stallplan-abteil-act, & .stallplan-tb-add {
+  & .pp-signature-clear, & .pp-signature-own, & .stallplan-abteil-act, & .stallplan-tb-add, & .ko-w-schnell, & .ko-w-neu {
     background: var(--panel); border: 1.5px solid var(--ink); color: var(--text);
-    font-family: var(--sans); font-weight: 600; box-shadow: none;
+    font-family: var(--f-text); font-weight: 600; box-shadow: none;
     transition: transform .08s, box-shadow .08s, background-color .1s;
   }
   & .betrieb-btn:hover, & .tool-btn:hover, & .export-btn:hover, & .tk-attachment-btn:hover, & #topbar button:hover,
-  & .kb-tile-new:hover, & .wf-add-row:hover, & .wf-add-section:hover {
+  & .kb-tile-new:hover, & .wf-add-row:hover, & .wf-add-section:hover, & .ko-w-schnell:hover, & .ko-w-neu:hover {
     background: var(--panel); border-color: var(--ink); color: var(--text);
     transform: translate(-1px, -1px); box-shadow: var(--shadow-hard);
   }
@@ -203,18 +271,19 @@
   & .betrieb-btn.primary .icon, & .tool-btn.primary .icon, & .tk-attachment-btn-primary .icon { color: inherit; }
   & .kb-tile-new, & .wf-add-row, & .wf-add-section { border-style: dashed; color: var(--text); }
   & .account-btn-danger { border-color: var(--stamp); color: var(--stamp); }
-  & .ko-link-btn, & .ff-link-btn { font-family: var(--mono); font-size: 11.5px; font-weight: 500; text-decoration: underline; text-underline-offset: 3px; color: var(--text); }
+  /* Links sind Text: Text-Schrift, unterstrichen */
+  & .ko-link-btn, & .ff-link-btn { font-family: var(--f-text); font-size: 12.5px; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; color: var(--text); }
   & .ko-icon-btn:hover, & .betrieb-icon-btn:hover { background: var(--ink); color: var(--paper); }
 
-  /* ---- Umschalter: unterstrichene Reiter statt Pillen ---- */
+  /* ---- Umschalter und Reiter: Etiketten mit Unterstrich ---- */
   & .ff-seg { background: transparent; border: none; border-bottom: 1.5px solid var(--ink); padding: 0; gap: 0; }
-  & .ff-seg > button, & #topbar .ff-seg > button, & #compare-view-toggle.ff-seg .cvt-btn {
-    border: none; background: transparent; color: var(--muted); font-family: var(--mono); font-size: 11.5px; font-weight: 500;
-    text-transform: uppercase; letter-spacing: 0.03em; box-shadow: none; transform: none; margin-bottom: -1.5px; border-bottom: 3px solid transparent;
+  & .ff-seg > button, & #topbar .ff-seg > button, & #compare-view-toggle.ff-seg .cvt-btn, & .ko-tabs [role="tab"], & .account-tabs > button, & .fb-reiter button {
+    font-family: var(--f-etikett); font-weight: 500; font-size: 10.5px; line-height: 1.3; letter-spacing: 0.06em; text-transform: uppercase; border: none; background: transparent; color: var(--muted); box-shadow: none; transform: none; margin-bottom: -1.5px; border-bottom: 3px solid transparent;
   }
   & .ff-seg > button:hover, & #topbar .ff-seg > button:hover { color: var(--text); background: transparent; transform: none; box-shadow: none; }
   & .ff-seg > button.active, & .ff-seg > button[aria-checked="true"], & .ff-seg > button[aria-pressed="true"], & .ff-seg > button[aria-selected="true"],
-  & #topbar .ff-seg > button[aria-checked="true"], & #compare-view-toggle.ff-seg .cvt-btn.active {
+  & #topbar .ff-seg > button[aria-checked="true"], & #compare-view-toggle.ff-seg .cvt-btn.active, & .ko-tabs [role="tab"][aria-selected="true"],
+  & .account-tabs > button[aria-selected="true"], & .fb-reiter button[aria-selected="true"] {
     background: transparent; color: var(--text); font-weight: 600; border-bottom-color: var(--accent);
   }
   /* über der Karte brauchen die Reiter einen Grund */
@@ -223,144 +292,231 @@
   & #topbar .ff-seg > button[aria-checked="true"], & #compare-view-toggle.ff-seg .cvt-btn.active { background: var(--ink); color: var(--paper); border-bottom-color: transparent; }
   & #topbar button, & .leaflet-bar a { box-shadow: 2px 2px 0 var(--ink); }
   & .leaflet-bar { border: 1.5px solid var(--ink) !important; box-shadow: 2px 2px 0 var(--ink) !important; border-radius: 0 !important; }
-  & .leaflet-bar a { border-radius: 0 !important; background: var(--panel); color: var(--text); box-shadow: none; border-bottom-color: var(--ink); }
+  & .leaflet-bar a { border-radius: 0 !important; background: var(--panel); color: var(--text); box-shadow: none; border-bottom-color: var(--ink); font-family: var(--f-titel); }
   & #topbar #btn-kulturen[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
 
-  /* ---- Karten und Abschnitte: Kontrollbogen mit Kopflinie statt Kästen ---- */
+  /* ---- Seiten: Akte mit Höhenlinien im Papier ---- */
   & #uebersicht-scroll, & #tiere-scroll, & .ko-scroll {
-    background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px);
-    background-size: 24px 24px;
+    background: var(--hoehenlinien), var(--papier-textur), var(--bg);
   }
-  & .ue-card, & .ko-card, & .kb-tile, & .kb-flaechen {
-    background: var(--panel); border: 1px solid var(--border); border-top: 3px solid var(--ink); box-shadow: none;
+  /* Abschnitte: Blätter mit Doppellinie oben */
+  & .ue-card, & .ko-card, & .kb-tile, & .kb-flaechen, & .kb-hero {
+    background: var(--panel) var(--papier-textur); border: 1px solid var(--border); border-top: 4px double var(--ink); box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.08);
   }
-  & .ue-card h3, & .ko-card-head h3, & .kb-tile-head h4 { font-family: var(--serif); font-size: 17px; font-weight: 600; color: var(--text); letter-spacing: -0.01em; }
+  & .ue-card h3, & .ko-card-head h3, & .kb-tile-head h4 { font-family: var(--f-titel); font-size: 17px; font-weight: 600; color: var(--text); letter-spacing: -0.01em; }
   & .ko-card-head h3 .icon, & .kb-tile-icon { display: none; }
   & .kb-tile.is-open { border-top-color: var(--stamp); }
   & .kb-tile.is-done { border-top-color: var(--accent); }
-  & .ue-head h2, & .ko-header h2 { font-family: var(--serif); font-size: 34px; font-weight: 700; letter-spacing: -0.02em; }
-  & .ue-head h2::after { width: 100%; height: 2px; background: var(--ink); }
+  /* Seitentitel: Beschriftung auf dem Aktendeckel */
+  & .ue-head h2, & .ko-header h2 { font-family: var(--f-titel); font-size: 34px; font-weight: 700; letter-spacing: -0.02em; }
+  & .ue-head h2::after { width: 100%; height: 4px; background: none; border-top: 3px double var(--ink); }
   & .ue-head { border-bottom: none; }
-  & .ko-header { border-bottom: 2px solid var(--ink); background: var(--bg); }
-  & .ue-head p, & .ko-header p { font-family: var(--mono); font-size: 11.5px; }
+  & .ko-header { border-bottom: 3px double var(--ink); background: var(--bg) var(--papier-textur); }
 
-  /* Kennzahlen: große Serifenziffern, durch Linien getrennt */
-  & .ue-kpis, & .ko-kpis { gap: 0; border: 1px solid var(--ink); border-top: 3px solid var(--ink); background: var(--panel); }
+  /* Kennzahlen: Kassenbuch — große Ziffern, durch Linien getrennt */
+  & .ue-kpis, & .ko-kpis { gap: 0; border: 1px solid var(--ink); border-top: 4px double var(--ink); background: var(--panel); }
   & .ue-kpi, & .ko-kpi { background: transparent; border: none; border-right: 1px solid var(--ink); }
   & .ue-kpi:last-child, & .ko-kpi:last-child { border-right: none; }
   & .ue-kpi.primary { background: var(--ink); background-image: none; color: var(--paper); border-color: var(--ink); }
   & .ue-kpi.primary .ue-kpi-label, & .ue-kpi.primary .ue-kpi-sub, & .ue-kpi.primary .ue-kpi-value, & .ue-kpi.primary .ue-kpi-value small { color: var(--paper); }
   & .ue-kpi.primary .ue-kpi-icon { color: var(--paper); }
-  & .ue-kpi-value, & .ko-kpi-value, & .kb-fl-value, & .tb-bilanz b, & .tb-n-value, & .ue-donut-value { font-family: var(--serif); font-weight: 600; letter-spacing: -0.02em; }
+  & .ue-kpi-value, & .ko-kpi-value, & .kb-fl-value, & .tb-bilanz b, & .tb-n-value, & .ue-donut-value { font-family: var(--f-titel); font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: lining-nums; }
   & .ue-kpi-value { font-size: 36px; }
-  & .ue-kpi-sub, & .ko-kpi-label { font-family: var(--mono); font-size: 10.5px; }
   & .ue-kpi-icon { opacity: .5; }
   & .ko-kpi .icon { background: transparent; color: var(--accent); }
   & .ue-kpi.is-warn .ue-kpi-value { color: var(--stamp); }
 
   /* Betriebsseite */
-  & .kb-hero { background: var(--panel); background-image: none; border: 1px solid var(--ink); border-top: 3px solid var(--ink); }
-  & .kb-hero-text h3 { font-family: var(--serif); font-size: 28px; font-weight: 700; letter-spacing: -0.02em; }
-  & .kb-hero-text p { font-family: var(--mono); font-size: 11.5px; }
+  & .kb-hero { background-image: var(--papier-textur); }
+  & .kb-hero-text h3 { font-family: var(--f-titel); font-size: 28px; font-weight: 700; letter-spacing: -0.02em; }
   & .kb-fns { gap: 0; border-top: 1px solid var(--ink); border-left: 1px solid var(--ink); }
-  & .kb-fn { background: var(--panel); border: none; border-right: 1px solid var(--ink); border-bottom: 1px solid var(--ink); font-family: var(--mono); font-size: 11px; font-weight: 500; }
+  & .kb-fn { background: var(--panel); border: none; border-right: 1px solid var(--ink); border-bottom: 1px solid var(--ink); font-family: var(--f-etikett); font-weight: 500; font-size: 10.5px; line-height: 1.3; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text); }
   & .kb-fn:hover { background: var(--ink); color: var(--paper); }
   & .kb-fn:hover .icon { color: var(--paper); }
-  & .kb-item, & .kb-hist-row, & .kb-termin, & .ko-agenda-row, & .tb-stall-row, & .km-auftrag, & .cy-row { background: transparent; border: none; border-bottom: 1px dashed var(--border); }
-  & .kb-item:hover, & .kb-hist-row:hover, & .ko-agenda-row:hover { background: var(--accent-tint); border-color: var(--border); }
+
+  /* Listen: liniertes Papier */
+  & .kb-item, & .kb-hist-row, & .kb-termin, & .ko-agenda-row, & .tb-stall-row, & .km-auftrag, & .cy-row, & .ko-w-zeile { background: transparent; border: none; border-bottom: 1px dashed var(--border); }
+  & .kb-item:hover, & .kb-hist-row:hover, & .ko-agenda-row:hover, & .ko-w-zeile:hover { background: var(--accent-tint); border-color: var(--border); }
   & .kb-termin { border: 1.5px solid var(--ink); border-left: 6px solid var(--accent); background: var(--panel-2); }
   & .ko-agenda-row { border-left: 4px solid var(--accent); }
   & .ko-agenda-row.is-warn { border-left-color: var(--stamp); }
   & .km-auftrag { border-left: 4px solid var(--auftrag-color, var(--accent)); }
-  & .ko-agenda-time, & .kb-hist-date, & .kb-pick-date { font-family: var(--mono); }
+  & .ko-agenda-title, & .ko-w-zeile-titel, & .kb-item b, & .fb-zeile-titel { font-family: var(--f-text); font-weight: 600; }
 
   /* ---- Stempel statt Pillen ---- */
   & .tk-badge, & .tk-chip, & .kb-auftrag, & .status-pill, & .wf-tol-chip, & .kb-tile-state, & .kb-tile-count, & .km-tab-count,
-  & .ff-hint-pill, & .tb-stall-chip, & .ff-leg-tag, & .tb-betrieb, & .stallplan-badge, & .tk-auftrag-count {
-    font-family: var(--mono); font-weight: 500; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em;
-    background: transparent; border: 1.5px solid currentColor; box-shadow: none;
+  & .ff-hint-pill, & .tb-stall-chip, & .ff-leg-tag, & .tb-betrieb, & .stallplan-badge, & .tk-auftrag-count, & .fb-chip, & .account-tab-count {
+    font-family: var(--f-etikett); font-weight: 500; font-size: 10.5px; line-height: 1.3; letter-spacing: 0.06em; text-transform: uppercase; background: transparent; border: 1.5px solid currentColor; box-shadow: none;
   }
   & .tk-chip-verband { background: var(--chip-bg); color: var(--chip-fg); border-color: var(--ink); }
-  & .tk-badge-warn, & .kb-tile.is-open .kb-tile-state, & .stallplan-badge.fail { color: var(--stamp); transform: rotate(-1.5deg); }
-  & .tk-badge-ok, & .kb-tile.is-done .kb-tile-state, & .stallplan-badge.ok { color: var(--accent); }
-  & .kb-tile-count, & .km-tab-count { background: var(--ink); color: var(--paper); border-color: var(--ink); }
-  & .wf-status { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; }
+  & .tk-badge-warn, & .kb-tile.is-open .kb-tile-state, & .stallplan-badge.fail, & .fb-chip.is-prio {
+    color: var(--stamp); transform: rotate(-2deg); box-shadow: 0 0 0 1.5px var(--panel), 0 0 0 2.5px currentColor; /* doppelter Stempelrand */
+  }
+  & .tk-badge-ok, & .kb-tile.is-done .kb-tile-state, & .stallplan-badge.ok, & .fb-chip.is-erledigt { color: var(--accent); background: transparent; }
+  & .kb-tile-count, & .km-tab-count, & .account-tab-count { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+  & .wf-status { font-family: var(--f-etikett); font-weight: 500; font-size: 10.5px; line-height: 1.3; letter-spacing: 0.06em; text-transform: uppercase; }
   & .wf-summary .wf-status, & .wf-list-row .wf-status { background: transparent; border: 1.5px solid currentColor; }
   & .ff-cell { background: transparent; border: none; border-bottom: 1.5px solid var(--border); padding: 1px 2px; }
   & .ff-cell.is-leg { border-bottom-color: var(--accent); font-weight: 600; }
 
   /* ---- Tabellen: liniertes Formular ---- */
-  & table thead th, & .tb-table th, & #ff-table thead th, & .wf-table th {
-    font-family: var(--mono); font-weight: 500; font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text);
-    background: transparent; border-top: 2px solid var(--ink); border-bottom: 1px solid var(--ink);
+  & table thead th, & .tb-table th, & #ff-table thead th, & .wf-table th, & .fb-tabelle th {
+    font-family: var(--f-etikett); font-weight: 500; font-size: 10.5px; line-height: 1.3; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text); background: transparent; border-top: 2px solid var(--ink); border-bottom: 1px solid var(--ink);
   }
+  & .fb-tabelle th { border: none; color: var(--muted); }
   & table tbody td { border-bottom: 1px dashed var(--border); }
-  & .tb-table tfoot td, & #ue-table tfoot td, & .wf-table tfoot td { background: transparent; border-top: 2px solid var(--ink); border-bottom: 3px double var(--ink); font-family: var(--serif); font-size: 15px; }
-  & td.num, & .num, & .wf-calc, & .kb-fl-ha, & .tb-art-n, & .ue-bar-value { font-family: var(--mono); font-variant-numeric: tabular-nums; }
-  & #table-panel, & #compare-table-panel, & #obstbaum-table-panel { border-top: 2px solid var(--ink); background: var(--bg); }
+  & .tb-table tfoot td, & #ue-table tfoot td, & .wf-table tfoot td { background: transparent; border-top: 2px solid var(--ink); border-bottom: 3px double var(--ink); font-family: var(--f-titel); font-size: 15px; }
+  & td.num, & .num, & .wf-calc, & .kb-fl-ha, & .tb-art-n, & .ue-bar-value { font-family: var(--f-text); font-variant-numeric: tabular-nums; }
+  & #table-panel, & #compare-table-panel, & #obstbaum-table-panel { border-top: 3px double var(--ink); background: var(--bg) var(--papier-textur); }
   & .wf-table-wrap { border: 1px solid var(--ink); }
   & .wf-table th:first-child, & .wf-table td:first-child { background: var(--panel); }
 
   /* ---- Eingaben: Linie zum Ausfüllen ---- */
   & .wf-input, & .fotomappe-input, & .account-input, & .km-notiz, & .wf-text, & .cy-jahr, & #compare-jahrb-picker,
   & .tb-stall-form select, & .tb-stall-form input, & .cy-layer-pick select, & .cy-pair-row select, & .ue-search, & .stallplan-abteil-name,
-  & input[type="date"], & .pp-field input, & .pp-field textarea, & .pp-field select {
-    background: var(--panel); border: 1px solid var(--border); border-bottom: 1.5px solid var(--ink); font-family: var(--sans);
+  & input[type="date"], & .pp-field input, & .pp-field textarea, & .pp-field select, & .ko-w-notiz {
+    background: var(--panel); border: 1px solid var(--border); border-bottom: 1.5px solid var(--ink); font-family: var(--f-text);
   }
-  & .wf-input:focus, & .fotomappe-input:focus, & .account-input:focus, & .km-notiz:focus, & .wf-text:focus {
+  & .wf-input:focus, & .fotomappe-input:focus, & .account-input:focus, & .km-notiz:focus, & .wf-text:focus, & .ko-w-notiz:focus {
     border-color: var(--ink); background: var(--accent-tint); outline: none;
   }
-  & .wf-input.wf-num, & .cy-jahr { font-family: var(--mono); }
+  & .wf-input.wf-num, & .cy-jahr { font-family: var(--f-text); font-variant-numeric: tabular-nums; }
   & .wf-input.wf-ref { border: 1px dashed var(--accent); border-bottom: 1.5px solid var(--accent); }
-  & .dropzone-mini { border: 1.5px dashed var(--ink); background: transparent; font-family: var(--mono); font-size: 11.5px; }
+  & .dropzone-mini { border: 1.5px dashed var(--ink); background: transparent; font-family: var(--f-text); }
   & .dropzone-mini:hover { background: var(--accent-tint); }
   & .wf-auto { background: var(--panel); border: 1.5px solid var(--ink); border-left: 6px solid var(--accent); }
-  & .wf-auto-text, & .wf-text { font-family: var(--serif); font-size: 14.5px; line-height: 1.65; background: var(--panel); }
-  & .wf-auto-h { font-family: var(--mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text); border-bottom: 1px solid var(--ink); padding-bottom: 2px; margin-top: 8px; }
+  /* Freitext der Berichte: wie mit der Hand ins Formular geschrieben */
+  & .wf-auto-text, & .wf-text { font-family: var(--f-titel); font-size: 14.5px; line-height: 1.65; background: var(--panel); }
+  & .wf-auto-h { font-family: var(--f-etikett); font-weight: 500; font-size: 10.5px; line-height: 1.3; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text); border-bottom: 1px solid var(--ink); padding-bottom: 2px; margin-top: 8px; }
   & .wf-auto-befund { border-left-color: var(--stamp); }
   & .wf-stage, & .wf-flow, & .wf-flow-node { background: var(--panel); border-color: var(--ink); }
   & .wf-flow { background: transparent; border: none; border-top: 1px solid var(--ink); border-bottom: 1px solid var(--ink); }
-  & .wf-stage-nr, & .wf-flow-nr { background: var(--ink); color: var(--paper); font-family: var(--serif); }
+  & .wf-stage-nr, & .wf-flow-nr { background: var(--ink); color: var(--paper); font-family: var(--f-titel); }
 
   /* ---- Dialoge: Blatt mit Druckschatten ---- */
-  & .modal-card, & .sigpad-card, & #kontrollmappe, & .account-menu, & .wf-zeitraum-pop {
-    background: var(--bg); border: 2px solid var(--ink); box-shadow: 8px 8px 0 rgba(0, 0, 0, 0.35);
+  & .modal-card, & .sigpad-card, & #kontrollmappe, & .account-menu, & .wf-zeitraum-pop, & .gs-karte {
+    background: var(--panel) var(--papier-textur); border: 1.5px solid var(--ink); box-shadow: 8px 8px 0 rgba(0, 0, 0, 0.3);
   }
-  & #kontrollmappe { box-shadow: -8px 0 0 rgba(0, 0, 0, 0.18); border-right: none; border-top: none; border-bottom: none; }
-  & .modal-overlay { background: rgba(10, 14, 11, 0.6); backdrop-filter: none; }
-  & .betrieb-head h3, & .km-title h3, & .wf-head-main h3, & .sigpad-head h3, & .modal-card > h3 { font-family: var(--serif); font-size: 21px; font-weight: 700; letter-spacing: -0.015em; }
+  & #kontrollmappe { box-shadow: -8px 0 0 rgba(0, 0, 0, 0.16); border-right: none; border-top: none; border-bottom: none; }
+  & .modal-overlay { background: rgba(20, 14, 6, 0.55); backdrop-filter: none; }
+  & .betrieb-head h3, & .km-title h3, & .wf-head-main h3, & .sigpad-head h3, & .modal-card > h3, & .gs-karte h2 { font-family: var(--f-titel); font-size: 21px; font-weight: 700; letter-spacing: -0.015em; }
   & .wf-head-icon { background: var(--ink); color: var(--paper); }
-  & .betrieb-date-badge { background: var(--panel); border: 1.5px solid var(--ink); font-family: var(--mono); }
-  & .betrieb-date-badge b { font-family: var(--serif); }
+  & .betrieb-date-badge { background: var(--panel); border: 1.5px solid var(--ink); font-family: var(--f-etikett); }
+  & .betrieb-date-badge b { font-family: var(--f-titel); }
+  & .gs-overlay { background: var(--bg) var(--hoehenlinien); }
 
   /* ---- Kalender ---- */
   & .tk-card { background: var(--panel); border: 1px solid var(--ink); border-left: 5px solid var(--accent); box-shadow: none; }
   & .tk-card:hover, & .tk-card.selected { box-shadow: var(--shadow-hard); transform: translate(-1px, -1px); }
-  & .tk-day-head { font-family: var(--mono); border-bottom: 1px solid var(--ink); background: var(--bg); }
+  & .tk-day-head { border-bottom: 1px solid var(--ink); background: var(--bg); }
   & .tk-day-col { border-left: 1px dashed var(--border); }
-  & #tk-week-label { font-family: var(--serif); font-size: 17px; }
+  & #tk-week-label, & .ko-w-kw-text b { font-family: var(--f-titel); font-size: 17px; font-weight: 600; }
 
-  /* ---- Diagramme ---- */
-  & .ue-bar-track, & .tb-art-track, & .tb-n-bar, & .besichtigt-bar, & .kb-fl-bar, & .uf-leg-track {
+  /* ---- Diagramme: Schraffur wie in der Kartenlegende ---- */
+  & .ue-bar-track, & .tb-art-track, & .tb-n-bar, & .besichtigt-bar, & .kb-fl-bar, & .uf-leg-track, & .ko-w-balkenspur {
     background: transparent; background-image: repeating-linear-gradient(90deg, var(--border) 0 1px, transparent 1px 8px); border: none; border-bottom: 1px solid var(--ink);
   }
   & .uf-leg-track { background-image: repeating-linear-gradient(0deg, var(--border) 0 1px, transparent 1px 15px); border-bottom: 2px solid var(--ink); }
-  & .uf-leg-fill { background: var(--accent); background-image: repeating-linear-gradient(45deg, transparent 0 5px, rgba(0,0,0,.12) 5px 6px); }
+  & .uf-leg-fill, & .ko-w-balkenspur span { background: var(--accent); background-image: repeating-linear-gradient(45deg, transparent 0 5px, rgba(0,0,0,.14) 5px 6px); }
   & .tb-monat-bars { border-bottom: 2px solid var(--ink); }
   & .tb-bilanz > div, & .kb-fl-kpi, & .tb-n { background: transparent; border: none; border-top: 2px solid var(--ink); }
   & .tb-bilanz .is-end { background: var(--ink); border-color: var(--ink); }
   & .tb-bilanz .is-end b, & .tb-bilanz .is-end span { color: var(--paper); }
-  & .tb-bilanz i { font-family: var(--serif); }
+  & .tb-bilanz i { font-family: var(--f-titel); }
   & .tb-n.is-bad { border-color: var(--stamp); }
-  & .tb-stall-sum { background: transparent; border: 1.5px solid var(--ink); font-family: var(--mono); font-size: 12px; }
-  & .tb-check { font-family: var(--mono); font-size: 11px; }
+  & .tb-stall-sum { background: transparent; border: 1.5px solid var(--ink); font-family: var(--f-text); font-size: 12px; }
+  & .tb-check { font-family: var(--f-text); font-size: 12px; }
 
-  /* ---- Karte: Flächennamen als Etikett ---- */
-  & .leaflet-tooltip.feature-label { border: 1.5px solid var(--ink); background: var(--panel); font-family: var(--mono); font-size: 10.5px; }
-  & .feature-label b { font-family: var(--serif); font-size: 12px; color: var(--text); }
-  & #ff-map-legend { border: 1.5px solid var(--ink); box-shadow: var(--shadow-hard); }
-  & #ff-map-legend summary { font-family: var(--serif); font-size: 14px; }
+  /* ---- Die Feldkarte ---- */
+  /* vergilbte Kacheln (alle Karten der App, auch Dashboard und Kalender) */
+  & .leaflet-container { background: var(--panel-2); font-family: var(--f-text); }
+  & .leaflet-tile-pane { filter: var(--karten-filter); }
+  /* Flächen wie gedruckt (hell: Farbe zieht ins Papier ein) */
+  &[data-theme="light"] .leaflet-overlay-pane path.leaflet-interactive { mix-blend-mode: multiply; }
+  /* leicht abgedunkelter Rand und Papierfaser über der großen Karte */
+  & #map::after {
+    content: ''; position: absolute; inset: 0; z-index: 455; pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 62%, var(--vignette) 100%), var(--papier-textur);
+  }
+  /* Karten-Export (PDF): ohne Tönung */
+  & #map.ff-capture::after { display: none; }
+  /* Flurnamen wie auf der Karte gestochen: kursiv, mit Papierrand statt Kasten */
+  & .leaflet-tooltip.feature-label {
+    background: transparent; border: none; padding: 0 4px; box-shadow: none; color: var(--ink);
+    font-family: var(--f-titel); font-style: italic; font-weight: 500; font-size: 13.5px; line-height: 1.15; letter-spacing: 0.01em;
+    text-shadow: 0 0 2px var(--paper), 0 0 2px var(--paper), 0 0 4px var(--paper), 0 0 6px var(--paper);
+  }
+  & .feature-label b { font-family: var(--f-etikett); font-style: normal; font-weight: 500; font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+  & #ff-map-legend { background: var(--panel) var(--papier-textur); border: 1.5px solid var(--ink); box-shadow: var(--shadow-hard); }
+  & #ff-map-legend summary { font-family: var(--f-titel); font-size: 15px; font-weight: 600; }
+  & .leaflet-popup-content-wrapper, & .leaflet-popup-tip { background: var(--panel); color: var(--text); }
   & .leaflet-popup-content-wrapper { border: 1.5px solid var(--ink); border-radius: 0 !important; box-shadow: var(--shadow-hard); }
+  & .leaflet-popup-content { font-family: var(--f-text); font-size: 12.5px; }
+  & .leaflet-popup-content b { font-family: var(--f-titel); font-size: 14px; color: var(--text); }
+  & #coord-readout { font-family: var(--f-etikett); font-weight: 500; font-size: 10.5px; line-height: 1.3; letter-spacing: 0.06em; text-transform: uppercase; background: var(--panel); border: 1px solid var(--ink); color: var(--text); }
+  /* ---- Symbole: gestochener Strich, Navigation passend zum Thema ---- */
+  & .material-symbols-rounded, & .layer-actions button[data-action]::before, & .dropzone-mini::before { font-family: 'FF Symbole Feldbuch'; }
+  /* Tausch ohne anderes HTML: das ursprüngliche Symbol bleibt als (unsichtbarer)
+     Platzhalter stehen, darüber zeichnet ::before das Themen-Symbol aus --ikon. */
+  & .segment-btn[data-view="viewer"] > .icon,
+  & .segment-btn[data-view="uebersicht"] > .icon,
+  & .segment-btn[data-view="compare"] > .icon,
+  & .segment-btn[data-view="zeichner"] > .icon,
+  & .segment-btn[data-view="obstbaum"] > .icon,
+  & .segment-btn[data-view="hofplan"] > .icon,
+  & .segment-btn[data-view="stallplaner"] > .icon,
+  & #kontrolle-switcher > .icon:not(.segment-chevron),
+  & #betrieb-switcher > .icon:not(.segment-chevron),
+  & .kb-fn[data-kb-segment="uebersicht"] > .icon,
+  & .kb-fn[data-kb-segment="zeichner"] > .icon,
+  & .kb-fn[data-kb-segment="hofplan"] > .icon,
+  & .kb-fn[data-kb-segment="stallplaner"] > .icon,
+  & .kb-fn[data-kb-segment="obstbaum"] > .icon,
+  & [data-ko-tab="uebersicht"] > .icon,
+  & [data-ko-tab="kalender"] > .icon,
+  & #btn-betrieb .betrieb-empty-icon,
+  & body[data-view="viewer"] #current-view-icon,
+  & body[data-view="uebersicht"] #current-view-icon,
+  & body[data-view="compare"] #current-view-icon,
+  & body[data-view="zeichner"] #current-view-icon,
+  & body[data-view="obstbaum"] #current-view-icon,
+  & body[data-view="hofplan"] #current-view-icon,
+  & body[data-view="stallplaner"] #current-view-icon,
+  & body[data-view="kontrolle"][data-ko-bereich="dashboard"] #current-view-icon,
+  & body[data-view="kontrolle"][data-ko-bereich="betrieb"] #current-view-icon {
+    position: relative; -webkit-text-fill-color: transparent;
+  }
+  :is(.segment-btn[data-view="viewer"] > .icon, .segment-btn[data-view="uebersicht"] > .icon, .segment-btn[data-view="compare"] > .icon, .segment-btn[data-view="zeichner"] > .icon, .segment-btn[data-view="obstbaum"] > .icon, .segment-btn[data-view="hofplan"] > .icon, .segment-btn[data-view="stallplaner"] > .icon, #kontrolle-switcher > .icon:not(.segment-chevron), #betrieb-switcher > .icon:not(.segment-chevron), .kb-fn[data-kb-segment="uebersicht"] > .icon, .kb-fn[data-kb-segment="zeichner"] > .icon, .kb-fn[data-kb-segment="hofplan"] > .icon, .kb-fn[data-kb-segment="stallplaner"] > .icon, .kb-fn[data-kb-segment="obstbaum"] > .icon, [data-ko-tab="uebersicht"] > .icon, [data-ko-tab="kalender"] > .icon, #btn-betrieb .betrieb-empty-icon, body[data-view="viewer"] #current-view-icon, body[data-view="uebersicht"] #current-view-icon, body[data-view="compare"] #current-view-icon, body[data-view="zeichner"] #current-view-icon, body[data-view="obstbaum"] #current-view-icon, body[data-view="hofplan"] #current-view-icon, body[data-view="stallplaner"] #current-view-icon, body[data-view="kontrolle"][data-ko-bereich="dashboard"] #current-view-icon, body[data-view="kontrolle"][data-ko-bereich="betrieb"] #current-view-icon)::before {
+    content: var(--ikon); position: absolute; inset: 0; text-align: center; -webkit-text-fill-color: currentColor;
+  }
+  & .segment-btn[data-view="viewer"] > .icon { --ikon: 'explore'; }
+  & .segment-btn[data-view="uebersicht"] > .icon { --ikon: 'landscape'; }
+  & .segment-btn[data-view="compare"] > .icon { --ikon: 'history'; }
+  & .segment-btn[data-view="zeichner"] > .icon { --ikon: 'ink_pen'; }
+  & .segment-btn[data-view="obstbaum"] > .icon { --ikon: 'nature'; }
+  & .segment-btn[data-view="hofplan"] > .icon { --ikon: 'cottage'; }
+  & .segment-btn[data-view="stallplaner"] > .icon { --ikon: 'fence'; }
+  & #kontrolle-switcher > .icon:not(.segment-chevron) { --ikon: 'inventory_2'; }
+  & #betrieb-switcher > .icon:not(.segment-chevron) { --ikon: 'agriculture'; }
+  & .kb-fn[data-kb-segment="uebersicht"] > .icon { --ikon: 'landscape'; }
+  & .kb-fn[data-kb-segment="zeichner"] > .icon { --ikon: 'ink_pen'; }
+  & .kb-fn[data-kb-segment="hofplan"] > .icon { --ikon: 'cottage'; }
+  & .kb-fn[data-kb-segment="stallplaner"] > .icon { --ikon: 'fence'; }
+  & .kb-fn[data-kb-segment="obstbaum"] > .icon { --ikon: 'nature'; }
+  & [data-ko-tab="uebersicht"] > .icon { --ikon: 'menu_book'; }
+  & [data-ko-tab="kalender"] > .icon { --ikon: 'event_note'; }
+  & #btn-betrieb .betrieb-empty-icon { --ikon: 'agriculture'; }
+  & body[data-view="viewer"] #current-view-icon { --ikon: 'explore'; }
+  & body[data-view="uebersicht"] #current-view-icon { --ikon: 'landscape'; }
+  & body[data-view="compare"] #current-view-icon { --ikon: 'history'; }
+  & body[data-view="zeichner"] #current-view-icon { --ikon: 'ink_pen'; }
+  & body[data-view="obstbaum"] #current-view-icon { --ikon: 'nature'; }
+  & body[data-view="hofplan"] #current-view-icon { --ikon: 'cottage'; }
+  & body[data-view="stallplaner"] #current-view-icon { --ikon: 'fence'; }
+  & body[data-view="kontrolle"][data-ko-bereich="dashboard"] #current-view-icon { --ikon: 'inventory_2'; }
+  & body[data-view="kontrolle"][data-ko-bereich="betrieb"] #current-view-icon { --ikon: 'agriculture'; }
+
+  & .leaflet-control-attribution { background: var(--panel) !important; font-family: var(--f-text); color: var(--muted); }
 }
 
 /* ---- Logo im Feldbuch-Design ----
