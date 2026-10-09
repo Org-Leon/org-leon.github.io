@@ -12,9 +12,10 @@
 -- zugangsanfragen-limit.sql, konto-loeschen.sql, registrierung.sql (wer darf sich
 -- registrieren). Ebenfalls nicht enthalten: die Tabellen selbst.
 --
--- Admin = angemeldet mit einer @oekop.de-Adresse (aus dem Anmelde-Token).
--- Das ist nur sicher, solange im Dashboard unter Authentication "Confirm email"
--- und "Secure email change" eingeschaltet sind.
+-- Admin = Adresse steht in der Liste admin_konten (public.ist_admin(), siehe
+-- admins.sql — muss vorher gelaufen sein). Das ist nur sicher, solange im
+-- Dashboard unter Authentication "Confirm email" und "Secure email change"
+-- eingeschaltet sind.
 
 -- ---------- Arbeitsstand: jeder nur seine eigene Zeile ----------
 alter table public.feldfolio_state enable row level security;
@@ -38,13 +39,13 @@ create policy "anyone can submit a request" on public.access_requests
 drop policy if exists "oekop admins can view requests" on public.access_requests;
 create policy "oekop admins can view requests" on public.access_requests
   for select to authenticated
-  using ((auth.jwt() ->> 'email') ilike '%@oekop.de');
+  using (public.ist_admin());
 
 drop policy if exists "oekop admins can update requests" on public.access_requests;
 create policy "oekop admins can update requests" on public.access_requests
   for update to authenticated
-  using ((auth.jwt() ->> 'email') ilike '%@oekop.de')
-  with check ((auth.jwt() ->> 'email') ilike '%@oekop.de');
+  using (public.ist_admin())
+  with check (public.ist_admin());
 
 -- ---------- Freigeschaltete Adressen: nur Admins ----------
 alter table public.access_allowlist enable row level security;
@@ -52,8 +53,8 @@ alter table public.access_allowlist enable row level security;
 drop policy if exists "oekop admins can manage allowlist" on public.access_allowlist;
 create policy "oekop admins can manage allowlist" on public.access_allowlist
   for all to authenticated
-  using ((auth.jwt() ->> 'email') ilike '%@oekop.de')
-  with check ((auth.jwt() ->> 'email') ilike '%@oekop.de');
+  using (public.ist_admin())
+  with check (public.ist_admin());
 
 -- ---------- Fotos und Dokumente: privater Bucket, jeder nur sein Ordner ----------
 -- Der Bucket "feldfolio-photos" ist NICHT öffentlich; Pfad = <user-id>/<datei>.

@@ -12,7 +12,7 @@
 --   Speicher      Bucket "feldfolio-photos" NICHT öffentlich; Regeln auf storage.objects
 --                 nur für den eigenen Ordner: (storage.foldername(name))[1] = auth.uid()::text
 --   access_requests   anlegen: jeder (anon) — begrenzt durch zugangsanfragen-limit.sql;
---                 lesen/ändern: nur Admins (@oekop.de)
+--                 lesen/ändern: nur Admins (Liste admin_konten)
 --   access_allowlist  lesen/ändern: nur Admins
 --   nutzungscodes siehe nutzungscodes.sql
 --   Realtime      Regeln "ff sync …" auf realtime.messages (sync-kanal.sql)
@@ -20,7 +20,7 @@
 --                 für @oekop.de oder freigeschaltete Adressen
 --   Funktionen    delete_my_account: security definer, nur für "authenticated"
 --   Dashboard     Authentication → "Confirm email" und "Secure email change" an
---                 (die Admin-Rechte hängen an der bestätigten @oekop.de-Adresse)
+--                 (die Admin-Rechte hängen an der bestätigten Adresse in admin_konten)
 --
 -- Abschnitt 7 zeigt den Inhalt der Server-Funktionen (z. B. check_signup_allowed:
 -- wer darf sich registrieren).

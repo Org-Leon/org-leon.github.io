@@ -115,6 +115,7 @@ test.describe('Gemeinsame Nutzungscodes', () => {
       { id: 2, land: 'TH', code: '999003', kultur: 'Kultur A', quelle: 'manuell', status: 'vorschlag', vorgeschlagen_von: 'u2' },
       { id: 3, land: 'TH', code: '999003', kultur: 'Kultur B', quelle: 'manuell', status: 'vorschlag', vorgeschlagen_von: 'u3' }
     ]);
+    await page.addInitScript(() => { window.__ffTestAdmin = true; }); // Admin laut Server (admin_konten)
     await page.goto('/');
     await setupCloud(page, { workspaces: {} });
     await loginWithCloud(page, { ...TEST_USER, email: 'admin@oekop.de' });

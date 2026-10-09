@@ -1,9 +1,11 @@
-import { oeffneSyncKanal, isSupabaseConfigured, signUp, signIn, signOut, getSession, saveState, loadState, uploadPhoto, getPhotoUrl, deletePhoto, requestAccess, listPendingAccessRequests, approveAccessRequest, declineAccessRequest, authErrorMessage, requestPasswordReset, updatePassword, verifyPassword, signOutEverywhere, onPasswordRecovery, deleteMyAccount, ladeNutzungscodes, schlageNutzungscodesVor, entscheideNutzungscode } from './supabase.js';
-import { readLocalState, writeLocalState, deleteLocalState, readLastUser, writeLastUser, addBackup, listBackups, saveQueuedUpload, listQueuedUploads, deleteQueuedUpload, saveFotomappeFoto, listFotomappeFotos, deleteFotomappeFoto } from './offline-store.js';
+import { istAdminAbfragen, oeffneSyncKanal, isSupabaseConfigured, signUp, signIn, signOut, getSession, saveState, loadState, uploadPhoto, getPhotoUrl, deletePhoto, requestAccess, listPendingAccessRequests, approveAccessRequest, declineAccessRequest, authErrorMessage, requestPasswordReset, updatePassword, verifyPassword, signOutEverywhere, onPasswordRecovery, deleteMyAccount, ladeNutzungscodes, schlageNutzungscodesVor, entscheideNutzungscode } from './supabase.js';
+import { readLocalState, writeLocalState, deleteLocalState, hatLocalState, readLastUser, writeLastUser, addBackup, listBackups, saveQueuedUpload, listQueuedUploads, deleteQueuedUpload, saveFotomappeFoto, listFotomappeFotos, deleteFotomappeFoto, alleDatenLoeschen, cacheVerpacken, cacheAuspacken } from './offline-store.js';
 import { registerSW } from 'virtual:pwa-register';
 // Turf 7 mit den Aufrufen von Turf 6.5 (src/geo.js) — ohne eval, daher CSP-tauglich
 import { turf } from './geo.js';
 import { renderDashboard, layoutBereinigen, dashboardLueckenSchliessen } from './dashboard.js';
+import { geraeteschutzEinrichten } from './geraeteschutz.js';
+import { protokollStarten, fehlerberichtEinrichten } from './fehlerbericht.js';
 import { createDokumentExplorer } from './dokumente.js';
 // SheetJS 0.20.3 (von cdn.sheetjs.com, per npm mitgebaut) — die cdnjs-Version 0.18.5
 // hat bekannte Lücken (CVE-2023-30533, CVE-2024-22363). Codepages für alte .xls.
@@ -22,6 +24,9 @@ import { slStatusTexteLernen, slParse, slAbgleich, slStufe, slExportZeilen, slIs
 import { parseHitPdf, computeTierbestand, tbFmtDate, tbAlterText, tbStatus, TB_ZUGANG_ARTEN, TB_ABGANG_ARTEN, TB_N_GRENZE } from './tierbestand.js';
 import { WF_MODULE, createWarenfluss, openWarenfluss, initWarenflussUi, warenflussRowInfo } from './warenfluss.js';
 import { rankBackCameras, drawScaled, rotateCanvas, defaultQuad, detectDocumentQuad, QuadTracker, quadDistance, warpDocument, applyScanFilter, SCAN_FILTERS, targetSizeForQuad } from './scan-engine.js';
+
+// Fehler und Klicks ab dem Start mitschreiben — für "Fehler melden" (src/fehlerbericht.js)
+protokollStarten();
 // Icon-Font selbst NICHT über das npm-Paket eingebunden (5+ MB Variable-Font
 // mit allen ~3000 Icons) — stattdessen ein auf die tatsächlich genutzten
 // Icon-Namen zugeschnittenes, auf eine feste Achsen-Instanz reduziertes
@@ -58,18 +63,12 @@ updateThemeToggleLabel();
 // Zweite Gestaltung zum Ausprobieren (src/design-feldbuch.css), gewählt über
 // <html data-design="feldbuch">. Die gespeicherte Wahl wird wie das Theme
 // schon im <head> angewendet; hier der Umschalter und das Nachladen der
-// Schriften (IBM Plex; Fraunces lädt index.html ohnehin fürs Logo) — nur wenn das Design aktiv ist.
+// Schriften (IBM Plex, Fraunces) liefert die App selbst aus (siehe
+// design-feldbuch.css); geladen werden sie erst, wenn das Design aktiv ist.
 function applyDesign(name) {
   const feldbuch = name === 'feldbuch';
   if (feldbuch) document.documentElement.setAttribute('data-design', 'feldbuch');
   else document.documentElement.removeAttribute('data-design');
-  if (feldbuch && !document.getElementById('design-fonts')) {
-    const link = document.createElement('link');
-    link.id = 'design-fonts';
-    link.rel = 'stylesheet';
-    link.href = 'https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap';
-    document.head.appendChild(link);
-  }
   const btn = document.getElementById('design-toggle');
   btn.setAttribute('aria-pressed', String(feldbuch));
   btn.title = feldbuch ? 'Design: Feldbuch (Test) — zum Standard wechseln' : 'Design: Standard — zum Feldbuch (Test) wechseln';
@@ -9233,6 +9232,16 @@ let lastSyncedAt = null;
 function isOekopEmail(email) {
   return /@oekop\.de$/i.test((email || '').trim());
 }
+// Admin ist nicht mehr jede @oekop.de-Adresse, sondern wer in der Liste
+// admin_konten steht (supabase/admins.sql). Der Server sagt es nach der Anmeldung;
+// ohne Antwort (offline) bleibt die Verwaltung ausgeblendet.
+let kontoIstAdmin = false;
+async function adminStatusLaden() {
+  const vorher = kontoIstAdmin;
+  try { kontoIstAdmin = !!accountSession && !accountSession.offline && await istAdminAbfragen(); } catch { kontoIstAdmin = false; }
+  if (kontoIstAdmin !== vorher && accountSession && !accountModal.hidden) renderAccountModal();
+  return kontoIstAdmin;
+}
 
 // Ein Formular für Anmelden/Registrieren statt zwei Buttons nebeneinander —
 // der Tab-Umschalter oben macht unmissverständlich klar, in welchem Modus
@@ -9322,7 +9331,7 @@ function renderAccountModal() {
     sub.textContent = kontoProfil.name ? accountSession.user.email : 'FeldFolio+ Konto';
     badge.textContent = kontoInitialen();
     badge.classList.add('is-avatar');
-    const isAdmin = isOekopEmail(accountSession.user.email);
+    const isAdmin = kontoIstAdmin;
     document.getElementById('account-tab-admin').hidden = !isAdmin;
     accountAdminSection.hidden = !isAdmin;
     if (!isAdmin && accountTab === 'admin') accountTab = 'profil';
@@ -9394,6 +9403,7 @@ async function refreshAdminRequests() {
     showAdminError(err.message || 'Anfragen konnten nicht geladen werden.');
   }
   refreshAdminCodes();
+  fehlerbericht.adminZeigen();
 }
 
 // Verwaltung: Vorschläge für Nutzungscodes (je Bundesland + Code alle genannten Kulturen)
@@ -9614,12 +9624,15 @@ accountAuthForm.addEventListener('submit', async (e) => {
       accountSession = data.session;
       accountTab = 'profil';
       updateAccountButton();
-      startUserState(accountSession.user);
-      refreshAutoSyncTimer();
-      zeigeDashboardAlsStart();
       accountPasswordInput.value = '';
       document.getElementById('account-password2').value = '';
       closeAccountModal();
+      // Geräteschutz mit dem eben eingegebenen Passwort entsperren bzw. einrichten
+      const user = accountSession.user;
+      if ((await geraeteschutz.nachAnmeldung(user, password).catch(() => 'weiter')) === 'abgemeldet') return;
+      startUserState(user);
+      refreshAutoSyncTimer();
+      zeigeDashboardAlsStart();
     } else {
       showAccountError('Registrierung erfolgreich — bitte E-Mail bestätigen und dann anmelden.');
     }
@@ -9795,6 +9808,8 @@ document.getElementById('account-recovery-save').addEventListener('click', async
     await updatePassword(pw);
     accountRecoveryMode = false;
     const session = await getSession().catch(() => null);
+    const wer = session ? session.user : accountSession && accountSession.user;
+    if (wer) await geraeteschutz.passwortGeaendert(wer, pw).catch(() => {});
     if (session && (!accountSession || accountSession.user.id !== session.user.id)) {
       accountSession = session;
       updateAccountButton();
@@ -9819,7 +9834,7 @@ function setAccountTab(tab) {
   document.querySelectorAll('[data-account-panel]').forEach(p => { p.hidden = p.dataset.accountPanel !== tab; });
   if (tab === 'profil') fillProfilForm();
   if (tab === 'sync') { renderAccountSyncPanel(); renderAccountBackups(); }
-  if (tab === 'sicherheit') resetSecurityForms();
+  if (tab === 'sicherheit') { resetSecurityForms(); geraeteschutz.einstellungenZeigen(); }
 }
 document.querySelectorAll('#account-tabs [data-account-tab]').forEach(b => b.addEventListener('click', () => setAccountTab(b.dataset.accountTab)));
 
@@ -9918,6 +9933,7 @@ document.getElementById('pw-change').addEventListener('click', async () => {
   }
   try {
     await updatePassword(pw);
+    await geraeteschutz.passwortGeaendert(accountSession.user, pw).catch(() => {});
     resetSecurityForms();
     setAccountStatus('pw-status', 'Passwort geändert.', 'ok');
   } catch (err) {
@@ -10070,14 +10086,15 @@ function renderAccountMenu() {
   const sync = document.getElementById('account-menu-sync');
   sync.dataset.tone = info.tone;
   document.getElementById('account-menu-sync-text').textContent = info.title + (info.tone === 'ok' && lastSyncedAt ? ' · ' + lastSyncedAt.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '');
-  document.getElementById('account-menu-admin').hidden = !isOekopEmail(email);
+  document.getElementById('account-menu-admin').hidden = !kontoIstAdmin;
   document.getElementById('account-menu-sync-now').disabled = syncState === 'syncing' || !!accountSession.offline;
 }
 function openAccountMenu() {
   renderAccountMenu();
+  document.getElementById('account-menu-sperren').hidden = !geraeteschutz.istAktiv();
   accountMenu.hidden = false;
   accountBtn.setAttribute('aria-expanded', 'true');
-  if (isOekopEmail(accountSession.user.email)) refreshAdminCount();
+  if (kontoIstAdmin) refreshAdminCount();
   (accountMenu.querySelector('.account-menu-item:not([disabled])') || accountMenu).focus?.();
 }
 function closeAccountMenu() {
@@ -10102,10 +10119,13 @@ document.getElementById('account-menu-sync-now').addEventListener('click', () =>
 document.getElementById('account-menu-settings').addEventListener('click', () => openAccountModal('profil'));
 document.getElementById('account-menu-admin').addEventListener('click', () => openAccountModal('admin'));
 document.getElementById('account-menu-signout').addEventListener('click', () => { closeAccountMenu(); openSignoutDialog(); });
+document.getElementById('account-menu-sperren').addEventListener('click', () => { closeAccountMenu(); geraeteschutz.sperren(); });
+document.getElementById('account-menu-fehler').addEventListener('click', () => { closeAccountMenu(); fehlerbericht.oeffnen(); });
 async function refreshAdminCount() {
   let n = 0;
   try { n = (await listPendingAccessRequests()).length; } catch {}
   try { n += adminCodeGruppen(await ladeNutzungscodes()).length; } catch {}
+  try { n += await fehlerbericht.offeneAnzahl(); } catch {}
   ['account-menu-admin-count', 'account-admin-count'].forEach(id => {
     const el = document.getElementById(id);
     el.textContent = n;
@@ -10158,13 +10178,14 @@ async function performSignOut({ wipe = true, serverDone = false } = {}) {
     // Nie automatisch wieder als dieser Nutzer starten (auch nicht offline).
     try { await writeLastUser(null); } catch {}
     if (wipe) {
-      try { await deleteLocalState(userId); } catch {}
-      try { for (const r of await listQueuedUploads(userId)) await deleteQueuedUpload(r.id); } catch {}
-      try { for (const r of await listFotomappeFotos(userId)) await deleteFotomappeFoto(r.id); } catch {}
+      // Stand, Sicherungen, Uploads, Fotomappe und Geräteschutz dieses Kontos
+      try { await alleDatenLoeschen(userId); } catch {}
       try { await caches.delete(DOC_CACHE); } catch {}
     }
     try { for (let i = uploadQueue.length - 1; i >= 0; i--) if (uploadQueue[i].userId === userId) uploadQueue.splice(i, 1); } catch {}
   }
+  geraeteschutz.vergessen(); // Schlüssel aus dem Arbeitsspeicher
+  kontoIstAdmin = false;
   offlineRec = null;
   persistCache = { key: null, ws: null, shared: null };
   syncState = 'idle';
@@ -10988,10 +11009,54 @@ function restoreFromOfflineRecord() {
   rebaselineLocalState();
 }
 
+// Geräteschutz (src/geraeteschutz.js): Offline-Daten verschlüsselt, App-Sperre.
+// In automatisierten Tests (Playwright) aus, außer ein Test schaltet ihn mit
+// window.__ffTestGeraeteschutz = true ein — sonst stünde vor jedem Test der
+// Sperrbildschirm. Im Produktions-Build immer an (Dead-Code-Elimination).
+const geraeteschutz = geraeteschutzEinrichten({
+  verifyPassword: (email, pw) => verifyPassword(email, pw),
+  abmelden: () => performSignOut({ wipe: false }),
+  dokCacheLoeschen: async () => { try { await caches.delete(DOC_CACHE); } catch {} },
+  istWiederherstellung: () => accountRecoveryMode,
+  kontoSchliessen: () => closeAccountModal(),
+  aktiv: () => !(import.meta.env.DEV && navigator.webdriver && !window.__ffTestGeraeteschutz)
+});
+
+// "Fehler melden" (src/fehlerbericht.js): Dialog, Warteschlange ohne Netz, Verwaltung.
+// Der Hinweis "Da ist etwas schiefgelaufen" ist in Playwright-Läufen aus
+// (window.__ffTestFehlerHinweis schaltet ihn für den Test ein).
+const fehlerbericht = fehlerberichtEinrichten({
+  user: () => (accountSession && accountSession.user) || null,
+  istAdmin: () => kontoIstAdmin,
+  appZustand: () => {
+    try {
+      return {
+        ansicht: document.body.dataset.view || 'viewer',
+        reiter: document.body.dataset.view === 'kontrolle' ? kontrolleTab : undefined,
+        design: document.documentElement.getAttribute('data-design') || 'standard',
+        farbschema: document.documentElement.getAttribute('data-theme') || 'auto',
+        angemeldet: !!accountSession,
+        offlineGestartet: !!(accountSession && accountSession.offline),
+        betriebGewaehlt: !!activeZuordnung,
+        abgleich: syncState,
+        autoAbgleich: autoSyncEnabled,
+        nichtAbgeglichen: hasPendingLocalChanges(),
+        wartendeUploads: myUploads().length,
+        geraeteschutz: geraeteschutz.istAktiv()
+      };
+    } catch { return {}; }
+  },
+  bildAnsehen: (blob, name) => openDocViewer([{ name, blob, type: blob.type || 'image/jpeg' }]),
+  toast: (text) => showToast(text),
+  hinweisAktiv: () => !(import.meta.env.DEV && navigator.webdriver && !window.__ffTestFehlerHinweis),
+  adminZahlAktualisieren: () => refreshAdminCount()
+});
+
 // Start mit einem (ggf. nur lokal bekannten) Nutzer: erst den lokalen Stand
 // zeigen (sofort, auch ohne Netz), dann — falls online — mit der Cloud
-// abgleichen.
+// abgleichen. Vorher ggf. entsperren (Geräteschutz).
 async function startUserState(user) {
+  if ((await geraeteschutz.vorStart(user, { offline: !!(accountSession && accountSession.offline) })) === 'abgemeldet') return;
   try { await writeLastUser({ id: user.id, email: user.email }); } catch {}
   let rec = null;
   try { rec = await readLocalState(user.id); } catch {}
@@ -11006,7 +11071,11 @@ async function startUserState(user) {
   resumeUploadQueue();
   if (accountSession && !accountSession.offline && navigator.onLine) await initialCloudLoad(!rec);
   nutzungscodesAbgleichen({ erzwingen: true });
+  fehlerbericht.warteschlangeSenden(); // ohne Netz geschriebene Meldungen
+  await adminStatusLaden();
+  startsFertig += 1;
 }
+let startsFertig = 0; // für Tests: abgeschlossene Starts (nach dem Entsperren)
 
 async function initialCloudLoad(firstOnThisDevice) {
   if (!firstOnThisDevice && hasPendingLocalChanges()) {
@@ -11056,11 +11125,7 @@ async function initAccountAndState() {
     // dem zuletzt angemeldeten Nutzer und seinem lokalen Stand weiterarbeiten,
     // der Abgleich folgt, sobald wieder Internet da ist.
     const last = await readLastUser();
-    if (last && !navigator.onLine) {
-      let rec = null;
-      try { rec = await readLocalState(last.id); } catch {}
-      if (rec) session = { user: last, offline: true };
-    }
+    if (last && !navigator.onLine && await hatLocalState(last.id)) session = { user: last, offline: true };
   }
   accountSession = session;
   updateAccountButton();
@@ -11089,6 +11154,7 @@ window.addEventListener('online', async () => {
     accountSession = session;
     updateAccountButton();
     refreshAutoSyncTimer();
+    adminStatusLaden();
   }
   if (accountSession) syncWithCloud();
 });
@@ -11107,10 +11173,11 @@ if (import.meta.env.DEV) {
     readStored: (userId) => readLocalState(userId),
     pending: () => hasPendingLocalChanges(),
     currentWorkspaceKey: () => currentWorkspaceKey,
+    starts: () => startsFertig,
     // Neustart der App nachstellen (gleicher Ablauf wie beim Seitenaufruf).
     boot: () => initAccountAndState(),
     // In-Memory-Stand verwerfen (wie beim Schließen der App).
-    clear: () => { clearWorkspace(); setActiveZuordnung(null); currentWorkspaceKey = NO_BETRIEB_KEY; },
+    clear: () => { clearWorkspace(); setActiveZuordnung(null); currentWorkspaceKey = NO_BETRIEB_KEY; geraeteschutz.vergessen(); },
     // Betrieb wechseln wie über den Betrieb-Dialog.
     switchTo: (betrieb) => applyZuordnungSelection(betrieb ? { betrieb, year: new Date().getFullYear(), terminId: null, terminLabel: null } : null),
     backups: (userId) => listBackups(userId)
@@ -13799,7 +13866,9 @@ async function loadDocBlob(item) {
   try { cache = await caches.open(DOC_CACHE); } catch {}
   if (cache) {
     const hit = await cache.match(docCacheKey(item.path)).catch(() => null);
-    if (hit) return hit.blob();
+    // bei Geräteschutz verschlüsselt abgelegt; nicht lesbar -> neu laden
+    const ausCache = hit ? await cacheAuspacken(currentUserId(), hit).catch(() => null) : null;
+    if (ausCache) return ausCache;
   }
   if (!navigator.onLine) throw new Error('Keine Internetverbindung — diese Datei wurde auf diesem Gerät noch nicht geöffnet.');
   const url = await getPhotoUrl(item.path);
@@ -13807,7 +13876,7 @@ async function loadDocBlob(item) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Datei konnte nicht geladen werden (${res.status}).`);
   const blob = await res.blob();
-  if (cache) cache.put(docCacheKey(item.path), new Response(blob, { headers: { 'Content-Type': item.type || blob.type || 'application/octet-stream' } })).catch(() => {});
+  if (cache) cacheVerpacken(currentUserId(), blob, item.type).then(r => r && cache.put(docCacheKey(item.path), r)).catch(() => {});
   return blob;
 }
 function docKind(item, blob) {

@@ -2,6 +2,13 @@ import { defineConfig, loadEnv } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { execSync } from 'node:child_process';
+
+// Versionsangaben für Fehlerberichte (src/fehlerbericht.js): Version aus
+// package.json, Commit (falls git verfügbar) und Zeitpunkt des Builds.
+const APP_VERSION = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version;
+let APP_COMMIT = '';
+try { APP_COMMIT = execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim(); } catch { /* ohne git */ }
 
 // ---- Content-Security-Policy ----
 // Legt fest, woher die Seite Skripte, Stile, Bilder und Verbindungen laden darf —
@@ -40,8 +47,8 @@ function cspPlugin() {
           // kein 'unsafe-inline', kein 'unsafe-eval': OpenCV (braucht eval) läuft in
           // public/scan-sandbox.html mit eigener Policy, Turf kommt per npm (src/geo.js)
           'script-src': ["'self'", ...cdnSkripte, PDFJS, ...inline],
-          'style-src': ["'self'", "'unsafe-inline'", ...cdnStile, 'https://fonts.googleapis.com'],
-          'font-src': ["'self'", 'data:', 'https://fonts.gstatic.com'],
+          'style-src': ["'self'", "'unsafe-inline'", ...cdnStile],
+          'font-src': ["'self'", 'data:'],
           'img-src': ["'self'", 'data:', 'blob:', ...cdnBilder, ...KARTEN, ...supabase.slice(0, 1), ...(dev ? ['https://*.test'] : [])],
           // blob:/data: = eigene, im Browser erzeugte Inhalte (kein Weg nach außen)
           'connect-src': ["'self'", 'blob:', 'data:', ...supabase, 'https://nominatim.openstreetmap.org', PDFJS, 'https://docs.opencv.org', ...devVerbindung],
@@ -66,7 +73,7 @@ function cspPlugin() {
 // da (beim ersten kontrolliert der Service Worker die Seite noch nicht).
 // Direkt aus index.html gelesen, damit die Liste nie veraltet.
 const CDN_URLS = [...new Set(readFileSync(new URL('./index.html', import.meta.url), 'utf8')
-  .match(/https:\/\/(cdnjs\.cloudflare\.com|fonts\.googleapis\.com)\/[^"'\s]+/g) || [])]
+  .match(/https:\/\/cdnjs\.cloudflare\.com\/[^"'\s]+/g) || [])]
   .map(url => url.replace(/&amp;/g, '&'));
 
 // Offline-Fähigkeit (Stallplan im Stall ohne Empfang): der Service Worker
@@ -81,6 +88,11 @@ export default defineConfig({
   // Service Worker auf die Domain-Wurzel — die App war dann nicht
   // installierbar. './' funktioniert unter Unterpfad und eigener Domain.
   base: './',
+  define: {
+    __FF_VERSION__: JSON.stringify(APP_VERSION),
+    __FF_COMMIT__: JSON.stringify(APP_COMMIT),
+    __FF_BUILD__: JSON.stringify(new Date().toISOString())
+  },
   server: {
     port: 5173,
     strictPort: true,
@@ -167,15 +179,6 @@ export default defineConfig({
               cacheableResponse: { statuses: [0, 200] }
             }
           },
-          {
-            urlPattern: ({ url }) => url.origin === 'https://fonts.googleapis.com' || url.origin === 'https://fonts.gstatic.com',
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'schriften',
-              expiration: { maxEntries: 20, maxAgeSeconds: 60 * 60 * 24 * 365 },
-              cacheableResponse: { statuses: [0, 200] }
-            }
-          }
           // Kartenkacheln (OSM, OpenTopoMap, Esri) werden bewusst NICHT
           // gespeichert — deren Nutzungsbedingungen untersagen Massen-Caching;
           // offline bleibt der Kartenhintergrund daher leer.

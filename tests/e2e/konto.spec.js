@@ -100,9 +100,41 @@ test.describe('Anmelde-Fenster', () => {
     const menu = page.locator('#account-menu');
     await expect(menu).toBeVisible();
     await expect(page.locator('#account-menu-name')).toHaveText('leon@oekop.de');
-    await expect(page.locator('#account-menu-admin')).toBeVisible(); // oekop.de = Admin
+    // @oekop.de allein macht nicht zum Admin — das entscheidet der Server (Liste admin_konten)
+    await expect(page.locator('#account-menu-admin')).toBeHidden();
     await page.keyboard.press('Escape');
     await expect(menu).toBeHidden();
+  });
+
+  test('Admin nur laut Server: Verwaltung im Menü und im Konto-Dialog, nach dem Abmelden weg', async ({ page }) => {
+    await page.addInitScript(() => { window.__ffTestAdmin = true; }); // Server: "ist_admin" = ja
+    await page.goto('/');
+    await setupCloud(page, { workspaces: {} });
+    await stubAuth(page);
+    await page.locator('#btn-account').click();
+    await page.locator('#account-email').fill('admin@oekop.de');
+    await page.locator('#account-password').fill('richtig123');
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#btn-account')).toHaveClass(/logged-in/);
+    await page.locator('#btn-account').click();
+    await expect(page.locator('#account-menu-admin')).toBeVisible();
+    await page.locator('#account-menu-settings').click();
+    await expect(page.locator('#account-tab-admin')).toBeVisible();
+    await page.keyboard.press('Escape');
+    // Abmelden: Admin-Status fällt weg (auch wenn sich danach ein anderes Konto anmeldet)
+    await page.evaluate(() => { window.__ffTestAdmin = false; });
+    await page.locator('#btn-account').click();
+    await page.locator('#account-menu-signout').click();
+    await page.locator('#signout-confirm').click();
+    await expect(page.locator('#btn-account')).not.toHaveClass(/logged-in/);
+    await page.locator('#btn-account').click();
+    await page.locator('#account-email').fill('kollege@oekop.de');
+    await page.locator('#account-password').fill('richtig123');
+    await page.keyboard.press('Enter');
+    await expect(page.locator('#btn-account')).toHaveClass(/logged-in/);
+    await page.locator('#btn-account').click();
+    await expect(page.locator('#account-menu')).toBeVisible();
+    await expect(page.locator('#account-menu-admin')).toBeHidden();
   });
 
   test('Passwort vergessen: Link anfordern, neues Passwort festlegen', async ({ page }) => {

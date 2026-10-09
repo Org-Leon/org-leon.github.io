@@ -7,15 +7,15 @@
 -- einen Nutzungscode. Die App lernt die Bedeutung aus dem Flächen- und
 -- Nutzungsnachweis (PDF) oder der Kontrolleur trägt sie selbst ein. Jede so
 -- gefundene Kombination wird hier als VORSCHLAG abgelegt; ein Admin
--- (@oekop.de) gibt ihn frei oder lehnt ihn ab. Freigegebene Codes lädt jede
+-- (Liste admin_konten, siehe admins.sql) gibt ihn frei oder lehnt ihn ab. Freigegebene Codes lädt jede
 -- App und übersetzt damit die Flächen aller Nutzer.
 --
 -- Rechte (Row Level Security):
 --   - angemeldete Nutzer: freigegebene Codes und eigene Vorschläge lesen,
 --     eigene Vorschläge anlegen (nur Status "vorschlag")
---   - Admins (bestätigte @oekop.de-Adresse): alles lesen, freigeben/ablehnen
+--   - Admins (admins.sql, muss vorher gelaufen sein): alles lesen, freigeben/ablehnen
 -- Voraussetzung: In Supabase sind "Confirm email" und "Secure email change"
--- eingeschaltet — sonst könnte sich jemand eine @oekop.de-Adresse geben.
+-- eingeschaltet — sonst könnte sich jemand eine fremde Adresse geben.
 
 create table if not exists public.nutzungscodes (
   id                bigint generated always as identity primary key,
@@ -33,14 +33,14 @@ create table if not exists public.nutzungscodes (
 
 create index if not exists nutzungscodes_status_idx on public.nutzungscodes (status);
 
--- Admin = angemeldet mit @oekop.de-Adresse (aus dem Token, nicht vom Client)
+-- Admin = steht in der Liste admin_konten (admins.sql)
 create or replace function public.nutzungscodes_ist_admin()
 returns boolean
 language sql
 stable
 set search_path = public
 as $$
-  select coalesce(lower(auth.jwt() ->> 'email') like '%@oekop.de', false);
+  select public.ist_admin();
 $$;
 
 alter table public.nutzungscodes enable row level security;

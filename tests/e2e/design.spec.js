@@ -8,6 +8,25 @@ const stil = (page, sel) => page.locator(sel).first().evaluate(el => {
 });
 
 test.describe('Design (Test): Standard / Feldbuch', () => {
+  test('Schriften ohne Google Fonts: keine Anfrage an Google, Fraunces und Plex aus der App', async ({ page }) => {
+    const fremd = [];
+    const eigen = [];
+    page.on('request', r => {
+      const u = r.url();
+      if (/fonts.(googleapis|gstatic).com/.test(u)) fremd.push(u);
+      else if (r.resourceType() === 'font') eigen.push(new URL(u).origin);
+    });
+    await page.goto('/');
+    await expect.poll(() => page.evaluate(async () => { await document.fonts.ready; return document.fonts.check('900 21px Fraunces'); })).toBe(true);
+    await page.locator('#design-toggle').click();
+    await expect.poll(() => page.evaluate(async () => { await document.fonts.ready; return document.fonts.check('500 13px "FF Plex Mono"'); })).toBe(true);
+    expect(fremd).toEqual([]);
+    expect(eigen.length).toBeGreaterThan(0);
+    expect([...new Set(eigen)]).toEqual([new URL(page.url()).origin]);
+    await page.locator('#design-toggle').click(); // zurück auf Standard
+  });
+
+
   test('Standard ist Vorgabe; Umschalter wechselt, Wahl bleibt nach dem Neuladen', async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('html')).not.toHaveAttribute('data-design', /.+/);
@@ -19,11 +38,11 @@ test.describe('Design (Test): Standard / Feldbuch', () => {
     await expect(page.locator('#design-toggle')).toHaveAttribute('aria-pressed', 'true');
     const feld = await stil(page, '.segment-btn');
     expect(feld.radius).toBe('0px');                 // harte Kanten
-    expect(feld.font).toContain('IBM Plex Mono');    // Schreibmaschine für Beschriftungen
+    expect(feld.font).toContain('FF Plex Mono');      // Schreibmaschine für Beschriftungen (IBM Plex Mono, selbst ausgeliefert)
     expect(feld.bg).not.toBe(vorher.bg);
     expect((await stil(page, '#current-view-title')).font).toContain('Fraunces');
-    // Schalter bleiben rund (Ausnahme von den harten Kanten)
-    await expect(page.locator('#design-fonts')).toHaveCount(1);
+    // Schriften kommen von der App selbst und sind tatsächlich geladen
+    await expect.poll(() => page.evaluate(async () => { await document.fonts.ready; return document.fonts.check('500 13px "FF Plex Mono"') && document.fonts.check('600 14px "FF Plex Sans"'); })).toBe(true);
 
     await page.reload();
     await expect(page.locator('html')).toHaveAttribute('data-design', 'feldbuch');

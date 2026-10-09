@@ -600,14 +600,47 @@ Die App funktioniert ohne Verbindung weiter, wenn du auf dem Gerät schon angeme
 
 Wurde derselbe Betrieb inzwischen auf einem anderen Gerät geändert, fragt die App beim Abgleich nach, welcher Stand gelten soll.
 
+### Daten auf diesem Gerät schützen (Geräteschutz)
+
+Damit du ohne Empfang arbeiten kannst, liegen deine Kontrolldaten auch auf dem Gerät: Termine, Protokolle, Flächen, Pläne, noch nicht hochgeladene Fotos und geöffnete Dokumente. Der Geräteschutz verschlüsselt diese Daten mit deinem Konto-Passwort. Geht ein Handy oder Tablet verloren, kann ohne dein Passwort niemand sie lesen.
+
+- **Einrichten:** Der Schutz ist von Anfang an eingeschaltet. Er wird beim Anmelden mit deinem Passwort eingerichtet. Warst du schon vorher angemeldet, fragt die App einmal nach deinem Passwort („Daten auf diesem Gerät schützen“). Dafür braucht es einmal Internet, weil das Passwort geprüft wird. Mit „Ohne Schutz weiter“ lässt du ihn aus.
+- **Entsperren:** Beim Öffnen der App und nach einer Weile ohne Bedienung zeigt die App „FeldFolio ist gesperrt“. Gib dein Konto-Passwort ein; das geht auch ohne Empfang. Sperrt sich die App nach einer Weile ohne Bedienung, laufen Abgleich und Uploads im Hintergrund weiter.
+- **Fingerabdruck oder Gesicht:** Unter **Konto & Einstellungen → Sicherheit** richtest du mit „Mit Fingerabdruck oder Gesicht entsperren“ zusätzlich das Entsperren über die Gerätesperre ein. Das geht nur auf Geräten, die es für Web-Apps anbieten (z. B. Windows Hello, aktuelle Android-Geräte, iPhone/iPad ab iOS 18). Das Passwort funktioniert immer.
+- **Sofort sperren:** im Konto-Menü „Jetzt sperren“, zum Beispiel bevor du das Tablet aus der Hand gibst.
+- **Einstellungen** unter **Konto & Einstellungen → Sicherheit → Daten auf diesem Gerät:**
+  - „Automatisch sperren nach“: 5, 15 (Voreinstellung), 30 oder 60 Minuten ohne Bedienung, oder „Nur beim Öffnen der App“.
+  - „Verschlüsseln und App sperren“: Ausschalten und wieder Einschalten geht jeweils nur mit deinem Passwort. Die Einstellung gilt für dieses Gerät.
+- **Passwort geändert:** Änderst du dein Passwort in der App, gilt hier sofort das neue. Hast du es auf einem anderen Gerät geändert, fragt die App beim nächsten Anmelden hier einmal nach dem bisherigen Passwort.
+- **Passwort vergessen:** Ohne das Passwort, mit dem die Daten geschützt wurden, lassen sie sich nicht öffnen. Unter „Passwort vergessen oder geändert?“ auf dem Sperrbildschirm kannst du sie auf diesem Gerät löschen. Was schon mit der Cloud abgeglichen war, lädt die App danach neu; nicht abgeglichene Änderungen gehen verloren. Ein neues Passwort setzt du über „Passwort vergessen?“ beim Anmelden.
+
+Der Geräteschutz ersetzt nicht die Sperre des Geräts selbst: Richte auf jedem Dienstgerät eine Bildschirmsperre (PIN, Fingerabdruck) ein. Geht ein Gerät verloren, melde dich in den Einstellungen mit „Auf allen Geräten abmelden“ überall ab.
+
+### Fehler melden
+
+Klappt etwas nicht, fehlt dir eine Funktion oder hast du eine Frage, meldest du das direkt aus der App: im Konto-Menü **„Fehler melden“** (nur angemeldet). Die Meldung geht an das FeldFolio-Team und bekommt eine Nummer (z. B. #12).
+
+- **Art:** „Fehler“, „Verbesserung“ oder „Frage“.
+- **Kurzbeschreibung** (Pflicht), dann je nach Art:
+  - bei Fehlern „Was hast du gemacht? (Schritte zum Nachstellen)“, „Was hast du erwartet?“ und „Was ist stattdessen passiert?“, dazu **Auswirkung** (Kritisch, Hoch, Mittel, Niedrig) und **Wie oft?**;
+  - bei Verbesserungen und Fragen ein Feld zum Beschreiben.
+  Je genauer die Schritte, desto schneller lässt sich der Fehler finden.
+- **Bildschirmfoto:** Die App macht beim Öffnen ein Bild der aktuellen Ansicht (Kartenhintergründe bleiben dabei grau). Es geht nur mit, wenn du **„Bildschirmfoto anhängen“** ankreuzt — es kann Betriebsdaten zeigen. Antippen vergrößert es. Mit „Eigenes Bild wählen“ hängst du stattdessen ein anderes Bild an, z. B. ein Bildschirmfoto deines Geräts.
+- **Technische Angaben** gehen immer mit: Version der App, Browser, Gerät, aktuelle Ansicht, Verbindungs- und Speicherstand sowie die letzten Fehlermeldungen und Klicks der App. Inhalte, E-Mail-Adressen und längere Nummern (z. B. Ohrmarken) werden vorher entfernt. Unter „Technische Angaben (werden mitgesendet)“ siehst du genau, was mitgeht.
+- **Ohne Empfang** wird die Meldung auf dem Gerät gespeichert und automatisch gesendet, sobald wieder Verbindung da ist.
+- **Meine Meldungen** (zweiter Reiter) zeigt deine Meldungen mit Nummer und Stand: Neu, Bestätigt, In Arbeit, Erledigt, Abgelehnt oder Duplikat.
+
+Tritt in der App ein unerwarteter Fehler auf, erscheint unten rechts kurz „Da ist etwas schiefgelaufen.“ mit dem Knopf **„Fehler melden“**; die Fehlermeldung steht dann schon im Bericht.
+
 ### Konto-Dialog
 
 - **Profil:** Name, Telefon, Kontrollstelle, Kürzel/Prüfernummer und deine Unterschrift. Name und Unterschrift werden in Protokollen vorbelegt.
-- **Sicherheit:** Passwort ändern.
+- **Sicherheit:** Daten auf diesem Gerät schützen (siehe oben), Passwort ändern.
 - **Sync & Gerät:** automatischer Abgleich, Sicherungen des Arbeitsstands.
 - **Abmelden:** wahlweise mit Löschen der Daten auf diesem Gerät (empfohlen auf fremden Geräten) und auf allen Geräten abmelden. Nach dem Abmelden ist kein Betrieb mehr gewählt, und seine Flächen und Pläne verschwinden aus der Ansicht. Meldest du dich wieder an, ist der zuletzt gewählte Betrieb wieder da.
 - **Konto löschen.**
-- **Verwaltung** (nur für Konten der Kontrollstelle): offene Zugangsanfragen freischalten oder ablehnen, und **Nutzungscodes – Vorschläge** prüfen. Je Bundesland und Code stehen dort alle vorgeschlagenen Kulturen, mit der Zahl der Nutzer und der Herkunft (Nutzungsnachweis oder eingetragen). **„Freigeben“** macht eine Kultur für alle gültig und lehnt die anderen Vorschläge für denselben Code ab; **„Ablehnen“** verwirft einen Vorschlag.
+- **Verwaltung** (nur für freigeschaltete Admin-Konten): offene Zugangsanfragen freischalten oder ablehnen, **Fehlerberichte** bearbeiten und **Nutzungscodes – Vorschläge** prüfen. Je Bundesland und Code stehen dort alle vorgeschlagenen Kulturen, mit der Zahl der Nutzer und der Herkunft (Nutzungsnachweis oder eingetragen). **„Freigeben“** macht eine Kultur für alle gültig und lehnt die anderen Vorschläge für denselben Code ab; **„Ablehnen“** verwirft einen Vorschlag.
+  Unter **Fehlerberichte** stehen die Meldungen aller Nutzer (Auswahl „Offene“ oder „Alle“). Ein Tipp auf eine Meldung zeigt alle Angaben, das Bildschirmfoto, die Umgebung und das Protokoll. Dort setzt du **Status**, **Priorität** (P1 bis P4) und bei Duplikaten die Nummer der ursprünglichen Meldung, dazu eine **interne Notiz**; „Speichern“ übernimmt das, der Melder sieht den neuen Stand. „Als Markdown kopieren“ gibt eine Meldung im üblichen Format für Fehler-Tickets weiter, der Knopf mit dem Pfeil lädt die ganze Liste als Datei herunter.
 
 ---
 
@@ -636,5 +669,7 @@ Wurde derselbe Betrieb inzwischen auf einem anderen Gerät geändert, fragt die 
 | Foto oder Scan erscheint nicht | Der Upload wartet auf Empfang. Der Status steht an der Datei im Reiter „Dokumente“; antippen startet ihn neu. |
 | Tierbestand: „kein HIT-Bestandsregister erkannt“ | Das Bestandsregister in HI-Tier als PDF speichern (nicht als Bild oder Scan) und unverändert laden. |
 | Dashboard und Betrieb fehlen in der Funktionsauswahl | Beide gibt es nur angemeldet. |
+| Sperrbildschirm nimmt das Passwort nicht an | Die Daten auf dem Gerät sind mit dem Passwort geschützt, das beim Einrichten galt. Hast du es seitdem auf einem anderen Gerät geändert, gib das bisherige ein. Sonst unter „Passwort vergessen oder geändert?“ die Daten auf diesem Gerät löschen (Abgeglichenes kommt aus der Cloud zurück). |
+| Etwas funktioniert nicht wie erwartet | Im Konto-Menü „Fehler melden“ wählen und die Schritte beschreiben. |
 | App zeigt einen alten Stand | Seite neu laden. Die installierte App einmal schließen und wieder öffnen. |
 | Kein Kartenbild | Kartenhintergründe brauchen Empfang. Flächen und Daten bleiben nutzbar. |

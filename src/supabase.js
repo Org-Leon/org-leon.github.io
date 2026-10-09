@@ -220,7 +220,18 @@ export async function requestAccess({ email, name, message }) {
   if (error) throw error;
 }
 
-// RLS lässt SELECT nur für @oekop.de-Sessions zu (siehe Migrations-SQL) —
+// Ist das angemeldete Konto Admin? Entscheidet der Server (Liste admin_konten,
+// supabase/admins.sql) — die App blendet damit nur die Verwaltung ein, die
+// Rechte selbst setzen die Regeln in der Datenbank durch.
+export async function istAdminAbfragen() {
+  if (import.meta.env.DEV && navigator.webdriver) return !!window.__ffTestAdmin; // Tests: per Haken
+  if (!supabase) return false;
+  const { data, error } = await supabase.rpc('ist_admin');
+  if (error) throw error;
+  return data === true;
+}
+
+// RLS lässt SELECT nur für Admins zu (supabase/admins.sql) —
 // für alle anderen kommt hier einfach eine leere Liste zurück statt eines
 // Fehlers, das Admin-UI zeigt sich dann ohnehin gar nicht erst an.
 export async function listPendingAccessRequests() {
@@ -390,5 +401,50 @@ export async function entscheideNutzungscode({ land, code, kultur, freigeben }) 
   }
   const { error } = await supabase.from(CODES_TABLE).update({ status: freigeben ? 'freigegeben' : 'abgelehnt', ...geprueft })
     .eq('land', land).eq('code', code).eq('kultur', kultur);
+  if (error) throw error;
+}
+
+// ---------- Fehlerberichte („Fehler melden“, src/fehlerbericht.js) ----------
+// Tabelle "fehlerberichte", siehe supabase/fehlerberichte.sql.
+const FEHLER_TABLE = 'fehlerberichte';
+const FEHLER_LISTE = 'id, nummer, client_id, erstellt_am, geaendert_am, email, art, schwere, haeufigkeit, titel, schritte, erwartet, tatsaechlich, umgebung, protokoll, hat_bild, status, prioritaet, duplikat_von, notiz';
+// Dev-Testhaken wie bei den Nutzungscodes: unter Playwright nie den echten Server
+const fehlerStub = () => (import.meta.env.DEV && (window.__ffTestFehler || navigator.webdriver)
+  ? (window.__ffTestFehler || { senden: async () => ({ nummer: null }), laden: async () => [], bild: async () => null, aktualisieren: async () => {} })
+  : null);
+
+// Meldung anlegen; doppelt gesendete (gleiche client_id, z. B. nach Verbindungsabbruch)
+// werden ignoriert. Liefert { nummer }.
+export async function fehlerberichtSenden(zeile) {
+  if (fehlerStub()) return fehlerStub().senden(zeile);
+  if (!supabase) throw new Error('Cloud-Konto ist nicht konfiguriert.');
+  assertOnline();
+  const { error } = await supabase.from(FEHLER_TABLE).upsert(zeile, { onConflict: 'client_id', ignoreDuplicates: true });
+  if (error) throw error;
+  const { data } = await supabase.from(FEHLER_TABLE).select('nummer').eq('client_id', zeile.client_id).maybeSingle();
+  return { nummer: data ? data.nummer : null };
+}
+// Eigene Meldungen (Admins: alle), neueste zuerst — ohne Bildschirmfoto
+export async function fehlerberichteLaden() {
+  if (fehlerStub()) return fehlerStub().laden();
+  if (!supabase) return [];
+  const { data, error } = await supabase.from(FEHLER_TABLE).select(FEHLER_LISTE).order('erstellt_am', { ascending: false }).limit(500);
+  if (error) throw error;
+  return data || [];
+}
+export async function fehlerberichtBild(id) {
+  if (fehlerStub()) return fehlerStub().bild(id);
+  if (!supabase) return null;
+  const { data, error } = await supabase.from(FEHLER_TABLE).select('screenshot').eq('id', id).maybeSingle();
+  if (error) throw error;
+  return data ? data.screenshot : null;
+}
+// Admin: Status, Priorität, Duplikat-Verweis, Notiz
+export async function fehlerberichtAktualisieren(id, felder) {
+  if (fehlerStub()) return fehlerStub().aktualisieren(id, felder);
+  if (!supabase) throw new Error('Cloud-Konto ist nicht konfiguriert.');
+  const erlaubt = {};
+  ['status', 'prioritaet', 'duplikat_von', 'notiz'].forEach(k => { if (k in felder) erlaubt[k] = felder[k]; });
+  const { error } = await supabase.from(FEHLER_TABLE).update(erlaubt).eq('id', id);
   if (error) throw error;
 }

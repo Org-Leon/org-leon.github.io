@@ -31,7 +31,7 @@ const ICON_NAMES = [
   'folder_open', 'format_color_fill', 'format_color_reset', 'grass',
   'grid_on', 'handyman', 'history', 'hive', 'home_work', 'info',
   'install_mobile', 'ios_share', 'key', 'layers', 'light_mode',
-  'location_on', 'logout', 'mail', 'manage_accounts', 'map', 'menu',
+  'location_on', 'lock', 'fingerprint', 'bug_report', 'lightbulb', 'send', 'image', 'logout', 'mail', 'manage_accounts', 'map', 'menu',
   'more_horiz', 'my_location', 'open_in_full', 'open_in_new', 'palette', 'park', 'pending_actions', 'pin', 'bar_chart', 'bolt', 'folder', 'folder_zip', 'tune', 'unfold_less', 'view_list',
   'person', 'pets', 'photo_camera', 'photo_library', 'picture_as_pdf',
   'polyline', 'radio_button_checked', 'rectangle', 'redo', 'refresh',

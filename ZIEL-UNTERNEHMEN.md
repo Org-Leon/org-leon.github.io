@@ -19,7 +19,8 @@ Daten“ — plus Datenschutz, Betrieb und Lizenzen.
 
 - [ ] Supabase auf bezahlten Plan (Pro), Region EU/Frankfurt; Backups, optional PITR
 - [ ] AVV/DPA mit Supabase, Verarbeitungsverzeichnis, kurze DSFA, Löschkonzept
-- [ ] Admin-Recht über Rollentabelle + RLS statt `@oekop.de`-Domainprüfung
+- [x] Admin-Recht über Rollentabelle + RLS statt `@oekop.de`-Domainprüfung
+      (`supabase/admins.sql`, Tabelle `admin_konten`, Funktion `ist_admin()`; 9. Oktober 2026)
 - [ ] Alle RLS-Policies/Tabellen als SQL versioniert im Repo (`supabase/`)
 - [ ] Konto löschen: Storage-Liste nicht auf 100 Dateien begrenzen
 - [ ] Admin-Funktion „Nutzer sperren + Daten an Kollegen übergeben“

@@ -37,6 +37,15 @@
    Produktions-Build per Dead-Code-Elimination entfernt, taucht also nie in
    `docs/` auf). Wiederverwendbare Test-Helfer (Tab wechseln, Zeichnen
    auslösen, Testkoordinaten) liegen in `tests/e2e/helpers.js`.
+   **Geräteschutz** (Verschlüsselung + Sperrbildschirm, `src/geraeteschutz.js`)
+   ist in Playwright-Läufen aus (Dev-Server + `navigator.webdriver`), sonst
+   stünde vor jedem Test der Sperrbildschirm. Tests dafür schalten ihn per
+   `page.addInitScript(() => { window.__ffTestGeraeteschutz = true; })` ein,
+   siehe `tests/e2e/geraeteschutz.spec.js`. Im Produktions-Build immer aktiv.
+   Ebenso der Hinweis „Da ist etwas schiefgelaufen“ von **Fehler melden**
+   (`src/fehlerbericht.js`): in Tests aus, `window.__ffTestFehlerHinweis`
+   schaltet ihn ein; der Server wird über `window.__ffTestFehler` gestubbt
+   (`tests/e2e/fehlerbericht.spec.js`).
 
 3. Für rein visuelle Prüfungen (Layout-Feinheiten, Screenshots), die sich
    nicht sinnvoll als Assertion ausdrücken lassen, weiterhin die
@@ -100,6 +109,18 @@
    - **Dev-Server**: `npm run dev` ist nur auf diesem Rechner erreichbar und
      liefert `test-shapes/` (echte Betriebsdaten) nicht aus. Für Tests vom
      Handy im selben WLAN `npm run dev:lan` — nicht in fremden Netzen.
+   - **Schriften** liefert die App selbst aus (npm-Pakete `@fontsource…`,
+     `@font-face` in `src/style.css` bzw. `src/design-feldbuch.css`) — keine
+     Google Fonts oder andere Schrift-CDNs (IP-Adressen an Dritte, DSGVO).
+   - **Nutzerdaten auf dem Gerät** nur über `src/offline-store.js` ablegen
+     (IndexedDB bzw. `cacheVerpacken`/`cacheAuspacken` für die Cache API):
+     dort werden sie bei aktivem Geräteschutz verschlüsselt. Keine
+     Kontrolldaten in `localStorage` (nur Ansichts-Einstellungen).
    - **Server-Regeln** (RLS, Trigger) liegen als SQL in `supabase/`; der
      öffentliche Schlüssel steckt in der App, den Schutz leisten allein diese
      Regeln. `supabase/rls-pruefen.sql` zeigt den Ist-Zustand.
+   - **Admin** ist, wer in der Tabelle `admin_konten` steht
+     (`supabase/admins.sql`, Funktion `public.ist_admin()`) — nicht jede
+     @oekop.de-Adresse (die dürfen sich nur registrieren). Neue Admin-Prüfungen
+     in SQL immer über `public.ist_admin()`; die App fragt den Status per
+     `istAdminAbfragen()` (Tests: `window.__ffTestAdmin = true`).

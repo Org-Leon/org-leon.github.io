@@ -70,6 +70,13 @@ test.describe('Content-Security-Policy', () => {
     await page.locator('#tk-attachments-grid [data-dv-index]').nth(1).click();
     await expect(page.locator('#dv-pdf canvas').first()).toBeVisible({ timeout: 30000 });
     await page.keyboard.press('Escape');
+    await page.keyboard.press('Escape');
+    // "Fehler melden": Bildschirmfoto der Ansicht mit Karte (fremde Kacheln werden nicht abgefragt)
+    await page.locator('.segment-btn[data-view="viewer"]').click();
+    await page.locator('#btn-account').click();
+    await page.locator('#account-menu-fehler').click();
+    await expect(page.locator('#fb-bild-vorschau')).toBeVisible({ timeout: 20000 });
+    await page.keyboard.press('Escape');
     expect(await verstoesse(page)).toEqual([]);
   });
 

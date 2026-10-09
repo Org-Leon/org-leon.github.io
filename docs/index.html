@@ -4,7 +4,7 @@
 <!-- hello -->
 
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js https://cdnjs.cloudflare.com/ajax/libs/shpjs/6.2.0/shp.min.js https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.22.0/proj4.min.js https://cdnjs.cloudflare.com/ajax/libs/jspdf/4.2.1/jspdf.umd.min.js https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/5.0.8/jspdf.plugin.autotable.min.js https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/ 'sha256-4Tsqpn2H7ShIgQ4bhA+vXp9yh5WalkcTIdHrk4HcdKk='; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css https://fonts.googleapis.com; font-src 'self' data: https://fonts.gstatic.com; img-src 'self' data: blob: https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/ https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/images/ https://*.tile.openstreetmap.org https://*.tile.opentopomap.org https://server.arcgisonline.com https://tmvbdkydvwrqxlcmrsnj.supabase.co; connect-src 'self' blob: data: https://tmvbdkydvwrqxlcmrsnj.supabase.co wss://tmvbdkydvwrqxlcmrsnj.supabase.co https://nominatim.openstreetmap.org https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/ https://docs.opencv.org; media-src 'self' blob:; worker-src 'self' blob:; frame-src 'self'; object-src 'self' blob:; manifest-src 'self'; base-uri 'self'; form-action 'self'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js https://cdnjs.cloudflare.com/ajax/libs/shpjs/6.2.0/shp.min.js https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.22.0/proj4.min.js https://cdnjs.cloudflare.com/ajax/libs/jspdf/4.2.1/jspdf.umd.min.js https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/5.0.8/jspdf.plugin.autotable.min.js https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/ 'sha256-4Tsqpn2H7ShIgQ4bhA+vXp9yh5WalkcTIdHrk4HcdKk='; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css; font-src 'self' data:; img-src 'self' data: blob: https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/ https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/images/ https://*.tile.openstreetmap.org https://*.tile.opentopomap.org https://server.arcgisonline.com https://tmvbdkydvwrqxlcmrsnj.supabase.co; connect-src 'self' blob: data: https://tmvbdkydvwrqxlcmrsnj.supabase.co wss://tmvbdkydvwrqxlcmrsnj.supabase.co https://nominatim.openstreetmap.org https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/ https://docs.opencv.org; media-src 'self' blob:; worker-src 'self' blob:; frame-src 'self'; object-src 'self' blob:; manifest-src 'self'; base-uri 'self'; form-action 'self'">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -14,8 +14,6 @@
 <link rel="icon" type="image/svg+xml" href="favicon-feldfolio.svg">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <meta name="theme-color" content="#12151A">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400..900&display=swap">
 <script>
   // Gespeicherte Theme-Wahl synchron vor dem ersten Rendern anwenden, damit
   // beim Neuladen im Hellmodus nicht kurz der Dunkelmodus aufblitzt.
@@ -48,8 +46,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/5.0.8/jspdf.plugin.autotable.min.js" integrity="sha512-QLh0AACvI+3C+bmn3QdH6blN0NWBxwGvBDgV67TvKV5Q2knO9+/+lguVL23JQ9DR7CnfuOSYUBURlXjmJeK11Q==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" integrity="sha512-BNaRQnYJYiPSqHHDb58B0yaPfCu+Wgds8Gp/gU33kqBtgNS4tSPHuGibyoeqMV/TJlSKda6FXzoEyYGjTe+vXA==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js" integrity="sha512-z8IYLHO8bTgFqj+yrPyIJnzBDf7DDhWwiEsk4sY+Oe6J2M+WQequeGS7qioI5vT6rXgVRb4K1UVQC5ER7MKzKQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-  <script type="module" crossorigin src="./assets/index-mDifagn3.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-Dlc6Tex1.css">
+  <script type="module" crossorigin src="./assets/index-xfj4ADFE.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-CzGoHObr.css">
 <link rel="manifest" href="./manifest.webmanifest"></head>
 <body data-view="viewer">
 
@@ -129,6 +127,8 @@
     <button type="button" role="menuitem" class="account-menu-item" id="account-menu-sync-now"><span class="material-symbols-rounded icon" aria-hidden="true">sync</span>Jetzt synchronisieren</button>
     <button type="button" role="menuitem" class="account-menu-item" id="account-menu-settings"><span class="material-symbols-rounded icon" aria-hidden="true">manage_accounts</span>Konto &amp; Einstellungen</button>
     <button type="button" role="menuitem" class="account-menu-item" id="account-menu-admin" hidden><span class="material-symbols-rounded icon" aria-hidden="true">admin_panel_settings</span>Zugangsanfragen<span class="account-tab-count" id="account-menu-admin-count" hidden></span></button>
+    <button type="button" role="menuitem" class="account-menu-item" id="account-menu-fehler"><span class="material-symbols-rounded icon" aria-hidden="true">bug_report</span>Fehler melden</button>
+    <button type="button" role="menuitem" class="account-menu-item" id="account-menu-sperren" hidden><span class="material-symbols-rounded icon" aria-hidden="true">lock</span>Jetzt sperren</button>
     <div class="account-menu-sep"></div>
     <button type="button" role="menuitem" class="account-menu-item" id="account-menu-signout"><span class="material-symbols-rounded icon" aria-hidden="true">logout</span>Abmelden</button>
   </div>
@@ -1596,6 +1596,39 @@
 
         <!-- Sicherheit -->
         <section class="account-panel" data-account-panel="sicherheit" hidden>
+          <!-- Geräteschutz (src/geraeteschutz.js) -->
+          <h4 class="account-h4">Daten auf diesem Gerät</h4>
+          <p class="modal-hint gs-status" id="gs-status"></p>
+          <label class="modal-checkbox-row">
+            <input type="checkbox" id="gs-aktiv">
+            <span><strong>Verschlüsseln und App sperren</strong> (empfohlen)<br>
+              Die offline gespeicherten Daten sind nur mit deinem Konto-Passwort lesbar. Gilt für dieses Gerät.</span>
+          </label>
+          <div id="gs-bestaetigen" class="gs-bestaetigen" hidden>
+            <label class="account-label" for="gs-bestaetigen-pw" id="gs-bestaetigen-label">Passwort zur Bestätigung</label>
+            <input type="password" id="gs-bestaetigen-pw" class="account-input" autocomplete="current-password">
+            <div class="account-actions">
+              <button type="button" id="gs-bestaetigen-abbrechen" class="betrieb-btn">Abbrechen</button>
+              <button type="button" id="gs-bestaetigen-ok" class="betrieb-btn primary">Bestätigen</button>
+            </div>
+          </div>
+          <div id="gs-optionen" hidden>
+            <label class="account-label" for="gs-sperre">Automatisch sperren nach</label>
+            <select id="gs-sperre" class="account-input gs-sperre">
+              <option value="5">5 Minuten ohne Bedienung</option>
+              <option value="15">15 Minuten ohne Bedienung</option>
+              <option value="30">30 Minuten ohne Bedienung</option>
+              <option value="60">1 Stunde ohne Bedienung</option>
+              <option value="0">Nur beim Öffnen der App</option>
+            </select>
+            <div class="account-actions account-actions-start">
+              <button type="button" id="gs-bio-an" class="betrieb-btn" hidden><span class="material-symbols-rounded icon" aria-hidden="true">fingerprint</span>Mit Fingerabdruck oder Gesicht entsperren</button>
+              <button type="button" id="gs-bio-aus" class="betrieb-btn" hidden><span class="material-symbols-rounded icon" aria-hidden="true">fingerprint</span>Fingerabdruck/Gesicht entfernen</button>
+              <button type="button" id="gs-jetzt" class="betrieb-btn"><span class="material-symbols-rounded icon" aria-hidden="true">lock</span>Jetzt sperren</button>
+            </div>
+          </div>
+          <p class="modal-hint" id="gs-meldung" role="status"></p>
+
           <h4 class="account-h4">Passwort ändern</h4>
           <label class="account-label" for="pw-current">Aktuelles Passwort</label>
           <div class="account-pw-wrap">
@@ -1683,6 +1716,18 @@
             <p class="modal-hint">Von Nutzern gefundene Zuordnungen Nutzungscode → Kultur. Freigegebene übersetzen die Flächen aller Nutzer.</p>
             <p class="modal-hint modal-error" id="account-admin-codes-error" hidden></p>
             <div id="account-admin-codes-list"></div>
+            <!-- Fehlerberichte (src/fehlerbericht.js) -->
+            <div class="admin-requests-head admin-codes-head">
+              <span>Fehlerberichte</span>
+              <span class="fb-admin-akt">
+                <select id="fb-admin-filter" aria-label="Welche Meldungen"><option value="offen">Offene</option><option value="alle">Alle</option></select>
+                <button type="button" id="fb-admin-export" title="Als Markdown herunterladen" aria-label="Als Markdown herunterladen"><span class="material-symbols-rounded icon">download</span></button>
+                <button type="button" id="fb-admin-refresh" title="Aktualisieren" aria-label="Aktualisieren"><span class="material-symbols-rounded icon">refresh</span></button>
+              </span>
+            </div>
+            <p class="modal-hint">Gemeldete Fehler, Verbesserungen und Fragen. Status und Priorität setzen, Notiz für die Bearbeitung; „Als Markdown“ gibt einen Vorgang im üblichen Issue-Format weiter.</p>
+            <p class="modal-hint modal-error" id="fb-admin-fehler" hidden></p>
+            <div id="fb-admin-liste"></div>
           </div>
         </section>
 
@@ -1693,6 +1738,111 @@
       </div>
     </div>
   </div>
+</div>
+
+<!-- Fehler melden — src/fehlerbericht.js -->
+<div id="fb-overlay" class="modal-overlay" hidden>
+  <div class="modal-card betrieb-card fb-card" role="dialog" aria-modal="true" aria-labelledby="fb-titel-kopf">
+    <div class="betrieb-head">
+      <div>
+        <h3 id="fb-titel-kopf">Fehler melden</h3>
+        <p class="betrieb-head-sub">Geht an das FeldFolio-Team und wird dort als Vorgang bearbeitet.</p>
+      </div>
+      <button type="button" id="fb-schliessen" class="betrieb-icon-btn" aria-label="Schließen" title="Schließen"><span class="material-symbols-rounded icon" aria-hidden="true">close</span></button>
+    </div>
+    <div class="fb-reiter" role="tablist" aria-label="Fehler melden">
+      <button type="button" role="tab" data-fb-reiter="neu" aria-selected="true">Neue Meldung</button>
+      <button type="button" role="tab" data-fb-reiter="meine" aria-selected="false">Meine Meldungen</button>
+    </div>
+    <form id="fb-form" class="account-body fb-body" novalidate>
+      <fieldset class="fb-art">
+        <legend class="account-label">Art</legend>
+        <label><input type="radio" name="fb-art" value="fehler" checked><span><span class="material-symbols-rounded icon" aria-hidden="true">bug_report</span>Fehler</span></label>
+        <label><input type="radio" name="fb-art" value="verbesserung"><span><span class="material-symbols-rounded icon" aria-hidden="true">lightbulb</span>Verbesserung</span></label>
+        <label><input type="radio" name="fb-art" value="frage"><span><span class="material-symbols-rounded icon" aria-hidden="true">help</span>Frage</span></label>
+      </fieldset>
+      <label class="account-label" for="fb-titel">Kurzbeschreibung *</label>
+      <input type="text" id="fb-titel" class="account-input" maxlength="200" autocomplete="off" placeholder="z. B. Export der Schlagliste bricht ab">
+      <label class="account-label" for="fb-schritte" id="fb-schritte-label">Was hast du gemacht? (Schritte zum Nachstellen)</label>
+      <textarea id="fb-schritte" class="account-input fb-text" rows="4" maxlength="5000" placeholder="1. …&#10;2. …&#10;3. …"></textarea>
+      <div class="fb-nur-fehler">
+        <label class="account-label" for="fb-erwartet">Was hast du erwartet?</label>
+        <textarea id="fb-erwartet" class="account-input fb-text" rows="2" maxlength="3000"></textarea>
+        <label class="account-label" for="fb-tatsaechlich">Was ist stattdessen passiert?</label>
+        <textarea id="fb-tatsaechlich" class="account-input fb-text" rows="3" maxlength="5000" placeholder="z. B. Fehlermeldung, falsche Werte, nichts passiert"></textarea>
+      </div>
+      <div class="account-grid">
+        <div id="fb-schwere-feld">
+          <label class="account-label" for="fb-schwere">Auswirkung</label>
+          <select id="fb-schwere" class="account-input">
+            <option value="kritisch">Kritisch – Arbeit nicht möglich oder Daten verloren</option>
+            <option value="hoch">Hoch – wichtige Funktion gestört</option>
+            <option value="mittel" selected>Mittel – umständlich, es gibt einen Umweg</option>
+            <option value="niedrig">Niedrig – Kleinigkeit</option>
+          </select>
+        </div>
+        <div class="fb-nur-fehler">
+          <label class="account-label" for="fb-haeufigkeit">Wie oft?</label>
+          <select id="fb-haeufigkeit" class="account-input">
+            <option value="immer">Jedes Mal</option>
+            <option value="manchmal">Manchmal</option>
+            <option value="einmal">Einmal</option>
+            <option value="unbekannt" selected>Weiß nicht</option>
+          </select>
+        </div>
+      </div>
+      <div class="fb-bild">
+        <img id="fb-bild-vorschau" class="fb-bild-vorschau" alt="Bildschirmfoto der aktuellen Ansicht (antippen zum Vergrößern)" hidden>
+        <div class="fb-bild-text">
+          <label class="modal-checkbox-row">
+            <input type="checkbox" id="fb-bild-an" disabled>
+            <span><strong>Bildschirmfoto anhängen</strong><br>Zeigt, was gerade zu sehen war — auch Betriebsdaten. Nur anhängen, wenn es hilft.</span>
+          </label>
+          <label class="betrieb-btn fb-bild-waehlen"><span class="material-symbols-rounded icon" aria-hidden="true">image</span>Eigenes Bild wählen<input type="file" id="fb-bild-datei" accept="image/*" hidden></label>
+          <p class="modal-hint" id="fb-bild-status"></p>
+        </div>
+      </div>
+      <details class="fb-technik">
+        <summary>Technische Angaben (werden mitgesendet)</summary>
+        <p class="modal-hint">Version, Browser, Gerät, aktuelle Ansicht und die letzten Fehlermeldungen und Klicks der App — ohne Inhalte, E-Mail-Adressen und Nummern.</p>
+        <pre id="fb-technik-text"></pre>
+      </details>
+      <p class="modal-hint" id="fb-status" role="status"></p>
+      <div class="account-actions">
+        <button type="button" id="fb-abbrechen" class="betrieb-btn">Abbrechen</button>
+        <button type="submit" id="fb-senden" class="betrieb-btn primary"><span class="material-symbols-rounded icon" aria-hidden="true">send</span>Senden</button>
+      </div>
+    </form>
+    <div id="fb-meine" class="account-body" hidden><div id="fb-meine-liste"></div></div>
+  </div>
+</div>
+<div id="fb-hinweis" class="fb-hinweis" role="status" hidden>
+  <span class="material-symbols-rounded icon" aria-hidden="true">bug_report</span><span>Da ist etwas schiefgelaufen.</span>
+  <button type="button" id="fb-hinweis-melden" class="betrieb-btn primary">Fehler melden</button>
+  <button type="button" id="fb-hinweis-zu" class="betrieb-icon-btn" aria-label="Schließen" title="Schließen"><span class="material-symbols-rounded icon" aria-hidden="true">close</span></button>
+</div>
+
+<!-- Geräteschutz: Sperrbildschirm (auch zum Einrichten) — src/geraeteschutz.js -->
+<div id="gs-overlay" class="gs-overlay" hidden>
+  <form class="gs-karte" role="dialog" aria-modal="true" aria-labelledby="gs-titel" autocomplete="on">
+    <span class="gs-schloss material-symbols-rounded icon" aria-hidden="true">lock</span>
+    <h2 id="gs-titel">FeldFolio ist gesperrt</h2>
+    <p class="gs-text" id="gs-text"></p>
+    <p class="gs-email" id="gs-email"></p>
+    <input type="email" class="gs-unsichtbar" autocomplete="username" tabindex="-1" aria-hidden="true">
+    <label class="account-label" for="gs-passwort">Konto-Passwort</label>
+    <input type="password" id="gs-passwort" class="account-input" autocomplete="current-password">
+    <p class="modal-hint modal-error" id="gs-fehler" role="alert" hidden></p>
+    <button type="submit" id="gs-ok" class="betrieb-btn primary gs-ok"><span id="gs-ok-text">Entsperren</span></button>
+    <button type="button" id="gs-bio" class="betrieb-btn gs-ok" hidden><span class="material-symbols-rounded icon" aria-hidden="true">fingerprint</span>Mit Fingerabdruck oder Gesicht</button>
+    <button type="button" id="gs-ohne" class="betrieb-btn gs-ok" hidden>Ohne Schutz weiter</button>
+    <details class="gs-vergessen" id="gs-vergessen">
+      <summary>Passwort vergessen oder geändert?</summary>
+      <p class="modal-hint">Die Daten auf diesem Gerät lassen sich nur mit dem Passwort öffnen, mit dem sie geschützt wurden. Ohne dieses Passwort kannst du sie hier löschen: Was schon mit der Cloud abgeglichen ist, lädt die App nach der Anmeldung neu, nicht abgeglichene Änderungen gehen verloren. Ein neues Passwort setzt du über „Passwort vergessen?“ beim Anmelden.</p>
+      <button type="button" id="gs-verwerfen" class="betrieb-btn account-btn-danger"><span class="material-symbols-rounded icon" aria-hidden="true">delete</span>Daten auf diesem Gerät löschen</button>
+    </details>
+    <button type="button" id="gs-abmelden" class="ko-link-btn gs-abmelden">Abmelden</button>
+  </form>
 </div>
 
 <!-- Abmelden: mit Wahl, ob die Daten auf diesem Gerät bleiben. -->
