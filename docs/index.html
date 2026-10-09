@@ -46,8 +46,8 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/5.0.8/jspdf.plugin.autotable.min.js" integrity="sha512-QLh0AACvI+3C+bmn3QdH6blN0NWBxwGvBDgV67TvKV5Q2knO9+/+lguVL23JQ9DR7CnfuOSYUBURlXjmJeK11Q==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" integrity="sha512-BNaRQnYJYiPSqHHDb58B0yaPfCu+Wgds8Gp/gU33kqBtgNS4tSPHuGibyoeqMV/TJlSKda6FXzoEyYGjTe+vXA==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js" integrity="sha512-z8IYLHO8bTgFqj+yrPyIJnzBDf7DDhWwiEsk4sY+Oe6J2M+WQequeGS7qioI5vT6rXgVRb4K1UVQC5ER7MKzKQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
-  <script type="module" crossorigin src="./assets/index-xfj4ADFE.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-CzGoHObr.css">
+  <script type="module" crossorigin src="./assets/index-D8ABzU_v.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-Dv5_d2vQ.css">
 <link rel="manifest" href="./manifest.webmanifest"></head>
 <body data-view="viewer">
 
@@ -1702,7 +1702,33 @@
 
         <!-- Verwaltung (nur @oekop.de) -->
         <section class="account-panel" data-account-panel="admin" hidden>
+          <!-- Zwei-Faktor für die Verwaltung (supabase/admins.sql): erst Code, dann Listen -->
+          <div id="admin-2fa" class="admin-2fa" hidden>
+            <span class="admin-2fa-symbol" aria-hidden="true"><span class="material-symbols-rounded icon" aria-hidden="true">lock</span></span>
+            <h4 class="account-h4" id="admin-2fa-titel">Verwaltung freischalten</h4>
+            <p class="modal-hint" id="admin-2fa-text"></p>
+            <div id="admin-2fa-einrichten" class="admin-2fa-einrichten" hidden>
+              <ol>
+                <li>Authenticator-App auf dem Handy öffnen (z. B. Google oder Microsoft Authenticator, Aegis, 1Password).</li>
+                <li>QR-Code scannen — oder den Schlüssel von Hand eingeben.</li>
+                <li>Den angezeigten 6-stelligen Code unten eintragen.</li>
+              </ol>
+              <img id="admin-2fa-qr" class="admin-2fa-qr" alt="QR-Code für die Authenticator-App" width="180" height="180">
+              <p class="modal-hint">Schlüssel: <code id="admin-2fa-secret" class="admin-2fa-secret"></code></p>
+            </div>
+            <div id="admin-2fa-eingabe" hidden>
+              <label class="account-label" for="admin-2fa-code">Code aus der Authenticator-App</label>
+              <input type="text" id="admin-2fa-code" class="account-input admin-2fa-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="123456">
+            </div>
+            <p class="modal-hint modal-error" id="admin-2fa-fehler" role="alert" hidden></p>
+            <div class="account-actions account-actions-start">
+              <button type="button" id="admin-2fa-start" class="betrieb-btn primary" hidden>Zwei-Faktor einrichten</button>
+              <button type="button" id="admin-2fa-ok" class="betrieb-btn primary" hidden>Freischalten</button>
+            </div>
+          </div>
           <div id="account-admin-requests" hidden>
+            <p class="modal-hint admin-2fa-aktiv"><span class="material-symbols-rounded icon" aria-hidden="true">verified_user</span><span>Mit Zwei-Faktor freigeschaltet (gilt 12 Stunden).</span>
+              <button type="button" id="admin-2fa-wechseln" class="ko-link-btn">Authenticator wechseln</button></p>
             <div class="admin-requests-head">
               <span>Offene Zugangsanfragen</span>
               <button type="button" id="account-admin-refresh" title="Aktualisieren" aria-label="Aktualisieren"><span class="material-symbols-rounded icon">refresh</span></button>

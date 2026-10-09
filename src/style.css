@@ -4303,6 +4303,20 @@
   @media (max-width: 860px) { .gs-karte input { font-size: 16px; } }
   .account-menu-sep { height: 1px; margin: 4px 6px; background: var(--border); }
 
+  /* ---- Verwaltung: Freischalten mit zweitem Faktor ---- */
+  .admin-2fa:not([hidden]) { display: flex; flex-direction: column; gap: 8px; max-width: 460px; }
+  .admin-2fa-symbol { display: flex; align-items: center; justify-content: center; width: 48px; height: 48px; border-radius: 50%; background: var(--accent-tint, var(--panel-2)); color: var(--accent); }
+  .admin-2fa-symbol .icon { font-size: 26px; }
+  .admin-2fa .account-h4 { margin: 4px 0 0; }
+  .admin-2fa-einrichten:not([hidden]) { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2); font-size: 13px; color: var(--text); }
+  .admin-2fa-einrichten ol { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+  .admin-2fa-qr { align-self: center; width: 180px; height: 180px; padding: 8px; border-radius: 10px; background: #fff; }
+  .admin-2fa-secret { font: 600 13px var(--mono); letter-spacing: .04em; user-select: all; overflow-wrap: anywhere; }
+  .admin-2fa-code { max-width: 180px; font: 600 20px var(--mono); letter-spacing: .3em; text-align: center; }
+  .admin-2fa-aktiv { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 10px; }
+  .admin-2fa-aktiv .icon { font-size: 18px; color: var(--accent); }
+  .admin-2fa-aktiv .ko-link-btn { margin-left: auto; }
+
   /* ---- Fehler melden (src/fehlerbericht.js) ---- */
   .modal-card.fb-card { width: 600px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); display: flex; flex-direction: column; overflow: hidden; }
   .fb-card > .account-body { flex: 1 1 auto; min-height: 0; }

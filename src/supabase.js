@@ -220,15 +220,73 @@ export async function requestAccess({ email, name, message }) {
   if (error) throw error;
 }
 
-// Ist das angemeldete Konto Admin? Entscheidet der Server (Liste admin_konten,
-// supabase/admins.sql) — die App blendet damit nur die Verwaltung ein, die
-// Rechte selbst setzen die Regeln in der Datenbank durch.
+// ---------- Admin: Liste und zweiter Faktor (supabase/admins.sql) ----------
+// admin_konto(): steht das Konto auf der Admin-Liste? (gibt keine Rechte)
+// ist_admin():   Admin-Rechte jetzt — Liste UND Code aus der Authenticator-App
+//                (TOTP) in den letzten 12 Stunden.
+// Die App blendet damit nur Oberfläche ein; die Rechte setzt die Datenbank durch.
+// Dev-Testhaken (Playwright): window.__ffTestAdmin = auf der Liste;
+// window.__ffTestMfa = { eingerichtet, freigeschaltet, code } stellt den zweiten
+// Faktor nach (fehlt es, gilt ein Admin im Test als freigeschaltet).
+const mfaTest = () => (import.meta.env.DEV && navigator.webdriver ? (window.__ffTestMfa || { eingerichtet: true, freigeschaltet: true, code: '123456' }) : null);
+export async function adminKontoAbfragen() {
+  if (import.meta.env.DEV && navigator.webdriver) return !!window.__ffTestAdmin;
+  if (!supabase) return false;
+  const { data, error } = await supabase.rpc('admin_konto');
+  if (error) throw error;
+  return data === true;
+}
 export async function istAdminAbfragen() {
-  if (import.meta.env.DEV && navigator.webdriver) return !!window.__ffTestAdmin; // Tests: per Haken
+  if (mfaTest()) return !!window.__ffTestAdmin && !!mfaTest().freigeschaltet;
   if (!supabase) return false;
   const { data, error } = await supabase.rpc('ist_admin');
   if (error) throw error;
   return data === true;
+}
+// Eingerichteter (bestätigter) Authenticator, sonst null
+export async function zweiFaktorAbfragen() {
+  if (mfaTest()) return mfaTest().eingerichtet ? { factorId: 'test-faktor' } : null;
+  if (!supabase) return null;
+  const { data, error } = await supabase.auth.mfa.listFactors();
+  if (error) throw error;
+  const f = (data.totp || []).find(x => x.status === 'verified');
+  return f ? { factorId: f.id } : null;
+}
+// Neuen Authenticator anlegen: liefert QR-Code (als Bild-URL) und Schlüssel zum Abtippen.
+// Halb angefangene (nicht bestätigte) Einrichtungen werden vorher entfernt.
+export async function zweiFaktorEinrichten() {
+  if (mfaTest()) return { factorId: 'test-faktor', qr: 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>'), secret: 'JBSWY3DPEHPK3PXP' };
+  if (!supabase) throw new Error('Cloud-Konto ist nicht konfiguriert.');
+  assertOnline();
+  const { data: liste } = await supabase.auth.mfa.listFactors();
+  for (const f of ((liste && liste.all) || []).filter(x => x.factor_type === 'totp' && x.status !== 'verified')) {
+    await supabase.auth.mfa.unenroll({ factorId: f.id });
+  }
+  const { data, error } = await supabase.auth.mfa.enroll({ factorType: 'totp', friendlyName: 'FeldFolio Verwaltung', issuer: 'FeldFolio' });
+  if (error) throw error;
+  const qr = data.totp.qr_code.startsWith('data:') ? data.totp.qr_code : 'data:image/svg+xml;utf8,' + encodeURIComponent(data.totp.qr_code);
+  return { factorId: data.id, qr, secret: data.totp.secret };
+}
+// Code prüfen: bestätigt eine neue Einrichtung bzw. schaltet die Verwaltung frei
+export async function zweiFaktorBestaetigen(factorId, code) {
+  const t = mfaTest();
+  if (t) {
+    if (code !== (t.code || '123456')) throw new Error('Invalid TOTP code entered');
+    window.__ffTestMfa = { ...t, eingerichtet: true, freigeschaltet: true };
+    return;
+  }
+  if (!supabase) throw new Error('Cloud-Konto ist nicht konfiguriert.');
+  assertOnline();
+  const { error } = await supabase.auth.mfa.challengeAndVerify({ factorId, code });
+  if (error) throw error;
+}
+// Authenticator entfernen (z. B. neues Handy) — nur mit freigeschalteter Verwaltung
+export async function zweiFaktorEntfernen(factorId) {
+  const t = mfaTest();
+  if (t) { window.__ffTestMfa = { ...t, eingerichtet: false, freigeschaltet: false }; return; }
+  if (!supabase) throw new Error('Cloud-Konto ist nicht konfiguriert.');
+  const { error } = await supabase.auth.mfa.unenroll({ factorId });
+  if (error) throw error;
 }
 
 // RLS lässt SELECT nur für Admins zu (supabase/admins.sql) —
@@ -280,6 +338,8 @@ export function authErrorMessage(err, fallback = 'Das hat nicht geklappt.') {
   if (/rate limit|too many requests|security purposes/i.test(msg)) return 'Zu viele Versuche — bitte kurz warten und es dann erneut probieren.';
   if (/unable to validate email|invalid email|email address .* is invalid/i.test(msg)) return 'Bitte eine gültige E-Mail-Adresse eingeben.';
   if (/failed to fetch|networkerror|load failed/i.test(msg)) return 'Keine Verbindung zum Server — bitte Internet prüfen.';
+  if (/invalid totp|invalid.*code|code.*(invalid|expired)/i.test(msg)) return 'Der Code stimmt nicht — bitte den aktuellen 6-stelligen Code aus der Authenticator-App eingeben.';
+  if (/mfa.*(disabled|not enabled)|enroll_not_enabled/i.test(msg)) return 'Zwei-Faktor ist auf dem Server nicht aktiviert (Supabase: Authentication → Multi-Factor → TOTP).';
   if (/could not find the function|function .* does not exist|PGRST202/i.test(msg)) return 'Diese Funktion ist auf dem Server noch nicht eingerichtet (siehe supabase/konto-loeschen.sql).';
   return msg || fallback;
 }

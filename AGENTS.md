@@ -124,3 +124,8 @@
      @oekop.de-Adresse (die dürfen sich nur registrieren). Neue Admin-Prüfungen
      in SQL immer über `public.ist_admin()`; die App fragt den Status per
      `istAdminAbfragen()` (Tests: `window.__ffTestAdmin = true`).
+     Admin-**Rechte** gibt es nur mit zweitem Faktor (TOTP, `aal2`, höchstens
+     12 Stunden alt) — `admin_konto()` sagt nur, ob jemand auf der Liste steht
+     (Verwaltung anzeigen, Code abfragen). Tests stellen den Faktor über
+     `window.__ffTestMfa = { eingerichtet, freigeschaltet, code }` nach; fehlt
+     es, gilt ein Admin im Test als freigeschaltet (`tests/e2e/admin-2fa.spec.js`).

@@ -20,6 +20,15 @@
 -- Solange die Liste leer ist, gibt es keinen Admin.
 -- Die Adresse muss bestätigt sein ("Confirm email" und "Secure email change"
 -- im Dashboard eingeschaltet), sonst könnte sich jemand eine fremde Adresse geben.
+--
+-- Zwei-Faktor (TOTP, Authenticator-App): Admin-RECHTE gibt es nur mit einem
+-- zweiten Faktor, der höchstens 12 Stunden alt ist — im Anmelde-Token steht
+-- dann aal = 'aal2' und in amr ein Eintrag "totp" mit Zeitpunkt. Für die normale
+-- Nutzung der App reicht weiterhin das Passwort; den Code fragt die App erst beim
+-- Öffnen der Verwaltung ab (und richtet die Authenticator-App beim ersten Mal ein).
+-- Voraussetzung im Dashboard: Authentication → Multi-Factor → TOTP aktiviert
+-- (Standard). Authenticator verloren: im Dashboard unter Authentication → Users
+-- beim Nutzer den Faktor löschen, dann in der App neu einrichten.
 
 create table if not exists public.admin_konten (
   email       text primary key check (email = lower(email) and email like '%@%'),
@@ -30,9 +39,11 @@ create table if not exists public.admin_konten (
 alter table public.admin_konten enable row level security;
 revoke all on public.admin_konten from anon, authenticated;
 
--- Ist der angemeldete Nutzer Admin? (E-Mail aus dem Anmelde-Token, nicht vom Client)
--- "security definer": darf die sonst gesperrte Liste lesen.
-create or replace function public.ist_admin()
+-- Steht der angemeldete Nutzer auf der Liste? Gibt KEINE Rechte — die App zeigt
+-- damit nur die Verwaltung an und fragt dann den zweiten Faktor ab.
+-- (E-Mail aus dem Anmelde-Token, nicht vom Client; "security definer": darf die
+-- sonst gesperrte Liste lesen.)
+create or replace function public.admin_konto()
 returns boolean
 language sql
 stable
@@ -40,6 +51,25 @@ security definer
 set search_path = public
 as $$
   select exists (select 1 from public.admin_konten where email = lower(auth.jwt() ->> 'email'));
+$$;
+revoke all on function public.admin_konto() from public, anon;
+grant execute on function public.admin_konto() to authenticated;
+
+-- Admin-Rechte: auf der Liste UND zweiter Faktor (TOTP) in den letzten 12 Stunden
+create or replace function public.ist_admin()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select public.admin_konto()
+     and coalesce(auth.jwt() ->> 'aal', '') = 'aal2'
+     and exists (
+       select 1 from jsonb_array_elements(coalesce(auth.jwt() -> 'amr', '[]'::jsonb)) as faktor
+       where faktor ->> 'method' = 'totp'
+         and (faktor ->> 'timestamp')::bigint > extract(epoch from now())::bigint - 12 * 3600
+     );
 $$;
 revoke all on function public.ist_admin() from public, anon;
 grant execute on function public.ist_admin() to authenticated;

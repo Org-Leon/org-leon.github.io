@@ -1,4 +1,4 @@
-import { istAdminAbfragen, oeffneSyncKanal, isSupabaseConfigured, signUp, signIn, signOut, getSession, saveState, loadState, uploadPhoto, getPhotoUrl, deletePhoto, requestAccess, listPendingAccessRequests, approveAccessRequest, declineAccessRequest, authErrorMessage, requestPasswordReset, updatePassword, verifyPassword, signOutEverywhere, onPasswordRecovery, deleteMyAccount, ladeNutzungscodes, schlageNutzungscodesVor, entscheideNutzungscode } from './supabase.js';
+import { istAdminAbfragen, adminKontoAbfragen, zweiFaktorAbfragen, zweiFaktorEinrichten, zweiFaktorBestaetigen, zweiFaktorEntfernen, oeffneSyncKanal, isSupabaseConfigured, signUp, signIn, signOut, getSession, saveState, loadState, uploadPhoto, getPhotoUrl, deletePhoto, requestAccess, listPendingAccessRequests, approveAccessRequest, declineAccessRequest, authErrorMessage, requestPasswordReset, updatePassword, verifyPassword, signOutEverywhere, onPasswordRecovery, deleteMyAccount, ladeNutzungscodes, schlageNutzungscodesVor, entscheideNutzungscode } from './supabase.js';
 import { readLocalState, writeLocalState, deleteLocalState, hatLocalState, readLastUser, writeLastUser, addBackup, listBackups, saveQueuedUpload, listQueuedUploads, deleteQueuedUpload, saveFotomappeFoto, listFotomappeFotos, deleteFotomappeFoto, alleDatenLoeschen, cacheVerpacken, cacheAuspacken } from './offline-store.js';
 import { registerSW } from 'virtual:pwa-register';
 // Turf 7 mit den Aufrufen von Turf 6.5 (src/geo.js) — ohne eval, daher CSP-tauglich
@@ -9232,14 +9232,23 @@ let lastSyncedAt = null;
 function isOekopEmail(email) {
   return /@oekop\.de$/i.test((email || '').trim());
 }
-// Admin ist nicht mehr jede @oekop.de-Adresse, sondern wer in der Liste
-// admin_konten steht (supabase/admins.sql). Der Server sagt es nach der Anmeldung;
-// ohne Antwort (offline) bleibt die Verwaltung ausgeblendet.
-let kontoIstAdmin = false;
+// Admin ist nicht jede @oekop.de-Adresse, sondern wer in der Liste admin_konten
+// steht (supabase/admins.sql). Admin-RECHTE gibt es erst mit dem Code aus der
+// Authenticator-App (zweiter Faktor, gilt 12 Stunden) — für die normale Nutzung
+// reicht das Passwort. Beides sagt der Server; ohne Antwort (offline) bleibt die
+// Verwaltung ausgeblendet.
+let kontoAdminListe = false; // steht auf der Liste: Verwaltung anzeigen, Code abfragen
+let kontoIstAdmin = false;   // Admin-Rechte jetzt (zweiter Faktor frisch)
 async function adminStatusLaden() {
-  const vorher = kontoIstAdmin;
-  try { kontoIstAdmin = !!accountSession && !accountSession.offline && await istAdminAbfragen(); } catch { kontoIstAdmin = false; }
-  if (kontoIstAdmin !== vorher && accountSession && !accountModal.hidden) renderAccountModal();
+  const vorher = kontoAdminListe + '|' + kontoIstAdmin;
+  if (!accountSession || accountSession.offline) {
+    kontoAdminListe = false;
+    kontoIstAdmin = false;
+  } else {
+    try { kontoAdminListe = await adminKontoAbfragen(); } catch { kontoAdminListe = false; }
+    try { kontoIstAdmin = kontoAdminListe && await istAdminAbfragen(); } catch { kontoIstAdmin = false; }
+  }
+  if (kontoAdminListe + '|' + kontoIstAdmin !== vorher && accountSession && !accountModal.hidden) renderAccountModal();
   return kontoIstAdmin;
 }
 
@@ -9331,12 +9340,15 @@ function renderAccountModal() {
     sub.textContent = kontoProfil.name ? accountSession.user.email : 'FeldFolio+ Konto';
     badge.textContent = kontoInitialen();
     badge.classList.add('is-avatar');
-    const isAdmin = kontoIstAdmin;
+    // Verwaltung: Reiter für Konten auf der Admin-Liste; die Listen erst nach dem Code
+    const isAdmin = kontoAdminListe;
     document.getElementById('account-tab-admin').hidden = !isAdmin;
-    accountAdminSection.hidden = !isAdmin;
+    accountAdminSection.hidden = !kontoIstAdmin;
+    document.getElementById('admin-2fa').hidden = !isAdmin || kontoIstAdmin;
     if (!isAdmin && accountTab === 'admin') accountTab = 'profil';
     setAccountTab(accountTab);
-    if (isAdmin) refreshAdminRequests();
+    if (kontoIstAdmin) refreshAdminRequests();
+    else if (isAdmin) admin2faZeigen();
   } else {
     title.innerHTML = 'FeldFolio<span class="account-plus">+</span>';
     sub.textContent = 'Dein Konto für Cloud & Kontrolle';
@@ -9394,6 +9406,88 @@ function renderAdminRequests(list) {
     });
   });
 }
+
+// ---- Verwaltung freischalten: Code aus der Authenticator-App (zweiter Faktor) ----
+let admin2faFaktor = null;
+function admin2faFehler(text) {
+  const el = document.getElementById('admin-2fa-fehler');
+  el.textContent = text;
+  el.hidden = !text;
+}
+async function admin2faZeigen() {
+  admin2faFehler('');
+  document.getElementById('admin-2fa-code').value = '';
+  let faktor = null;
+  try { faktor = await zweiFaktorAbfragen(); } catch (err) { admin2faFehler(authErrorMessage(err, 'Zwei-Faktor-Stand konnte nicht geladen werden.')); }
+  admin2faFaktor = faktor ? faktor.factorId : null;
+  document.getElementById('admin-2fa-titel').textContent = faktor ? 'Verwaltung freischalten' : 'Zwei-Faktor für die Verwaltung einrichten';
+  document.getElementById('admin-2fa-text').textContent = faktor
+    ? 'Für die Verwaltung brauchst du zusätzlich den 6-stelligen Code aus deiner Authenticator-App. Die Freischaltung gilt 12 Stunden; für alles andere reicht weiterhin dein Passwort.'
+    : 'Die Verwaltung ist mit einem zweiten Faktor geschützt: einem Code aus einer Authenticator-App auf deinem Handy. Einmal einrichten — danach fragt die App den Code nur ab, wenn du die Verwaltung öffnest (gilt dann 12 Stunden).';
+  document.getElementById('admin-2fa-einrichten').hidden = true;
+  document.getElementById('admin-2fa-eingabe').hidden = !faktor;
+  document.getElementById('admin-2fa-start').hidden = !!faktor;
+  const ok = document.getElementById('admin-2fa-ok');
+  ok.hidden = !faktor;
+  ok.textContent = 'Freischalten';
+}
+document.getElementById('admin-2fa-start').addEventListener('click', async () => {
+  const btn = document.getElementById('admin-2fa-start');
+  admin2faFehler('');
+  setButtonBusy(btn, true, 'Richte ein …');
+  try {
+    const neu = await zweiFaktorEinrichten();
+    admin2faFaktor = neu.factorId;
+    document.getElementById('admin-2fa-qr').src = neu.qr;
+    document.getElementById('admin-2fa-secret').textContent = neu.secret.replace(/(.{4})/g, '$1 ').trim();
+    document.getElementById('admin-2fa-einrichten').hidden = false;
+    document.getElementById('admin-2fa-eingabe').hidden = false;
+    btn.hidden = true;
+    const ok = document.getElementById('admin-2fa-ok');
+    ok.hidden = false;
+    ok.textContent = 'Bestätigen und freischalten';
+    document.getElementById('admin-2fa-code').focus();
+  } catch (err) {
+    admin2faFehler(authErrorMessage(err, 'Einrichten hat nicht geklappt.'));
+  } finally {
+    setButtonBusy(btn, false, 'Zwei-Faktor einrichten');
+  }
+});
+async function admin2faFreischalten() {
+  const ok = document.getElementById('admin-2fa-ok');
+  const code = document.getElementById('admin-2fa-code').value.replace(/\D/g, '');
+  if (code.length !== 6) { admin2faFehler('Bitte den 6-stelligen Code aus der Authenticator-App eingeben.'); return; }
+  if (!admin2faFaktor) return;
+  admin2faFehler('');
+  const text = ok.textContent;
+  setButtonBusy(ok, true, 'Prüfe …');
+  try {
+    await zweiFaktorBestaetigen(admin2faFaktor, code);
+    if (!(await adminStatusLaden())) { admin2faFehler('Der Code wurde angenommen, aber der Server bestätigt keine Admin-Rechte (ist supabase/admins.sql ausgeführt?).'); return; }
+    renderAccountModal();
+    showToast('Verwaltung freigeschaltet.');
+  } catch (err) {
+    admin2faFehler(authErrorMessage(err, 'Der Code wurde nicht angenommen.'));
+    document.getElementById('admin-2fa-code').select();
+  } finally {
+    setButtonBusy(ok, false, text);
+  }
+}
+document.getElementById('admin-2fa-ok').addEventListener('click', admin2faFreischalten);
+document.getElementById('admin-2fa-code').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); admin2faFreischalten(); } });
+document.getElementById('admin-2fa-wechseln').addEventListener('click', async () => {
+  if (!confirm('Authenticator wechseln (z. B. neues Handy)?\n\nDer bisherige Eintrag wird entfernt; danach richtest du den neuen ein. Bis dahin ist die Verwaltung gesperrt.')) return;
+  try {
+    const faktor = await zweiFaktorAbfragen();
+    if (faktor) await zweiFaktorEntfernen(faktor.factorId);
+  } catch (err) {
+    showToast(authErrorMessage(err, 'Entfernen hat nicht geklappt.'));
+    return;
+  }
+  kontoIstAdmin = false;
+  await adminStatusLaden();
+  renderAccountModal();
+});
 
 async function refreshAdminRequests() {
   showAdminError('');
@@ -9835,6 +9929,7 @@ function setAccountTab(tab) {
   if (tab === 'profil') fillProfilForm();
   if (tab === 'sync') { renderAccountSyncPanel(); renderAccountBackups(); }
   if (tab === 'sicherheit') { resetSecurityForms(); geraeteschutz.einstellungenZeigen(); }
+  if (tab === 'admin') adminStatusLaden(); // Freischaltung kann abgelaufen sein (12 Stunden)
 }
 document.querySelectorAll('#account-tabs [data-account-tab]').forEach(b => b.addEventListener('click', () => setAccountTab(b.dataset.accountTab)));
 
@@ -10086,7 +10181,7 @@ function renderAccountMenu() {
   const sync = document.getElementById('account-menu-sync');
   sync.dataset.tone = info.tone;
   document.getElementById('account-menu-sync-text').textContent = info.title + (info.tone === 'ok' && lastSyncedAt ? ' · ' + lastSyncedAt.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '');
-  document.getElementById('account-menu-admin').hidden = !kontoIstAdmin;
+  document.getElementById('account-menu-admin').hidden = !kontoAdminListe;
   document.getElementById('account-menu-sync-now').disabled = syncState === 'syncing' || !!accountSession.offline;
 }
 function openAccountMenu() {
@@ -10186,6 +10281,7 @@ async function performSignOut({ wipe = true, serverDone = false } = {}) {
   }
   geraeteschutz.vergessen(); // Schlüssel aus dem Arbeitsspeicher
   kontoIstAdmin = false;
+  kontoAdminListe = false;
   offlineRec = null;
   persistCache = { key: null, ws: null, shared: null };
   syncState = 'idle';
