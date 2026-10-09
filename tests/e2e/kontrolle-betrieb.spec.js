@@ -24,15 +24,16 @@ async function setup(page) {
     };
   });
 }
-const openKontrolle = (page) => page.locator('#kontrolle-switcher').click();
+// "Betrieb" ist ein eigener Knopf in der Seitenleiste (neben "Dashboard")
+const openKontrolle = (page) => page.locator('#betrieb-switcher').click();
 const tile = (page, key) => page.locator(`.kb-tile[data-kb-tile="${key}"]`);
 
 test.describe('Kontrolle › Betrieb', () => {
   test('Ohne Betrieb: Auswahl mit nächsten Terminen; Klick ordnet zu und zeigt die Betriebsseite', async ({ page }) => {
     await setup(page);
     await openKontrolle(page);
-    await expect(page.locator('#kontrolle-uebersicht')).toBeVisible(); // ohne Betrieb Start in der Übersicht
-    await page.locator('#kontrolle-tabs [data-ko-tab="betrieb"]').click();
+    await expect(page.locator('#ko-header-title')).toHaveText('Betrieb');
+    await expect(page.locator('#kontrolle-tabs')).toBeHidden(); // die Betriebsseite hat keine Reiter
     await expect(page.locator('#kontrolle-betrieb .kb-empty')).toContainText('Kein Betrieb zugeordnet');
     await expect(page.locator('.kb-pick')).toHaveCount(2);
     await page.locator('.kb-pick', { hasText: 'Biohof Sonnental' }).click();
@@ -45,7 +46,9 @@ test.describe('Kontrolle › Betrieb', () => {
     await page.evaluate(() => window.__ffTestOffline.switchTo('Biohof Sonnental'));
     await openKontrolle(page);
     await expect(page.locator('#kontrolle-betrieb')).toBeVisible();
-    await expect(page.locator('#kontrolle-tabs [data-ko-tab="betrieb"]')).toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator('#betrieb-switcher')).toHaveClass(/active/);
+    await expect(page.locator('#kontrolle-switcher')).not.toHaveClass(/active/);
+    await expect(page.locator('#betrieb-switcher-sub')).toHaveText('Biohof Sonnental');
 
     const hero = page.locator('.kb-hero');
     await expect(hero.locator('.kb-avatar')).toHaveText('B');

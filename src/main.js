@@ -3,6 +3,8 @@ import { readLocalState, writeLocalState, deleteLocalState, readLastUser, writeL
 import { registerSW } from 'virtual:pwa-register';
 // Turf 7 mit den Aufrufen von Turf 6.5 (src/geo.js) — ohne eval, daher CSP-tauglich
 import { turf } from './geo.js';
+import { renderDashboard, layoutBereinigen, dashboardLueckenSchliessen } from './dashboard.js';
+import { createDokumentExplorer } from './dokumente.js';
 // SheetJS 0.20.3 (von cdn.sheetjs.com, per npm mitgebaut) — die cdnjs-Version 0.18.5
 // hat bekannte Lücken (CVE-2023-30533, CVE-2024-22363). Codepages für alte .xls.
 import * as XLSX from 'xlsx';
@@ -2897,7 +2899,7 @@ const SEGMENT_CAPTIONS = {
   obstbaum: 'Obstbäume auf der Karte erfassen',
   bienenflug: 'Bienenstöcke mit 3-km-Flugradius markieren',
   hofplan: 'Gebäude auf dem Luftbild einzeichnen',
-  kontrolle: 'Termine, Protokolle und Dokumente deiner Kontrollen',
+  kontrolle: 'Übersicht, Kalender und Dokumente deiner Kontrollen',
   stallplaner: 'Stall vermessen, in Abteile teilen, Öko-VO prüfen',
   tiere: 'HIT-Auszug: Bestand, Zu- und Abgänge, Stickstoff, Tierbesatz'
 };
@@ -2906,7 +2908,7 @@ const SEGMENT_CAPTIONS = {
 // in der Schublade versteckt — ohne Titel wüsste man nicht, wo man ist).
 const SEGMENT_TITLES = {
   viewer: 'Karte', uebersicht: 'Flächenübersicht', compare: 'Jahresvergleich', zeichner: 'Flächenzeichner', obstbaum: 'Obstbaumkataster',
-  bienenflug: 'Bienenflugkarte', hofplan: 'Hofplan', kontrolle: 'Kontrolle', stallplaner: 'Stallplaner', tiere: 'Tierbestand'
+  bienenflug: 'Bienenflugkarte', hofplan: 'Hofplan', kontrolle: 'Dashboard', stallplaner: 'Stallplaner', tiere: 'Tierbestand'
 };
 
 function setActiveSegment(target) {
@@ -2999,6 +3001,7 @@ function setActiveSegment(target) {
 document.querySelectorAll('.segment-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     const target = btn.getAttribute('data-view');
+    if (btn.dataset.koBereich) kontrolleStart = btn.dataset.koBereich; // "dashboard" | "betrieb"
     setActiveSegment(btn.classList.contains('active') ? 'viewer' : target);
   });
 });
@@ -9479,6 +9482,7 @@ function updateAccountButton() {
   // abgesetzte Umschalter-Button lenkt in der normalen (nicht angemeldeten)
   // Ansicht nur unnötig ab und erscheint daher erst nach der Anmeldung.
   document.getElementById('kontrolle-switcher').hidden = !accountSession;
+  document.getElementById('betrieb-switcher').hidden = !accountSession;
   // Cloud-Sync gibt es nur mit Konto — ohne Anmeldung ist der Schalter
   // (im Konto-Dialog) wirkungslos. Offline mit dem
   // zuletzt angemeldeten Nutzer gestartet (accountSession.offline) bleibt er
@@ -9569,7 +9573,7 @@ updateInstallButton();
 // auf Zustand zu, der weiter unten in dieser Datei erst angelegt wird.
 setTimeout(() => {
   let startView = new URLSearchParams(location.search).get('view');
-  if (startView === 'terminkalender') { kontrolleTab = 'kalender'; kontrolleTabChosen = true; startView = 'kontrolle'; }
+  if (startView === 'terminkalender') { kontrolleDashTab = 'kalender'; startView = 'kontrolle'; }
   if (startView && SEGMENT_TITLES[startView] && startView !== 'viewer') setActiveSegment(startView);
 }, 0);
 
@@ -9612,6 +9616,7 @@ accountAuthForm.addEventListener('submit', async (e) => {
       updateAccountButton();
       startUserState(accountSession.user);
       refreshAutoSyncTimer();
+      zeigeDashboardAlsStart();
       accountPasswordInput.value = '';
       document.getElementById('account-password2').value = '';
       closeAccountModal();
@@ -9867,6 +9872,7 @@ document.getElementById('profil-signatur-clear').addEventListener('click', () =>
 });
 document.getElementById('profil-save').addEventListener('click', async () => {
   kontoProfil = normalizeKontoProfil({
+    ...kontoProfil, // Übersicht-Layout und Notiz bleiben erhalten
     name: document.getElementById('profil-name').value,
     telefon: document.getElementById('profil-telefon').value,
     kontrollstelle: document.getElementById('profil-kontrollstelle').value,
@@ -10169,6 +10175,11 @@ async function performSignOut({ wipe = true, serverDone = false } = {}) {
   terminkalenderEvents = [];
   manualBetriebe = [];
   closeKontrollmappe();
+  // Gewählten Betrieb und seinen Arbeitsstand (Flächen, Pläne, …) ebenfalls
+  // nicht weiter zeigen — beim nächsten Anmelden kommt er aus dem Konto zurück.
+  try { clearWorkspace(); } catch {}
+  currentWorkspaceKey = NO_BETRIEB_KEY;
+  setActiveZuordnung(null);
   try { updateBetriebPin(); } catch {}
   updateAccountButton();
   closeAccountModal();
@@ -10469,6 +10480,15 @@ function normalizeKontoProfil(p) {
   const out = {};
   ['name', 'telefon', 'kontrollstelle', 'kuerzel'].forEach(k => { if (typeof src[k] === 'string' && src[k].trim()) out[k] = src[k].trim(); });
   if (typeof src.signatur === 'string' && src.signatur.startsWith('data:image/')) out.signatur = src.signatur;
+  // Kontrolle → Übersicht: gewählte Bausteine (dashboard.js) und der Merkzettel
+  // Plätze im Raster { id, x, y, w, h }; ältere Stände nur { id, breit } (rechnet dashboard.js um)
+  if (Array.isArray(src.dashboard)) out.dashboard = src.dashboard.filter(x => x && typeof x.id === 'string').slice(0, 30).map(x => {
+    const o = { id: x.id };
+    ['x', 'y', 'w', 'h'].forEach(k => { if (Number.isFinite(x[k])) o[k] = Math.round(x[k]); });
+    if (x.breit) o.breit = true;
+    return o;
+  });
+  if (typeof src.notiz === 'string' && src.notiz.trim()) out.notiz = src.notiz.slice(0, 5000);
   return out;
 }
 
@@ -10488,6 +10508,7 @@ function restoreSharedState(full) {
   manualBetriebe = Array.isArray(full.manualBetriebe) ? full.manualBetriebe : [];
   kontoProfil = normalizeKontoProfil(full.profil);
   if (typeof renderKontoProfilViews === 'function') renderKontoProfilViews();
+  if (typeof refreshKontrolleAnsichten === 'function') refreshKontrolleAnsichten();
 }
 
 // Explizites Speichern (Notizen, Termine, Betriebsliste, …): immer zuerst
@@ -10817,9 +10838,11 @@ async function runCloudSync() {
       rec.full.profil = merged.profil;
     }
   }
-  if (!sharedDirty && !sameShared(merged, base || rec.full)) {
-    // Termine/Betriebe anderswo geändert, hier nicht — wie beim offenen
-    // Betrieb: Basis nicht vorziehen (siehe oben).
+  if (!sharedDirty && !sharedVonAussen && !sameShared(merged, base || rec.full)) {
+    // Termine/Betriebe anderswo geändert, hier nicht — und NICHT übernommen (z. B.
+    // weil ein Protokoll offen ist): Basis nicht vorziehen (siehe oben). Wurde der
+    // fremde Stand übernommen (sharedVonAussen), ist er die neue Basis — sonst
+    // gälte die nächste eigene Änderung fälschlich als Konflikt.
     newBase.terminkalenderEvents = base ? base.terminkalenderEvents : rec.full.terminkalenderEvents;
     newBase.manualBetriebe = base ? base.manualBetriebe : rec.full.manualBetriebe;
     newBase.profil = base ? base.profil : rec.full.profil;
@@ -11043,6 +11066,17 @@ async function initAccountAndState() {
   updateAccountButton();
   if (session) await startUserState(session.user);
   refreshAutoSyncTimer();
+  if (session) zeigeDashboardAlsStart();
+}
+// Angemeldet ist das Dashboard (Übersicht) die erste Seite — beim Start der App
+// und direkt nach dem Anmelden. Nicht, wenn schon eine andere Funktion offen ist
+// oder die App über eine Verknüpfung (?view=…) geöffnet wurde.
+function zeigeDashboardAlsStart() {
+  if (new URLSearchParams(location.search).get('view')) return;
+  if ((document.body.dataset.view || 'viewer') !== 'viewer') return;
+  kontrolleStart = 'dashboard';
+  kontrolleDashTab = 'uebersicht';
+  setActiveSegment('kontrolle');
 }
 
 window.addEventListener('online', async () => {
@@ -11852,11 +11886,13 @@ function renderTerminkalenderSummary() {
 // Termin-Daten heißen intern weiter terminkalenderEvents (Cloud-Format
 // unverändert). Ein Termin öffnet die Kontrollmappe (siehe
 // renderTerminkalenderDetail).
-const KONTROLLE_TABS = { betrieb: 'kontrolle-betrieb', uebersicht: 'kontrolle-uebersicht', kalender: 'terminkalender-main' };
+const KONTROLLE_TABS = { betrieb: 'kontrolle-betrieb', uebersicht: 'kontrolle-uebersicht', kalender: 'terminkalender-main', dokumente: 'kontrolle-dokumente' };
+// Zwei Bereiche in EINER Ansicht (intern "kontrolle"), je mit eigenem Knopf in
+// der Seitenleiste: "Dashboard" (Reiter Übersicht, Kalender, Dokumente) und
+// "Betrieb" (die Seite des gewählten Betriebs, ohne Reiter).
 let kontrolleTab = 'uebersicht';
-// Solange der Reiter nicht von Hand gewählt wurde: mit zugeordnetem Betrieb
-// startet die Kontrolle auf der Betriebsseite, sonst in der Übersicht.
-let kontrolleTabChosen = false;
+let kontrolleDashTab = 'uebersicht';   // zuletzt gewählter Reiter im Dashboard
+let kontrolleStart = null;             // von der Seitenleiste gewünschter Bereich
 const TK_MODE_KEY = 'feldfolio-tk-mode';
 const TK_MAP_KEY = 'feldfolio-tk-map';
 let tkMode = 'woche';
@@ -11877,13 +11913,30 @@ function openKontrolle() {
   document.getElementById('ko-header-date').textContent =
     new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
   renderTerminkalenderSummary();
-  if (!kontrolleTabChosen) kontrolleTab = activeZuordnung ? 'betrieb' : 'uebersicht';
-  setKontrolleTab(kontrolleTab);
+  // Seitenleiste: "Betrieb" -> Betriebsseite, "Dashboard" -> zuletzt gewählter Reiter (anfangs Übersicht)
+  const bereich = kontrolleStart || (kontrolleTab === 'betrieb' ? 'betrieb' : 'dashboard');
+  kontrolleStart = null;
+  setKontrolleTab(bereich === 'betrieb' ? 'betrieb' : kontrolleDashTab);
 }
 
 function setKontrolleTab(tab) {
   if (!KONTROLLE_TABS[tab]) tab = 'uebersicht';
   kontrolleTab = tab;
+  const istBetrieb = tab === 'betrieb';
+  if (!istBetrieb) kontrolleDashTab = tab;
+  // Kopf, Reiter und Seitenleiste je Bereich
+  document.getElementById('ko-header-title').textContent = istBetrieb ? 'Betrieb' : 'Dashboard';
+  document.getElementById('kontrolle-tabs').hidden = istBetrieb;
+  document.getElementById('kontrolle-subnav').hidden = istBetrieb;
+  document.getElementById('kontrolle-import').hidden = istBetrieb;
+  document.getElementById('kontrolle-betrieb-hinweis').hidden = !istBetrieb;
+  if (document.body.dataset.view === 'kontrolle') {
+    document.getElementById('kontrolle-switcher').classList.toggle('active', !istBetrieb);
+    document.getElementById('betrieb-switcher').classList.toggle('active', istBetrieb);
+    document.getElementById('current-view-title').textContent = istBetrieb ? 'Betrieb' : 'Dashboard';
+    document.getElementById('current-view-icon').textContent = istBetrieb ? 'business' : 'space_dashboard';
+    document.getElementById('brand-caption').textContent = istBetrieb ? 'Termine, Unterlagen und Funktionen des gewählten Betriebs' : SEGMENT_CAPTIONS.kontrolle;
+  }
   Object.entries(KONTROLLE_TABS).forEach(([key, panelId]) => {
     document.getElementById(panelId).hidden = key !== tab;
   });
@@ -11898,13 +11951,18 @@ function setKontrolleTab(tab) {
   } else if (tab === 'betrieb') {
     updateKontrolleCounts();
     renderKontrolleBetrieb();
+  } else if (tab === 'dokumente') {
+    updateKontrolleCounts();
+    renderKontrolleDokumente();
   } else {
     renderKontrolleUebersicht();
   }
 }
-document.querySelectorAll('#kontrolle-tabs [data-ko-tab], #kontrolle-subnav [data-ko-tab], #kontrolle-uebersicht [data-ko-tab]').forEach(btn => {
-  btn.addEventListener('click', () => {
-    kontrolleTabChosen = true;
+// Reiter-Knöpfe (Kopf, Seitenleiste) und Verweise in den Bausteinen der Übersicht
+document.querySelectorAll('#kontrolle-tabs, #kontrolle-subnav, #kontrolle-uebersicht').forEach(bereich => {
+  bereich.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-ko-tab]');
+    if (!btn) return;
     setKontrolleTab(btn.dataset.koTab);
     closeMobileSidebar();
   });
@@ -12114,6 +12172,10 @@ function updateKontrolleCounts() {
   const n = kontrolleWeekGroups().length;
   el.textContent = n;
   el.hidden = !n;
+  const dok = document.getElementById('ko-subnav-count-dok');
+  const nDok = terminkalenderEvents.reduce((sum, e) => sum + (e.attachments || []).length, 0) + myUploads().length;
+  dok.textContent = nDok;
+  dok.hidden = !nDok;
 }
 function tkEventActionsHtml(ev) {
   const actions = [];
@@ -12127,67 +12189,416 @@ function tkEventActionsHtml(ev) {
   return actions.join('');
 }
 
+// ---- Übersicht als Baukasten (Raster + Bearbeiten-Modus: src/dashboard.js) ----
+// Jeder Nutzer stellt sich die Übersicht selbst zusammen ("Anpassen"); die Wahl
+// liegt in kontoProfil.dashboard und wird mit dem Konto abgeglichen.
+// Plätze im Raster mit 12 Spalten (x, w) und Zeilen zu 48 px (y, h).
+const KO_LAYOUT_STANDARD = [
+  { id: 'kennzahlen', x: 0, y: 0, w: 12, h: 2 },
+  { id: 'agenda', x: 0, y: 2, w: 6, h: 8 }, { id: 'karte', x: 6, y: 2, w: 6, h: 8 },
+  { id: 'dokumente', x: 0, y: 10, w: 6, h: 7 }, { id: 'protokolle', x: 6, y: 10, w: 6, h: 7 },
+  { id: 'schnell', x: 0, y: 17, w: 12, h: 3 }
+];
+let koBearbeiten = false;
+let koKarte = null;        // Leaflet-Karte des Bausteins "Karte"
+let koKarteWoche = 0;      // gezeigte Kalenderwoche des Bausteins, relativ zur aktuellen
+function koWoche() { const start = tkAddDays(getMondayOfWeek(new Date()), koKarteWoche * 7); return { start, ende: tkAddDays(start, 7) }; }
+function koWochenGruppen() { const { start, ende } = koWoche(); return tkGroupEvents(terminkalenderEvents.filter(e => e.date >= start && e.date < ende)); }
+let koNotizTimer = null;
+const koLeer = (icon, text) => `<div class="ko-empty ko-empty-small"><span class="material-symbols-rounded icon" aria-hidden="true">${icon}</span><p>${text}</p></div>`;
+const koListe = (zeilen, mehr = '') => `<div class="ko-w-liste">${zeilen.join('')}</div>${mehr}`;
+// Zeile einer Liste: Symbol, Titel, Unterzeile; attrs = data-…-Attribute für den Klick
+const koZeile = (attrs, icon, titel, sub, cls = '') => `<button type="button" class="ko-w-zeile${cls ? ' ' + cls : ''}" ${attrs}>
+    <span class="material-symbols-rounded icon" aria-hidden="true">${icon}</span>
+    <span class="ko-w-zeile-text"><span class="ko-w-zeile-titel">${escapeHtml(titel)}</span><span class="ko-w-zeile-sub">${sub}</span></span></button>`;
+function koKommend(tage) {
+  const today = tkDayStart(new Date());
+  return tkGroupEvents(terminkalenderEvents.filter(e => e.date >= today && e.date < tkAddDays(today, tage)));
+}
+// Protokolle (Formulare + Warenfluss) aller Termine, zuletzt bearbeitete zuerst
+function koProtokolle() {
+  const out = [];
+  terminkalenderEvents.forEach(e => {
+    Object.keys(TK_FORMULARE).forEach(kind => {
+      const def = tkFormularDef(kind);
+      (e[def.listKey] || []).forEach(p => out.push({ ev: e, zeit: p.updatedAt || p.createdAt || '', icon: 'science', titel: def.rowTitle(p) || def.title, art: def.title,
+        offen: probenprotokollMissing(p, kind).length > 0 }));
+    });
+    (e.warenfluss || []).forEach(c => { const info = warenflussRowInfo(c); out.push({ ev: e, zeit: c.updatedAt || c.createdAt || '', icon: info.icon, titel: info.titel, art: 'Warenfluss', offen: false }); });
+  });
+  return out.sort((a, b) => String(b.zeit).localeCompare(String(a.zeit)));
+}
+
+const KO_BAUSTEINE = {
+  kennzahlen: {
+    titel: 'Kennzahlen', icon: 'donut_small', text: 'Termine heute und diese Woche, Aufträge', rahmenlos: true, w: 12, h: 2,
+    inhalt() {
+      const tomorrow = tkAddDays(tkDayStart(new Date()), 1);
+      const todayCount = koKommend(7).filter(g => g.date < tomorrow).length;
+      const weekGroups = kontrolleWeekGroups();
+      const kpi = (icon, value, label) => `<div class="ko-kpi">
+          <span class="material-symbols-rounded icon" aria-hidden="true">${icon}</span>
+          <span class="ko-kpi-value">${value}</span>
+          <span class="ko-kpi-label">${label}</span>
+        </div>`;
+      return `<div class="ko-kpis" id="ko-kpis">${kpi('today', todayCount, 'Termine heute')
+        + kpi('calendar_month', weekGroups.length, 'Termine diese Woche')
+        + kpi('assignment', weekGroups.reduce((n, g) => n + g.members.length, 0), 'Aufträge diese Woche')}</div>`;
+    }
+  },
+  agenda: {
+    titel: 'Heute & nächste Tage', icon: 'today', text: 'Termine der nächsten 7 Tage mit Route und Anruf', h: 8,
+    aktion: '<button type="button" class="ko-link-btn" data-ko-tab="kalender">Zum Kalender</button>',
+    inhalt() {
+      const upcoming = koKommend(7);
+      let html;
+      if (!terminkalenderEvents.length) {
+        html = `<div class="ko-empty">
+            <span class="material-symbols-rounded icon" aria-hidden="true">upload_file</span>
+            <p><strong>Noch keine Termine</strong><br>Lade die Termine als Excel aus dem Portal.</p>
+            <button type="button" class="betrieb-btn primary" id="ko-btn-import" data-ko-akt="import">Termine importieren</button>
+          </div>`;
+      } else if (!upcoming.length) {
+        html = koLeer('event_available', 'Keine Termine in den nächsten 7 Tagen.');
+      } else {
+        html = '';
+        let lastDay = '';
+        upcoming.forEach(g => {
+          const dayKey = g.date.toDateString();
+          if (dayKey !== lastDay) { html += `<div class="ko-day-label">${escapeHtml(tkDayLabel(g.date))}</div>`; lastDay = dayKey; }
+          const ev = g.primary;
+          const count = g.members.length > 1 ? `<span class="tk-auftrag-count">${g.members.length} Aufträge</span>` : '';
+          html += `<div class="ko-agenda-row${g.urgent ? ' is-warn' : ''}">
+            <button type="button" class="ko-agenda-main" data-open-termin="${escapeHtml(g.id)}">
+              <span class="ko-agenda-time">${tkTimeLabel(g)}</span>
+              <span class="ko-agenda-text">
+                <span class="ko-agenda-title">${escapeHtml(g.kunde)}${count}</span>
+                <span class="ko-agenda-sub">${escapeHtml([ev.auditart, ev.ort].filter(Boolean).join(' · '))}</span>
+                ${tkGroupChipsHtml(g)}
+              </span>
+            </button>
+            <span class="ko-agenda-actions">${tkEventActionsHtml(ev)}</span>
+          </div>`;
+        });
+      }
+      return `<div id="ko-agenda">${html}</div>`;
+    }
+  },
+  karte: {
+    titel: 'Karte der Termine', icon: 'map', text: 'Die Termine einer Kalenderwoche auf der Karte', h: 8,
+    inhalt() {
+      const { start } = koWoche();
+      const { week, year } = getISOWeek(start);
+      const kurz = (d) => d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
+      const alle = koWochenGruppen();
+      const punkte = alle.filter(g => g.primary.lat != null && g.primary.lng != null);
+      const ohne = alle.length - punkte.length;
+      return `<div class="ko-w-kw">
+          <button type="button" class="ko-icon-btn" data-ko-akt="kw-zurueck" title="Vorherige Woche" aria-label="Vorherige Woche"><span class="material-symbols-rounded icon" aria-hidden="true">chevron_left</span></button>
+          <span class="ko-w-kw-text" id="ko-w-kw"><b>KW ${week}</b> · ${kurz(start)}–${kurz(tkAddDays(start, 6))}${year !== new Date().getFullYear() ? ' ' + year : ''}</span>
+          <button type="button" class="ko-icon-btn" data-ko-akt="kw-vor" title="Nächste Woche" aria-label="Nächste Woche"><span class="material-symbols-rounded icon" aria-hidden="true">chevron_right</span></button>
+          ${koKarteWoche ? '<button type="button" class="ko-link-btn" data-ko-akt="kw-heute">Diese Woche</button>' : ''}
+          <span class="ko-w-kw-zahl">${alle.length} ${alle.length === 1 ? 'Termin' : 'Termine'}${ohne ? `, ${ohne} ohne Adresse` : ''}</span>
+        </div>`
+        + (punkte.length ? '<div class="ko-w-karte" id="ko-w-karte"></div>'
+          : koLeer('map', alle.length ? 'Die Termine dieser Woche haben keine Adresse.' : 'Keine Termine in dieser Woche.'));
+    },
+    danach(el) {
+      if (koKarte) { koKarte.remove(); koKarte = null; }
+      const ziel = el.querySelector('#ko-w-karte');
+      if (!ziel || typeof L === 'undefined') return;
+      const punkte = koWochenGruppen().filter(g => g.primary.lat != null && g.primary.lng != null);
+      koKarte = L.map(ziel, { zoomControl: false, scrollWheelZoom: false, attributionControl: true });
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '&copy; OpenStreetMap' }).addTo(koKarte);
+      const marker = punkte.map(g => {
+        const mk = L.circleMarker([g.primary.lat, g.primary.lng], { radius: 8, color: '#fff', weight: 2, fillColor: g.urgent ? '#E8A33D' : '#7FA36B', fillOpacity: 1 }).addTo(koKarte);
+        mk.bindTooltip(`${escapeHtml(g.kunde)} · ${escapeHtml(tkFmtDate(g.date))}`);
+        mk.on('click', () => openKontrollmappe(g.id, 'ueberblick'));
+        return mk;
+      });
+      koKarte.fitBounds(L.featureGroup(marker).getBounds(), { padding: [28, 28], maxZoom: 12 });
+    }
+  },
+  dokumente: {
+    titel: 'Neueste Dokumente', icon: 'folder_open', text: 'Die zuletzt hinzugefügten Fotos und Dateien', h: 7,
+    aktion: '<button type="button" class="ko-link-btn" data-ko-tab="dokumente">Alle Dokumente</button>',
+    inhalt() {
+      const neu = dokumenteNeueste(6);
+      if (!neu.length) return koLeer('folder_open', 'Noch keine Dokumente.');
+      return koListe(neu.map((d, i) => koZeile(`data-ko-dok="${i}"`, /pdf$/i.test(d.type || d.name) ? 'picture_as_pdf' : (d.type || '').startsWith('image/') ? 'photo_camera' : 'description',
+        d.name, `${escapeHtml(d.betrieb)} · ${escapeHtml(tkFmtDate(new Date(d.terminDatum)))}`)));
+    }
+  },
+  protokolle: {
+    titel: 'Zuletzt bearbeitete Protokolle', icon: 'fact_check', text: 'Probenahme, Cross Check und Warenfluss über alle Termine', h: 7,
+    inhalt() {
+      const liste = koProtokolle().slice(0, 6);
+      if (!liste.length) return koLeer('fact_check', 'Noch keine Protokolle.');
+      return koListe(liste.map(p => koZeile(`data-open-termin="${escapeHtml((tkGroupFor(p.ev.id) || p.ev).id)}" data-open-tab="protokolle"`, p.icon, p.titel,
+        `${escapeHtml(p.art)} · ${escapeHtml(p.ev.kunde)} · ${escapeHtml(tkFmtDate(p.ev.date))}${p.offen ? ' · <span class="kb-warn">unvollständig</span>' : ''}`)));
+    }
+  },
+  schnell: {
+    titel: 'Schnellzugriff', icon: 'bolt', text: 'Häufige Schritte mit einem Tipp', w: 12, h: 3,
+    inhalt() {
+      const heute = koKommend(1)[0];
+      const knopf = (attrs, icon, text) => `<button type="button" class="ko-w-schnell" ${attrs}><span class="material-symbols-rounded icon" aria-hidden="true">${icon}</span>${text}</button>`;
+      return `<div class="ko-w-schnellraster">
+        ${heute ? knopf(`data-open-termin="${escapeHtml(heute.id)}"`, 'today', 'Heutigen Termin öffnen') : ''}
+        ${knopf('data-ko-tab="kalender"', 'calendar_month', 'Kalender')}
+        ${knopf('data-ko-tab="dokumente"', 'folder_open', 'Dokumente')}
+        ${knopf('data-ko-akt="betrieb"', 'business', activeZuordnung ? 'Betrieb wechseln' : 'Betrieb wählen')}
+        ${knopf('data-ko-akt="import"', 'upload_file', 'Termine importieren')}
+      </div>`;
+    }
+  },
+  offen: {
+    titel: 'Zu erledigen', icon: 'checklist', text: 'Unbestätigte und unangemeldete Termine, offene Uploads, unvollständige Protokolle', h: 7,
+    inhalt() {
+      const zeilen = [];
+      koKommend(30).forEach(g => {
+        const was = [!g.bestaetigt ? 'unbestätigt' : '', g.members.some(m => m.unangemeldet) ? 'unangemeldet' : '', !(g.primary.address || g.primary.lat != null) ? 'ohne Adresse' : ''].filter(Boolean);
+        if (was.length) zeilen.push(koZeile(`data-open-termin="${escapeHtml(g.id)}"`, 'event_upcoming', g.kunde, `${escapeHtml(tkFmtDate(g.date))} · <span class="kb-warn">${was.join(', ')}</span>`));
+      });
+      koProtokolle().filter(p => p.offen).forEach(p => zeilen.push(koZeile(`data-open-termin="${escapeHtml((tkGroupFor(p.ev.id) || p.ev).id)}" data-open-tab="protokolle"`, 'fact_check', p.titel,
+        `${escapeHtml(p.ev.kunde)} · <span class="kb-warn">${escapeHtml(p.art)} unvollständig</span>`)));
+      const warten = myUploads();
+      if (warten.length) zeilen.unshift(koZeile('data-ko-tab="dokumente"', 'cloud_upload', `${warten.length} ${warten.length === 1 ? 'Datei wartet' : 'Dateien warten'} auf den Upload`,
+        warten.some(r => r.status === 'error') ? '<span class="kb-warn">mindestens ein Upload ist fehlgeschlagen</span>' : 'wird bei Verbindung automatisch nachgeholt'));
+      if (!zeilen.length) return koLeer('task_alt', 'Nichts offen.');
+      return koListe(zeilen.slice(0, 8), zeilen.length > 8 ? `<p class="ko-w-mehr">und ${zeilen.length - 8} weitere</p>` : '');
+    }
+  },
+  betrieb: {
+    titel: 'Aktueller Betrieb', icon: 'business', text: 'Der gewählte Betrieb mit nächstem Termin', h: 4,
+    aktion: '<button type="button" class="ko-link-btn" data-ko-tab="betrieb">Zur Betriebsseite</button>',
+    inhalt() {
+      if (!activeZuordnung) return `<div class="ko-empty ko-empty-small"><span class="material-symbols-rounded icon" aria-hidden="true">business</span><p>Kein Betrieb gewählt.</p>
+        <button type="button" class="betrieb-btn primary" data-ko-akt="betrieb">Betrieb wählen</button></div>`;
+      const gruppen = tkGroupEvents(kbEvents(activeZuordnung.betrieb));
+      const naechster = kbCurrentGroup(gruppen);
+      const dok = kbEvents(activeZuordnung.betrieb).reduce((n, e) => n + (e.attachments || []).length, 0);
+      return `<div class="ko-w-betrieb"><b>${escapeHtml(activeZuordnung.betrieb)}</b>
+        <span>${naechster ? `Termin ${escapeHtml(tkFmtDate(naechster.date))} · ${escapeHtml(naechster.primary.auditart || '')}` : 'Kein Termin'}</span>
+        <span>${gruppen.length} ${gruppen.length === 1 ? 'Termin' : 'Termine'} · ${dok} ${dok === 1 ? 'Dokument' : 'Dokumente'}</span></div>
+        ${naechster ? `<button type="button" class="betrieb-btn" data-open-termin="${escapeHtml(naechster.id)}"><span class="material-symbols-rounded icon" aria-hidden="true">fact_check</span>Kontrollmappe öffnen</button>` : ''}`;
+    }
+  },
+  auftraege: {
+    titel: 'Aufträge nach Art', icon: 'bar_chart', text: 'Was in den nächsten 30 Tagen ansteht', h: 6,
+    inhalt() {
+      const zahl = new Map();
+      koKommend(30).forEach(g => g.members.forEach(m => { const k = (m.auditart || 'Ohne Angabe').trim(); zahl.set(k, (zahl.get(k) || 0) + 1); }));
+      const liste = [...zahl.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+      if (!liste.length) return koLeer('bar_chart', 'Keine Aufträge in den nächsten 30 Tagen.');
+      const max = liste[0][1];
+      return `<div class="ko-w-balken">${liste.map(([name, n]) => `<div class="ko-w-balkenzeile"><span class="ko-w-balkenname" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+        <span class="ko-w-balkenspur"><span style="width:${Math.round(n / max * 100)}%"></span></span><span class="ko-w-balkenzahl">${n}</span></div>`).join('')}</div>`;
+    }
+  },
+  notiz: {
+    titel: 'Meine Notiz', icon: 'sticky_note_2', text: 'Freier Merkzettel — nur für dich, auf allen deinen Geräten', h: 5,
+    inhalt() {
+      return `<textarea class="ko-w-notiz" id="ko-notiz" rows="5" maxlength="5000" placeholder="Merkzettel …" aria-label="Meine Notiz">${escapeHtml(kontoProfil.notiz || '')}</textarea>`;
+    }
+  }
+};
+
+function koLayout() { return layoutBereinigen(kontoProfil.dashboard, KO_BAUSTEINE, KO_LAYOUT_STANDARD); }
+function koLayoutSpeichern(layout) {
+  kontoProfil.dashboard = layout;
+  persistLocalState().catch(() => {});
+  syncBald(1500);
+}
 function renderKontrolleUebersicht() {
   updateKontrolleCounts();
   refreshKontrolleBetrieb();
   if (document.getElementById('kontrolle-uebersicht').hidden) return;
-  const today = tkDayStart(new Date());
-  const tomorrow = tkAddDays(today, 1);
-  const in7 = tkAddDays(today, 7);
-  const upcoming = tkGroupEvents(terminkalenderEvents.filter(e => e.date >= today && e.date < in7));
-  const todayCount = upcoming.filter(g => g.date < tomorrow).length;
-  const weekGroups = kontrolleWeekGroups();
-  const weekAuftraege = weekGroups.reduce((n, g) => n + g.members.length, 0);
+  // während im Notizfeld getippt wird, nicht unter dem Cursor neu zeichnen
+  if (document.activeElement && document.activeElement.id === 'ko-notiz') return;
+  const anpassen = document.getElementById('ko-dash-anpassen');
+  anpassen.setAttribute('aria-pressed', String(koBearbeiten));
+  anpassen.querySelector('.ko-dash-text').textContent = koBearbeiten ? 'Fertig' : 'Anpassen';
+  anpassen.classList.toggle('primary', koBearbeiten);
+  document.getElementById('ko-dash-standard').hidden = !koBearbeiten;
+  document.getElementById('ko-dash-luecken').hidden = !koBearbeiten;
+  document.getElementById('ko-dash-hinweis').hidden = !koBearbeiten;
+  renderDashboard(document.getElementById('ko-dash'), {
+    bausteine: KO_BAUSTEINE, layout: koLayout(), bearbeiten: koBearbeiten,
+    onLayout: (neu) => { koLayoutSpeichern(neu); renderKontrolleUebersicht(); }
+  });
+}
+document.getElementById('ko-dash-anpassen').addEventListener('click', () => { koBearbeiten = !koBearbeiten; renderKontrolleUebersicht(); });
+document.getElementById('ko-dash-luecken').addEventListener('click', () => dashboardLueckenSchliessen(document.getElementById('ko-dash')));
+document.getElementById('ko-dash-standard').addEventListener('click', () => {
+  if (!confirm('Die Übersicht auf die Standard-Bausteine zurücksetzen?')) return;
+  koLayoutSpeichern(KO_LAYOUT_STANDARD.map(x => ({ ...x })));
+  renderKontrolleUebersicht();
+});
+// Notiz: beim Tippen speichern (verzögert), ohne die Übersicht neu zu zeichnen
+document.getElementById('ko-dash').addEventListener('input', (e) => {
+  if (e.target.id !== 'ko-notiz') return;
+  const text = e.target.value;
+  clearTimeout(koNotizTimer);
+  koNotizTimer = setTimeout(() => {
+    if (text.trim()) kontoProfil.notiz = text.slice(0, 5000); else delete kontoProfil.notiz;
+    persistLocalState().catch(() => {});
+    syncBald(1500);
+  }, 600);
+});
 
-  const kpi = (icon, value, label) => `<div class="ko-kpi">
-      <span class="material-symbols-rounded icon" aria-hidden="true">${icon}</span>
-      <span class="ko-kpi-value">${value}</span>
-      <span class="ko-kpi-label">${label}</span>
-    </div>`;
-  document.getElementById('ko-kpis').innerHTML =
-    kpi('today', todayCount, 'Termine heute') +
-    kpi('calendar_month', weekGroups.length, 'Termine diese Woche') +
-    kpi('assignment', weekAuftraege, 'Aufträge diese Woche');
-
-  const agendaEl = document.getElementById('ko-agenda');
-  if (!terminkalenderEvents.length) {
-    agendaEl.innerHTML = `<div class="ko-empty">
-        <span class="material-symbols-rounded icon" aria-hidden="true">upload_file</span>
-        <p><strong>Noch keine Termine</strong><br>Lade die Termine als Excel aus dem Portal.</p>
-        <button type="button" class="betrieb-btn primary" id="ko-btn-import">Termine importieren</button>
-      </div>`;
-    document.getElementById('ko-btn-import').addEventListener('click', () => document.getElementById('terminkalender-file-input').click());
-  } else if (!upcoming.length) {
-    agendaEl.innerHTML = '<div class="ko-empty ko-empty-small"><span class="material-symbols-rounded icon" aria-hidden="true">event_available</span><p>Keine Termine in den nächsten 7 Tagen.</p></div>';
-  } else {
-    let html = '';
-    let lastDay = '';
-    upcoming.forEach(g => {
-      const dayKey = g.date.toDateString();
-      if (dayKey !== lastDay) {
-        html += `<div class="ko-day-label">${escapeHtml(tkDayLabel(g.date))}</div>`;
-        lastDay = dayKey;
-      }
-      const ev = g.primary;
-      const count = g.members.length > 1 ? `<span class="tk-auftrag-count">${g.members.length} Aufträge</span>` : '';
-      html += `<div class="ko-agenda-row${g.urgent ? ' is-warn' : ''}">
-        <button type="button" class="ko-agenda-main" data-open-termin="${escapeHtml(g.id)}">
-          <span class="ko-agenda-time">${tkTimeLabel(g)}</span>
-          <span class="ko-agenda-text">
-            <span class="ko-agenda-title">${escapeHtml(g.kunde)}${count}</span>
-            <span class="ko-agenda-sub">${escapeHtml([ev.auditart, ev.ort].filter(Boolean).join(' · '))}</span>
-            ${tkGroupChipsHtml(g)}
-          </span>
-        </button>
-        <span class="ko-agenda-actions">${tkEventActionsHtml(ev)}</span>
-      </div>`;
-    });
-    agendaEl.innerHTML = html;
+// ---- Dokumente (Dateiexplorer der Kontrolle, Darstellung: src/dokumente.js) ----
+// Alle Fotos und Dateien aller Termine: Anhänge am Termin, Anlagen der
+// Protokolle (nur ansehen) und Dateien, die noch auf den Upload warten.
+function dokumenteSammeln() {
+  const out = [];
+  const basisVon = (e) => {
+    const g = tkGroupFor(e.id);
+    const kopf = g ? g.primary : e;
+    const mehr = g && g.members.length > 1 ? ` (+${g.members.length - 1})` : '';
+    return { betrieb: e.kunde || 'Ohne Betrieb', terminId: g ? g.id : e.id, evId: e.id, terminDatum: e.date.getTime(),
+      terminText: `${tkFmtDate(e.date)} · ${kopf.auditart || 'Termin'}${mehr}` };
+  };
+  terminkalenderEvents.forEach(e => {
+    const basis = basisVon(e);
+    (e.attachments || []).forEach(a => out.push({ ...basis, id: 'a:' + a.path, name: a.name || 'Datei', type: a.type || '', size: a.size || 0, path: a.path,
+      herkunft: 'Termin', status: 'ok', aenderbar: true, hinzugefuegt: a.addedAt || '' }));
+    Object.keys(TK_FORMULARE).forEach(kind => (e[tkFormularDef(kind).listKey] || []).forEach(p => (p.anlagenDateien || []).forEach(a => out.push({
+      ...basis, id: 'p:' + a.path, name: a.name || 'Datei', type: a.type || '', size: a.size || 0, path: a.path,
+      herkunft: 'Protokoll', status: 'ok', aenderbar: false, hinzugefuegt: '' }))));
+  });
+  myUploads().forEach(r => {
+    const e = terminkalenderEvents.find(x => x.id === r.evId);
+    if (!e) return;
+    out.push({ ...basisVon(e), id: 'u:' + r.id, name: r.name || 'Datei', type: r.type || '', size: r.size || 0, blob: r.blob, uploadId: r.id,
+      herkunft: 'Termin', status: r.status === 'error' ? 'fehler' : 'wartet', aenderbar: true, hinzugefuegt: r.createdAt || '' });
+  });
+  return out;
+}
+// Neueste zuerst: nach Zeitpunkt des Hinzufügens, sonst nach Termin
+function dokumenteNeueste(n) {
+  return dokumenteSammeln().sort((a, b) => String(b.hinzugefuegt || '').localeCompare(String(a.hinzugefuegt || '')) || b.terminDatum - a.terminDatum).slice(0, n);
+}
+const dokViewerItem = (d) => ({ name: d.name, type: d.type, size: d.size, path: d.path, blob: d.blob, uploadId: d.uploadId, thumb: null,
+  note: d.status !== 'ok' ? 'noch nicht hochgeladen' : d.herkunft === 'Protokoll' ? 'Protokoll-Anlage' : undefined });
+// Löschen (mit Rückfrage). Ergebnis: wirklich gelöscht?
+async function dokumentLoeschen(d) {
+  if (!d.aenderbar) return false;
+  if (d.uploadId) {
+    const vorher = uploadQueue.length;
+    await cancelQueuedUpload(d.uploadId);
+    return uploadQueue.length < vorher;
   }
+  if (!confirm(`„${d.name}" wirklich löschen?`)) return false;
+  await removeTerminkalenderAttachment(d.evId, d.path);
+  const ev = terminkalenderEvents.find(e => e.id === d.evId);
+  return !(ev && (ev.attachments || []).some(a => a.path === d.path));
+}
+function dokumenteAnsehen(liste, index) {
+  openDocViewer(liste.map(dokViewerItem), index, {
+    onDelete: async (item) => {
+      const d = liste.find(x => (item.uploadId ? x.uploadId === item.uploadId : x.path === item.path));
+      if (!d || !d.aenderbar) { alert('Protokoll-Anlagen lassen sich nur im Protokoll entfernen.'); return false; }
+      const ok = await dokumentLoeschen(d);
+      if (ok) refreshKontrolleAnsichten();
+      return ok;
+    }
+  });
+}
+function dateiSpeichern(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+const dokumentExplorer = createDokumentExplorer(document.getElementById('ko-dokumente'), {
+  ansehen: dokumenteAnsehen,
+  vorschau: (d) => (d.blob ? Promise.resolve(URL.createObjectURL(d.blob)) : getPhotoUrl(d.path, d.name)),
+  zumTermin: (d) => openKontrollmappe(d.terminId, 'dokumente'),
+  async umbenennen(d) {
+    const ev = terminkalenderEvents.find(e => e.id === d.evId);
+    if (!ev) return;
+    const art = await askDocName({ title: 'Dokument umbenennen', value: docArtFromName(ev, d.name), ev, fileName: d.name, skipLabel: 'Abbrechen',
+      previewIcon: /pdf$/i.test(d.type || d.name || '') ? 'picture_as_pdf' : (d.type || '').startsWith('image/') ? 'photo_camera' : 'description' });
+    if (!art) return;
+    if (d.uploadId) renameTerminDoc(ev, d.uploadId, art);
+    else { const a = (ev.attachments || []).find(x => x.path === d.path); if (a) renameAttachment(ev, a, art); }
+    refreshKontrolleAnsichten();
+  },
+  async loeschen(d) { if (await dokumentLoeschen(d)) refreshKontrolleAnsichten(); },
+  async herunterladen(d, melde) {
+    try {
+      melde(`Lade „${d.name}“ …`);
+      dateiSpeichern(await loadDocBlob(dokViewerItem(d)), d.name);
+      melde('');
+    } catch (err) { melde(`„${d.name}“ konnte nicht geladen werden: ${err.message || 'unbekannter Fehler'}`); }
+  },
+  // Alle angezeigten Dateien als ZIP: Ordner Betrieb/Termin, Namen eindeutig
+  async zip(liste, name, melde) {
+    if (typeof JSZip === 'undefined') { melde('ZIP-Export nicht verfügbar (Bibliothek konnte nicht geladen werden).'); return; }
+    const zip = new JSZip();
+    const vergeben = new Set();
+    let fehler = 0;
+    for (let i = 0; i < liste.length; i++) {
+      const d = liste[i];
+      melde(`Lade ${i + 1} von ${liste.length} …`);
+      try {
+        const blob = await loadDocBlob(dokViewerItem(d));
+        const ordner = `${sanitizeFileNamePart(d.betrieb)}/${sanitizeFileNamePart(d.terminText)}/`;
+        let pfad = ordner + d.name;
+        for (let n = 2; vergeben.has(pfad); n++) pfad = ordner + d.name.replace(/(\.[^.]+)?$/, ` (${n})$1`);
+        vergeben.add(pfad);
+        zip.file(pfad, blob);
+      } catch { fehler++; }
+    }
+    if (fehler === liste.length) { melde('Keine der Dateien konnte geladen werden (ohne Internet sind nur schon angesehene verfügbar).'); return; }
+    melde('Erstelle ZIP …');
+    dateiSpeichern(await zip.generateAsync({ type: 'blob' }), sanitizeFileNamePart(name) + '.zip');
+    melde(fehler ? `ZIP erstellt — ${fehler} ${fehler === 1 ? 'Datei fehlt' : 'Dateien fehlen'} (nicht ladbar).` : '');
+  },
+  hinzufuegen(terminId, files) {
+    const g = tkGroupFor(terminId);
+    const ev = g ? g.primary : terminkalenderEvents.find(e => e.id === terminId);
+    if (ev) files.forEach(f => uploadTerminkalenderAttachment(ev, f));
+  }
+});
+function renderKontrolleDokumente() {
+  if (document.getElementById('kontrolle-dokumente').hidden) return;
+  dokumentExplorer.zeige(dokumenteSammeln());
+}
+// Kontrollmappe → "Im Dateiexplorer": Reiter Dokumente, Ordner dieses Termins
+document.getElementById('terminkalender-detail').addEventListener('click', (e) => {
+  if (!e.target.closest('#tk-zum-explorer')) return;
+  const g = tkGroupFor(terminkalenderSelectedId);
+  closeKontrollmappe();
+  setKontrolleTab('dokumente');
+  if (g) dokumentExplorer.oeffne(g.kunde, g.id);
+});
+// Nach Änderungen an Anhängen/Uploads: offene Kontrolle-Ansichten auffrischen
+function refreshKontrolleAnsichten() {
+  if (document.getElementById('kontrolle-view').hidden) return;
+  renderKontrolleDokumente();
+  renderKontrolleUebersicht();
 }
 document.getElementById('kontrolle-uebersicht').addEventListener('click', (e) => {
+  if (koBearbeiten) return; // im Bearbeiten-Modus öffnen die Bausteine nichts
   const btn = e.target.closest('[data-open-termin]');
-  if (btn) openKontrollmappe(btn.dataset.openTermin, btn.dataset.openTab || 'ueberblick');
+  if (btn) return openKontrollmappe(btn.dataset.openTermin, btn.dataset.openTab || 'ueberblick');
+  const dok = e.target.closest('[data-ko-dok]');
+  if (dok) return dokumenteAnsehen(dokumenteNeueste(6), Number(dok.dataset.koDok));
+  const akt = e.target.closest('[data-ko-akt]');
+  if (!akt) return;
+  if (akt.dataset.koAkt === 'import') document.getElementById('terminkalender-file-input').click();
+  else if (akt.dataset.koAkt === 'betrieb') openBetriebModal();
+  else if (/^kw-/.test(akt.dataset.koAkt)) {
+    // Baustein "Karte": Kalenderwoche wechseln
+    koKarteWoche = akt.dataset.koAkt === 'kw-heute' ? 0 : koKarteWoche + (akt.dataset.koAkt === 'kw-vor' ? 1 : -1);
+    renderKontrolleUebersicht();
+  }
 });
 
 // ---- Betrieb (Unterfunktion der Kontrolle) ----
@@ -12623,7 +13034,8 @@ function renderTerminkalenderDetail(ev) {
       </section>
       <section class="km-panel" data-km-panel="dokumente"${tab === 'dokumente' ? '' : ' hidden'}>
         <div class="tk-attachments">
-          <div class="tk-attachments-head">Fotos &amp; Dateien</div>
+          <div class="tk-attachments-head">Fotos &amp; Dateien
+            <button type="button" class="ko-link-btn" id="tk-zum-explorer" title="Alle Dokumente dieses Termins im Dateiexplorer"><span class="material-symbols-rounded icon" aria-hidden="true">folder_open</span>Im Dateiexplorer</button></div>
           <div class="tk-attachments-grid tk-upload-queue" id="tk-upload-queue" hidden></div>
           <div class="tk-attachments-grid" id="tk-attachments-grid"></div>
           <div class="tk-attachments-actions">
@@ -12839,7 +13251,8 @@ async function handleTerminkalenderPhotoCapture(ev, e) {
 // Name = Jahr_Betrieb_<Bezeichnung>.<Endung> (gleiches Schema wie bisher,
 // die Bezeichnung ersetzt "Foto Termin"/"Scan Termin"). Ein Dialog nach dem
 // anderen: kommt während des Benennens schon das nächste Foto, wartet es.
-const DOCNAME_VORSCHLAEGE = ['Lieferschein', 'Rechnung', 'Etikett', 'Zertifikat', 'Futtermittel', 'Saatgut', 'Lager', 'Stall', 'Auslauf', 'Bestandsregister', 'Reinigungsmittel', 'Schädlingsbekämpfung'];
+const DOCNAME_VORSCHLAEGE = ['Lieferschein', 'Rechnung', 'Etikett', 'Zertifikat', 'Lieferantenliste', 'Sortimentsliste', 'Wiederverkäuferliste', 'HIT-Auszug', 'FNN', 'Verstoß Beleg',
+  'Futtermittel', 'Saatgut', 'Lager', 'Stall', 'Auslauf', 'Bestandsregister', 'Reinigungsmittel', 'Schädlingsbekämpfung'];
 function docNamePrefix(ev) { return `${ev.date.getFullYear()}_${sanitizeFileNamePart(ev.kunde)}_`; }
 function docArtFromName(ev, name) {
   const base = String(name || '').replace(/\.[^.]+$/, '');
@@ -12928,6 +13341,7 @@ function renameAttachment(ev, a, art) {
   const group = tkGroupFor(ev.id);
   if (group && group.id === terminkalenderSelectedId) renderTerminkalenderAttachments(group.primary);
   refreshKontrolleBetrieb();
+  renderKontrolleDokumente();
 }
 
 function handleTerminkalenderFileAdd(ev, e) {
@@ -12970,7 +13384,7 @@ async function runUploadQueue() {
         const target = group ? group.primary : terminkalenderEvents.find(e => e.id === rec.evId);
         if (target) {
           target.attachments = target.attachments || [];
-          target.attachments.push({ path, name: rec.name, size: rec.size, type: rec.type, uploadId: rec.id });
+          target.attachments.push({ path, name: rec.name, size: rec.size, type: rec.type, uploadId: rec.id, addedAt: new Date().toISOString() });
         }
         removeQueuedUpload(rec);
         try { await persistLocalState(); } catch {}
@@ -13065,6 +13479,7 @@ function uploadSummaryText(list) {
 // "Dokumente", Zähler am Reiter, Speicherstatus in der Kopfzeile.
 function refreshUploadViews() {
   updateSaveStatus();
+  refreshKontrolleAnsichten();
   const mappe = document.getElementById('kontrollmappe');
   if (!mappe || mappe.hidden || !terminkalenderSelectedId) return;
   renderUploadQueueTiles(terminkalenderSelectedId);
@@ -14842,6 +15257,7 @@ function updateBetriebButton() {
     btnBetriebLabel.innerHTML = `<span class="material-symbols-rounded icon betrieb-empty-icon" aria-hidden="true">business</span><span class="btn-betrieb-name">Betrieb wählen</span>${caret}`;
   }
   btnBetrieb.title = activeZuordnung ? `Betrieb: ${activeZuordnung.betrieb} — antippen zum Wechseln` : 'Betrieb/Termin zuordnen';
+  document.getElementById('betrieb-switcher-sub').textContent = activeZuordnung ? activeZuordnung.betrieb : 'Unterlagen · Flächen · Funktionen';
   btnBetrieb.setAttribute('aria-label', activeZuordnung ? `Betrieb: ${activeZuordnung.betrieb} (wechseln)` : 'Betrieb wählen');
 }
 

@@ -30,11 +30,14 @@ test.describe('Kontrolle', () => {
     await expect(page.locator('#account-modal-overlay')).toBeVisible();
   });
 
-  test('Kachel heißt „Kontrolle", Start in der Übersicht; alter Link ?view=terminkalender öffnet den Kalender', async ({ page }) => {
+  test('Kachel heißt „Dashboard", Start in der Übersicht; alter Link ?view=terminkalender öffnet den Kalender', async ({ page }) => {
     await login(page);
-    await expect(page.locator('#kontrolle-switcher')).toContainText('Kontrolle');
+    await expect(page.locator('#kontrolle-switcher')).toContainText('Dashboard');
     await openKontrolle(page);
-    await expect(page.locator('#current-view-title')).toHaveText('Kontrolle');
+    await expect(page.locator('#current-view-title')).toHaveText('Dashboard');
+    await expect(page.locator('#ko-header-title')).toHaveText('Dashboard');
+    await expect(page.locator('#kontrolle-tabs [role="tab"] .ko-tab-text')).toHaveText(['Übersicht', 'Kalender', 'Dokumente']);
+    await expect(page.locator('#kontrolle-subnav .ko-subnav-label')).toHaveText(['Übersicht', 'Kalender', 'Dokumente']);
     await expect(page.locator('#kontrolle-uebersicht')).toBeVisible();
     await expect(page.locator('#terminkalender-main')).toBeHidden();
     await expect(page.locator('#map-wrap')).toBeHidden();
@@ -179,7 +182,7 @@ test.describe('Kontrolle', () => {
   test('Reiter wechseln über Kopf, Seitenleiste und „Zum Kalender"', async ({ page }) => {
     await login(page);
     await openKontrolle(page);
-    await page.locator('#kontrolle-uebersicht [data-ko-tab="kalender"]').click();
+    await page.locator('#kontrolle-uebersicht .ko-link-btn[data-ko-tab="kalender"]').click();
     await expect(page.locator('#terminkalender-main')).toBeVisible();
     await expect(page.locator('#kontrolle-tabs [data-ko-tab="kalender"]')).toHaveAttribute('aria-selected', 'true');
     await expect(page.locator('#kontrolle-subnav [data-ko-tab="kalender"]')).toHaveClass(/active/);

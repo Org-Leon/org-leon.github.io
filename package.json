@@ -22,6 +22,7 @@
     "@turf/turf": "^7.4.0",
     "@zxing/browser": "^0.2.1",
     "@zxing/library": "^0.23.0",
+    "gridstack": "^14.0.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   }
 }

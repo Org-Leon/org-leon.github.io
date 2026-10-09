@@ -1,6 +1,6 @@
 # FeldFolio – Benutzerhandbuch
 
-Stand: 8. Oktober 2026
+Stand: 9. Oktober 2026
 
 FeldFolio ist ein Werkzeug für die Öko-Kontrolle: Flächen eines Betriebs auf der Karte ansehen und auswerten, Hof und Stall erfassen und die Kontrolle selbst mit Terminen, Protokollen und Dokumenten begleiten. Die App läuft im Browser auf PC, Tablet und Handy und funktioniert vor Ort auch ohne Empfang.
 
@@ -17,7 +17,7 @@ FeldFolio ist ein Werkzeug für die Öko-Kontrolle: Flächen eines Betriebs auf 
 9. [Hofplan](#9-hofplan)
 10. [Stallplaner](#10-stallplaner)
 11. [Tierbestand](#11-tierbestand)
-12. [Kontrolle](#12-kontrolle)
+12. [Dashboard und Betrieb](#12-dashboard-und-betrieb)
 13. [Warenflussprüfung](#13-warenflussprüfung)
 14. [Konto, Speichern und Offline-Nutzung](#14-konto-speichern-und-offline-nutzung)
 15. [Hinweise und Grenzen](#15-hinweise-und-grenzen)
@@ -30,7 +30,7 @@ FeldFolio ist ein Werkzeug für die Öko-Kontrolle: Flächen eines Betriebs auf 
 ### Aufbau der App
 
 - **Kopfzeile:** links das Menü (am Handy) und der Name der aktuellen Funktion, in der Mitte die Flächensuche, rechts Speicherstatus, Betrieb, Hell-/Dunkelmodus und Konto.
-- **Funktionsauswahl:** die Kacheln oben in der Seitenleiste (Karte, Flächenübersicht, Jahresvergleich, Flächenzeichner, Obstbaumkataster, Bienenflugkarte, Hofplan, Stallplaner, Tierbestand). Mit Konto kommt darüber die Kachel **Kontrolle** dazu.
+- **Funktionsauswahl:** die Kacheln oben in der Seitenleiste (Karte, Flächenübersicht, Jahresvergleich, Flächenzeichner, Obstbaumkataster, Bienenflugkarte, Hofplan, Stallplaner, Tierbestand). Mit Konto kommen darüber die breiten Kacheln **Dashboard** und **Betrieb** dazu. Angemeldet startet die App im Dashboard.
 - **Seitenleiste:** zeigt die Einstellungen und Exporte der gewählten Funktion. Am Handy ist sie eine Schublade, die du über das Menü öffnest.
 - **Hauptbereich:** die Karte oder die jeweilige Ansicht.
 
@@ -48,7 +48,7 @@ Mit einem **FeldFolio+-Konto** kommt dazu:
 
 - Dein Arbeitsstand wird gespeichert, auf dem Gerät und in der Cloud.
 - Du arbeitest auf Handy, Tablet und PC mit demselben Stand weiter.
-- Die Funktion **Kontrolle** mit Terminen, Protokollen und Dokumenten.
+- Das **Dashboard** mit Übersicht, Kalender und Dokumenten sowie die Seite **Betrieb** mit Protokollen und Unterlagen.
 - Betriebe: jeder Betrieb hat seinen eigenen Arbeitsstand.
 - Im Jahresvergleich der Abgleich mit der Schlagliste samt Umstellungsstatus (siehe [Umstellung (Schlagliste)](#umstellung-schlagliste)).
 
@@ -426,13 +426,16 @@ Die Zuordnung ist dieselbe wie im Stallplaner beim Abteil unter „Tiere“. Die
 
 ---
 
-## 12. Kontrolle
+## 12. Dashboard und Betrieb
 
-Die Kontrolle gibt es mit Konto. Sie hat drei Reiter: **Betrieb**, **Übersicht** und **Kalender**.
+Beides gibt es mit Konto. In der Seitenleiste stehen dafür oben zwei breite Kacheln:
 
-### Reiter „Betrieb“
+- **Dashboard** mit den Reitern **Übersicht**, **Kalender** und **Dokumente**. Angemeldet ist die Übersicht die erste Seite: beim Start der App und direkt nach dem Anmelden.
+- **Betrieb** für die Seite des gewählten Betriebs. Unter dem Namen der Kachel steht, welcher Betrieb gerade gewählt ist.
 
-Die zentrale Seite für den gewählten Betrieb. Ist ein Betrieb gewählt, startet die Kontrolle hier.
+### Betrieb
+
+Die zentrale Seite für den gewählten Betrieb, zu erreichen über die Kachel „Betrieb“ in der Seitenleiste.
 
 - **Kopfkarte:** Name, Kundennummer, Ort, Verbände; Knöpfe für Route, Anrufen und E-Mail; Kontaktdaten; „Wechseln“.
 - **Betriebsfunktionen:** Kacheln direkt unter der Kopfkarte für Flächenübersicht, Fruchtfolge, Flächenzeichner, Hofplan, Stallplaner, Tierbestand, Obstbäume und Bienenflug.
@@ -442,11 +445,29 @@ Die zentrale Seite für den gewählten Betrieb. Ist ein Betrieb gewählt, starte
 
 Ohne gewählten Betrieb bietet die Seite die nächsten Termine zur Auswahl an.
 
-### Reiter „Übersicht“
+### Dashboard: Reiter „Übersicht“
 
-Kennzahlen (Termine heute, Termine und Aufträge diese Woche) und die Liste „Heute & nächste Tage“.
+Die Übersicht besteht aus **Bausteinen**, die du dir selbst zusammenstellst. Voreingestellt sind:
 
-### Reiter „Kalender“
+- **Kennzahlen:** Termine heute, Termine und Aufträge diese Woche.
+- **Heute & nächste Tage:** die Termine der nächsten 7 Tage mit Route und Anruf. Ein Tipp öffnet die Kontrollmappe.
+- **Karte der Termine:** die Termine einer Kalenderwoche, die eine Adresse haben. Mit den Pfeilen blätterst du wochenweise, „Diese Woche“ springt zurück. Daneben steht, wie viele Termine die Woche hat und wie viele davon keine Adresse haben. Ein Tipp auf einen Punkt öffnet die Kontrollmappe.
+- **Neueste Dokumente:** die zuletzt hinzugefügten Fotos und Dateien; „Alle Dokumente“ führt in den Reiter „Dokumente“.
+- **Zuletzt bearbeitete Protokolle:** Probenahme, Cross Check und Warenfluss über alle Termine.
+- **Schnellzugriff:** heutigen Termin öffnen, Kalender, Dokumente, Betrieb wählen, Termine importieren.
+
+**Anpassen:** Der Knopf „Anpassen“ oben rechts schaltet in den Bearbeiten-Modus. Die Übersicht ist dann ein Raster, auf dem du die Bausteine frei anordnest:
+
+- **Verschieben:** Baustein an seiner Kopfzeile (mit dem Titel und den sechs Punkten) mit Maus oder Finger an eine beliebige Stelle ziehen. Die anderen Bausteine bleiben stehen und weichen nur aus, wenn sie im Weg sind. Lücken sind erlaubt.
+- **Größe ändern:** an einem Rand oder einer Ecke ziehen (die Ecke unten rechts ist markiert) — so wird ein Baustein breiter, schmaler, höher oder niedriger. Passt der Inhalt nicht hinein, lässt er sich im Baustein scrollen.
+- **✕:** Baustein ausblenden.
+- **Lücken schließen:** rückt alle Bausteine so weit wie möglich nach oben.
+
+Unter „Weitere Bausteine“ blendest du zusätzliche ein: **Zu erledigen** (unbestätigte und unangemeldete Termine, Termine ohne Adresse, wartende Uploads, unvollständige Protokolle), **Aktueller Betrieb**, **Aufträge nach Art** (nächste 30 Tage) und **Meine Notiz** (ein Merkzettel nur für dich). „Standard“ stellt die Voreinstellung wieder her, „Fertig“ beendet das Anpassen.
+
+Neue Bausteine erscheinen unten. Deine Anordnung und die Notiz werden im Konto gespeichert und gelten auf allen deinen Geräten. Am Handy (schmaler Bildschirm) stehen die Bausteine in derselben Reihenfolge untereinander; auf dem breiten Bildschirm ist die freie Anordnung wieder da. Außerhalb von „Anpassen“ ist das Raster fest, damit nichts versehentlich verrutscht.
+
+### Dashboard: Reiter „Kalender“
 
 - **Termine importieren** (Seitenleiste): Termine als Excel-Datei (.xlsx) aus dem Portal laden. Uhrzeiten kommen optional aus einer Kalenderdatei (.ics).
 - **Woche oder Liste;** am Handy immer als Liste.
@@ -454,6 +475,21 @@ Kennzahlen (Termine heute, Termine und Aufträge diese Woche) und die Liste „H
 - **Termin verschieben:** am PC per Ziehen, sonst über das Datumsfeld in der Kontrollmappe.
 - **Unangemeldete Audits** (Spalte „Audit unangemeldet“ der Terminliste) sind im Kalender farbig hervorgehoben; in der Kontrollmappe steht das Schild „Unangemeldet“.
 - Aufträge desselben Betriebs zur selben Zeit werden zu **einem Termin** zusammengefasst. Verbände (Demeter, Bioland, Naturland …) erscheinen als farbige Schilder, Probenahme und CC-Anfrage als Schilder mit Symbol.
+
+### Dashboard: Reiter „Dokumente“
+
+Der Dateiexplorer zeigt **alle Fotos und Dokumente aller Termine** an einer Stelle. Dazu gehören auch die Anlagen der Protokolle (nur zum Ansehen) und Dateien, die noch auf den Upload warten. Die Zahl am Reiter in der Seitenleiste nennt die Anzahl.
+
+- **Ordner:** links der Ordnerbaum — „Alle Dokumente“, darunter je Betrieb ein Ordner und darin je Termin einer. Über der Liste stehen dieselben Ordner als Kacheln, oben der Pfad zum Zurückspringen. Am Handy gibt es nur Pfad und Kacheln.
+- **Suche** nach Dateiname, Betrieb oder Termin.
+- **Filter:** Alle, Fotos, PDF, Sonstige.
+- **Sortierung:** Neueste oder älteste zuerst, Name, Größe, Betrieb.
+- **Liste oder Kacheln:** Kacheln zeigen bei Fotos ein Vorschaubild. Deine Wahl merkt sich die App.
+- **Je Datei:** antippen öffnet den Viewer (dort blätterst du durch alle angezeigten Dateien), dazu „Umbenennen“, „Herunterladen“, „Zum Termin“ (öffnet die Kontrollmappe) und „Löschen“.
+- **Als ZIP herunterladen:** packt alle gerade angezeigten Dateien in eine ZIP-Datei, sortiert in Ordner nach Betrieb und Termin. Ohne Internet sind nur Dateien dabei, die du schon einmal angesehen hast.
+- **Datei hinzufügen:** erscheint, wenn du im Ordner eines Termins bist.
+
+Hochgeladen wird weiterhin am Termin: Foto, Scan und Fotomappe findest du in der Kontrollmappe unter „Dokumente“. Von dort führt „Im Dateiexplorer“ direkt in den Ordner des Termins.
 
 ### Kontrollmappe
 
@@ -472,7 +508,7 @@ Ein Tipp auf einen Termin öffnet die Kontrollmappe (am Handy im Vollbild). Im K
 
 **Dokumente:**
 
-- **Foto aufnehmen:** Das Foto wird sofort gesichert. Danach fragt die App nach einem Namen, mit Vorschlägen wie Lieferschein, Etikett oder Zertifikat. „Ohne Namen“ behält den Standardnamen.
+- **Foto aufnehmen:** Das Foto wird sofort gesichert. Danach fragt die App nach einem Namen, mit Vorschlägen zum Antippen: Lieferschein, Rechnung, Etikett, Zertifikat, Lieferantenliste, Sortimentsliste, Wiederverkäuferliste, HIT-Auszug, FNN, Verstoß Beleg, Futtermittel, Saatgut, Lager, Stall, Auslauf, Bestandsregister, Reinigungsmittel und Schädlingsbekämpfung. Hinter den Vorschlag kannst du Details schreiben. „Ohne Namen“ behält den Standardnamen.
 - **Datei hinzufügen.**
 - **Dokument scannen:** mehrere Seiten aufnehmen (Kamera, Kamera-App oder Galerie), Ecken prüfen, Filter wählen, drehen. „Fertig“ erstellt eine PDF-Datei; danach benennst du das Dokument.
 - **Fotomappe:** mehrere Fotos zu einer PDF-Datei mit Bezeichnung zusammenfassen.
@@ -569,7 +605,7 @@ Wurde derselbe Betrieb inzwischen auf einem anderen Gerät geändert, fragt die 
 - **Profil:** Name, Telefon, Kontrollstelle, Kürzel/Prüfernummer und deine Unterschrift. Name und Unterschrift werden in Protokollen vorbelegt.
 - **Sicherheit:** Passwort ändern.
 - **Sync & Gerät:** automatischer Abgleich, Sicherungen des Arbeitsstands.
-- **Abmelden:** wahlweise mit Löschen der Daten auf diesem Gerät (empfohlen auf fremden Geräten) und auf allen Geräten abmelden.
+- **Abmelden:** wahlweise mit Löschen der Daten auf diesem Gerät (empfohlen auf fremden Geräten) und auf allen Geräten abmelden. Nach dem Abmelden ist kein Betrieb mehr gewählt, und seine Flächen und Pläne verschwinden aus der Ansicht. Meldest du dich wieder an, ist der zuletzt gewählte Betrieb wieder da.
 - **Konto löschen.**
 - **Verwaltung** (nur für Konten der Kontrollstelle): offene Zugangsanfragen freischalten oder ablehnen, und **Nutzungscodes – Vorschläge** prüfen. Je Bundesland und Code stehen dort alle vorgeschlagenen Kulturen, mit der Zahl der Nutzer und der Herkunft (Nutzungsnachweis oder eingetragen). **„Freigeben“** macht eine Kultur für alle gültig und lehnt die anderen Vorschläge für denselben Code ab; **„Ablehnen“** verwirft einen Vorschlag.
 
@@ -599,6 +635,6 @@ Wurde derselbe Betrieb inzwischen auf einem anderen Gerät geändert, fragt die 
 | „Nicht synchron“ in der Kopfzeile | Es gibt Änderungen, die noch nicht in der Cloud sind. Bei Empfang gleicht die App von selbst ab. |
 | Foto oder Scan erscheint nicht | Der Upload wartet auf Empfang. Der Status steht an der Datei im Reiter „Dokumente“; antippen startet ihn neu. |
 | Tierbestand: „kein HIT-Bestandsregister erkannt“ | Das Bestandsregister in HI-Tier als PDF speichern (nicht als Bild oder Scan) und unverändert laden. |
-| Kontrolle fehlt in der Funktionsauswahl | Die Kontrolle gibt es nur angemeldet. |
+| Dashboard und Betrieb fehlen in der Funktionsauswahl | Beide gibt es nur angemeldet. |
 | App zeigt einen alten Stand | Seite neu laden. Die installierte App einmal schließen und wieder öffnen. |
 | Kein Kartenbild | Kartenhintergründe brauchen Empfang. Flächen und Daten bleiben nutzbar. |

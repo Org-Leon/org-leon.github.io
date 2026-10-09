@@ -46,4 +46,23 @@ test.describe('Schneller Abgleich zwischen Geräten', () => {
     await page.evaluate(() => window.__ffTestSync.ping());
     await expect.poll(() => page.evaluate((evId) => window.__ffTestTk.getEvent(evId).hinweis, id), { timeout: 4000 }).toBe('Vom Handy');
   });
+
+  // Der übernommene fremde Stand ist die neue Ausgangsbasis: Die nächste EIGENE
+  // Änderung darf keine Rückfrage "Welche Version soll gelten?" auslösen.
+  test('Nach einer übernommenen Änderung vom anderen Gerät: eigene Änderung ohne Konfliktfrage', async ({ page }) => {
+    const id = await setup(page);
+    await page.evaluate((evId) => window.__ffTestCloud.setRemote(d => { d.terminkalenderEvents.find(e => e.id === evId).hinweis = 'Vom Handy'; }), id);
+    await page.evaluate(() => window.__ffTestSync.ping());
+    await expect.poll(() => page.evaluate((evId) => window.__ffTestTk.getEvent(evId).hinweis, id), { timeout: 4000 }).toBe('Vom Handy');
+    // jetzt hier etwas ändern und abgleichen
+    await page.evaluate(() => window.__ffTestTk.addEvent({ kunde: 'Hof Zwei' }));
+    const ergebnis = await Promise.race([
+      page.evaluate(() => window.__ffTestOffline.sync()),
+      page.locator('#sync-conflict-overlay').waitFor({ state: 'visible', timeout: 6000 }).then(() => 'KONFLIKTFRAGE').catch(() => 'keine Antwort')
+    ]);
+    expect(ergebnis).toBe('synced');
+    await expect(page.locator('#sync-conflict-overlay')).toBeHidden();
+    const cloud = await page.evaluate(() => window.__ffTestCloud.row.data.terminkalenderEvents.map(e => [e.kunde, e.hinweis || '']));
+    expect(cloud).toEqual(expect.arrayContaining([['Hof Sync', 'Vom Handy'], ['Hof Zwei', '']]));
+  });
 });

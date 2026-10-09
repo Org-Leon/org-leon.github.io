@@ -32,13 +32,13 @@ const ICON_NAMES = [
   'grid_on', 'handyman', 'history', 'hive', 'home_work', 'info',
   'install_mobile', 'ios_share', 'key', 'layers', 'light_mode',
   'location_on', 'logout', 'mail', 'manage_accounts', 'map', 'menu',
-  'more_horiz', 'my_location', 'open_in_full', 'open_in_new', 'palette', 'park', 'pending_actions', 'pin',
+  'more_horiz', 'my_location', 'open_in_full', 'open_in_new', 'palette', 'park', 'pending_actions', 'pin', 'bar_chart', 'bolt', 'folder', 'folder_zip', 'tune', 'unfold_less', 'view_list',
   'person', 'pets', 'photo_camera', 'photo_library', 'picture_as_pdf',
   'polyline', 'radio_button_checked', 'rectangle', 'redo', 'refresh',
   'restaurant', 'rotate_right', 'route', 'schedule', 'screen_rotation', 'science', 'search',
   'shield', 'space_dashboard', 'sticky_note_2', 'storefront', 'straighten', 'swap_horiz', 'sync',
   'restart_alt', 'table_view', 'task_alt', 'today', 'touch_app', 'undo', 'unfold_more',
-  'upload_file', 'view_agenda', 'view_week', 'visibility', 'visibility_off',
+  'upload_file', 'view_agenda', 'view_week', 'vertical_align_top', 'visibility', 'visibility_off',
   'warning', 'water_drop', 'window', 'zoom_in', 'zoom_out'
 ];
 

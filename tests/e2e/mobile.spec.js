@@ -7,7 +7,8 @@ test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true
 
 async function openFunction(page, view) {
   await page.locator('#btn-sidebar-toggle').click();
-  await page.locator(`.segment-btn[data-view="${view}"]`).click();
+  // "kontrolle" hat zwei Knöpfe (Dashboard, Betrieb) — gemeint ist das Dashboard
+  await page.locator(`.segment-btn[data-view="${view}"]`).first().click();
 }
 
 test.describe('Handy-Ansicht', () => {

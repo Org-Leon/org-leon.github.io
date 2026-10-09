@@ -270,6 +270,36 @@ test.describe('Konto-Seite', () => {
     await expect(page.locator('#btn-account')).not.toHaveClass(/logged-in/);
     expect(await page.evaluate((id) => window.__ffTestOffline.readStored(id), TEST_USER.id)).toBeNull();
   });
+
+  test('Abmelden: der gewählte Betrieb und sein Arbeitsstand werden nicht weiter angezeigt', async ({ page }) => {
+    await loggedIn(page);
+    await page.evaluate(() => {
+      const d = new Date(); d.setDate(d.getDate() + 3);
+      window.__ffTestTk.addEvent({ kunde: 'Hof Abmeldetest', date: d, lat: 51.1, lng: 10.4, address: 'Testweg 1', geocodeStatus: 'ok' });
+    });
+    await page.evaluate(() => window.__ffTestOffline.switchTo('Hof Abmeldetest'));
+    await page.evaluate(() => window.__ffTestStallplaner.createPlan({ name: 'Stall Abmeldetest' }));
+    await expect(page.locator('#btn-betrieb-label')).toContainText('Hof Abmeldetest');
+    await expect(page.locator('.leaflet-marker-pane .betrieb-pin')).toHaveCount(1);
+    await page.evaluate(() => window.__ffTestOffline.persist());
+
+    await page.locator('#btn-account').click();
+    await page.locator('#account-menu-signout').click();
+    await page.locator('#signout-wipe').uncheck(); // Daten auf dem Gerät behalten
+    await page.locator('#signout-confirm').click();
+    await expect(page.locator('#btn-account')).not.toHaveClass(/logged-in/);
+    await expect(page.locator('#btn-betrieb-label')).toContainText('Betrieb wählen');
+    await expect(page.locator('#btn-betrieb-label')).not.toContainText('Hof Abmeldetest');
+    await expect(page.locator('#btn-betrieb')).not.toHaveClass(/active/);
+    await expect(page.locator('.leaflet-marker-pane .betrieb-pin')).toHaveCount(0);
+    expect(await page.evaluate(() => window.__ffTestOffline.currentWorkspaceKey())).toBe('__kein_betrieb__');
+    expect(await page.evaluate(() => window.__ffTestStallplaner.getActivePlan())).toBeFalsy();
+
+    // wieder anmelden: Betrieb und Stallplan sind wieder da
+    await loginWithCloud(page);
+    await expect(page.locator('#btn-betrieb-label')).toContainText('Hof Abmeldetest');
+    await expect.poll(() => page.evaluate(() => window.__ffTestStallplaner.getActivePlan()?.name)).toBe('Stall Abmeldetest');
+  });
 });
 
 test.describe('Konto am Handy', () => {

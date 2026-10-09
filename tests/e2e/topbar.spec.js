@@ -78,7 +78,7 @@ test.describe('Top-Bar Desktop', () => {
     // Lange Funktionsnamen (mit "+" am Logo) passen vollständig und schieben nichts.
     await page.evaluate(() => window.__ffTestTk.loginFake());
     for (const view of ['obstbaum', 'uebersicht', 'bienenflug', 'kontrolle', 'stallplaner']) {
-      await page.locator(`.segment-btn[data-view="${view}"]`).click();
+      await page.locator(`.segment-btn[data-view="${view}"]`).first().click(); // "kontrolle": Dashboard (erster von zwei Knöpfen)
       const fits = await page.locator('#current-view-title').evaluate(el => el.scrollWidth <= el.clientWidth);
       expect(fits, view).toBe(true);
       expect(await page.locator('#topbar-search').evaluate(el => el.getBoundingClientRect().left), view).toBe(base.search);
@@ -123,7 +123,7 @@ test.describe('Top-Bar Desktop', () => {
     }));
     const base = await measure();
     for (const view of ['compare', 'zeichner', 'obstbaum', 'bienenflug', 'hofplan', 'stallplaner', 'tiere', 'uebersicht', 'viewer']) {
-      await page.locator(`.segment-btn[data-view="${view}"]`).click();
+      await page.locator(`.segment-btn[data-view="${view}"]`).first().click(); // "kontrolle": Dashboard (erster von zwei Knöpfen)
       expect(await measure(), view).toEqual(base);
     }
   });

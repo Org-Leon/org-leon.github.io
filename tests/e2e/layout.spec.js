@@ -173,16 +173,25 @@ test.describe('Seitenleiste: einheitliches Schema', () => {
 // An/Aus-Schalter"): Funktionskacheln mit Symbol, Kontrolle als
 // normale Kachel nur mit Konto, An/Aus überall als Schiebeschalter.
 test.describe('Seitenleiste: einheitliche Umschalter', () => {
-  test('Funktionswahl: jede Kachel mit Symbol, Kontrolle nur mit Anmeldung', async ({ page }) => {
+  test('Funktionswahl: jede Kachel mit Symbol, Dashboard und Betrieb nur mit Anmeldung', async ({ page }) => {
     await page.goto('/');
     const tiles = page.locator('#view-switcher .segment-btn');
     await expect(tiles.filter({ visible: true })).toHaveCount(9);
     expect(await page.locator('#view-switcher .segment-btn:visible .icon').count()).toBe(9);
     await expect(page.locator('#kontrolle-switcher')).toBeHidden();
+    await expect(page.locator('#betrieb-switcher')).toBeHidden();
     await page.evaluate(() => window.__ffTestTk.loginFake());
-    await expect(tiles.filter({ visible: true })).toHaveCount(10);
+    await expect(tiles.filter({ visible: true })).toHaveCount(11); // + Dashboard, + Betrieb
     await page.locator('#kontrolle-switcher').click();
     await expect(page.locator('#kontrolle-switcher')).toHaveClass(/active/);
+    await expect(page.locator('#betrieb-switcher')).not.toHaveClass(/active/);
+    // "Betrieb" ist ein eigener Knopf: Betriebsseite, Dashboard-Knopf nicht mehr aktiv
+    await page.locator('#betrieb-switcher').click();
+    await expect(page.locator('#betrieb-switcher')).toHaveClass(/active/);
+    await expect(page.locator('#kontrolle-switcher')).not.toHaveClass(/active/);
+    await expect(page.locator('#kontrolle-betrieb')).toBeVisible();
+    await page.locator('#kontrolle-switcher').click();
+    await expect(page.locator('#kontrolle-uebersicht')).toBeVisible();
     await expect(page.locator('#terminkalender-btn-save')).toHaveClass(/tool-btn/);
   });
 

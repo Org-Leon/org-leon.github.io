@@ -122,7 +122,7 @@ export default defineConfig({
         // (ausgewertet über ?view= in main.js).
         shortcuts: [
           { name: 'Stallplaner', short_name: 'Stallplan', url: '?view=stallplaner', icons: [{ src: 'pwa-192.png', sizes: '192x192', type: 'image/png' }] },
-          { name: 'Kontrolle', short_name: 'Kontrolle', url: '?view=kontrolle', icons: [{ src: 'pwa-192.png', sizes: '192x192', type: 'image/png' }] },
+          { name: 'Dashboard', short_name: 'Dashboard', url: '?view=kontrolle', icons: [{ src: 'pwa-192.png', sizes: '192x192', type: 'image/png' }] },
           { name: 'Flächenzeichner', short_name: 'Flächen', url: '?view=zeichner', icons: [{ src: 'pwa-192.png', sizes: '192x192', type: 'image/png' }] }
         ],
         background_color: '#12151A',
