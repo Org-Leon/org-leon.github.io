@@ -147,7 +147,7 @@
   --vignette: rgba(0, 0, 0, 0.26);
   --papier-textur: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'180'%20height%3D'180'%3E%3Cfilter%20id%3D'p'%3E%3CfeTurbulence%20type%3D'fractalNoise'%20baseFrequency%3D'.85'%20numOctaves%3D'3'%20stitchTiles%3D'stitch'%2F%3E%3CfeColorMatrix%20values%3D'0%200%200%200%20.93%200%200%200%200%20.89%200%200%200%200%20.79%200%200%200%20.06%200'%2F%3E%3C%2Ffilter%3E%3Crect%20width%3D'180'%20height%3D'180'%20filter%3D'url(%23p)'%2F%3E%3C%2Fsvg%3E");
   --hoehenlinien: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'420'%20height%3D'300'%20viewBox%3D'0%200%20420%20300'%3E%20%3Cg%20fill%3D'none'%20stroke%3D'%23EDE3CA'%20stroke-opacity%3D'.05'%20stroke-width%3D'1'%3E%20%3Cpath%20d%3D'M0%2040%20C70%2010%20140%2070%20210%2040%20S350%2070%20420%2040'%2F%3E%20%3Cpath%20d%3D'M0%2070%20C70%2045%20140%20100%20210%2070%20S350%2095%20420%2070'%2F%3E%20%3Cpath%20d%3D'M0%20102%20C80%2082%20130%20132%20210%20102%20S340%20122%20420%20102'%2F%3E%20%3Cpath%20d%3D'M120%20210%20C120%20170%20190%20160%20225%20190%20S270%20255%20215%20262%20S120%20250%20120%20210Z'%2F%3E%20%3Cpath%20d%3D'M145%20212%20C147%20188%20188%20182%20207%20199%20S232%20240%20202%20244%20S145%20235%20145%20212Z'%2F%3E%20%3Cpath%20d%3D'M168%20213%20C170%20200%20190%20198%20198%20207%20S206%20228%20192%20229%20S168%20224%20168%20213Z'%2F%3E%20%3Cpath%20d%3D'M0%20285%20C90%20270%20150%20300%20230%20280%20S330%20300%20420%20285'%2F%3E%20%3C%2Fg%3E%3C%2Fsvg%3E");
-  --karten-filter: sepia(.5) saturate(.55) brightness(.72) contrast(1.08);
+  --karten-filter: sepia(.12) saturate(1.12) brightness(.8) contrast(1.05);
 
   /* ---- Schrift: drei Rollen ---- */
   --serif: 'Fraunces', 'Iowan Old Style', Georgia, serif;
@@ -178,7 +178,7 @@
     --vignette: rgba(92, 62, 18, 0.12);
     --papier-textur: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'180'%20height%3D'180'%3E%3Cfilter%20id%3D'p'%3E%3CfeTurbulence%20type%3D'fractalNoise'%20baseFrequency%3D'.85'%20numOctaves%3D'3'%20stitchTiles%3D'stitch'%2F%3E%3CfeColorMatrix%20values%3D'0%200%200%200%20.32%200%200%200%200%20.25%200%200%200%200%20.14%200%200%200%20.10%200'%2F%3E%3C%2Ffilter%3E%3Crect%20width%3D'180'%20height%3D'180'%20filter%3D'url(%23p)'%2F%3E%3C%2Fsvg%3E");
     --hoehenlinien: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'420'%20height%3D'300'%20viewBox%3D'0%200%20420%20300'%3E%20%3Cg%20fill%3D'none'%20stroke%3D'%232D2920'%20stroke-opacity%3D'.07'%20stroke-width%3D'1'%3E%20%3Cpath%20d%3D'M0%2040%20C70%2010%20140%2070%20210%2040%20S350%2070%20420%2040'%2F%3E%20%3Cpath%20d%3D'M0%2070%20C70%2045%20140%20100%20210%2070%20S350%2095%20420%2070'%2F%3E%20%3Cpath%20d%3D'M0%20102%20C80%2082%20130%20132%20210%20102%20S340%20122%20420%20102'%2F%3E%20%3Cpath%20d%3D'M120%20210%20C120%20170%20190%20160%20225%20190%20S270%20255%20215%20262%20S120%20250%20120%20210Z'%2F%3E%20%3Cpath%20d%3D'M145%20212%20C147%20188%20188%20182%20207%20199%20S232%20240%20202%20244%20S145%20235%20145%20212Z'%2F%3E%20%3Cpath%20d%3D'M168%20213%20C170%20200%20190%20198%20198%20207%20S206%20228%20192%20229%20S168%20224%20168%20213Z'%2F%3E%20%3Cpath%20d%3D'M0%20285%20C90%20270%20150%20300%20230%20280%20S330%20300%20420%20285'%2F%3E%20%3C%2Fg%3E%3C%2Fsvg%3E");
-    --karten-filter: sepia(.55) saturate(.72) contrast(.94) brightness(1.03);
+    --karten-filter: sepia(.16) saturate(1.12) contrast(.98) brightness(1.02);
   }
 
   /* ---- Grundton ---- */

@@ -29,7 +29,10 @@ function cspPlugin() {
       handler(html) {
         // eingebettete Skripte (Theme vor dem ersten Rendern) über ihre Prüfsumme erlauben
         const inline = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)]
-          .map(m => `'sha256-${createHash('sha256').update(m[1]).digest('base64')}'`);
+          // Zeilenenden wie der Browser normalisieren (CRLF/CR -> LF): Unter Windows checkt
+          // Git index.html mit CRLF aus, der Browser rechnet die Prüfsumme aber über LF —
+          // sonst passt sie nicht und das Skript wird blockiert.
+          .map(m => `'sha256-${createHash('sha256').update(m[1].replace(/\r\n?/g, '\n')).digest('base64')}'`);
         let supabase = [];
         if (!nurFrontend) { try { const u = new URL(env.VITE_SUPABASE_URL); supabase = [u.origin, 'wss://' + u.host]; } catch { /* nicht konfiguriert */ } }
         // Adresssuche (Termine, Betriebspin) und OpenCV (Dokumentenscanner) gibt es nur mit Konto
