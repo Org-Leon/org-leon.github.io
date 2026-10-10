@@ -6,6 +6,17 @@ const stil = (page, sel) => page.locator(sel).first().evaluate(el => {
   const cs = getComputedStyle(el);
   return { radius: cs.borderTopLeftRadius, font: cs.fontFamily, bg: cs.backgroundColor };
 });
+// Schrift wirklich aus der App ladbar? document.fonts.load() stößt das Laden selbst
+// an und wartet darauf. document.fonts.check() allein blieb im Headless-Browser
+// vereinzelt auf "lädt" stehen (direkt nach einer CSS-Änderung am Dev-Server),
+// obwohl die Datei längst angekommen war.
+const schriftGeladen = (page, ...schriften) => page.evaluate(async (liste) => {
+  for (const schrift of liste) {
+    const faces = await document.fonts.load(schrift);
+    if (!faces.length || faces.some(f => f.status !== 'loaded')) return false;
+  }
+  return true;
+}, schriften);
 
 test.describe('Design (Test): Standard / Feldbuch', () => {
   test('Schriften ohne Google Fonts: keine Anfrage an Google, Fraunces und Plex aus der App', async ({ page }) => {
@@ -17,9 +28,9 @@ test.describe('Design (Test): Standard / Feldbuch', () => {
       else if (r.resourceType() === 'font') eigen.push(new URL(u).origin);
     });
     await page.goto('/');
-    await expect.poll(() => page.evaluate(async () => { await document.fonts.ready; return document.fonts.check('900 21px Fraunces'); }), { timeout: 15000 }).toBe(true);
+    await expect.poll(() => schriftGeladen(page, '900 21px Fraunces'), { timeout: 15000 }).toBe(true);
     await page.locator('#design-toggle').click();
-    await expect.poll(() => page.evaluate(async () => { await document.fonts.ready; return document.fonts.check('500 13px "FF Plex Mono"'); }), { timeout: 15000 }).toBe(true);
+    await expect.poll(() => schriftGeladen(page, '500 13px "FF Plex Mono"'), { timeout: 15000 }).toBe(true);
     expect(fremd).toEqual([]);
     expect(eigen.length).toBeGreaterThan(0);
     expect([...new Set(eigen)]).toEqual([new URL(page.url()).origin]);
@@ -43,7 +54,7 @@ test.describe('Design (Test): Standard / Feldbuch', () => {
     expect(feld.bg).not.toBe(vorher.bg);
     expect((await stil(page, '#current-view-title')).font).toContain('Fraunces');
     // Schriften kommen von der App selbst und sind tatsächlich geladen
-    await expect.poll(() => page.evaluate(async () => { await document.fonts.ready; return document.fonts.check('500 13px "FF Plex Mono"') && document.fonts.check('600 14px "FF Plex Sans"'); }), { timeout: 15000 }).toBe(true);
+    await expect.poll(() => schriftGeladen(page, '500 13px "FF Plex Mono"', '600 14px "FF Plex Sans"'), { timeout: 15000 }).toBe(true);
 
     await page.reload();
     await expect(page.locator('html')).toHaveAttribute('data-design', 'feldbuch');
@@ -90,12 +101,72 @@ test.describe('Design (Test): Standard / Feldbuch', () => {
     expect(await ikon('.segment-btn[data-view="zeichner"] > .icon')).toBe('"ink_pen"');
     expect(await ikon('#kontrolle-switcher > .icon:not(.segment-chevron)')).toBe('"inventory_2"');
     expect(await ikon('#current-view-icon')).toBe('"explore"');   // Kopfzeile folgt der Ansicht
-    await expect.poll(() => page.evaluate(async () => { await document.fonts.ready; return document.fonts.check('24px "FF Symbole Feldbuch"'); }), { timeout: 15000 }).toBe(true);
+    await expect.poll(() => schriftGeladen(page, '24px "FF Symbole Feldbuch"'), { timeout: 15000 }).toBe(true);
+    // Titel der Funktion passt ganz in die Kopfzeile (auch der längste, neben „FeldFolio+“)
+    for (const view of ['uebersicht', 'compare', 'zeichner', 'obstbaum', 'bienenflug']) {
+      await page.locator(`.segment-btn[data-view="${view}"]`).click();
+      expect(await page.locator('#current-view-title').evaluate(el => el.scrollWidth <= el.clientWidth), view).toBe(true);
+    }
     // Standard-Design bleibt unberührt
     await page.goto('/?design=standard');
     expect(await page.locator('#map .leaflet-tile-pane').evaluate(el => getComputedStyle(el).filter)).toBe('none');
     expect(await page.locator('#map').evaluate(el => getComputedStyle(el, '::after').content)).toBe('none');
     expect(await page.locator('.segment-btn[data-view="viewer"] > .icon').evaluate(el => getComputedStyle(el, '::before').content)).toBe('none');
+  });
+
+  test('Feldbuch: Bewegung beim Öffnen und Wechseln — nicht im Standard-Design, nicht bei reduzierter Bewegung', async ({ page }) => {
+    const animation = (sel) => page.locator(sel).first().evaluate(el => getComputedStyle(el).animationName);
+    await page.goto('/?design=feldbuch');
+    await page.evaluate(() => window.__ffTestTk.loginFake());
+    // Dialog legt sich als Blatt auf den Tisch
+    await page.locator('#btn-account').click();
+    await page.locator('#account-menu-settings').click();
+    await expect(page.locator('#account-modal-overlay')).toBeVisible();
+    expect(await animation('#account-modal-overlay')).toBe('fb-schleier');
+    expect(await animation('#account-modal-overlay > .modal-card')).toBe('fb-blatt');
+    await page.keyboard.press('Escape');
+    // gewählte Registerkarte wird gestempelt, Seitenwechsel blättert um
+    await page.locator('.segment-btn[data-view="stallplaner"]').click();
+    expect(await animation('.segment-btn[data-view="stallplaner"] > .icon')).toBe('fb-stempel');
+    expect(await animation('#stallplaner-view')).toBe('fb-blaettern-vor');           // Karte -> Stallplaner: vorwärts
+    expect(await animation('.segment-btn[data-view="viewer"] > .icon')).toBe('none'); // nur die gewählte
+    // nach der Animation steht alles an seinem Platz (keine hängende Verschiebung)
+    await expect.poll(() => page.locator('#stallplaner-view').evaluate(el => getComputedStyle(el).transform)).toBe('none');
+    // zurück zu einer früheren Registerkarte: es wird rückwärts geblättert
+    await page.locator('.segment-btn[data-view="tiere"]').click();
+    await expect(page.locator('html')).toHaveAttribute('data-blatt', 'vor');
+    await page.locator('.segment-btn[data-view="uebersicht"]').click();
+    await expect(page.locator('html')).toHaveAttribute('data-blatt', 'zurueck');
+    expect(await animation('#uebersicht-view')).toBe('fb-blaettern-zurueck');
+    // Dashboard-Reiter blättern ebenfalls; Reiter im Konto-Dialog schlagen um
+    await page.locator('#kontrolle-switcher').click();
+    await page.locator('#kontrolle-tabs [data-ko-tab="zeiten"]').click();
+    expect(await animation('#kontrolle-zeiten')).toBe('fb-blaettern-vor');
+    await page.locator('#kontrolle-tabs [data-ko-tab="kalender"]').click();
+    expect(await animation('#terminkalender-main')).toBe('fb-blaettern-zurueck');
+    await page.locator('#btn-account').click();
+    await page.locator('#account-menu-settings').click();
+    await page.locator('[data-account-tab="sicherheit"]').click();
+    expect(await animation('.account-panel[data-account-panel="sicherheit"]')).toBe('fb-umschlagen');
+    await page.keyboard.press('Escape');
+    // kein seitliches Überlaufen durch die Drehung
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+    // Bewegung reduziert: keine dieser Animationen
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.locator('.segment-btn[data-view="hofplan"]').click();
+    expect(await animation('.segment-btn[data-view="hofplan"] > .icon')).toBe('none');
+    await page.locator('#btn-account').click();
+    await page.locator('#account-menu-settings').click();
+    expect(await animation('#account-modal-overlay > .modal-card')).toBe('none');
+    await page.keyboard.press('Escape');
+
+    // Standard-Design: unverändert
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    await page.goto('/?design=standard');
+    await page.locator('.segment-btn[data-view="stallplaner"]').click();
+    expect(await animation('.segment-btn[data-view="stallplaner"] > .icon')).toBe('none');
+    expect(await animation('#stallplaner-view')).toBe('none');
   });
 
   test('Feldbuch am Handy: Umschalter in der Schublade, kein seitliches Überlaufen', async ({ page }) => {

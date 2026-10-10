@@ -7,6 +7,8 @@ import { renderDashboard, layoutBereinigen, dashboardLueckenSchliessen } from '.
 import { NUR_FRONTEND } from './edition.js';
 import { geraeteschutzEinrichten } from './geraeteschutz.js';
 import { protokollStarten, fehlerberichtEinrichten } from './fehlerbericht.js';
+import { checklisteEinrichten, checklisteHtml, checklisteBereinigen, vorlageBereinigen } from './checkliste.js';
+import { zeiterfassungEinrichten, zeitenBereinigen } from './zeiterfassung.js';
 import { createDokumentExplorer } from './dokumente.js';
 // SheetJS 0.20.3 (von cdn.sheetjs.com, per npm mitgebaut) — die cdnjs-Version 0.18.5
 // hat bekannte Lücken (CVE-2023-30533, CVE-2024-22363). Codepages für alte .xls.
@@ -2911,7 +2913,14 @@ const SEGMENT_TITLES = {
   bienenflug: 'Bienenflugkarte', hofplan: 'Hofplan', kontrolle: 'Dashboard', stallplaner: 'Stallplaner', tiere: 'Tierbestand'
 };
 
+// Richtung eines Seitenwechsels merken (<html data-blatt="vor|zurueck">): Das
+// Test-Design "Feldbuch" blättert damit vorwärts oder rückwärts um
+// (design-feldbuch.css, Abschnitt "Bewegung"); sonst ohne Wirkung.
+function blattRichtung(reihenfolge, vorher, nachher) {
+  document.documentElement.dataset.blatt = reihenfolge.indexOf(nachher) < reihenfolge.indexOf(vorher) ? 'zurueck' : 'vor';
+}
 function setActiveSegment(target) {
+  blattRichtung([...document.querySelectorAll('#view-switcher .segment-btn')].map(b => b.dataset.view), document.body.dataset.view || 'viewer', target);
   // Auf schmalen Bildschirmen liegt die Sidebar als Einschub über der Karte —
   // eine Funktion auszuwählen soll die Karte gleich freigeben (no-op auf Desktop).
   closeMobileSidebar();
@@ -3973,6 +3982,36 @@ let slFocusLayer = null;
 let slFokus = null;            // id des Falls, der gerade auf der Karte gezeigt wird
 let slVorherErledigt = null;   // Set der erledigten Fälle beim letzten Zeichnen (für den Häkchen-Effekt)
 let slWarFertig = false;
+// Ansicht des Abgleichs: alle Fälle in Abschnitten ('liste') oder Fläche für
+// Fläche ('einzeln' — immer genau ein Fall, die Karte fliegt mit). Reine
+// Ansichts-Einstellung, deshalb im localStorage.
+const SL_MODUS_KEY = 'feldfolio-sl-modus';
+let slModus = 'liste';
+try { if (localStorage.getItem(SL_MODUS_KEY) === 'einzeln') slModus = 'einzeln'; } catch { /* ohne Speicher */ }
+let slEinzelId = null;         // id des gezeigten Schritts
+let slEinzelIdx = 0;           // seine Stelle (falls der Fall durch eine Entscheidung entfällt: der nachgerückte)
+let slEinzelIds = [];          // alle Schritte in Reihenfolge (beim letzten Zeichnen)
+let slEinzelOffen = new Set(); // davon noch offen
+let slEinzelVonKey = new Map(); // Fläche -> Schritt (eine bestätigte Fläche heißt auf der Karte "z:…", ihr Schritt "p:…")
+let slEinzelAlle = false;      // auch automatisch zugeordnete Flächen durchgehen
+let slEinzelTimer = null;      // "gleich zum nächsten offenen Fall"
+let slAutoWeiter = false;      // letzte Aktion war eine Entscheidung per Knopf/Auswahl (nicht: Datum tippen)
+function slModusSetzen(modus) {
+  slModus = modus === 'einzeln' ? 'einzeln' : 'liste';
+  try { localStorage.setItem(SL_MODUS_KEY, slModus); } catch { /* ohne Speicher */ }
+  slEinzelId = null;
+  if (schlaglisteData) renderSchlaglisteReview();
+}
+function slEinzelGehe(wie) {
+  const i = slEinzelIds.indexOf(slEinzelId);
+  let ziel = null;
+  if (wie === 'zurueck') ziel = slEinzelIds[i - 1];
+  else if (wie === 'weiter') ziel = slEinzelIds[i + 1];
+  else ziel = [...slEinzelIds.slice(i + 1), ...slEinzelIds.slice(0, Math.max(i, 0))].find(id => slEinzelOffen.has(id));
+  if (!ziel) return;
+  slEinzelId = ziel;
+  renderSchlaglisteReview();
+}
 const slSecZustand = {};       // Abschnitt -> { offen, fertig } wie zuletzt vom Nutzer gesetzt
 function slSecMerken(det) {
   if (!det || !det.dataset.slSec) return;
@@ -4272,6 +4311,8 @@ function closeSchlaglisteReview() {
   if (slMapLayer) { map.removeLayer(slMapLayer); slMapLayer = null; }
   if (slFocusLayer) { map.removeLayer(slFocusLayer); slFocusLayer = null; }
   slFokus = null;
+  clearTimeout(slEinzelTimer); slEinzelTimer = null;
+  slEinzelId = null;
   renderSchlaglisteBox();
   refreshCompareStatusColumn();
   if (document.body.dataset.view === 'compare' && (compareResult || compareViewMode !== 'diff')) showCompareView(false);
@@ -4387,7 +4428,7 @@ function renderSchlaglisteReview(fitMap = false) {
   };
 
   // 1) Kritische Änderungen: Teilstück dazugekommen
-  const kritHtml = kritisch.map(fall => {
+  const kritItem = (fall) => {
     const f = featByKey.get(fall.key), g = geo.byKey.get(fall.key);
     const e = zeileByKey.get(fall.key);
     const u = d.unterflaechen[fall.key];
@@ -4411,7 +4452,8 @@ function renderSchlaglisteReview(fitMap = false) {
     return item(fall.id, `<div class="sl-liste"><span class="sl-tag is-shape">${escapeHtml(y.jahr)}</span><b>${escapeHtml(f.nummer || '–')}</b> ${escapeHtml(f.name || '')} · ${slFmtHa(f.ha)} ${basis ? slBadge(basis) : ''} ${slAuge(fall.id)} ${slKarteBtn(fall.id)}</div>
       <p class="sl-krit"><span class="material-symbols-rounded icon" aria-hidden="true">warning</span><span><b>+${formatHaExact(g.neuHa)} ha Teilstück dazugekommen</b> — gehörte ${escapeHtml(vj)} zu keiner Fläche des Betriebs. Hat es einen eigenen Umstellungsbeginn, als Unterfläche anlegen.</span></p>
       ${aktion}`, ' is-krit');
-  }).join('');
+  };
+  const kritHtml = kritisch.map(kritItem).join('');
 
   const zusammen = slZusammenlegungen(ctx);
   const zusammenHtml = (e) => {
@@ -4444,7 +4486,7 @@ function renderSchlaglisteReview(fitMap = false) {
         <button type="button" class="sl-undo" data-sl-teilung-weg="${e.idx}">Teilung lösen</button></div>` : '';
   };
   // 2) Zweifelsfälle
-  const pruefenHtml = pruefen.map(e => {
+  const pruefenItem = (e) => {
     const f = e.key && featByKey.get(e.key);
     return item('p:' + e.idx, `${slZeileHtml(e, sl)}
       <div class="sl-match"><span class="sl-tag is-shape">${escapeHtml(y.jahr)}</span>${slAuswahl(e, ctx, freieKeys)}
@@ -4452,7 +4494,8 @@ function renderSchlaglisteReview(fitMap = false) {
       <p class="sl-why">${escapeHtml(e.gruende.join(' · ') || 'nur schwache Übereinstimmung')}${slHaDiff(e.z.ha, f && f.ha)} ${slChips(geo, f)} ${slAuge('p:' + e.idx)}</p>
       ${teilungHtml(e)}
       ${zusammenHtml(e)}`);
-  }).join('') + manuell.map(e => {
+  };
+  const manuellItem = (e) => {
     // schon entschieden: bleibt hier stehen (abgehakt), mit "ändern" zurück in die Prüfung
     const f = e.key && featByKey.get(e.key);
     return item('p:' + e.idx, `${slZeileHtml(e, sl)}
@@ -4460,7 +4503,8 @@ function renderSchlaglisteReview(fitMap = false) {
         ${f ? `zugeordnet: <b>${escapeHtml(f.nummer || '–')}</b> ${escapeHtml(f.name || '')} · ${slFmtHa(f.ha)}` : `keine Fläche — Abgang ${d.abgangAm[e.idx] ? 'am ' + slDeAusIso(d.abgangAm[e.idx]) : ''}`}
         ${f ? slKarteBtn('p:' + e.idx) : ''}<button type="button" class="sl-undo" data-sl-reset="${e.idx}">ändern</button></div>
       ${geteiltInfo(e)}`);
-  }).join('');
+  };
+  const pruefenHtml = pruefen.map(pruefenItem).join('') + manuell.map(manuellItem).join('');
 
   // 3) Neu in den Shapes (ohne Landschaftselemente)
   const neuOhneLe = abgleich.neu.filter(f => !f.le);
@@ -4500,7 +4544,8 @@ function renderSchlaglisteReview(fitMap = false) {
   const sammel = (mitFeldblock.length ? `<button type="button" class="betrieb-btn sl-bulk" data-sl-bulk="feldblock"><span class="material-symbols-rounded icon" aria-hidden="true">done_all</span>Feldblock-Datum für alle ${mitFeldblock.length} übernehmen</button>` : '')
     + [...haeufigGruppen.entries()].map(([k, keys]) => { const [land, dt] = k.split('|');
       return `<button type="button" class="betrieb-btn sl-bulk" data-sl-bulk-datum="${dt}" data-sl-bulk-keys="${escapeHtml(keys.join(','))}" title="Häufigstes Umstellungsdatum der Liste${land ? ' in ' + escapeHtml(landText[land] || land) : ''}"><span class="material-symbols-rounded icon" aria-hidden="true">event_available</span>${slDeAusIso(dt)}${land ? ' (' + escapeHtml(land) + ')' : ''} für ${keys.length} ohne Vorschlag</button>`; }).join('');
-  const neuHtml = (sammel ? `<div class="sl-bulkbar">${sammel}</div>` : '') + neuOhneLe.map(f => {
+  const sammelHtml = sammel ? `<div class="sl-bulkbar">${sammel}</div>` : '';
+  const neuItem = (f) => {
     const id = 'n:' + f.key;
     const b = d.zugangNeu[f.key] || '';
     const g = geo.byKey.get(f.key);
@@ -4519,7 +4564,8 @@ function renderSchlaglisteReview(fitMap = false) {
         <button type="button" class="betrieb-btn sl-aus" data-sl-aus="${escapeHtml(f.key)}" title="Hecke, Feldgehölz o. ä. — gehört nicht in die Schlagliste"><span class="material-symbols-rounded icon" aria-hidden="true">visibility_off</span>Ausblenden</button>
         ${fehlt.length ? `<select class="sl-select" data-sl-assign="${escapeHtml(f.key)}" aria-label="Listenzeile zuordnen"><option value="">… oder Listenzeile zuordnen</option>${fehlt.map(e => `<option value="${e.idx}">${escapeHtml(slZeileName(e.z) + ' · ' + slFmtHa(e.z.ha))}</option>`).join('')}</select>` : ''}
       </div>`, istNeuland && geo.vor ? ' is-krit' : '');
-  }).join('');
+  };
+  const neuHtml = sammelHtml + neuOhneLe.map(neuItem).join('');
   const leHtml = leFlaechen.length ? `<ul class="sl-unv">${leFlaechen.map(f => `<li class="sl-le-item" data-sl-fall="l:${escapeHtml(f.key)}">${escapeHtml(f.nummer || '–')} · ${escapeHtml(f.kultur || 'Landschaftselement')} · ${slFmtHa(f.ha)}${f.flik ? ' · ' + escapeHtml(f.flik) : ''}${f.leManuell ? ` <span class="sl-meta">ausgeblendet</span> <button type="button" class="sl-undo" data-sl-ein="${escapeHtml(f.key)}">wieder einblenden</button>` : ''}</li>`).join('')}</ul>` : '';
 
   // Kulturen: Zuordnung zum Katalog des externen Programms
@@ -4551,7 +4597,8 @@ function renderSchlaglisteReview(fitMap = false) {
       <label class="betrieb-btn sl-bulk"><span class="material-symbols-rounded icon" aria-hidden="true">upload_file</span>Nutzungsnachweis (PDF) laden<input type="file" id="sl-fnn-file" accept=".pdf,application/pdf" hidden></label>
       ${d.fnnInfo ? `<p class="sl-why" id="sl-fnn-info">${escapeHtml(d.fnnInfo)}</p>` : ''}
     </div>`;
-  const kulturHtml = fnnHtml + `<datalist id="sl-katalog">${SL_KATALOG_OPTIONEN.map(e => `<option value="${escapeHtml(e.name)}">${escapeHtml(e.v !== e.name ? e.v : '')}</option>`).join('')}</datalist>` + kulturOffen.map(kulturZeile).join('')
+  const katalogHtml = `<datalist id="sl-katalog">${SL_KATALOG_OPTIONEN.map(e => `<option value="${escapeHtml(e.name)}">${escapeHtml(e.v !== e.name ? e.v : '')}</option>`).join('')}</datalist>`;
+  const kulturHtml = fnnHtml + katalogHtml + kulturOffen.map(kulturZeile).join('')
     + (kulturEindeutig.length ? `<details class="sl-kfold"><summary>Eindeutig zugeordnet (${kulturEindeutig.length})</summary>${kulturEindeutig.map(kulturZeile).join('')}</details>` : '');
 
   // 4) Nicht mehr in den Shapes
@@ -4571,7 +4618,7 @@ function renderSchlaglisteReview(fitMap = false) {
   // Zeilen mit Fläche, in die eine Zeile ohne Fläche aufgehen kann
   const zusammenZiele = abgleich.zeilen.filter(x => x.key && x.art !== 'unvollstaendig');
   const zusammenMit = d.zusammenMit || {};
-  const fehltHtml = fehltEcht.map(e => {
+  const fehltItem = (e) => {
     const id = 'f:' + e.idx;
     const am = d.abgangAm[e.idx] || '';
     const warDa = slVorjahrFlaeche(ctx, geo, e);
@@ -4592,7 +4639,8 @@ function renderSchlaglisteReview(fitMap = false) {
         ${zusammenZiele.length ? `<select class="sl-select" data-sl-zusammen-mit="${e.idx}" aria-label="Mit einer anderen Zeile zusammenfügen"><option value="">… mit Zeile zusammenfügen</option>${zusammenZiele.map(x => `<option value="${x.idx}">${escapeHtml(slZeileName(x.z) + ' · ' + slFmtHa(x.z.ha))}</option>`).join('')}</select>` : ''}
         ${freieKeys.length ? slAuswahl({ ...e, key: null }, ctx, freieKeys, '… oder Fläche zuordnen') : ''}
       </div>`}`);
-  }).join('');
+  };
+  const fehltHtml = fehltEcht.map(fehltItem).join('');
 
   // 5) Automatisch zugeordnet
   const sicherHtml = sicher.length ? `<table class="sl-table"><thead><tr><th>Liste</th><th>ha</th><th>Fläche ${escapeHtml(y.jahr)}</th><th>ha</th><th>Status</th><th></th></tr></thead><tbody>${sicher.map(e => {
@@ -4604,13 +4652,98 @@ function renderSchlaglisteReview(fitMap = false) {
   const unvHtml = unv.length ? `<ul class="sl-unv">${unv.map(e => `<li>Zeile ${e.idx + 2}${e.z.nr ? ' · Schlagnummer ' + escapeHtml(e.z.nr) : ''} — ohne Bezeichnung und Fläche, bleibt unverändert</li>`).join('')}</ul>` : '';
   const liste = (typ) => faelle.filter(f => f.typ === typ);
 
-  document.getElementById('sl-body').innerHTML =
-    sec('is-krit', 'warning', `Kritische Änderungen (${kritisch.length})`, kritisch, vj ? `Flächen, an die seit ${escapeHtml(vj)} ein Teilstück dazugekommen ist (auf der Karte rot). Ein neues Teilstück hat oft einen eigenen Umstellungsbeginn.` : '', kritHtml)
-    + sec('is-warn', 'help', `Zweifelsfälle prüfen (${pruefen.length + manuell.length})`, liste('pruefen'), 'Vorschlag ansehen, ggf. andere Fläche wählen und mit „Passt“ bestätigen. Bis dahin bleibt die Zeile beim Export unverändert.', pruefenHtml)
-    + sec('is-neu', 'add_circle', `Neu in den Shapes (${neuOhneLe.length})`, liste('neu'), 'Nicht in der Schlagliste. Umstellungsbeginn eintragen — dann kommen sie beim Export als neue Zeile dazu. Teilstücke eines schon zugeordneten Feldblocks (gleiche FLIK) bekommen dessen Datum vorgeschlagen. Ist es eine umbenannte Fläche, die passende Listenzeile zuordnen.', neuHtml)
-    + sec('is-kultur', 'eco', `Kulturen (${kulturen.length})`, liste('kultur'), 'Kulturen aus den Shapes, übersetzt in den Kulturkatalog des externen Programms. „ähnlich“ und „unbekannt“ bitte prüfen — die Wahl merkt sich die App auch für andere Betriebe.', kulturHtml, kulturOffen.length > 0 || ohneKultur > 0, ohneKultur > 0)
+  const hinweis = {
+    kritisch: vj ? `Flächen, an die seit ${escapeHtml(vj)} ein Teilstück dazugekommen ist (auf der Karte rot). Ein neues Teilstück hat oft einen eigenen Umstellungsbeginn.` : '',
+    pruefen: 'Vorschlag ansehen, ggf. andere Fläche wählen und mit „Passt“ bestätigen. Bis dahin bleibt die Zeile beim Export unverändert.',
+    neu: 'Nicht in der Schlagliste. Umstellungsbeginn eintragen — dann kommen sie beim Export als neue Zeile dazu. Teilstücke eines schon zugeordneten Feldblocks (gleiche FLIK) bekommen dessen Datum vorgeschlagen. Ist es eine umbenannte Fläche, die passende Listenzeile zuordnen.',
+    kultur: 'Kulturen aus den Shapes, übersetzt in den Kulturkatalog des externen Programms. „ähnlich“ und „unbekannt“ bitte prüfen — die Wahl merkt sich die App auch für andere Betriebe.',
+    fehlt: `Diese Zeilen der Liste haben keine Fläche in den Shapes. Abgang eintragen, unverändert lassen, mit einer anderen Zeile zusammenfügen (diese Zeile bekommt dann den Abgang) oder einer Fläche zuordnen. Ist die Fläche erst nach dem Agrarantrag (${antragDatum}) zum Betrieb gekommen — z. B. ein Bio-Zugang mit dem Umstellungsdatum des Vorbewirtschafters —, „Nach Antrag zugegangen“ wählen.`,
+    sicher: 'Von der App sicher zugeordnet. Stimmt etwas nicht, holst du die Zeile mit „ändern“ in die Prüfung.'
+  };
+  // Ansicht: alle Fälle in Abschnitten — oder Fläche für Fläche (immer genau ein Fall)
+  const panel = document.getElementById('sl-overlay');
+  panel.classList.toggle('is-einzeln', slModus === 'einzeln');
+  panel.querySelectorAll('[data-sl-modus]').forEach(b => b.setAttribute('aria-checked', String(b.dataset.slModus === slModus)));
+  document.getElementById('sl-einzel-leiste').hidden = slModus !== 'einzeln';
+  clearTimeout(slEinzelTimer); slEinzelTimer = null;
+  let einzelWechsel = false;
+  if (slModus === 'einzeln') {
+    // automatisch zugeordnete Zeile als Karte (nur mit "Auch die … automatisch zugeordneten")
+    const sicherKarte = (e) => {
+      const f = featByKey.get(e.key);
+      return `<div class="sl-item is-done" data-sl-fall="z:${escapeHtml(e.key)}">
+        <span class="sl-done-mark" aria-hidden="true"><span class="material-symbols-rounded icon">check</span></span>
+        ${slZeileHtml(e, sl)}
+        <div class="sl-liste"><span class="sl-tag is-shape">${escapeHtml(y.jahr)}</span><b>${escapeHtml(f.nummer || '–')}</b> ${escapeHtml(f.name || '')} · ${slFmtHa(f.ha)}${f.flik ? ` <span class="sl-meta">${escapeHtml(f.flik)}</span>` : ''}${slKulturText(f)} ${slKarteBtn('z:' + e.key)}</div>
+        <p class="sl-why">${escapeHtml((e.gruende || []).join(' · ') || 'sicher zugeordnet')}${slHaDiff(e.z.ha, f.ha)} ${slChips(geo, f)}</p>
+        <div class="sl-unter is-ok"><span class="material-symbols-rounded icon" aria-hidden="true">task_alt</span>Automatisch zugeordnet
+          <button type="button" class="sl-undo" data-sl-reset="${e.idx}" title="Zuordnung prüfen">ändern</button></div>
+      </div>`;
+    };
+    const ABSCHNITT = {
+      kritisch: { cls: 'is-krit', icon: 'warning', titel: 'Kritische Änderung' },
+      pruefen: { cls: 'is-warn', icon: 'help', titel: 'Zweifelsfall' },
+      neu: { cls: 'is-neu', icon: 'add_circle', titel: 'Neu in den Shapes' },
+      fehlt: { cls: 'is-fehlt', icon: 'remove_circle', titel: `Nicht in den Shapes ${escapeHtml(y.jahr)}` },
+      kultur: { cls: 'is-kultur', icon: 'eco', titel: 'Kultur' },
+      sicher: { cls: 'is-ok', icon: 'task_alt', titel: 'Automatisch zugeordnet' }
+    };
+    const nurSicher = sicher.filter(e => e.art === 'sicher');
+    // feste Reihenfolge, auch wenn ein Fall geklärt wird (bestätigte Zweifelsfälle bleiben an ihrer Stelle)
+    const schritte = [
+      ...kritisch.map(fall => ({ id: fall.id, typ: 'kritisch', html: () => kritItem(fall) })),
+      ...[...pruefen, ...manuell].sort((a, b) => a.idx - b.idx).map(e => ({ id: 'p:' + e.idx, typ: 'pruefen', html: () => (e.art === 'manuell' ? manuellItem(e) : pruefenItem(e)) })),
+      ...neuOhneLe.map(f => ({ id: 'n:' + f.key, typ: 'neu', html: () => neuItem(f) })),
+      ...fehltEcht.map(e => ({ id: 'f:' + e.idx, typ: 'fehlt', html: () => fehltItem(e) })),
+      ...kulturOffen.slice().sort((a, b) => a.quelle.localeCompare(b.quelle, 'de')).map(k => ({ id: 'c:' + k.quelle, typ: 'kultur', html: () => kulturZeile(k) })),
+      ...(slEinzelAlle ? nurSicher.map(e => ({ id: 'z:' + e.key, typ: 'sicher', html: () => sicherKarte(e) })) : [])
+    ];
+    const istOffen = (st) => st.typ !== 'sicher' && !(fallById.get(st.id) || {}).erledigt;
+    let i = schritte.findIndex(st => st.id === slEinzelId);
+    if (i < 0) {
+      // neu in dieser Ansicht: beim gerade gezeigten Fall anfangen, sonst beim ersten offenen.
+      // War der Schritt eben noch da (Fall durch die Entscheidung entfallen): der nachgerückte.
+      i = slEinzelId === null ? schritte.findIndex(st => st.id === slFokus) : Math.min(slEinzelIdx, schritte.length - 1);
+      if (i < 0) i = schritte.findIndex(istOffen);
+      if (i < 0) i = 0;
+    }
+    const st = schritte[i] || null;
+    slEinzelIds = schritte.map(x => x.id);
+    slEinzelOffen = new Set(schritte.filter(istOffen).map(x => x.id));
+    slEinzelVonKey = new Map([...pruefen, ...manuell].filter(e => e.key).map(e => [e.key, 'p:' + e.idx]));
+    let html;
+    if (st) {
+      einzelWechsel = slFokus !== st.id;
+      slEinzelId = st.id; slEinzelIdx = i; slFokus = st.id;
+      const a = ABSCHNITT[st.typ];
+      const chip = st.typ === 'sicher' ? '' : istOffen(st) ? '<span class="sl-sec-chip">offen</span>' : '<span class="sl-sec-chip is-done"><span class="material-symbols-rounded icon" aria-hidden="true">check</span>erledigt</span>';
+      html = `<div class="sl-sec sl-einzel ${a.cls}" data-sl-einzel="${escapeHtml(st.id)}">
+          <div class="sl-einzel-kopf"><span class="material-symbols-rounded icon" aria-hidden="true">${a.icon}</span><span class="sl-sec-title">${a.titel}</span>${chip}</div>
+          ${hinweis[st.typ] ? `<p class="sl-sec-hint">${hinweis[st.typ]}</p>` : ''}
+          ${st.typ === 'kultur' ? katalogHtml : ''}
+          ${st.html()}
+          ${st.typ === 'neu' ? sammelHtml : ''}
+        </div>`;
+    } else {
+      slEinzelId = null; slEinzelIdx = 0;
+      html = `<div class="sl-sec sl-einzel is-ok"><p class="sl-einzel-leer">Hier gibt es nichts zu klären — alle Zeilen der Liste sind automatisch zugeordnet.</p></div>`;
+    }
+    const nochOffen = [...slEinzelOffen].filter(id => !st || id !== st.id).length;
+    html += `<div class="sl-einzel-fuss">
+        ${st && !istOffen(st) && nochOffen ? `<button type="button" class="betrieb-btn sl-einzel-offen" data-sl-schritt="offen"><span class="material-symbols-rounded icon" aria-hidden="true">arrow_forward</span>Zum nächsten offenen Fall (noch ${nochOffen})</button>` : ''}
+        ${nurSicher.length ? `<label class="sl-check"><input type="checkbox" id="sl-einzel-alle"${slEinzelAlle ? ' checked' : ''}> Auch die ${nurSicher.length} automatisch zugeordneten Flächen durchgehen</label>` : ''}
+      </div>`;
+    document.getElementById('sl-body').innerHTML = html;
+    document.getElementById('sl-einzel-pos').innerHTML = st ? `<b>${i + 1}</b> von ${schritte.length}` : '–';
+    panel.querySelector('[data-sl-schritt="zurueck"]').disabled = i <= 0;
+    panel.querySelector('[data-sl-schritt="weiter"]').disabled = i >= schritte.length - 1;
+  } else document.getElementById('sl-body').innerHTML =
+    sec('is-krit', 'warning', `Kritische Änderungen (${kritisch.length})`, kritisch, hinweis.kritisch, kritHtml)
+    + sec('is-warn', 'help', `Zweifelsfälle prüfen (${pruefen.length + manuell.length})`, liste('pruefen'), hinweis.pruefen, pruefenHtml)
+    + sec('is-neu', 'add_circle', `Neu in den Shapes (${neuOhneLe.length})`, liste('neu'), hinweis.neu, neuHtml)
+    + sec('is-kultur', 'eco', `Kulturen (${kulturen.length})`, liste('kultur'), hinweis.kultur, kulturHtml, kulturOffen.length > 0 || ohneKultur > 0, ohneKultur > 0)
     + sec('is-le', 'park', `Landschaftselemente und ausgeblendet (${leFlaechen.length})`, null, 'Hecken, Baumreihen, Feldgehölze u. ä. gehören zum Schlag — kein eigener Umstellungsfall, kommen nicht in den Export. Erkennt die App ein solches Element nicht, blendest du es unter „Neu in den Shapes“ mit „Ausblenden“ aus.', leHtml, false)
-    + sec('is-fehlt', 'remove_circle', `Nicht in den Shapes ${escapeHtml(y.jahr)} (${fehltEcht.length})`, liste('fehlt'), `Diese Zeilen der Liste haben keine Fläche in den Shapes. Abgang eintragen, unverändert lassen, mit einer anderen Zeile zusammenfügen (diese Zeile bekommt dann den Abgang) oder einer Fläche zuordnen. Ist die Fläche erst nach dem Agrarantrag (${antragDatum}) zum Betrieb gekommen — z. B. ein Bio-Zugang mit dem Umstellungsdatum des Vorbewirtschafters —, „Nach Antrag zugegangen“ wählen.`, fehltHtml)
+    + sec('is-fehlt', 'remove_circle', `Nicht in den Shapes ${escapeHtml(y.jahr)} (${fehltEcht.length})`, liste('fehlt'), hinweis.fehlt, fehltHtml)
     + sec('is-nachantrag', 'event_upcoming', `Ohne Fläche, bleiben unverändert (${nachAntrag.length})`, null, `In der Liste, aber nicht in den Shapes ${escapeHtml(y.jahr)} — kein Abgang, die Zeilen bleiben beim Export unverändert (nur der Umstellungsstatus wird zum Stichtag fortgeschrieben). Zeilen mit Umstellungsdatum nach dem ${antragDatum} (nach dem Agrarantrag) erkennt die App von selbst.`, nachAntragHtml, false)
     + sec('is-ok', 'task_alt', `Automatisch zugeordnet (${sicher.length})`, null, '', sicherHtml, false)
     + sec('', 'block', `Unvollständige Zeilen (${unv.length})`, null, '', unvHtml, false);
@@ -4620,10 +4753,15 @@ function renderSchlaglisteReview(fitMap = false) {
   if (slVorherErledigt) erledigt.forEach(id => { if (!slVorherErledigt.has(id)) document.querySelector(`#sl-body [data-sl-fall="${CSS.escape(id)}"]`)?.classList.add('just-done'); });
   const fertig = faelle.length > 0 && erledigt.size === faelle.length;
   if (fertig && slVorherErledigt && !slWarFertig) slKonfetti();
+  // Fläche für Fläche: Fall gerade per Knopf/Auswahl geklärt -> gleich zum nächsten offenen
+  const geradeGeklaert = slModus === 'einzeln' && slAutoWeiter && !!slVorherErledigt && !!slEinzelId && erledigt.has(slEinzelId) && !slVorherErledigt.has(slEinzelId);
+  slAutoWeiter = false;
   slWarFertig = fertig;
   slVorherErledigt = erledigt;
   slUndoKnopf();
   renderSlMap(ctx, geo, fitMap);
+  if (slModus === 'einzeln' && einzelWechsel && slEinzelId) slFocus(slEinzelId);
+  if (geradeGeklaert && [...slEinzelOffen].some(id => id !== slEinzelId)) slEinzelTimer = setTimeout(() => { slEinzelTimer = null; slEinzelGehe('offen'); }, 900);
 }
 
 // ---- Rückgängig / Zurücksetzen ----
@@ -4665,6 +4803,7 @@ function slUndo() {
   } catch { /* ohne Speicher */ }
   slVorherErledigt = null; // kein Häkchen-Effekt beim Zurücknehmen
   slGeoCache = null;
+  if (slModus === 'einzeln' && s.fallId) slEinzelId = s.fallId; // zurück zu diesem Schritt
   persistLocalState().catch(() => {});
   renderSchlaglisteReview();
   renderSchlaglisteBox();
@@ -4689,6 +4828,7 @@ function slZuruecksetzen() {
   slGeoCache = null;
   delete d.fnnInfo;
   slFokus = null;
+  slEinzelId = null;
   slVorherErledigt = null;
   slWarFertig = false;
   slSpeichern();
@@ -4786,6 +4926,8 @@ function slFallGeometrien(id) {
     const e = ctx.abgleich.zeilen[Number(rest)];
     const v = e && slVorjahrFlaeche(ctx, geo, e);
     if (v) out.push(v);
+  } else if (typ === 'c') {
+    ctx.feats.forEach(f => { if (f.kultur === rest && !f.le && f.feature) out.push(f.feature); });
   }
   return out;
 }
@@ -4799,6 +4941,11 @@ function slZeigeFokus(id, fliegen = true) {
 }
 function slFocus(id, { vonKarte = false } = {}) {
   const d = schlaglisteData;
+  // Fläche für Fläche: ein anderer Fall (z. B. auf der Karte angetippt) wird zum gezeigten Schritt
+  if (slModus === 'einzeln') {
+    const schritt = slEinzelIds.includes(id) ? id : slEinzelVonKey.get(id.slice(2));
+    if (schritt && schritt !== slEinzelId) { slEinzelId = schritt; renderSchlaglisteReview(); return; }
+  }
   if (compareViewMode !== 'diff') { compareViewMode = 'diff'; renderCompareToggle(); showCompareView(false); }
   slFokus = id;
   const gezeigt = slZeigeFokus(id, !vonKarte);
@@ -4808,7 +4955,7 @@ function slFocus(id, { vonKarte = false } = {}) {
   const el = document.querySelector(`#sl-body [data-sl-fall="${CSS.escape(id)}"]`) || document.querySelector(`#sl-body [data-sl-row-key="${CSS.escape(id.slice(2))}"]`);
   if (el) {
     el.closest('.sl-sec')?.querySelectorAll('details').forEach(x => { if (x.contains(el)) x.open = true; });
-    const sec = el.closest('.sl-sec');
+    const sec = el.closest('details.sl-sec');
     if (sec && !sec.open) { sec.open = true; slSecMerken(sec); }
     el.classList.add('is-focus');
     if (vonKarte) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -4880,6 +5027,11 @@ slOverlay.addEventListener('click', (e) => {
   if (sum) { setTimeout(() => slSecMerken(sum.parentElement)); return; } // Auf-/Zuklappen merken
   if (t.closest('#sl-undo')) return slUndo();
   if (t.closest('#sl-reset2')) return slZuruecksetzen();
+  const modusBtn = t.closest('[data-sl-modus]');
+  if (modusBtn) return slModusSetzen(modusBtn.dataset.slModus);
+  const schritt = t.closest('[data-sl-schritt]');
+  if (schritt) return slEinzelGehe(schritt.dataset.slSchritt);
+  slAutoWeiter = true;
   slVorAenderung = slSchnappschuss(t.closest('[data-sl-fall]')?.dataset.slFall || null);
   const ok = t.closest('[data-sl-ok]');
   if (ok) {
@@ -5012,6 +5164,7 @@ slOverlay.addEventListener('click', (e) => {
     slTeilungLoesen(idx);
     delete d.manuell[idx];
     d.zurPruefung = { ...(d.zurPruefung || {}), [idx]: true };
+    if (slModus === 'einzeln') slEinzelId = 'p:' + idx; // jetzt dieser Zweifelsfall
     return slSpeichern();
   }
   const fokus = t.closest('[data-sl-focus]');
@@ -5027,6 +5180,9 @@ slOverlay.addEventListener('change', (e) => {
   const d = schlaglisteData;
   if (!d) return;
   const t = e.target;
+  if (t.id === 'sl-einzel-alle') { slEinzelAlle = t.checked; return renderSchlaglisteReview(); }
+  // ein getipptes Datum ist evtl. noch nicht fertig — dann nicht von selbst weiterspringen
+  slAutoWeiter = t.type !== 'date';
   slVorAenderung = slSchnappschuss(t.closest('[data-sl-fall]')?.dataset.slFall || null);
   if (t.matches('[data-sl-match]')) {
     const idx = Number(t.dataset.slMatch);
@@ -5072,6 +5228,7 @@ slOverlay.addEventListener('change', (e) => {
     if (t.value !== d.jahr && (Object.keys(d.manuell).length || Object.keys(d.zugangNeu).length || Object.keys(d.unterflaechen || {}).length) && !confirm('Für ein anderes Jahr gelten die bisherigen manuellen Zuordnungen nicht mehr. Wechseln?')) { t.value = d.jahr; return; }
     Object.assign(d, { jahr: t.value, manuell: {}, ausgeblendet: {}, nachAntrag: {}, zusammenMit: {}, teilVon: {}, zugangNeu: {}, zurPruefung: {}, unterflaechen: {}, teilstueckOk: {}, angesehen: {} });
     slFokus = null;
+    slEinzelId = null;
     slUndoStapel = [];
     Object.keys(slSecZustand).forEach(k => delete slSecZustand[k]);
     slVorAenderung = null;
@@ -6708,6 +6865,13 @@ let obstbaumTablePanel = null;
 const obstbaumTrees = []; // { id, nummer, art, latlng, marker, parcelId }
 let obstbaumTreeCounter = 0;
 let activeFruitKey = null;
+let obstbaumFilter = null;      // Tabelle: nur diese Obstart (Schlüssel) bzw. OBST_OHNE, null = alle
+let obstbaumSelectedId = null;  // in Tabelle und Karte markierter Baum
+const OBST_OHNE = '__ohne-flaeche';
+function obstbaumGefiltert() {
+  if (!obstbaumFilter) return obstbaumTrees;
+  return obstbaumTrees.filter(t => (obstbaumFilter === OBST_OHNE ? !t.parcelId : t.art === obstbaumFilter));
+}
 
 // Flächen kommen jetzt aus dem geteilten Datenbestand (layers/featureIndex,
 // siehe Viewer weiter oben) — dieselben Flächen, die im Viewer/Jahresvergleich/
@@ -6731,6 +6895,7 @@ function findObstbaumParcelForLatLng(latlng) {
 
 function reassignAllTreesToParcels() {
   obstbaumTrees.forEach(t => { t.parcelId = findObstbaumParcelForLatLng(t.latlng)?.id || null; });
+  renderObstbaumSummary();
   renderObstbaumTable();
   renderFeatureTable();
 }
@@ -6807,9 +6972,14 @@ function setActiveFruitKey(key) {
     el.classList.toggle('active', el.getAttribute('data-key') === activeFruitKey);
   });
   document.getElementById('map').classList.toggle('placing', !!activeFruitKey);
-  setObstbaumStatus(activeFruitKey
-    ? `${fruitOf(activeFruitKey).label} aktiv — auf die Karte tippen, um Bäume zu setzen.`
-    : '');
+  // gewählte Obstart steht direkt unter der Auswahl (auch wenn sie aus "Sonstige" kommt)
+  document.getElementById('obstbaum-aktiv').hidden = !activeFruitKey;
+  if (activeFruitKey) {
+    const fruit = fruitOf(activeFruitKey);
+    document.getElementById('obstbaum-aktiv-dot').style.background = fruit.color;
+    document.getElementById('obstbaum-aktiv-text').textContent = `${fruit.label} — auf die Karte tippen`;
+  }
+  setObstbaumStatus('');
   updateMapPlaceChip();
 }
 
@@ -6842,7 +7012,7 @@ function addTree(key, latlng) {
   };
 
   const marker = L.marker(latlng, { icon: createTreeIcon(fruit.color), draggable: true });
-  marker.bindTooltip(fruit.label, { direction: 'top', offset: [0, -10] });
+  marker.bindTooltip(`Nr. ${entry.nummer} · ${fruit.label}`, { direction: 'top', offset: [0, -10] });
   marker.on('click', (e) => { L.DomEvent.stopPropagation(e); zoomToTree(entry.id); selectTreeInTable(entry.id); });
   // Rechtsklick auf einen Baum löscht ihn sofort — schnellste Korrektur bei
   // Fehlklicks beim Setzen, ohne erst die Baumtabelle öffnen zu müssen.
@@ -6854,6 +7024,7 @@ function addTree(key, latlng) {
   marker.on('dragend', () => {
     entry.latlng = marker.getLatLng();
     entry.parcelId = findObstbaumParcelForLatLng(entry.latlng)?.id || null;
+    renderObstbaumSummary();
     renderObstbaumTable();
     renderFeatureTable();
   });
@@ -6873,6 +7044,7 @@ function removeTree(id) {
   if (idx === -1) return;
   const fruit = fruitOf(obstbaumTrees[idx].art);
   obstbaumLayerGroup.removeLayer(obstbaumTrees[idx].marker);
+  if (obstbaumSelectedId === id) obstbaumSelectedId = null;
   obstbaumTrees.splice(idx, 1);
   renderObstbaumSummary();
   renderObstbaumTable();
@@ -6900,10 +7072,11 @@ function fitObstbaumContent() {
   if (bounds && bounds.isValid()) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 18 });
 }
 
+// Fläche eines Baums für die Tabelle: Nummer und Name; "ohne Fläche" nur, wenn überhaupt Flächen geladen sind
 function parcelLabelFor(parcelId) {
-  if (!parcelId) return '–';
-  const p = featureIndex.find(x => x.id === parcelId);
-  return p ? escapeHtml(p.nummer || p.featName || '–') : '–';
+  const p = parcelId && featureIndex.find(x => x.id === parcelId);
+  if (p) return escapeHtml([p.nummer, p.featName].filter(Boolean).join(' · ') || '–');
+  return featureIndex.length ? '<span class="obst-ohne">ohne Fläche</span>' : '–';
 }
 
 function fruitChipHtml(key, extra) {
@@ -6911,35 +7084,58 @@ function fruitChipHtml(key, extra) {
   return `<span class="fruit-chip"><span class="fruit-dot" style="background:${fruit.color}"></span>${escapeHtml(fruit.label)}${extra || ''}</span>`;
 }
 
+// Stand des Katasters: Zahlen in der Seitenleiste (je Obstart am Knopf, Summe
+// darunter) und die Filter-Knöpfe über der Baumtabelle.
 function renderObstbaumSummary() {
   const el = document.getElementById('obstbaum-summary-row');
-  document.getElementById('obstbaum-table-count').textContent = obstbaumTrees.length;
   const counts = new Map();
   obstbaumTrees.forEach(t => counts.set(t.art, (counts.get(t.art) || 0) + 1));
-  if (!counts.size) {
-    el.innerHTML = '<span style="color:var(--muted); font-size:11.5px;">Noch keine Bäume erfasst.</span>';
+  const n = obstbaumTrees.length;
+  const ohne = featureIndex.length ? obstbaumTrees.filter(t => !t.parcelId).length : 0;
+  // Filter, zu dem es keinen Baum mehr gibt, zurücknehmen
+  if (obstbaumFilter && (obstbaumFilter === OBST_OHNE ? !ohne : !counts.has(obstbaumFilter))) obstbaumFilter = null;
+  document.getElementById('obstbaum-table-count').textContent = obstbaumFilter ? `${obstbaumGefiltert().length} von ${n}` : n;
+  document.querySelectorAll('[data-fruit-count]').forEach(s => { const c = counts.get(s.dataset.fruitCount) || 0; s.textContent = c || ''; s.hidden = !c; });
+  document.getElementById('obstbaum-zahlen').innerHTML = n
+    ? `<b>${n}</b> ${n === 1 ? 'Baum' : 'Bäume'} · <b>${counts.size}</b> ${counts.size === 1 ? 'Obstart' : 'Obstarten'}${ohne ? ` · <span class="obst-ohne">${ohne} ohne Fläche</span>` : ''}`
+    : 'Noch keine Bäume erfasst.';
+  document.getElementById('btn-obstbaum-undo').disabled = !n;
+  if (!n) {
+    el.innerHTML = '<span class="obst-leer">Noch keine Bäume erfasst.</span>';
     return;
   }
-  el.innerHTML = [...counts.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .map(([key, n]) => fruitChipHtml(key, ` <span class="n">${n}</span>`))
-    .join('');
+  const knopf = (wert, inner, zahl) => `<button type="button" class="fruit-chip${(obstbaumFilter || '') === wert ? ' active' : ''}" data-obst-filter="${escapeHtml(wert)}" aria-pressed="${(obstbaumFilter || '') === wert}">${inner} <span class="n">${zahl}</span></button>`;
+  el.innerHTML = knopf('', 'Alle', n)
+    + [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([key, c]) => { const fruit = fruitOf(key); return knopf(key, `<span class="fruit-dot" style="background:${fruit.color}"></span>${escapeHtml(fruit.label)}`, c); }).join('')
+    + (ohne ? knopf(OBST_OHNE, 'ohne Fläche', ohne) : '');
 }
+document.getElementById('obstbaum-summary-row').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-obst-filter]');
+  if (!b) return;
+  obstbaumFilter = b.dataset.obstFilter || null;
+  renderObstbaumSummary();
+  renderObstbaumTable();
+});
+document.getElementById('btn-obstbaum-undo').addEventListener('click', () => {
+  if (obstbaumTrees.length) removeTree(obstbaumTrees[obstbaumTrees.length - 1].id);
+});
+document.getElementById('obstbaum-aktiv-fertig').addEventListener('click', () => {
+  if (activeFruitKey) setActiveFruitKey(activeFruitKey); // dieselbe Art nochmal = ausschalten
+});
 
 function renderObstbaumTable() {
   const tbody = document.getElementById('obstbaum-table-body');
   if (!obstbaumTrees.length) {
-    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted); padding:14px;">Noch keine Bäume erfasst.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="4" class="obst-leer">Noch keine Bäume erfasst.</td></tr>';
     return;
   }
-  tbody.innerHTML = obstbaumTrees.map(t => {
+  tbody.innerHTML = obstbaumGefiltert().map(t => {
     const hasNotes = t.notes || t.photos.length;
-    return `<tr data-id="${t.id}">
-      <td>${t.nummer}</td>
+    return `<tr data-id="${t.id}"${t.id === obstbaumSelectedId ? ' class="row-selected"' : ''}>
+      <td class="obst-nr">${t.nummer}</td>
       <td>${fruitChipHtml(t.art)}</td>
       <td>${parcelLabelFor(t.parcelId)}</td>
-      <td><button class="notes-btn${hasNotes ? ' has-notes' : ''}" data-id="${t.id}" data-action="notes" title="Notiz &amp; Fotos"><span class="material-symbols-rounded icon">sticky_note_2</span></button></td>
-      <td><button data-id="${t.id}" data-action="remove" class="table-remove-btn">Entfernen</button></td>
+      <td class="obst-aktionen"><button class="notes-btn${hasNotes ? ' has-notes' : ''}" data-id="${t.id}" data-action="notes" title="Notiz &amp; Fotos" aria-label="Notiz und Fotos zu Baum Nr. ${t.nummer}"><span class="material-symbols-rounded icon" aria-hidden="true">sticky_note_2</span></button><button data-id="${t.id}" data-action="remove" class="table-remove-btn" title="Baum entfernen" aria-label="Baum Nr. ${t.nummer} entfernen"><span class="material-symbols-rounded icon" aria-hidden="true">delete</span></button></td>
     </tr>`;
   }).join('');
   tbody.querySelectorAll('tr[data-id]').forEach(tr => {
@@ -6965,10 +7161,17 @@ function renderObstbaumTable() {
   });
 }
 
+// Baum in Tabelle UND auf der Karte markieren (Ring um den Punkt, liegt obenauf)
 function highlightTreeRow(id) {
+  obstbaumSelectedId = id;
   document.querySelectorAll('#obstbaum-table-body tr.row-selected').forEach(r => r.classList.remove('row-selected'));
   const row = document.querySelector('#obstbaum-table-body tr[data-id="' + id + '"]');
   if (row) row.classList.add('row-selected');
+  obstbaumTrees.forEach(t => {
+    const el = t.marker && t.marker.getElement();
+    if (el) el.classList.toggle('is-selected', t.id === id);
+    if (t.marker) t.marker.setZIndexOffset(t.id === id ? 1000 : 0);
+  });
 }
 
 // Öffnet die Baumtabelle (schließt dafür die Flächentabelle, beide teilen
@@ -6976,6 +7179,9 @@ function highlightTreeRow(id) {
 // Klick auf der Karte ausgewählten Baums.
 function selectTreeInTable(id) {
   document.getElementById('table-panel').classList.remove('open');
+  // der angetippte Baum muss in der Tabelle stehen: einen Filter, der ihn ausblendet, aufheben
+  const t = obstbaumTrees.find(x => x.id === id);
+  if (t && obstbaumFilter && !obstbaumGefiltert().includes(t)) obstbaumFilter = null;
   obstbaumTablePanel.open();
   renderObstbaumTable();
   renderObstbaumSummary();
@@ -7074,7 +7280,7 @@ function renderFruitPicker() {
     btn.type = 'button';
     btn.className = 'fruit-btn';
     btn.setAttribute('data-key', key);
-    btn.innerHTML = `<span class="fruit-dot" style="background:${fruit.color}"></span><span class="fruit-label">${escapeHtml(fruit.label).split('/').join('/<wbr>')}</span>`;
+    btn.innerHTML = `<span class="fruit-dot" style="background:${fruit.color}"></span><span class="fruit-label">${escapeHtml(fruit.label).split('/').join('/<wbr>')}</span><span class="fruit-count" data-fruit-count="${escapeHtml(key)}" title="erfasste Bäume" hidden></span>`;
     btn.classList.toggle('active', key === activeFruitKey);
     btn.addEventListener('click', () => setActiveFruitKey(key));
     makeFruitDraggable(btn, key);
@@ -7097,7 +7303,7 @@ function renderFruitPicker() {
       row.type = 'button';
       row.className = 'fruit-list-row';
       row.setAttribute('data-key', fruit.key);
-      row.innerHTML = `<span class="fruit-dot" style="background:${fruit.color}"></span><span class="fruit-label">${escapeHtml(fruit.label).split('/').join('/<wbr>')}</span>`;
+      row.innerHTML = `<span class="fruit-dot" style="background:${fruit.color}"></span><span class="fruit-label">${escapeHtml(fruit.label).split('/').join('/<wbr>')}</span><span class="fruit-count" data-fruit-count="${escapeHtml(fruit.key)}" title="erfasste Bäume" hidden></span>`;
       row.classList.toggle('active', fruit.key === activeFruitKey);
       row.addEventListener('click', () => setActiveFruitKey(fruit.key));
       makeFruitDraggable(row, fruit.key);
@@ -7124,6 +7330,7 @@ function renderFruitPicker() {
   });
   customInput.addEventListener('click', (e) => e.stopPropagation());
   customInput.addEventListener('dragover', (e) => e.stopPropagation());
+  renderObstbaumSummary(); // Zähler an den neu gebauten Knöpfen
 }
 renderFruitPicker();
 
@@ -7137,24 +7344,20 @@ sonstigeList.addEventListener('drop', (e) => {
 });
 
 const sonstigeToggle = document.getElementById('obstbaum-sonstige-toggle');
+// "Sonstige Obstart" klappt in der Seitenleiste auf (schiebt den Rest nach unten)
+// und bleibt offen, bis man sie wieder zuklappt — so sieht man die gewählte Art
+// auch, während man Bäume setzt.
 function closeSonstigeDropdown() {
   sonstigeList.hidden = true;
   sonstigeToggle.classList.remove('open');
+  sonstigeToggle.setAttribute('aria-expanded', 'false');
 }
 sonstigeToggle.addEventListener('click', () => {
   const willOpen = sonstigeList.hidden;
   sonstigeList.hidden = !willOpen;
   sonstigeToggle.classList.toggle('open', willOpen);
+  sonstigeToggle.setAttribute('aria-expanded', String(willOpen));
 });
-// Capture-Phase nötig: das "+"-Formular in der Liste ruft bei Klick
-// renderFruitPicker() auf, was die Liste neu aufbaut und e.target damit vom
-// DOM löst — in der Bubble-Phase wäre sonstigeList.contains(e.target) dann
-// fälschlich false und die Liste ginge sofort wieder zu.
-document.addEventListener('click', (e) => {
-  if (sonstigeList.hidden) return;
-  if (sonstigeList.contains(e.target) || sonstigeToggle.contains(e.target)) return;
-  closeSonstigeDropdown();
-}, true);
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && activeFruitKey) setActiveFruitKey(null);
@@ -10293,6 +10496,7 @@ async function performSignOut({ wipe = true, serverDone = false } = {}) {
   kontoProfil = {};
   terminkalenderEvents = [];
   manualBetriebe = [];
+  zeiterfassung.aktualisieren(); // laufende Zeit nicht weiter anzeigen
   closeKontrollmappe();
   // Gewählten Betrieb und seinen Arbeitsstand (Flächen, Pläne, …) ebenfalls
   // nicht weiter zeigen — beim nächsten Anmelden kommt er aus dem Konto zurück.
@@ -10608,6 +10812,11 @@ function normalizeKontoProfil(p) {
     return o;
   });
   if (typeof src.notiz === 'string' && src.notiz.trim()) out.notiz = src.notiz.slice(0, 5000);
+  // eigene Checklisten-Vorlage (checkliste.js) und erfasste Zeiten (zeiterfassung.js)
+  const vorlage = vorlageBereinigen(src.checkliste);
+  if (vorlage.length) out.checkliste = vorlage;
+  const zeiten = zeitenBereinigen(src.zeiten);
+  if (zeiten.length) out.zeiten = zeiten;
   return out;
 }
 
@@ -10619,13 +10828,15 @@ function restoreSharedState(full) {
       ...e, date: new Date(e.date), dateEnd: e.dateEnd ? new Date(e.dateEnd) : null,
       attachments: Array.isArray(e.attachments) ? e.attachments : [],
       probenprotokolle: Array.isArray(e.probenprotokolle) ? e.probenprotokolle : [],
-      crossChecks: Array.isArray(e.crossChecks) ? e.crossChecks : []
+      crossChecks: Array.isArray(e.crossChecks) ? e.crossChecks : [],
+      ...(Array.isArray(e.checkliste) && e.checkliste.length ? { checkliste: checklisteBereinigen(e.checkliste) } : {})
     }));
     renderTerminkalenderSummary();
     renderTerminkalenderGrid();
   }
   manualBetriebe = Array.isArray(full.manualBetriebe) ? full.manualBetriebe : [];
   kontoProfil = normalizeKontoProfil(full.profil);
+  try { zeiterfassung.aktualisieren(); } catch { /* beim allerersten Laden noch nicht eingerichtet */ }
   if (typeof renderKontoProfilViews === 'function') renderKontoProfilViews();
   if (typeof refreshKontrolleAnsichten === 'function') refreshKontrolleAnsichten();
 }
@@ -10731,7 +10942,7 @@ function serializeSharedState() {
       ...e, date: e.date.toISOString(), dateEnd: e.dateEnd ? e.dateEnd.toISOString() : null
     })),
     manualBetriebe: manualBetriebe.slice(),
-    profil: { ...kontoProfil }
+    profil: (() => { const pr = { ...kontoProfil }; if (!pr.zeiten || !pr.zeiten.length) delete pr.zeiten; return pr; })() // leere Zeitliste nicht speichern
   };
 }
 // Ein leerer Workspace (alle Listen leer) zählt wie ein fehlender — sonst
@@ -11150,6 +11361,32 @@ const fehlerbericht = fehlerberichtEinrichten({
   adminZahlAktualisieren: () => refreshAdminCount()
 });
 
+// Checkliste je Termin (src/checkliste.js) und Zeiterfassung (src/zeiterfassung.js):
+// beide ändern Daten, die mit dem Konto abgeglichen werden (Termin bzw. Profil).
+const kontrolleSpeichern = () => { persistLocalState().catch(() => {}); syncBald(1500); };
+const terminHauptauftrag = (id) => { const g = tkGroupFor(id); return g ? g.primary : (terminkalenderEvents.find(e => e.id === id) || null); };
+checklisteEinrichten({
+  termin: terminHauptauftrag,
+  vorlage: () => kontoProfil.checkliste || [],
+  vorlageSetzen: (liste) => { if (liste.length) kontoProfil.checkliste = liste; else delete kontoProfil.checkliste; kontrolleSpeichern(); },
+  geaendert: kontrolleSpeichern,
+  toast: (text) => showToast(text)
+});
+const zeiterfassung = zeiterfassungEinrichten({
+  liste: () => (Array.isArray(kontoProfil.zeiten) ? kontoProfil.zeiten : (kontoProfil.zeiten = [])),
+  speichern: kontrolleSpeichern,
+  termin: terminHauptauftrag,
+  aktiverBetrieb: () => (activeZuordnung ? activeZuordnung.betrieb : ''),
+  betriebe: () => getAllBetriebNamen(),
+  zeigeZeiten: () => {
+    if (document.body.dataset.view === 'kontrolle') { setKontrolleTab('zeiten'); return; }
+    kontrolleStart = 'dashboard';
+    kontrolleDashTab = 'zeiten';
+    setActiveSegment('kontrolle');
+  },
+  toast: (text) => showToast(text)
+});
+
 // Start mit einem (ggf. nur lokal bekannten) Nutzer: erst den lokalen Stand
 // zeigen (sofort, auch ohne Netz), dann — falls online — mit der Cloud
 // abgleichen. Vorher ggf. entsperren (Geräteschutz).
@@ -11274,8 +11511,16 @@ if (import.meta.env.DEV) {
     starts: () => startsFertig,
     // Neustart der App nachstellen (gleicher Ablauf wie beim Seitenaufruf).
     boot: () => initAccountAndState(),
-    // In-Memory-Stand verwerfen (wie beim Schließen der App).
-    clear: () => { clearWorkspace(); setActiveZuordnung(null); currentWorkspaceKey = NO_BETRIEB_KEY; geraeteschutz.vergessen(); },
+    // In-Memory-Stand verwerfen (wie beim Schließen der App). Auch den geladenen
+    // Datensatz und den anstehenden Sofort-Abgleich: Eine geschlossene App hat
+    // beides nicht mehr — sonst schriebe ein Abgleich, der zwischen clear() und
+    // dem nächsten start() fällt, den geleerten Arbeitsstand in die Cloud.
+    clear: () => {
+      clearTimeout(syncBaldTimer); syncBaldTimer = null;
+      offlineRec = null;
+      persistCache = { key: null, ws: null, shared: null };
+      clearWorkspace(); setActiveZuordnung(null); currentWorkspaceKey = NO_BETRIEB_KEY; geraeteschutz.vergessen();
+    },
     // Betrieb wechseln wie über den Betrieb-Dialog.
     switchTo: (betrieb) => applyZuordnungSelection(betrieb ? { betrieb, year: new Date().getFullYear(), terminId: null, terminLabel: null } : null),
     backups: (userId) => listBackups(userId)
@@ -12051,7 +12296,7 @@ function renderTerminkalenderSummary() {
 // Termin-Daten heißen intern weiter terminkalenderEvents (Cloud-Format
 // unverändert). Ein Termin öffnet die Kontrollmappe (siehe
 // renderTerminkalenderDetail).
-const KONTROLLE_TABS = { betrieb: 'kontrolle-betrieb', uebersicht: 'kontrolle-uebersicht', kalender: 'terminkalender-main', dokumente: 'kontrolle-dokumente' };
+const KONTROLLE_TABS = { betrieb: 'kontrolle-betrieb', uebersicht: 'kontrolle-uebersicht', kalender: 'terminkalender-main', dokumente: 'kontrolle-dokumente', zeiten: 'kontrolle-zeiten' };
 // Zwei Bereiche in EINER Ansicht (intern "kontrolle"), je mit eigenem Knopf in
 // der Seitenleiste: "Dashboard" (Reiter Übersicht, Kalender, Dokumente) und
 // "Betrieb" (die Seite des gewählten Betriebs, ohne Reiter).
@@ -12086,6 +12331,7 @@ function openKontrolle() {
 
 function setKontrolleTab(tab) {
   if (!KONTROLLE_TABS[tab]) tab = 'uebersicht';
+  if (tab !== kontrolleTab) blattRichtung(Object.keys(KONTROLLE_TABS), kontrolleTab, tab);
   kontrolleTab = tab;
   const istBetrieb = tab === 'betrieb';
   if (!istBetrieb) kontrolleDashTab = tab;
@@ -12120,6 +12366,9 @@ function setKontrolleTab(tab) {
   } else if (tab === 'dokumente') {
     updateKontrolleCounts();
     renderKontrolleDokumente();
+  } else if (tab === 'zeiten') {
+    updateKontrolleCounts();
+    zeiterfassung.seiteZeichnen(document.getElementById('ko-zeiten'));
   } else {
     renderKontrolleUebersicht();
   }
@@ -12346,7 +12595,7 @@ function updateKontrolleCounts() {
 function tkEventActionsHtml(ev) {
   const actions = [];
   if (ev.address || ev.lat != null) {
-    actions.push(`<a class="ko-icon-btn" href="${eventRouteUrl(ev)}" target="_blank" rel="noopener" title="Route" aria-label="Route zu ${escapeHtml(ev.kunde)}"><span class="material-symbols-rounded icon" aria-hidden="true">directions</span></a>`);
+    actions.push(`<a class="ko-icon-btn" data-ze-route="${escapeHtml(ev.id)}" href="${eventRouteUrl(ev)}" target="_blank" rel="noopener" title="Route" aria-label="Route zu ${escapeHtml(ev.kunde)}"><span class="material-symbols-rounded icon" aria-hidden="true">directions</span></a>`);
   }
   const tel = ev.mobil || ev.telefon;
   if (tel) {
@@ -12562,6 +12811,19 @@ const KO_BAUSTEINE = {
         <span class="ko-w-balkenspur"><span style="width:${Math.round(n / max * 100)}%"></span></span><span class="ko-w-balkenzahl">${n}</span></div>`).join('')}</div>`;
     }
   },
+  checkliste: {
+    titel: 'Checkliste', icon: 'checklist', text: 'Eigene Punkte zum nächsten Termin — schreiben, abhaken, als Vorlage merken', h: 7,
+    inhalt() {
+      const g = koCheckGruppe();
+      if (!g) return koLeer('checklist', 'Kein Termin in Sicht — die Checkliste gehört immer zu einem Termin.');
+      return `<div class="cl-termin"><button type="button" class="ko-link-btn" data-open-termin="${escapeHtml(g.id)}">${escapeHtml(g.kunde)} · ${escapeHtml(tkFmtDate(g.date))}</button></div>${checklisteHtml(g.primary)}`;
+    }
+  },
+  zeit: {
+    titel: 'Zeiterfassung', icon: 'timer', text: 'Fahrt-, Kontroll- und Bürozeit starten und stoppen, Summen von heute', h: 6,
+    aktion: '<button type="button" class="ko-link-btn" data-ko-tab="zeiten">Alle Zeiten</button>',
+    inhalt() { return zeiterfassung.bausteinHtml(); }
+  },
   notiz: {
     titel: 'Meine Notiz', icon: 'sticky_note_2', text: 'Freier Merkzettel — nur für dich, auf allen deinen Geräten', h: 5,
     inhalt() {
@@ -12570,6 +12832,11 @@ const KO_BAUSTEINE = {
   }
 };
 
+// Termin der Checkliste im Dashboard: der des gewählten Betriebs, sonst der nächste
+function koCheckGruppe() {
+  if (activeZuordnung) { const g = kbCurrentGroup(tkGroupEvents(kbEvents(activeZuordnung.betrieb))); if (g) return g; }
+  return koKommend(60)[0] || null;
+}
 function koLayout() { return layoutBereinigen(kontoProfil.dashboard, KO_BAUSTEINE, KO_LAYOUT_STANDARD); }
 function koLayoutSpeichern(layout) {
   kontoProfil.dashboard = layout;
@@ -12581,7 +12848,7 @@ function renderKontrolleUebersicht() {
   refreshKontrolleBetrieb();
   if (document.getElementById('kontrolle-uebersicht').hidden) return;
   // während im Notizfeld getippt wird, nicht unter dem Cursor neu zeichnen
-  if (document.activeElement && document.activeElement.id === 'ko-notiz') return;
+  if (document.activeElement && (document.activeElement.id === 'ko-notiz' || document.activeElement.classList.contains('cl-eingabe'))) return;
   const anpassen = document.getElementById('ko-dash-anpassen');
   anpassen.setAttribute('aria-pressed', String(koBearbeiten));
   anpassen.querySelector('.ko-dash-text').textContent = koBearbeiten ? 'Fertig' : 'Anpassen';
@@ -12594,7 +12861,12 @@ function renderKontrolleUebersicht() {
     onLayout: (neu) => { koLayoutSpeichern(neu); renderKontrolleUebersicht(); }
   });
 }
-document.getElementById('ko-dash-anpassen').addEventListener('click', () => { koBearbeiten = !koBearbeiten; renderKontrolleUebersicht(); });
+document.getElementById('ko-dash-anpassen').addEventListener('click', () => {
+  koBearbeiten = !koBearbeiten;
+  renderKontrolleUebersicht();
+  // der Knopf sitzt unter den Bausteinen: nach "Fertig" wieder nach oben zum Anfang
+  if (!koBearbeiten) document.querySelector('#kontrolle-uebersicht .ko-scroll').scrollTo({ top: 0, behavior: 'smooth' });
+});
 document.getElementById('ko-dash-luecken').addEventListener('click', () => dashboardLueckenSchliessen(document.getElementById('ko-dash')));
 document.getElementById('ko-dash-standard').addEventListener('click', () => {
   if (!confirm('Die Übersicht auf die Standard-Bausteine zurücksetzen?')) return;
@@ -12791,6 +13063,7 @@ function kbDate(iso) {
 }
 function refreshKontrolleBetrieb() {
   const panel = document.getElementById('kontrolle-betrieb');
+  if (document.activeElement && document.activeElement.classList.contains('cl-eingabe') && panel && panel.contains(document.activeElement)) return; // beim Tippen in der Checkliste
   if (panel && !panel.hidden && !document.getElementById('kontrolle-view').hidden) renderKontrolleBetrieb();
 }
 
@@ -12897,6 +13170,7 @@ function renderKontrolleBetrieb() {
       state: pending ? { cls: 'is-open', text: `${pending} Upload${pending === 1 ? '' : 's'} läuft` } : null,
       body: dokRows || '<p class="kb-tile-empty">Noch keine Fotos oder Dateien.</p>',
       foot: noTermin ? '' : `<button type="button" class="kb-tile-new" data-kb-mappe="dokumente"><span class="material-symbols-rounded icon" aria-hidden="true">photo_camera</span>Foto / Datei hinzufügen</button>` }),
+    ...(ev ? [kbTileHtml({ key: 'checkliste', icon: 'checklist', title: 'Checkliste', count: 0, body: checklisteHtml(ev), foot: '' })] : []),
     kbTileHtml({ key: 'notizen', icon: 'sticky_note_2', title: 'Notizen', count: notiz ? '•' : 0,
       body: notiz ? `<p class="kb-notiz">${escapeHtml(notiz.length > 220 ? notiz.slice(0, 220) + ' …' : notiz)}</p>` : '<p class="kb-tile-empty">Noch keine Notiz zum aktuellen Termin.</p>',
       foot: noTermin ? '' : `<button type="button" class="kb-tile-new" data-kb-mappe="notizen"><span class="material-symbols-rounded icon" aria-hidden="true">edit_note</span>${notiz ? 'Notiz bearbeiten' : 'Notiz schreiben'}</button>` })
@@ -12953,7 +13227,8 @@ function renderKontrolleBetrieb() {
         <button type="button" class="betrieb-btn kb-switch" data-kb-action="choose"><span class="material-symbols-rounded icon" aria-hidden="true">swap_horiz</span><span>Wechseln</span></button>
       </div>
       <div class="kb-hero-actions">
-        ${kontakt && (kontakt.address || kontakt.lat != null) ? `<a class="betrieb-btn" href="${eventRouteUrl(kontakt)}" target="_blank" rel="noopener"><span class="material-symbols-rounded icon" aria-hidden="true">directions</span>Route</a>` : ''}
+        ${zeiterfassung.knopfHtml(name, ev ? ev.id : '')}
+        ${kontakt && (kontakt.address || kontakt.lat != null) ? `<a class="betrieb-btn" data-ze-route="${escapeHtml(kontakt.id)}" href="${eventRouteUrl(kontakt)}" target="_blank" rel="noopener"><span class="material-symbols-rounded icon" aria-hidden="true">directions</span>Route</a>` : ''}
         ${tel ? `<a class="betrieb-btn" href="tel:${escapeHtml(telHref(tel))}"><span class="material-symbols-rounded icon" aria-hidden="true">call</span>Anrufen</a>` : ''}
         ${kontakt && kontakt.email ? `<a class="betrieb-btn" href="mailto:${escapeHtml(kontakt.email)}"><span class="material-symbols-rounded icon" aria-hidden="true">mail</span>E-Mail</a>` : ''}
       </div>
@@ -13165,7 +13440,8 @@ function renderTerminkalenderDetail(ev) {
       </div>
       <div class="tk-badges">${badges.join('')}</div>
       <div class="km-actions">
-        ${(ev.address || ev.lat != null) ? `<a class="betrieb-btn" href="${eventRouteUrl(ev)}" target="_blank" rel="noopener"><span class="material-symbols-rounded icon" aria-hidden="true">directions</span>Route</a>` : ''}
+        ${(ev.address || ev.lat != null) ? `<a class="betrieb-btn" data-ze-route="${escapeHtml(ev.id)}" href="${eventRouteUrl(ev)}" target="_blank" rel="noopener"><span class="material-symbols-rounded icon" aria-hidden="true">directions</span>Route</a>` : ''}
+        ${zeiterfassung.knopfHtml(ev.kunde, ev.id)}
         ${tel ? `<a class="betrieb-btn" href="tel:${escapeHtml(telHref(tel))}"><span class="material-symbols-rounded icon" aria-hidden="true">call</span>Anrufen</a>` : ''}
         <button type="button" class="betrieb-btn tk-betrieb-assign-btn${isActiveZuordnung ? ' active' : ''}" id="tk-betrieb-assign-btn">
           ${isActiveZuordnung
@@ -13193,6 +13469,10 @@ function renderTerminkalenderDetail(ev) {
           ${renderTerminkalenderContactRows(ev)}
         </div>
         ${ev.hinweis ? `<div class="km-section"><h4>Hinweis</h4><p class="tk-detail-desc">${escapeHtml(ev.hinweis).replace(/\n/g, '<br>')}</p></div>` : ''}
+        <div class="km-section">
+          <h4>Checkliste</h4>
+          ${checklisteHtml(ev)}
+        </div>
       </section>
       <section class="km-panel" data-km-panel="protokolle"${tab === 'protokolle' ? '' : ' hidden'}>
         ${formularSectionsHtml(ev)}
@@ -15425,7 +15705,8 @@ function updateBetriebButton() {
     btnBetriebLabel.innerHTML = `<span class="material-symbols-rounded icon betrieb-empty-icon" aria-hidden="true">business</span><span class="btn-betrieb-name">Betrieb wählen</span>${caret}`;
   }
   btnBetrieb.title = activeZuordnung ? `Betrieb: ${activeZuordnung.betrieb} — antippen zum Wechseln` : 'Betrieb/Termin zuordnen';
-  document.getElementById('betrieb-switcher-sub').textContent = activeZuordnung ? activeZuordnung.betrieb : 'Unterlagen · Flächen · Funktionen';
+  document.getElementById('betrieb-switcher-sub').textContent = activeZuordnung ? activeZuordnung.betrieb : 'Unterlagen · Flächen';
+  document.getElementById('betrieb-switcher').title = activeZuordnung ? activeZuordnung.betrieb : ''; // Untertitel ist einzeilig gekürzt
   btnBetrieb.setAttribute('aria-label', activeZuordnung ? `Betrieb: ${activeZuordnung.betrieb} (wechseln)` : 'Betrieb wählen');
 }
 
@@ -15508,7 +15789,7 @@ function betriebPinPopupHtml(z, ev) {
     <strong>${escapeHtml(z.betrieb)}</strong>
     ${ev.address ? `<span>${escapeHtml(ev.address)}</span>` : ''}
     ${termin ? `<span class="betrieb-pin-termin">Termin: ${escapeHtml(termin)}</span>` : ''}
-    ${route ? `<a href="${route}" target="_blank" rel="noopener"><span class="material-symbols-rounded icon" aria-hidden="true">directions</span>Route</a>` : ''}
+    ${route ? `<a href="${route}" data-ze-route="${escapeHtml(ev.id)}" target="_blank" rel="noopener"><span class="material-symbols-rounded icon" aria-hidden="true">directions</span>Route</a>` : ''}
   </div>`;
 }
 function updateBetriebPin() {

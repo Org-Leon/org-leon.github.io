@@ -74,7 +74,7 @@ test.describe('Kontrolle › Betrieb', () => {
     await expect(tile(page, 'probenprotokoll')).toHaveClass(/is-open/);
     await expect(tile(page, 'probenprotokoll').locator('.kb-tile-state')).toHaveText('beauftragt · offen');
     await expect(tile(page, 'crosscheck')).not.toHaveClass(/is-open|is-done/);
-    await expect(page.locator('.kb-tile')).toHaveCount(5);
+    await expect(page.locator('.kb-tile')).toHaveCount(6); // + Checkliste zum aktuellen Termin
 
     // Weitere Termine darunter (ohne den aktuellen)
     const rows = page.locator('.kb-hist-row');

@@ -53,7 +53,7 @@ test.describe('Kontrolle: Übersicht als Baukasten', () => {
     await page.locator('#ko-dash-anpassen').click();
     await expect(page.locator('#ko-dash-anpassen')).toContainText('Fertig');
     await expect(page.locator('#ko-dash-luecken')).toBeVisible();
-    await expect(page.locator('.ko-w-hinzu .ko-w-neu')).toHaveCount(4); // Zu erledigen, Aktueller Betrieb, Aufträge nach Art, Meine Notiz
+    await expect(page.locator('.ko-w-hinzu .ko-w-neu')).toHaveCount(6); // Zu erledigen, Aktueller Betrieb, Aufträge nach Art, Checkliste, Zeiterfassung, Meine Notiz
     await page.locator('[data-w-id="karte"] [data-w-akt="weg"]').click();
     await page.locator('.ko-w-neu[data-w="offen"]').click();
     const neu = await plaetze(page);
@@ -113,6 +113,9 @@ test.describe('Kontrolle: Übersicht als Baukasten', () => {
     await start(page);
     await page.locator('#ko-dash-anpassen').click();
     await expect(page.locator('#ko-dash .ko-w-griff')).toHaveCount(6);
+    // "Anpassen" sitzt unter den Bausteinen — zum Ziehen wieder an den Anfang
+    await page.locator('#kontrolle-uebersicht .ko-scroll').evaluate(el => el.scrollTo(0, 0));
+    await expect(page.locator('#ko-dash-anpassen')).toBeInViewport(); // die Leiste bleibt beim Anpassen unten stehen
     const raster = await page.locator('#ko-dash .grid-stack').boundingBox();
     const spalte = raster.width / 12;
     // "Karte" (x 6, y 2) am Kopf nach links unten unter den Schnellzugriff ziehen -> x 0, y 20: Lücke bleibt

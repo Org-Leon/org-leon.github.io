@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { gotoTab } from './helpers.js';
+import { gotoTab, setupCloud, loginWithCloud } from './helpers.js';
 
 // Regressionstest für den "width:100% + horizontale margin"-Bug (Sidebar
 // wurde dadurch horizontal scrollbar, siehe git-Historie) — prüft auf allen
@@ -242,6 +242,48 @@ test.describe('Seitenleiste: Vereinheitlichung', () => {
     expect(tkBox.width + betriebBox.width).toBeGreaterThan(gridBox.width - 20); // zusammen ganze Breite
     expect(tkBox.y + tkBox.height).toBeLessThanOrEqual(karteBox.y);       // darüber
   });
+
+  for (const design of ['standard', 'feldbuch']) {
+    test(`Kacheln aufgeräumt (${design}): Dashboard und Betrieb gleich aufgebaut, Symbole der Werkzeuge je Reihe auf einer Höhe`, async ({ page }) => {
+      await page.goto('/?design=' + design);
+      await setupCloud(page, { workspaces: {} });
+      await loginWithCloud(page);
+      await page.evaluate(() => window.__ffTestOffline.switchTo('Ein ziemlich langer Betriebsname zum Kürzen'));
+      // erst messen, wenn nichts mehr in Bewegung ist (im Feldbuch wird das gewählte Symbol kurz "gestempelt")
+      const mass = () => page.evaluate(async () => {
+        await Promise.all(document.getElementById('view-switcher').getAnimations({ subtree: true }).map(a => a.finished.catch(() => {})));
+        const box = (el) => { const r = el.getBoundingClientRect(); return { y: Math.round(r.y), h: Math.round(r.height), unten: Math.round(r.bottom) }; };
+        const breit = ['#kontrolle-switcher', '#betrieb-switcher'].map(sel => {
+          const b = document.querySelector(sel);
+          const sub = b.querySelector('.segment-sub');
+          return { kachel: box(b), ikon: box(b.querySelector('.icon')).y, titel: box(b.querySelector('.segment-label')).y, sub: box(sub),
+            zeilen: Math.round(sub.getBoundingClientRect().height / parseFloat(getComputedStyle(sub).lineHeight)), gekuerzt: sub.scrollWidth > sub.clientWidth, title: b.title };
+        });
+        const werkzeuge = [...document.querySelectorAll('#view-switcher .segment-btn:not(.segment-btn-wide)')].map(b => ({ kachel: box(b), ikon: box(b.querySelector('.icon')).y, text: box(b.querySelector('.segment-label')).y }));
+        return { breit, werkzeuge };
+      });
+      for (const aktiv of ['#kontrolle-switcher', '#betrieb-switcher', '.segment-btn[data-view="uebersicht"]']) {
+        await page.locator(aktiv).click();
+        const { breit: [dash, betrieb], werkzeuge } = await mass();
+        // oben: gleiche Höhe, Symbol/Titel/Untertitel auf derselben Höhe, Untertitel einzeilig
+        expect(dash.kachel, aktiv).toEqual(betrieb.kachel);
+        expect([dash.ikon, dash.titel, dash.sub.y], aktiv).toEqual([betrieb.ikon, betrieb.titel, betrieb.sub.y]);
+        expect([dash.zeilen, betrieb.zeilen], aktiv).toEqual([1, 1]);
+        expect(betrieb.gekuerzt).toBe(true);                                   // langer Name: gekürzt …
+        expect(betrieb.title).toBe('Ein ziemlich langer Betriebsname zum Kürzen'); // … voller Name im Tooltip
+        expect(dash.gekuerzt).toBe(false);
+        // Werkzeuge: 3 je Reihe, alle Kacheln gleich hoch, Symbol und Beschriftung je Reihe auf einer Höhe
+        expect(werkzeuge).toHaveLength(9);
+        expect(new Set(werkzeuge.map(w => w.kachel.h)).size, aktiv).toBe(1);
+        for (let r = 0; r < 3; r++) {
+          const reihe = werkzeuge.slice(r * 3, r * 3 + 3);
+          expect(new Set(reihe.map(w => w.kachel.y)).size, aktiv + ' Reihe ' + r).toBe(1);
+          expect(new Set(reihe.map(w => w.ikon)).size, aktiv + ' Reihe ' + r).toBe(1);
+          expect(new Set(reihe.map(w => w.text)).size, aktiv + ' Reihe ' + r).toBe(1);
+        }
+      }
+    });
+  }
 
   test('Ebenen: in "Karte" offen, in Werkzeugen eingeklappt, Aktionen als Symbole', async ({ page }) => {
     await page.goto('/');

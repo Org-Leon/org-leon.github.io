@@ -409,6 +409,104 @@ test.describe('Jahresvergleich: Umnummerierung und Schlagliste (Umstellung)', ()
     await expect(page.locator('#sl-summary .sl-mini span').first()).toHaveText('3 zugeordnet');
   });
 
+  test('Abgleich: Fortschritt bleibt oben stehen; Ansicht „Fläche für Fläche“ zeigt einen Fall nach dem anderen', async ({ page }) => {
+    await page.goto('/');
+    await openCompare(page);
+    await page.evaluate(() => window.__ffTestTk.loginFake('test@example.com'));
+    await page.setInputFiles('#compare-file-add', [yearFile(2025), yearFile(2026)]);
+    await page.setInputFiles('#sl-file', await schlaglisteFile(page));
+    await expect(page.locator('#sl-overlay')).toBeVisible();
+    await page.locator('#sl-kultur-uebernehmen').uncheck();
+    await expect(fortschritt(page)).toHaveText('0 von 3 Fällen geklärt');
+
+    // Fortschritt ist angepinnt: nicht im scrollenden Teil, bleibt beim Scrollen an seinem Platz
+    expect(await page.evaluate(() => document.querySelector('.sl-scroll').contains(document.getElementById('sl-progress-wrap')))).toBe(false);
+    const obenVorher = (await page.locator('#sl-progress-wrap').boundingBox()).y;
+    await page.locator('.sl-scroll').evaluate(el => { el.scrollTop = el.scrollHeight; });
+    expect(await page.locator('.sl-scroll').evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+    expect((await page.locator('#sl-progress-wrap').boundingBox()).y).toBe(obenVorher);
+    await expect(fortschritt(page)).toBeInViewport();
+
+    // Ansicht wechseln: genau ein Fall, Einstellungen ausgeblendet, Karte zeigt den Fall
+    const pos = page.locator('#sl-einzel-pos');
+    const karte = page.locator('#sl-body .sl-einzel');
+    await expect(page.locator('#sl-einzel-leiste')).toBeHidden();
+    await page.locator('[data-sl-modus="einzeln"]').click();
+    await expect(page.locator('[data-sl-modus="einzeln"]')).toHaveAttribute('aria-checked', 'true');
+    await expect(page.locator('#sl-einzel-leiste')).toBeVisible();
+    await expect(page.locator('#sl-jahr')).toBeHidden();
+    await expect(page.locator('#sl-body .sl-item')).toHaveCount(1);
+    await expect(pos).toHaveText('1 von 3');
+    await expect(karte).toHaveClass(/is-warn/);
+    await expect(karte.locator('.sl-einzel-kopf')).toContainText('Zweifelsfall');
+    await expect(karte.locator('.sl-einzel-kopf')).toContainText('offen');
+    await expect(karte).toContainText('6 Senke');
+    await expect(page.locator('#map path.sl-focus').first()).toBeAttached();
+    await expect(page.locator('[data-sl-schritt="zurueck"]')).toBeDisabled();
+
+    // "Passt" klärt den Fall — die Ansicht springt von selbst zum nächsten offenen
+    await karte.locator('[data-sl-ok]').click();
+    await expect(fortschritt(page)).toHaveText('1 von 3 Fällen geklärt');
+    await expect(pos).toHaveText('2 von 3');
+    await expect(karte).toHaveClass(/is-neu/);
+    await expect(karte).toContainText('Neuland');
+
+    // Datum getippt: kein Sprung (das Datum könnte noch unfertig sein) — weiter mit dem Knopf
+    await karte.locator('[data-sl-beginn]').fill('2026-03-01');
+    await expect(fortschritt(page)).toHaveText('2 von 3 Fällen geklärt');
+    await expect(karte.locator('.sl-einzel-kopf')).toContainText('erledigt');
+    await page.waitForTimeout(1300);
+    await expect(pos).toHaveText('2 von 3');
+    await page.locator('[data-sl-schritt="offen"]').click();
+    await expect(pos).toHaveText('3 von 3');
+    await expect(karte).toHaveClass(/is-fehlt/);
+    await expect(karte).toContainText('3 Alter Acker');
+    await expect(page.locator('[data-sl-schritt="weiter"]')).toBeDisabled();
+
+    // blättern; ein Tipp auf eine Fläche der Karte holt deren Fall
+    await page.locator('[data-sl-schritt="zurueck"]').click();
+    await expect(pos).toHaveText('2 von 3');
+    await page.locator('[data-sl-schritt="weiter"]').click();
+    await expect(pos).toHaveText('3 von 3');
+    await page.locator('#map path.sl-flaeche').nth(3).dispatchEvent('click'); // 8 Senke
+    await expect(pos).toHaveText('1 von 3');
+    await expect(karte).toContainText('zugeordnet: 8 Senke');
+    await page.locator('[data-sl-schritt="offen"]').click();
+    await expect(pos).toHaveText('3 von 3');
+
+    // Fall entfällt durch die Entscheidung ("Unverändert lassen"): die Ansicht bleibt an der Stelle
+    await karte.locator('[data-sl-gleich]').click();
+    await expect(fortschritt(page)).toHaveText('2 von 2 Fällen geklärt');
+    await expect(pos).toHaveText('2 von 2');
+
+    // auch die automatisch zugeordneten durchgehen; "ändern" macht daraus einen Zweifelsfall
+    await page.locator('#sl-einzel-alle').check();
+    await expect(pos).toHaveText('2 von 4');
+    await page.locator('[data-sl-schritt="weiter"]').click();
+    await expect(pos).toHaveText('3 von 4');
+    await expect(karte).toHaveClass(/is-ok/);
+    await expect(karte.locator('.sl-einzel-kopf')).toContainText('Automatisch zugeordnet');
+    await expect(karte).toContainText('1 Acker Nord');
+    await karte.locator('[data-sl-reset]').click();
+    await expect(fortschritt(page)).toHaveText('2 von 3 Fällen geklärt');
+    await expect(karte).toHaveClass(/is-warn/);
+    await expect(karte).toContainText('1 Acker Nord');
+    await expect(karte.locator('[data-sl-ok]')).toBeVisible();
+    // Rückgängig führt zum selben Schritt zurück
+    await page.locator('#sl-undo').click();
+    await expect(fortschritt(page)).toHaveText('2 von 2 Fällen geklärt');
+    await expect(karte).toHaveClass(/is-ok/);
+    await expect(karte).toContainText('1 Acker Nord');
+
+    // zurück zur Liste: Abschnitte und Einstellungen wieder da, die Wahl ist gemerkt
+    expect(await page.evaluate(() => localStorage.getItem('feldfolio-sl-modus'))).toBe('einzeln');
+    await page.locator('[data-sl-modus="liste"]').click();
+    await expect(page.locator('#sl-einzel-leiste')).toBeHidden();
+    await expect(page.locator('#sl-jahr')).toBeVisible();
+    await expect(page.locator('.sl-sec.is-warn > summary')).toContainText('Zweifelsfälle prüfen (1)');
+    await expect(page.locator('#sl-body .sl-einzel')).toHaveCount(0);
+  });
+
   test('Umstellungsstufen ab festem Datum: 12 / 24 Monate; Besichtigt-Jahr im Export', async ({ page }) => {
     await page.goto('/');
     const r = await page.evaluate(async () => {

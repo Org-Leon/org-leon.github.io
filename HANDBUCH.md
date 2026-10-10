@@ -1,6 +1,6 @@
 # FeldFolio – Benutzerhandbuch
 
-Stand: 10. Oktober 2026
+Stand: 11. Oktober 2026
 
 FeldFolio ist ein Werkzeug für die Öko-Kontrolle: Flächen eines Betriebs auf der Karte ansehen und auswerten, Hof und Stall erfassen und die Kontrolle selbst mit Terminen, Protokollen und Dokumenten begleiten. Die App läuft im Browser auf PC, Tablet und Handy und funktioniert vor Ort auch ohne Empfang.
 
@@ -47,7 +47,7 @@ Ein Tipp auf die bereits aktive Kachel führt zurück zur Karte.
 
 ### Design (Test)
 
-Über das Paletten-Symbol in der Kopfzeile (am Handy: in der Schublade unten „Design wechseln (Test)“) schaltest du zwischen dem Standard-Design und dem Test-Design „Feldbuch“ um. Das Feldbuch-Design zeigt dieselben Funktionen als alte Akte mit Feldkarte: Aktenpapier, die Seitenleiste als Mappe mit Registerkarten, Abschnitte als Blätter, Hinweise als Stempel. Die Karte erscheint wie eine vergilbte Flurkarte mit Flurnamen in Kursivschrift. Die Symbole sind fein gezeichnet; einige Funktionen haben eigene Symbole (z. B. Kompass für die Karte, Füllfeder für den Flächenzeichner, Archivkasten für das Dashboard). In Kartenexporten (PDF) fehlt die Tönung. Hell und Dunkel gibt es in beiden Designs. Die Wahl bleibt auf dem Gerät gespeichert. Beschriftungen und Abläufe sind gleich; die Bilder und Beschreibungen in diesem Handbuch gelten für beide.
+Über das Paletten-Symbol in der Kopfzeile (am Handy: in der Schublade unten „Design wechseln (Test)“) schaltest du zwischen dem Standard-Design und dem Test-Design „Feldbuch“ um. Das Feldbuch-Design zeigt dieselben Funktionen als alte Akte mit Feldkarte: Aktenpapier, die Seitenleiste als Mappe mit Registerkarten, Abschnitte als Blätter, Hinweise als Stempel. Dazu kommen Anleihen bei alter Zeitung und Kartendruck: Seitentitel als große Schlagzeile mit Doppellinie und einer Zeile zwischen zwei Linien darunter, Überschriften mit Trennlinie, feine Passmarken an den unteren Blattecken und ein leichtes Druckraster auf dunklen Flächen. Die Karte erscheint wie eine vergilbte Flurkarte mit Flurnamen in Kursivschrift. Die Symbole sind fein gezeichnet; einige Funktionen haben eigene Symbole (z. B. Kompass für die Karte, Füllfeder für den Flächenzeichner, Archivkasten für das Dashboard). In Kartenexporten (PDF) fehlt die Tönung. Die Bewegungen ahmen das Blättern in einer Akte nach: Beim Wechsel der Ansicht oder des Reiters schwenkt die neue Seite herein – vorwärts, wenn du zu einer späteren Registerkarte gehst, rückwärts, wenn du zurückgehst. Die Kontrollmappe klappt wie ein Aktendeckel auf, Reiter in der Mappe und in Dialogen schlagen um, Dialoge legen sich als Blatt auf den Tisch, die gewählte Registerkarte wird gestempelt. Hast du am Gerät „Bewegung reduzieren“ eingestellt, entfallen die Animationen. Hell und Dunkel gibt es in beiden Designs. Die Wahl bleibt auf dem Gerät gespeichert. Beschriftungen und Abläufe sind gleich; die Bilder und Beschreibungen in diesem Handbuch gelten für beide.
 
 ### Mit und ohne Konto
 
@@ -292,11 +292,22 @@ Die Abschnitte im Einzelnen:
 - **Ohne Fläche, bleiben unverändert:** In diesem Abschnitt stehen alle Zeilen ohne Fläche, die keinen Abgang bekommen, mit dem Grund (Umstellungsdatum nach dem 15.05., nach Antrag zugegangen, unverändert gelassen, Teilstück von …).
 - **Nach dem Agrarantrag zugegangen:** Flächen, die erst nach dem 15.05. des Abgleichsjahres zum Betrieb gekommen sind, stehen schon in der Liste, aber noch nicht in den Shapes. Sie sind kein Abgang. Zeilen mit einem Umstellungsdatum nach dem 15.05. erkennt die App von selbst und zeigt sie in diesem eigenen Abschnitt, ohne offenen Fall. Hat eine solche Fläche ein älteres Datum, z. B. ein Bio-Zugang mit dem Umstellungsdatum des Vorbewirtschafters, tippst du unter „Nicht in den Shapes“ auf **„Nach Antrag zugegangen“**. Beim Export bleiben diese Zeilen ohne Abgang; nur der Umstellungsstatus wird zum Stichtag fortgeschrieben. Mit **„doch nicht“** wird die Zeile wieder ein normaler Fall.
 
-**Fortschritt:** Oben im Panel steht, wie viele Fälle schon geklärt sind, mit Balken und Prozentzahl. Ein erledigter Fall bekommt einen grünen Haken, ein erledigter Abschnitt den Hinweis „erledigt“ und klappt zu. Abschnitte, die du selbst zu- oder aufgeklappt hast, bleiben so, während du weiterarbeitest. Das Auge zeigt, welche kritischen und neuen Fälle du schon auf der Karte angesehen hast. Sind alle Fälle geklärt, gibt es eine kleine Feier und den Hinweis „bereit für den Export“. Den Stand siehst du auch in der Seitenleiste.
+**Fortschritt:** Oben im Panel steht, wie viele Fälle schon geklärt sind, mit Balken und Prozentzahl. Die Anzeige bleibt dort stehen, auch wenn du im Panel nach unten scrollst. Ein erledigter Fall bekommt einen grünen Haken, ein erledigter Abschnitt den Hinweis „erledigt“ und klappt zu. Abschnitte, die du selbst zu- oder aufgeklappt hast, bleiben so, während du weiterarbeitest. Das Auge zeigt, welche kritischen und neuen Fälle du schon auf der Karte angesehen hast. Sind alle Fälle geklärt, gibt es eine kleine Feier und den Hinweis „bereit für den Export“. Den Stand siehst du auch in der Seitenleiste.
+
+**Alle Fälle oder Fläche für Fläche:** Direkt unter dem Fortschritt wählst du die Ansicht. Die Wahl merkt sich die App auf dem Gerät.
+
+- **„Alle Fälle“** zeigt alle Abschnitte untereinander, wie oben beschrieben. Nur hier stehen Jahr, Stichtag, „Kulturen aus den Shapes übernehmen“, die Statusbezeichnungen und „Nutzungsnachweis (PDF) laden“.
+- **„Fläche für Fläche“** zeigt immer genau einen Fall, und die Karte fliegt zu seiner Fläche. Die Reihenfolge: kritische Änderungen, Zweifelsfälle, neue Flächen, Zeilen ohne Fläche, Kulturen.
+  - Unten blätterst du mit **„Zurück“** und **„Weiter“**. Dazwischen steht, bei welchem Fall du bist, z. B. „3 von 12“.
+  - Klärst du einen Fall mit einem Knopf oder einer Auswahl (z. B. „Passt“), springt die Ansicht nach einem Moment von selbst zum nächsten offenen Fall.
+  - Tippst du ein Datum ein, bleibt die Ansicht stehen. Weiter geht es dann mit **„Zum nächsten offenen Fall“** oder „Weiter“.
+  - Ein Tipp auf eine Fläche der Karte holt deren Fall.
+  - Mit dem Haken **„Auch die … automatisch zugeordneten Flächen durchgehen“** kommen die sicher zugeordneten Zeilen dazu. So prüfst du wirklich jede Fläche einzeln; mit „ändern“ holst du eine Zeile in die Prüfung.
+  - Am Handy sind in dieser Ansicht Legende und Erklärtexte ausgeblendet, damit der Fall Platz hat.
 
 **Rückgängig und Zurücksetzen:**
 
-- **„Rückgängig“** oben im Panel nimmt die letzte Entscheidung zurück, z. B. ein „Passt“, ein Datum oder einen Abgang. Die App springt dabei zu dem Fall zurück, sodass du ihn gleich neu bearbeiten kannst. Das geht mehrmals hintereinander (bis zu 30 Schritte, solange die App offen ist).
+- **„Rückgängig“** oben im Panel nimmt die letzte Entscheidung zurück, z. B. ein „Passt“, ein Datum oder einen Abgang. Die App springt dabei zu dem Fall zurück (auch in der Ansicht „Fläche für Fläche“), sodass du ihn gleich neu bearbeiten kannst. Das geht mehrmals hintereinander (bis zu 30 Schritte, solange die App offen ist).
 - **„Zurücksetzen“** unten im Panel (oder „Abgleich zurücksetzen“ in der Seitenleiste) verwirft nach einer Rückfrage alle Entscheidungen dieses Abgleichs: Zuordnungen, Umstellungsdaten, Abgänge, Unterflächen und die hier gewählten Kulturen. Die Schlagliste selbst bleibt geladen. Auch das Zurücksetzen lässt sich mit „Rückgängig“ zurücknehmen.
 
 **Für Import exportieren (Excel)** erzeugt die Liste im gleichen Format wie die Vorlage. Sind noch Fälle offen, fragt die App vorher nach.
@@ -336,10 +347,13 @@ Gezeichnete Flächen stehen auch unter „Ebenen“ und in allen anderen Funktio
 
 Obstbäume auf der Karte erfassen.
 
-- Obstart wählen, dann Bäume auf die Karte tippen. Die Obstart bleibt aktiv, bis du sie erneut antippst (oder Esc drückst).
-- Bäume verschieben: ziehen. Löschen: Rechtsklick.
-- Weitere Obstarten unter „Sonstige Obstart“.
-- Tabellen „Bäume“ und „Flächen“: Bäume werden der Fläche zugeordnet, auf der sie stehen.
+- **Setzen:** Obstart wählen, dann Bäume auf die Karte tippen. Unter der Auswahl steht, welche Obstart gerade aktiv ist. Sie bleibt aktiv, bis du auf „Fertig“ tippst, sie erneut antippst oder Esc drückst.
+- **Weitere Obstarten** unter „Sonstige Obstart“: Die Liste klappt in der Seitenleiste auf und bleibt offen, bis du sie wieder zuklappst. Unten in der Liste legst du eine eigene Obstart an.
+- **Stand:** An jeder Obstart steht, wie viele Bäume davon erfasst sind. Darunter die Summe, z. B. „9 Bäume · 3 Obstarten · 2 ohne Fläche“. „Ohne Fläche“ erscheint, wenn Flächen geladen sind und ein Baum auf keiner davon steht.
+- **Verschieben:** den Baum auf der Karte ziehen.
+- **Entfernen:** „Letzten Baum entfernen“ in der Seitenleiste, der Papierkorb in der Tabelle „Bäume“ oder am PC ein Rechtsklick auf den Baum.
+- **Tabelle „Bäume“:** Nummer, Obstart und Fläche (Nummer und Name) je Baum. Die Knöpfe über der Tabelle filtern nach Obstart oder „ohne Fläche“; „Alle“ hebt den Filter auf. Ein Tipp auf eine Zeile zeigt den Baum auf der Karte und markiert ihn dort mit einem Ring. Ein Tipp auf einen Baum auf der Karte öffnet die Tabelle und markiert seine Zeile.
+- **Tabelle „Flächen“:** Bäume werden der Fläche zugeordnet, auf der sie stehen.
 - Notiz und Fotos je Baum (mit Konto).
 
 Export: Flächenkarten (PDF) und „Kataster speichern“ (GeoJSON). Ein gespeichertes Kataster lässt sich wieder laden.
@@ -439,16 +453,16 @@ Die Zuordnung ist dieselbe wie im Stallplaner beim Abteil unter „Tiere“. Die
 
 Beides gibt es mit Konto. In der Seitenleiste stehen dafür oben zwei Kacheln nebeneinander:
 
-- **Dashboard** mit den Reitern **Übersicht**, **Kalender** und **Dokumente**. Angemeldet ist die Übersicht die erste Seite: beim Start der App und direkt nach dem Anmelden.
-- **Betrieb** für die Seite des gewählten Betriebs. Unter dem Namen der Kachel steht, welcher Betrieb gerade gewählt ist.
+- **Dashboard** mit den Reitern **Übersicht**, **Kalender**, **Dokumente** und **Zeiten**. Angemeldet ist die Übersicht die erste Seite: beim Start der App und direkt nach dem Anmelden.
+- **Betrieb** für die Seite des gewählten Betriebs. Unter dem Namen der Kachel steht, welcher Betrieb gerade gewählt ist (ein langer Name wird gekürzt; in voller Länge steht er in der Kopfzeile).
 
 ### Betrieb
 
 Die zentrale Seite für den gewählten Betrieb, zu erreichen über die Kachel „Betrieb“ in der Seitenleiste.
 
-- **Kopfkarte:** Name, Kundennummer, Ort, Verbände; Knöpfe für Route, Anrufen und E-Mail; Kontaktdaten; „Wechseln“.
+- **Kopfkarte:** Name, Kundennummer, Ort, Verbände; Knöpfe für „Kontrollzeit starten“ (siehe Zeiterfassung), Route, Anrufen und E-Mail; Kontaktdaten; „Wechseln“.
 - **Betriebsfunktionen:** Kacheln direkt unter der Kopfkarte für Flächenübersicht, Fruchtfolge, Flächenzeichner, Hofplan, Stallplaner, Tierbestand, Obstbäume und Bienenflug.
-- **Unterlagen der Kontrolle:** je eine Kachel für Probenahmeprotokolle, Cross Checks, Warenflussprüfungen, Fotos & Dokumente und Notizen. Jede Kachel zeigt die letzten Einträge und legt neue direkt am aktuellen Termin an. Ist eine Probenahme oder ein Cross Check beauftragt, ist die Kachel markiert („beauftragt · offen“ oder „beauftragt · erledigt“).
+- **Unterlagen der Kontrolle:** je eine Kachel für Probenahmeprotokolle, Cross Checks, Warenflussprüfungen, Fotos & Dokumente, die Checkliste des aktuellen Termins und Notizen. Jede Kachel zeigt die letzten Einträge und legt neue direkt am aktuellen Termin an. Ist eine Probenahme oder ein Cross Check beauftragt, ist die Kachel markiert („beauftragt · offen“ oder „beauftragt · erledigt“).
 - **Flächen:** Kurzform der Flächenübersicht mit Gesamtfläche und den größten Kulturen.
 - **Termine dieses Betriebs:** oben der aktuelle Termin (der zugeordnete, sonst der nächste) mit seinen Aufträgen als Schilder und dem Knopf „Kontrollmappe öffnen“. Ein roter Punkt am Auftrag heißt „unbestätigt“. Darunter stehen die weiteren Termine mit Zählern für Protokolle, Prüfungen und Dateien; ein Tipp öffnet die Kontrollmappe.
 
@@ -465,14 +479,14 @@ Die Übersicht besteht aus **Bausteinen**, die du dir selbst zusammenstellst. Vo
 - **Zuletzt bearbeitete Protokolle:** Probenahme, Cross Check und Warenfluss über alle Termine.
 - **Schnellzugriff:** heutigen Termin öffnen, Kalender, Dokumente, Betrieb wählen, Termine importieren.
 
-**Anpassen:** Der Knopf „Anpassen“ oben rechts schaltet in den Bearbeiten-Modus. Die Übersicht ist dann ein Raster, auf dem du die Bausteine frei anordnest:
+**Anpassen:** Der Knopf „Anpassen“ steht unter den Bausteinen (ganz unten rechts) und schaltet in den Bearbeiten-Modus. Die Leiste mit „Lücken schließen“, „Standard“ und „Fertig“ bleibt dabei am unteren Rand stehen. Die Übersicht ist dann ein Raster, auf dem du die Bausteine frei anordnest:
 
 - **Verschieben:** Baustein an seiner Kopfzeile (mit dem Titel und den sechs Punkten) mit Maus oder Finger an eine beliebige Stelle ziehen. Die anderen Bausteine bleiben stehen und weichen nur aus, wenn sie im Weg sind. Lücken sind erlaubt.
 - **Größe ändern:** an einem Rand oder einer Ecke ziehen (die Ecke unten rechts ist markiert) — so wird ein Baustein breiter, schmaler, höher oder niedriger. Passt der Inhalt nicht hinein, lässt er sich im Baustein scrollen.
 - **✕:** Baustein ausblenden.
 - **Lücken schließen:** rückt alle Bausteine so weit wie möglich nach oben.
 
-Unter „Weitere Bausteine“ blendest du zusätzliche ein: **Zu erledigen** (unbestätigte und unangemeldete Termine, Termine ohne Adresse, wartende Uploads, unvollständige Protokolle), **Aktueller Betrieb**, **Aufträge nach Art** (nächste 30 Tage) und **Meine Notiz** (ein Merkzettel nur für dich). „Standard“ stellt die Voreinstellung wieder her, „Fertig“ beendet das Anpassen.
+Unter „Weitere Bausteine“ blendest du zusätzliche ein: **Zu erledigen** (unbestätigte und unangemeldete Termine, Termine ohne Adresse, wartende Uploads, unvollständige Protokolle), **Aktueller Betrieb**, **Aufträge nach Art** (nächste 30 Tage), **Checkliste** (deine Punkte zum Termin des gewählten Betriebs, sonst zum nächsten Termin), **Zeiterfassung** (laufende Zeit, Starten und Stoppen, Summen von heute und dieser Woche) und **Meine Notiz** (ein Merkzettel nur für dich). „Standard“ stellt die Voreinstellung wieder her, „Fertig“ beendet das Anpassen.
 
 Neue Bausteine erscheinen unten. Deine Anordnung und die Notiz werden im Konto gespeichert und gelten auf allen deinen Geräten. Am Handy (schmaler Bildschirm) stehen die Bausteine in derselben Reihenfolge untereinander; auf dem breiten Bildschirm ist die freie Anordnung wieder da. Außerhalb von „Anpassen“ ist das Raster fest, damit nichts versehentlich verrutscht.
 
@@ -500,11 +514,42 @@ Der Dateiexplorer zeigt **alle Fotos und Dokumente aller Termine** an einer Stel
 
 Hochgeladen wird weiterhin am Termin: Foto, Scan und Fotomappe findest du in der Kontrollmappe unter „Dokumente“. Von dort führt „Im Dateiexplorer“ direkt in den Ordner des Termins.
 
+### Dashboard: Reiter „Zeiten“ (Zeiterfassung)
+
+Hier erfasst du Fahrt-, Kontroll- und Bürozeit. Du musst dafür nicht eigens hierher wechseln — die App bietet es dort an, wo du arbeitest:
+
+- **Fahrt:** Tippst du bei einem Termin auf „Route“, fragt die App unten links „Fahrtzeit starten?“. „Starten“ lässt die Fahrtzeit zu diesem Betrieb laufen.
+- **Kontrolle:** Auf der Betriebsseite und im Kopf der Kontrollmappe steht „Kontrollzeit starten“. Läuft gerade die Fahrt, heißt der Knopf „Angekommen · Kontrollzeit starten“: Er beendet die Fahrt und startet die Kontrolle. Ein weiterer Tipp („Kontrolle läuft“) stoppt sie.
+- **Büro:** im Baustein „Zeiterfassung“ oder hier im Reiter.
+
+Es läuft immer nur eine Zeit: Eine neue zu starten beendet die laufende. Solange eine Zeit läuft, steht sie mit der Uhr in der Kopfzeile; ein Tipp darauf führt in diesen Reiter.
+
+Im Reiter:
+
+- **Jetzt:** die laufende Zeit mit „Stoppen“, sonst Knöpfe zum Starten von Fahrt, Kontrolle und Büro.
+- **Woche:** mit den Pfeilen blätterst du wochenweise. Darunter die Summen je Art und gesamt, dann die Einträge je Tag mit Beginn, Ende, Betrieb und Dauer.
+- **Nachtragen:** einen vergessenen Eintrag mit Datum, Beginn, Ende, Art, Betrieb und Notiz anlegen. Liegt das Ende vor dem Beginn, gilt es für den Folgetag (über Mitternacht).
+- **Ändern und Löschen:** der Stift an einem Eintrag öffnet ihn zum Bearbeiten.
+- **Monat als Excel:** speichert alle abgeschlossenen Zeiten des Monats der angezeigten Woche mit Summen als Excel-Datei.
+
+Läuft eine Zeit länger als 12 Stunden, weist die App darauf hin — dann das Ende über den Stift nachtragen. Die Zeiten gehören zu deinem Konto und laufen auf allen deinen Geräten gleich: Eine am Handy gestartete Zeit läuft am Laptop weiter.
+
+### Checkliste je Termin
+
+Zu jedem Termin kannst du dir eine eigene Checkliste schreiben. Du findest sie in der Kontrollmappe unter „Überblick“, auf der Betriebsseite (Kachel „Checkliste“) und als Baustein im Dashboard — überall dieselbe Liste.
+
+- **Punkt hinzufügen:** in „Neuer Punkt …“ schreiben und Enter drücken (oder das Plus antippen). Der Cursor bleibt im Feld, so schreibst du mehrere Punkte hintereinander.
+- **Abhaken:** das Kästchen antippen. Oben steht, wie viele Punkte erledigt sind.
+- **Löschen:** das ✕ am Punkt.
+- **Als Vorlage speichern:** merkt sich die Punkte dieser Liste als deine Vorlage. **„Meine Vorlage einfügen“** ergänzt sie in einem anderen Termin (unabgehakt); eigene Punkte kannst du weiter dazuschreiben.
+
+Die Liste gehört zum Termin und wird mit dem Konto abgeglichen, die Vorlage gilt auf allen deinen Geräten.
+
 ### Kontrollmappe
 
-Ein Tipp auf einen Termin öffnet die Kontrollmappe (am Handy im Vollbild). Im Kopf: Betrieb, Datum, Status, Route, Anrufen, „Als Betrieb zuordnen“.
+Ein Tipp auf einen Termin öffnet die Kontrollmappe (am Handy im Vollbild). Im Kopf: Betrieb, Datum, Status, Route, „Kontrollzeit starten“, Anrufen, „Als Betrieb zuordnen“.
 
-**Überblick:** die Aufträge des Termins, Termin verschieben, Kontakt, Hinweise.
+**Überblick:** die Aufträge des Termins, Termin verschieben, Kontakt, Hinweise und die Checkliste des Termins.
 
 **Protokolle:**
 

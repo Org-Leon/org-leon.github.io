@@ -420,6 +420,10 @@
   }
   .segment-btn .icon { font-size: 22px; }
   .segment-label { max-width: 100%; }
+  /* Werkzeug-Kacheln: immer Platz für zwei Zeilen Beschriftung — so stehen die
+     Symbole in allen Kacheln auf einer Höhe und alle Reihen sind gleich hoch,
+     egal ob die Beschriftung ein- oder zweizeilig ist. */
+  .segment-btn:not(.segment-btn-wide) > .segment-label { min-height: 2.4em; min-height: 2lh; } /* 2lh = zwei Zeilen, egal welche Zeilenhöhe das Design setzt */
   .segment-btn:hover { color: var(--text); border-color: var(--accent); }
   .segment-btn.active {
     background: var(--accent-tint);
@@ -452,8 +456,10 @@
   .segment-btn-wide .segment-sub { grid-area: sub; }
   .segment-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
   .segment-btn-wide .segment-label { font-size: 13px; font-weight: 600; }
-  /* Untertitel höchstens zwei Zeilen (lange Betriebsnamen werden gekürzt) */
-  .segment-sub { font-size: 10.5px; font-weight: 400; line-height: 1.25; color: var(--muted); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+  /* Untertitel immer genau eine Zeile (lange Betriebsnamen werden gekürzt, der
+     volle Name steht im title der Kachel) — so sind Dashboard und Betrieb gleich
+     aufgebaut: Symbol und Titel auf einer Höhe, Untertitel darunter. */
+  .segment-sub { font-size: 10.5px; font-weight: 400; line-height: 1.25; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .segment-chevron { display: none; } /* nebeneinander zu schmal für den Pfeil */
   .segment-btn-wide.active { box-shadow: inset 0 -3px 0 var(--accent); }
 
@@ -1287,6 +1293,34 @@
   .sl-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0 0 10px; font-size: 11.5px; color: var(--muted); }
   .sl-legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 5px; vertical-align: -2px; }
   .sl-legend i.is-dash { background: none; border: 2px dashed #E0507A; width: 10px; height: 10px; }
+  /* Fortschritt und Ansicht-Umschalter stehen fest über dem scrollenden Inhalt */
+  .sl-pin { flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px; padding: 10px 14px 8px; border-bottom: 1px solid var(--border); background: var(--panel); }
+  .sl-pin .sl-progress { margin: 0; padding: 9px 12px; }
+  .sl-pin .sl-prog-top { margin-bottom: 6px; }
+  .sl-pin .sl-prog-hint { margin-top: 6px; }
+  .sl-modus > button .icon { font-size: 16px; }
+  /* Ansicht "Fläche für Fläche": genau ein Fall, darunter die Blätterleiste */
+  .sl-panel.is-einzeln .sl-controls, .sl-panel.is-einzeln .sl-texte { display: none; }
+  .sl-einzel-kopf { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font: 600 13.5px var(--sans); color: var(--text); }
+  .sl-einzel-kopf .icon { font-size: 20px; color: var(--muted); }
+  .sl-einzel-kopf .sl-sec-chip .icon { font-size: 14px; color: inherit; }
+  .sl-sec.is-warn > .sl-einzel-kopf > .icon { color: #E8A33D; }
+  .sl-sec.is-neu > .sl-einzel-kopf > .icon { color: #6FBF73; }
+  .sl-sec.is-fehlt > .sl-einzel-kopf > .icon { color: #D97757; }
+  .sl-sec.is-krit > .sl-einzel-kopf > .icon { color: #E0507A; }
+  .sl-sec.is-ok > .sl-einzel-kopf > .icon, .sl-sec.is-kultur > .sl-einzel-kopf > .icon { color: var(--accent); }
+  .sl-einzel .sl-item:hover, .sl-einzel .sl-item.is-focus { background: none; }
+  .sl-einzel .sl-item.is-focus:not(.is-krit) { box-shadow: none; }
+  .sl-einzel .sl-bulkbar { border-top: 1px solid var(--border); }
+  .sl-einzel-leer { margin: 0; padding: 14px 12px; font-size: 13px; line-height: 1.45; color: var(--muted); }
+  .sl-einzel-fuss { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin: 2px 0 10px; }
+  .sl-einzel-fuss .sl-check { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+  .sl-einzel-leiste { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-top: 1px solid var(--border); }
+  .sl-einzel-leiste[hidden] { display: none; }
+  .sl-einzel-leiste .betrieb-btn { flex: 1; min-height: 44px; justify-content: center; }
+  .sl-einzel-leiste .betrieb-btn:disabled { opacity: .45; cursor: default; }
+  .sl-einzel-pos { flex: 0 0 auto; min-width: 78px; text-align: center; font-size: 12.5px; color: var(--muted); }
+  .sl-einzel-pos b { font-size: 16px; color: var(--text); }
   /* Fortschritt */
   .sl-progress { padding: 12px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel-2); }
   .sl-progress.is-done { border-color: var(--accent); }
@@ -1356,7 +1390,10 @@
   .sl-kfold > summary { padding: 8px 12px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
   .sl-kitem { cursor: default; }
   /* ---- Kontrolle → Übersicht: Baukasten (dashboard.js) ---- */
-  .ko-dash-kopf { display: flex; align-items: center; justify-content: flex-end; gap: 12px; max-width: 1100px; margin-bottom: 12px; }
+  /* Leiste unter den Bausteinen ("Anpassen"); beim Anpassen klebt sie unten,
+     damit "Fertig" auch bei langem Raster erreichbar bleibt */
+  .ko-dash-kopf { display: flex; align-items: center; justify-content: flex-end; gap: 12px; max-width: 1100px; margin-top: 14px; }
+  .ko-dash.is-bearbeiten + .ko-dash-kopf { position: sticky; bottom: 0; z-index: 6; margin-top: 16px; padding: 10px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 -6px 18px rgba(0, 0, 0, .12); }
   .ko-dash-hinweis { margin: 0 auto 0 0; font-size: 12.5px; color: var(--muted); }
   .ko-dash-akt { display: flex; gap: 8px; flex: 0 0 auto; }
   /* freies Raster (gridstack): Bausteine sind fest hoch, der Inhalt scrollt darin */
@@ -1564,6 +1601,17 @@
   }
   @media (max-width: 860px) {
     .sl-panel { top: auto; left: 0; right: 0; bottom: 0; width: auto; max-width: none; height: 58vh; height: 58dvh; border-radius: 16px 16px 0 0; animation-name: sl-sheet-in; }
+    /* am Handy knapp: Fortschritt als Zeile mit Balken, der Hinweis nur noch, wenn alles geklärt ist */
+    .sl-pin { padding: 8px 12px 6px; gap: 6px; }
+    .sl-pin .sl-progress { padding: 7px 10px; }
+    .sl-pin .sl-prog-count b { font-size: 15px; }
+    .sl-pin .sl-progress:not(.is-done) .sl-prog-hint { display: none; }
+    /* Fläche für Fläche: mehr Platz für den einen Fall — Legende, Dateizeile und
+       der (bei jedem Fall gleiche) Erklärtext stehen in der Ansicht "Alle Fälle" */
+    .sl-panel.is-einzeln { height: 68vh; height: 68dvh; }
+    .sl-panel.is-einzeln .sl-legend, .sl-panel.is-einzeln .sl-einzel > .sl-sec-hint, .sl-panel.is-einzeln #sl-sub { display: none; }
+    .sl-panel.is-einzeln .sl-scroll { padding-top: 8px; }
+    .sl-einzel-leiste { padding: 6px 12px; }
   }
   @media (max-width: 860px) {
     .sl-texte-grid { grid-template-columns: 1fr; }
@@ -1988,8 +2036,12 @@
     white-space: normal;
     overflow-wrap: break-word;
   }
-  .fruit-btn { padding: 7px 8px; font-size: 11.5px; line-height: 1.3; }
-  .fruit-list-row { padding: 5px 6px; font-size: 10.5px; line-height: 1.25; }
+  /* alle Knöpfe gleich hoch (Platz für zwei Zeilen wie "Pflaume/Zwetschge"), groß genug zum Antippen */
+  .fruit-btn { min-height: 44px; padding: 6px 8px; font-size: 12px; line-height: 1.25; }
+  .fruit-list-row { min-height: 36px; padding: 5px 7px; font-size: 11.5px; line-height: 1.25; }
+  /* Zähler: wie viele Bäume dieser Art schon erfasst sind */
+  .fruit-count { flex: 0 0 auto; min-width: 20px; padding: 1px 6px; border-radius: 999px; background: var(--accent); color: var(--on-accent); font: 600 11px/1.5 var(--mono); text-align: center; }
+  .fruit-count[hidden] { display: none; }
   .fruit-btn .fruit-label, .fruit-list-row .fruit-label {
     flex: 1;
     min-width: 0;
@@ -2030,30 +2082,39 @@
     cursor: pointer;
   }
   #obstbaum-sonstige-toggle:hover { border-color: var(--accent); color: var(--text); }
-  #obstbaum-sonstige-toggle .chev { transition: transform .15s; margin-left: auto; }
+  #obstbaum-sonstige-toggle { min-height: 34px; }
+  #obstbaum-sonstige-toggle .chev { transition: transform .15s; margin-left: auto; font-size: 18px; }
   #obstbaum-sonstige-toggle.open .chev { transform: rotate(180deg); }
-  /* Als echtes Dropdown: absolut positioniert, schwebt über dem Inhalt
-     darunter statt ihn wegzuschieben — bleibt aber (anders als ein natives
-     <select>) eine per Drag&Drop bedienbare Liste. */
+  /* Klappt in der Seitenleiste auf und schiebt den Rest nach unten (kein
+     schwebendes Dropdown mehr, das Tipps und Tabellen-Knöpfe verdeckt) —
+     bleibt eine per Drag&Drop bedienbare Liste. */
   #obstbaum-sonstige-list {
-    position: absolute;
-    left: 14px;
-    right: 14px;
-    top: 100%;
-    z-index: 30;
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 4px;
-    margin-top: 4px;
+    margin-top: 6px;
     padding: 6px;
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 6px;
-    box-shadow: 0 10px 24px rgba(0,0,0,0.4);
-    max-height: 180px;
-    overflow-y: auto;
     transition: border-color .15s;
   }
+  /* gewählte Obstart und Stand des Katasters */
+  .obst-aktiv { display: flex; align-items: center; gap: 8px; margin: 10px 14px 0; padding: 8px 8px 8px 10px; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent-tint); color: var(--text); font-size: 12.5px; font-weight: 500; }
+  .obst-aktiv[hidden] { display: none; }
+  .obst-aktiv .fruit-dot { width: 12px; height: 12px; border-radius: 50%; flex: 0 0 auto; border: 1px solid rgba(255,255,255,0.4); }
+  .obst-aktiv > span:nth-child(2) { flex: 1 1 auto; min-width: 0; }
+  .obst-aktiv button { flex: 0 0 auto; min-height: 32px; padding: 0 12px; border: 1px solid var(--accent); border-radius: 6px; background: var(--accent-dim); color: var(--on-accent); font: 600 12px var(--sans); cursor: pointer; }
+  .obst-uebersicht { display: flex; flex-direction: column; gap: 8px; margin: 12px 14px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); }
+  .obst-zahlen { font-size: 12.5px; color: var(--muted); line-height: 1.4; }
+  .obst-zahlen b { color: var(--text); font-size: 15px; }
+  .obst-ohne { color: var(--warn); }
+  .obst-undo { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--text); font: 500 12px var(--sans); cursor: pointer; }
+  .obst-undo .icon { font-size: 18px; }
+  .obst-undo:hover:not(:disabled) { border-color: var(--accent); }
+  .obst-undo:disabled { opacity: .45; cursor: default; }
+  .obst-leer { color: var(--muted); font-size: 12px; }
+  td.obst-leer { padding: 14px 16px; }
   #obstbaum-sonstige-list[hidden] { display: none; }
   .fruit-add-row {
     grid-column: 1 / -1;
@@ -2193,6 +2254,18 @@
     white-space: nowrap;
   }
   .fruit-chip .n { font-family: var(--mono); color: var(--muted); }
+  /* über der Baumtabelle sind die Chips Filter-Knöpfe */
+  button.fruit-chip { font-family: var(--sans); cursor: pointer; min-height: 28px; }
+  button.fruit-chip:hover { border-color: var(--accent); }
+  button.fruit-chip.active { border-color: var(--accent); background: var(--accent-tint); font-weight: 600; }
+  button.fruit-chip.active .n { color: var(--text); }
+  #obstbaum-summary-row { align-items: center; }
+  /* Spalten: Nr. schmal, Aktionen rechts am Rand */
+  #obstbaum-table .obst-nr { width: 64px; font-family: var(--mono); }
+  #obstbaum-table .obst-aktionen { width: 1%; white-space: nowrap; text-align: right; }
+  #obstbaum-table .obst-aktionen button { vertical-align: middle; margin-left: 6px; }
+  #obstbaum-table .table-remove-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; min-height: 30px; padding: 0 6px; }
+  #obstbaum-table .table-remove-btn .icon { font-size: 18px; }
   #obstbaum-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
   #obstbaum-table thead th {
     position: sticky;
@@ -2247,7 +2320,11 @@
     border-radius: 50%;
     border: 1.5px solid #ffffff;
     box-shadow: 0 0 0 1px rgba(0,0,0,0.35), 0 1px 3px rgba(0,0,0,0.4);
+    transition: transform .15s, box-shadow .15s;
   }
+  /* in der Tabelle gewählter Baum: größer, mit Ring */
+  .tree-marker-icon.is-selected span { transform: scale(1.3); box-shadow: 0 0 0 1px rgba(0,0,0,0.5), 0 0 0 4px #ffffff, 0 0 0 6px rgba(0,0,0,0.55); }
+  @media (prefers-reduced-motion: reduce) { .tree-marker-icon span { transition: none; } }
 
   /* ---------- Modal-Popup (z.B. Export-Optionen im Obstbaumkataster) ---------- */
   .modal-overlay {
@@ -4330,6 +4407,84 @@
      Alles ausblenden, was eine Anmeldung braucht: Konto-Knopf, Betriebswahl,
      Speicherstatus, Notizen/Fotos an Flächen und Bäumen. */
   :root[data-edition="frontend"] :is(#btn-account, #account-menu, #btn-betrieb, #save-status, .notes-btn, #kontrolle-switcher, #betrieb-switcher) { display: none !important; }
+
+  /* ---- Checkliste je Termin (src/checkliste.js) ---- */
+  .cl { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .cl-termin { margin-bottom: 6px; }
+  .cl-kopf { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
+  .cl-balken { flex: 1; height: 6px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
+  .cl-balken span { display: block; height: 100%; border-radius: 3px; background: var(--accent); transition: width .2s; }
+  .cl-liste { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+  .cl-punkt { display: flex; align-items: flex-start; gap: 4px; border-radius: 8px; }
+  .cl-punkt:hover { background: var(--panel-2); }
+  .cl-punkt label { flex: 1; min-width: 0; display: flex; align-items: flex-start; gap: 10px; min-height: 40px; padding: 9px 8px; cursor: pointer; font-size: 13.5px; line-height: 1.4; color: var(--text); overflow-wrap: anywhere; }
+  .cl-punkt input { width: 18px; height: 18px; margin: 1px 0 0; flex: 0 0 auto; accent-color: var(--accent); cursor: pointer; }
+  .cl-punkt.is-erledigt label span { color: var(--muted); text-decoration: line-through; }
+  .cl-weg { flex: 0 0 auto; width: 40px; height: 40px; display: inline-flex; align-items: center; justify-content: center; border: none; border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; opacity: .55; }
+  .cl-weg:hover, .cl-weg:focus-visible { opacity: 1; color: var(--warn); }
+  .cl-weg .icon { font-size: 18px; }
+  .cl-leer { margin: 0; font-size: 13px; color: var(--muted); }
+  .cl-neu { display: flex; gap: 6px; align-items: center; }
+  .cl-eingabe { flex: 1; min-width: 0; min-height: 40px; padding: 0 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2); color: var(--text); font: 14px var(--sans); }
+  .cl-eingabe:focus { outline: none; border-color: var(--accent); }
+  .cl-fuss { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+  .cl-fuss:empty { display: none; }
+  @media (max-width: 860px) { .cl-eingabe { font-size: 16px; } }
+
+  /* ---- Zeiterfassung (src/zeiterfassung.js) ---- */
+  .ze-chip { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 10px; border: 1px solid var(--accent); border-radius: 999px; background: var(--accent-tint); color: var(--text); font: 600 12.5px var(--sans); font-variant-numeric: tabular-nums; cursor: pointer; flex: 0 0 auto; }
+  .ze-chip[hidden] { display: none; }
+  .ze-chip .icon { font-size: 18px; color: var(--accent); }
+  .ze-platz { display: contents; }
+  .betrieb-btn.ze-laeuft { border-color: var(--accent); background: var(--accent-tint); font-variant-numeric: tabular-nums; }
+  .ze-jetzt { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; padding: 10px 12px; border: 1px solid var(--accent); border-radius: 12px; background: var(--accent-tint); }
+  .ze-jetzt > .icon { font-size: 24px; color: var(--accent); }
+  .ze-jetzt-text { display: flex; flex-direction: column; flex: 1; min-width: 120px; font-size: 13.5px; color: var(--text); }
+  .ze-jetzt-text small { font-size: 12px; color: var(--muted); }
+  .ze-jetzt.is-lang { border-color: var(--warn); }
+  .ze-jetzt.is-lang small { color: var(--warn); }
+  .ze-uhr { font: 600 22px var(--mono); font-variant-numeric: tabular-nums; color: var(--text); }
+  .ze-ruhe { margin: 0 0 8px; font-size: 13px; color: var(--muted); }
+  .ze-start { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; }
+  .ze-start-btn { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-height: 60px; padding: 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2); color: var(--text); font: 600 13px var(--sans); cursor: pointer; }
+  .ze-start-btn:hover { border-color: var(--accent); }
+  .ze-start-btn .icon { font-size: 22px; color: var(--accent); }
+  .ze-start-btn small { max-width: 100%; font: 400 11px var(--sans); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ze-summen { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 10px; font-size: 12.5px; color: var(--muted); }
+  .ze-summen-titel { font-weight: 600; color: var(--text); min-width: 86px; }
+  .ze-summe { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+  .ze-summe .icon { font-size: 16px; }
+  .ze-summe b { color: var(--text); font-variant-numeric: tabular-nums; }
+  .ze-summe.is-gesamt { margin-left: auto; }
+  .ze-baustein { display: flex; flex-direction: column; }
+  .ze-seite { display: flex; flex-direction: column; gap: 14px; max-width: 900px; }
+  .ze-woche { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13.5px; color: var(--text); }
+  .ze-woche-text { min-width: 150px; text-align: center; }
+  .ze-woche-akt { margin-left: auto; display: inline-flex; flex-wrap: wrap; gap: 8px; }
+  .ze-summen-woche { margin-top: 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
+  .ze-tag { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); overflow: hidden; }
+  .ze-tag h4 { display: flex; justify-content: space-between; align-items: center; margin: 0; padding: 9px 12px; font: 600 13px var(--sans); color: var(--text); background: var(--panel-2); }
+  .ze-tag h4 b { font-variant-numeric: tabular-nums; }
+  .ze-zeile { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 4px 6px 4px 12px; border-top: 1px solid var(--border); font-size: 13.5px; color: var(--text); }
+  .ze-zeile > .icon { font-size: 20px; color: var(--muted); flex: 0 0 auto; }
+  .ze-zeile.is-laeuft > .icon { color: var(--accent); }
+  .ze-zeile-zeit { flex: 0 0 auto; min-width: 96px; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .ze-zeile-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .ze-zeile-text b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ze-zeile-text small { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ze-zeile-dauer { flex: 0 0 auto; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .ze-frage { left: 16px; right: auto; }
+  .modal-card.ze-dialog-karte { width: 440px; max-width: calc(100vw - 24px); }
+  @media (max-width: 600px) {
+    #ze-dialog { align-items: flex-end; }
+    .modal-card.ze-dialog-karte { width: 100%; max-width: 100%; border-radius: 16px 16px 0 0; padding-bottom: env(safe-area-inset-bottom, 0px); }
+    .ze-dialog-karte .account-input { font-size: 16px; }
+    .ze-chip-text { display: none; }
+    .ze-zeile-zeit { min-width: 0; }
+    .ze-woche-akt { margin-left: 0; width: 100%; }
+    .ze-frage { left: 8px; right: 8px; }
+  }
+  :root[data-edition="frontend"] :is(#ze-chip, #ze-frage) { display: none !important; }
 
   /* ---- Fehler melden (src/fehlerbericht.js) ---- */
   .modal-card.fb-card { width: 600px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); display: flex; flex-direction: column; overflow: hidden; }

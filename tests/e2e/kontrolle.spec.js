@@ -36,8 +36,8 @@ test.describe('Kontrolle', () => {
     await openKontrolle(page);
     await expect(page.locator('#current-view-title')).toHaveText('Dashboard');
     await expect(page.locator('#ko-header-title')).toHaveText('Dashboard');
-    await expect(page.locator('#kontrolle-tabs [role="tab"] .ko-tab-text')).toHaveText(['Übersicht', 'Kalender', 'Dokumente']);
-    await expect(page.locator('#kontrolle-subnav .ko-subnav-label')).toHaveText(['Übersicht', 'Kalender', 'Dokumente']);
+    await expect(page.locator('#kontrolle-tabs [role="tab"] .ko-tab-text')).toHaveText(['Übersicht', 'Kalender', 'Dokumente', 'Zeiten']);
+    await expect(page.locator('#kontrolle-subnav .ko-subnav-label')).toHaveText(['Übersicht', 'Kalender', 'Dokumente', 'Zeiten']);
     await expect(page.locator('#kontrolle-uebersicht')).toBeVisible();
     await expect(page.locator('#terminkalender-main')).toBeHidden();
     await expect(page.locator('#map-wrap')).toBeHidden();
