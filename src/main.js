@@ -4,6 +4,7 @@ import { registerSW } from 'virtual:pwa-register';
 // Turf 7 mit den Aufrufen von Turf 6.5 (src/geo.js) — ohne eval, daher CSP-tauglich
 import { turf } from './geo.js';
 import { renderDashboard, layoutBereinigen, dashboardLueckenSchliessen } from './dashboard.js';
+import { NUR_FRONTEND } from './edition.js';
 import { geraeteschutzEinrichten } from './geraeteschutz.js';
 import { protokollStarten, fehlerberichtEinrichten } from './fehlerbericht.js';
 import { createDokumentExplorer } from './dokumente.js';
@@ -2600,7 +2601,7 @@ function featureTableColumns() {
   const loggedIn = document.body.dataset.auth === 'in';
   const cols = ['nummer', 'name', 'flid', 'groesse', 'kultur', 'baeume'];
   if (loggedIn && !featureTableMobile.matches) cols.push('besichtigt');
-  cols.push('notiz');
+  if (!NUR_FRONTEND) cols.push('notiz'); // Notizen und Fotos brauchen ein Konto
   if (ANBAUPLANUNG_AKTIV) cols.push('kulturplan');
   cols.push('route');
   if (loggedIn && featureTableMobile.matches) cols.unshift('besichtigt');
@@ -9678,6 +9679,7 @@ updateInstallButton();
 setTimeout(() => {
   let startView = new URLSearchParams(location.search).get('view');
   if (startView === 'terminkalender') { kontrolleDashTab = 'kalender'; startView = 'kontrolle'; }
+  if (NUR_FRONTEND && startView === 'kontrolle') startView = null; // Dashboard/Betrieb gibt es nur mit Konto
   if (startView && SEGMENT_TITLES[startView] && startView !== 'viewer') setActiveSegment(startView);
 }, 0);
 

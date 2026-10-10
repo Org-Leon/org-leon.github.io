@@ -7,6 +7,7 @@
     "dev": "vite",
     "dev:lan": "vite --host",
     "build": "vite build",
+    "build:frontend": "vite build --mode frontend",
     "preview": "vite preview",
     "test": "playwright test"
   },

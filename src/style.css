@@ -4326,6 +4326,11 @@
   .admin-2fa-aktiv .icon { font-size: 18px; color: var(--accent); }
   .admin-2fa-aktiv .ko-link-btn { margin-left: auto; }
 
+  /* ---- Frontend-Version ohne Konto (src/edition.js) ----
+     Alles ausblenden, was eine Anmeldung braucht: Konto-Knopf, Betriebswahl,
+     Speicherstatus, Notizen/Fotos an Flächen und Bäumen. */
+  :root[data-edition="frontend"] :is(#btn-account, #account-menu, #btn-betrieb, #save-status, .notes-btn, #kontrolle-switcher, #betrieb-switcher) { display: none !important; }
+
   /* ---- Fehler melden (src/fehlerbericht.js) ---- */
   .modal-card.fb-card { width: 600px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 24px); display: flex; flex-direction: column; overflow: hidden; }
   .fb-card > .account-body { flex: 1 1 auto; min-height: 0; }

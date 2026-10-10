@@ -20,9 +20,10 @@ try { APP_COMMIT = execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'p
 function cspPlugin() {
   let env = {};
   let dev = false;
+  let nurFrontend = false; // Frontend-Version (--mode frontend): keine Server-Verbindungen
   return {
     name: 'feldfolio-csp',
-    configResolved(config) { env = loadEnv(config.mode, config.root, 'VITE_'); dev = config.command === 'serve'; },
+    configResolved(config) { env = loadEnv(config.mode, config.root, 'VITE_'); dev = config.command === 'serve'; nurFrontend = config.mode === 'frontend'; },
     transformIndexHtml: {
       order: 'post',
       handler(html) {
@@ -30,7 +31,9 @@ function cspPlugin() {
         const inline = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)]
           .map(m => `'sha256-${createHash('sha256').update(m[1]).digest('base64')}'`);
         let supabase = [];
-        try { const u = new URL(env.VITE_SUPABASE_URL); supabase = [u.origin, 'wss://' + u.host]; } catch { /* nicht konfiguriert */ }
+        if (!nurFrontend) { try { const u = new URL(env.VITE_SUPABASE_URL); supabase = [u.origin, 'wss://' + u.host]; } catch { /* nicht konfiguriert */ } }
+        // Adresssuche (Termine, Betriebspin) und OpenCV (Dokumentenscanner) gibt es nur mit Konto
+        const mitKonto = nurFrontend ? [] : ['https://nominatim.openstreetmap.org', 'https://docs.opencv.org'];
         // cdnjs NICHT als ganzer Host: dort liegen tausende Bibliotheken, mit denen sich eine
         // Policy umgehen ließe. Erlaubt sind nur die Dateien aus index.html (Skripte, Stile),
         // deren Bildordner (Leaflet-Symbole) und pdf.js (wird bei Bedarf nachgeladen).
@@ -51,7 +54,7 @@ function cspPlugin() {
           'font-src': ["'self'", 'data:'],
           'img-src': ["'self'", 'data:', 'blob:', ...cdnBilder, ...KARTEN, ...supabase.slice(0, 1), ...(dev ? ['https://*.test'] : [])],
           // blob:/data: = eigene, im Browser erzeugte Inhalte (kein Weg nach außen)
-          'connect-src': ["'self'", 'blob:', 'data:', ...supabase, 'https://nominatim.openstreetmap.org', PDFJS, 'https://docs.opencv.org', ...devVerbindung],
+          'connect-src': ["'self'", 'blob:', 'data:', ...supabase, PDFJS, ...mitKonto, ...devVerbindung],
           'media-src': ["'self'", 'blob:'],
           'worker-src': ["'self'", 'blob:'],
           'frame-src': ["'self'"],
@@ -81,7 +84,12 @@ const CDN_URLS = [...new Set(readFileSync(new URL('./index.html', import.meta.ur
 // Bibliotheken vor, damit die Seite auch ohne Netz startet. Die Daten selbst
 // liegen lokal in IndexedDB (src/offline-store.js). Nur im Produktions-Build
 // aktiv — der Dev-Server bleibt unverändert.
-export default defineConfig({
+// Zwei Ausgaben aus demselben Code (siehe src/edition.js):
+//   npm run build            -> mit Konto (FeldFolio+), braucht die Supabase-Werte aus .env
+//   npm run build:frontend   -> Frontend-Version ohne Anmeldung/Server (--mode frontend)
+export default defineConfig(({ mode }) => {
+  const NUR_FRONTEND = mode === 'frontend';
+  return {
   // Relative Pfade im Build: GitHub Pages liefert das Repo unter einem
   // Unterpfad aus (…github.io/ShapeViewer/). Mit absoluten Pfaden
   // (/assets, /sw.js, /manifest.webmanifest) zeigten Skripte, Manifest und
@@ -91,7 +99,10 @@ export default defineConfig({
   define: {
     __FF_VERSION__: JSON.stringify(APP_VERSION),
     __FF_COMMIT__: JSON.stringify(APP_COMMIT),
-    __FF_BUILD__: JSON.stringify(new Date().toISOString())
+    __FF_BUILD__: JSON.stringify(new Date().toISOString()),
+    __FF_FRONTEND__: JSON.stringify(NUR_FRONTEND),
+    // Frontend-Version: Zugangsdaten aus .env gar nicht erst einsetzen
+    ...(NUR_FRONTEND ? { 'import.meta.env.VITE_SUPABASE_URL': '""', 'import.meta.env.VITE_SUPABASE_ANON_KEY': '""' } : {})
   },
   server: {
     port: 5173,
@@ -134,7 +145,7 @@ export default defineConfig({
         // (ausgewertet über ?view= in main.js).
         shortcuts: [
           { name: 'Stallplaner', short_name: 'Stallplan', url: '?view=stallplaner', icons: [{ src: 'pwa-192.png', sizes: '192x192', type: 'image/png' }] },
-          { name: 'Dashboard', short_name: 'Dashboard', url: '?view=kontrolle', icons: [{ src: 'pwa-192.png', sizes: '192x192', type: 'image/png' }] },
+          ...(NUR_FRONTEND ? [] : [{ name: 'Dashboard', short_name: 'Dashboard', url: '?view=kontrolle', icons: [{ src: 'pwa-192.png', sizes: '192x192', type: 'image/png' }] }]),
           { name: 'Flächenzeichner', short_name: 'Flächen', url: '?view=zeichner', icons: [{ src: 'pwa-192.png', sizes: '192x192', type: 'image/png' }] }
         ],
         background_color: '#12151A',
@@ -187,4 +198,5 @@ export default defineConfig({
       devOptions: { enabled: false }
     })
   ]
+  };
 });

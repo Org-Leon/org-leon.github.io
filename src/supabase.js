@@ -7,13 +7,16 @@
 // bleibt dann unverändert nutzbar, nur der Cloud-Bereich zeigt einen Hinweis.
 
 import { createClient } from '@supabase/supabase-js';
+import { NUR_FRONTEND } from './edition.js';
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+// Frontend-Version (src/edition.js): __FF_FRONTEND__ ist im Build fest "true" —
+// die Zugangsdaten stehen dann nicht im Bündel und die Bibliothek fällt heraus.
+const SUPABASE_URL = __FF_FRONTEND__ ? '' : import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_ANON_KEY = __FF_FRONTEND__ ? '' : import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-export const isSupabaseConfigured = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
+export const isSupabaseConfigured = !NUR_FRONTEND && !!(SUPABASE_URL && SUPABASE_ANON_KEY);
 
-export const supabase = isSupabaseConfigured
+export const supabase = !__FF_FRONTEND__ && isSupabaseConfigured
   ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
   : null;
 

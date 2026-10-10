@@ -134,3 +134,18 @@
      (Verwaltung anzeigen, Code abfragen). Tests stellen den Faktor über
      `window.__ffTestMfa = { eingerichtet, freigeschaltet, code }` nach; fehlt
      es, gilt ein Admin im Test als freigeschaltet (`tests/e2e/admin-2fa.spec.js`).
+
+7. **Zwei Ausgaben aus einem Code** (`src/edition.js`): mit Konto
+   (FeldFolio+, `npm run build`, braucht die Supabase-Werte aus `.env`) und
+   die **Frontend-Version ohne Anmeldung und Server**
+   (`npm run build:frontend` = `vite build --mode frontend`). Im
+   Frontend-Build ist `__FF_FRONTEND__` fest `true`: Supabase-Zugangsdaten
+   und -Bibliothek landen nicht im Bündel, die CSP erlaubt keine
+   Server-Verbindungen, alle Konto-Einstiege sind ausgeblendet
+   (`<html data-edition="frontend">` in `src/style.css`, `NUR_FRONTEND` im
+   Code). **Neue Funktion, die ein Konto braucht?** Ihren Einstieg in der
+   Frontend-Version ausblenden und `tests/e2e/frontend.spec.js` erweitern
+   (der Test prüft u. a., dass nirgends „anmelden“ steht und kein fremder
+   Server angesprochen wird). Im Dev-Server schaltet `?edition=frontend` die
+   Frontend-Version ein. Keine zwei Code-Stände pflegen — beide Ausgaben
+   kommen aus demselben Branch.

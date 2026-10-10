@@ -1,6 +1,6 @@
 # FeldFolio – Benutzerhandbuch
 
-Stand: 9. Oktober 2026
+Stand: 10. Oktober 2026
 
 FeldFolio ist ein Werkzeug für die Öko-Kontrolle: Flächen eines Betriebs auf der Karte ansehen und auswerten, Hof und Stall erfassen und die Kontrolle selbst mit Terminen, Protokollen und Dokumenten begleiten. Die App läuft im Browser auf PC, Tablet und Handy und funktioniert vor Ort auch ohne Empfang.
 
@@ -26,6 +26,15 @@ FeldFolio ist ein Werkzeug für die Öko-Kontrolle: Flächen eines Betriebs auf 
 ---
 
 ## 1. Erste Schritte
+
+### Zwei Ausgaben: mit und ohne Konto
+
+FeldFolio gibt es in zwei Ausgaben:
+
+- **Ohne Konto:** Karte, Flächenübersicht, Jahresvergleich, Flächenzeichner, Obstbaumkataster, Bienenflugkarte, Hofplan, Stallplaner und Tierbestand mit allen Exporten. Es gibt keine Anmeldung und nichts wird an einen Server gesendet. Deine Daten bleiben nur so lange erhalten, wie die App geöffnet ist — sichere Ergebnisse über die Exporte.
+- **Mit Konto (FeldFolio+):** zusätzlich Dashboard, Betrieb, Kalender, Dokumente, Protokolle, Warenflussprüfung, Notizen und Fotos, das Speichern und der Abgleich zwischen Geräten.
+
+In der Ausgabe ohne Konto fehlen die Knöpfe „Anmelden“ und „Betrieb wählen“ sowie die Spalte „Notiz“ in den Tabellen. Die Kapitel 2, 12, 13 und 14 dieses Handbuchs gelten nur mit Konto; ebenso alle Stellen, an denen „angemeldet“ oder „mit Konto“ steht.
 
 ### Aufbau der App
 
