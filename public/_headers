@@ -1,0 +1,32 @@
+# Sicherheits-Header für das Hosting der Version mit Konto (Cloudflare Pages,
+# auch Netlify liest dieses Format). GitHub Pages kann keine Header setzen und
+# ignoriert die Datei — dort gilt nur die Policy aus dem <meta>-Tag (vite.config.js).
+#
+# Ergänzt die Content-Security-Policy der Seite um das, was nur als Header geht:
+#   - frame-ancestors: die App darf nicht in fremde Seiten eingebettet werden
+#     (Schutz vor "Clickjacking"); 'self' bleibt erlaubt für public/scan-sandbox.html
+#   - Strict-Transport-Security: immer HTTPS
+#   - Permissions-Policy: nur was die App braucht (Kamera für den Scanner,
+#     Standort für "Mein Standort", Passkeys für den Geräteschutz)
+#   - X-Robots-Tag: nicht in Suchmaschinen aufnehmen
+
+/*
+  Content-Security-Policy: frame-ancestors 'self'
+  X-Frame-Options: SAMEORIGIN
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(self), geolocation=(self), publickey-credentials-get=(self), publickey-credentials-create=(self), clipboard-write=(self), microphone=(), payment=(), usb=(), bluetooth=(), serial=()
+  X-Robots-Tag: noindex, nofollow
+
+# Service Worker und Startseite immer frisch holen, damit Updates ankommen
+/sw.js
+  Cache-Control: no-cache
+/index.html
+  Cache-Control: no-cache
+/manifest.webmanifest
+  Cache-Control: no-cache
+
+# Build-Dateien tragen eine Prüfsumme im Namen und ändern sich nie
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
