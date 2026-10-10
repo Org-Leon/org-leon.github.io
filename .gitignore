@@ -11,3 +11,6 @@ test-shapes
 .env.*
 playwright-report
 test-results
+# Build der Version mit Konto für Cloudflare (npm run deploy:plus)
+dist-plus
+.wrangler

@@ -1,0 +1,12 @@
+// Hosting der Version mit Konto (FeldFolio+) bei Cloudflare Pages: reine statische
+// Dateien, kein Server-Code — https://feldfolio-plus.pages.dev
+// Gebaut wird lokal ("npm run deploy:plus" baut nach dist-plus/ und lädt hoch) —
+// die Supabase-Werte aus .env stehen dann nur im fertigen Bündel, nicht in den
+// Cloudflare-Einstellungen. Sicherheits-Header: public/_headers.
+// Die Frontend-Version ohne Konto läuft weiter über GitHub Pages (main, docs/).
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "feldfolio-plus",
+  "compatibility_date": "2026-10-10",
+  "pages_build_output_dir": "./dist-plus"
+}

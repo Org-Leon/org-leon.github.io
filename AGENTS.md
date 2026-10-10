@@ -149,3 +149,8 @@
    Server angesprochen wird). Im Dev-Server schaltet `?edition=frontend` die
    Frontend-Version ein. Keine zwei Code-Stände pflegen — beide Ausgaben
    kommen aus demselben Branch.
+   **Veröffentlicht** wird die Frontend-Version über GitHub Pages (Branch
+   `main`, Ordner `docs/`, dort immer `npm run build:frontend`), die Version
+   mit Konto bei Cloudflare Pages (https://feldfolio-plus.pages.dev, `wrangler.jsonc`,
+   `npm run deploy:plus` baut nach `dist-plus/` und lädt hoch; Sicherheits-
+   Header in `public/_headers`). `dist-plus/` ist gitignored.
