@@ -1,7 +1,52 @@
+import { istAdminAbfragen, adminKontoAbfragen, zweiFaktorAbfragen, zweiFaktorEinrichten, zweiFaktorBestaetigen, zweiFaktorEntfernen, oeffneSyncKanal, isSupabaseConfigured, signUp, signIn, signOut, getSession, saveState, loadState, uploadPhoto, getPhotoUrl, deletePhoto, requestAccess, listPendingAccessRequests, approveAccessRequest, declineAccessRequest, authErrorMessage, requestPasswordReset, updatePassword, verifyPassword, signOutEverywhere, onPasswordRecovery, deleteMyAccount, ladeNutzungscodes, schlageNutzungscodesVor, entscheideNutzungscode } from './supabase.js';
+import { readLocalState, writeLocalState, deleteLocalState, hatLocalState, readLastUser, writeLastUser, addBackup, listBackups, saveQueuedUpload, listQueuedUploads, deleteQueuedUpload, saveFotomappeFoto, listFotomappeFotos, deleteFotomappeFoto, alleDatenLoeschen, cacheVerpacken, cacheAuspacken } from './offline-store.js';
+import { registerSW } from 'virtual:pwa-register';
+// Turf 7 mit den Aufrufen von Turf 6.5 (src/geo.js) — ohne eval, daher CSP-tauglich
+import { turf } from './geo.js';
+import { renderDashboard, layoutBereinigen, dashboardLueckenSchliessen } from './dashboard.js';
+import { NUR_FRONTEND } from './edition.js';
+import { geraeteschutzEinrichten } from './geraeteschutz.js';
+import { protokollStarten, fehlerberichtEinrichten } from './fehlerbericht.js';
+import { createDokumentExplorer } from './dokumente.js';
+// SheetJS 0.20.3 (von cdn.sheetjs.com, per npm mitgebaut) — die cdnjs-Version 0.18.5
+// hat bekannte Lücken (CVE-2023-30533, CVE-2024-22363). Codepages für alte .xls.
+import * as XLSX from 'xlsx';
+import * as XLSX_CPTABLE from 'xlsx/dist/cpexcel.full.mjs';
+XLSX.set_cptable(XLSX_CPTABLE);
+// Tests erzeugen/lesen Excel-Dateien im Browser über window.XLSX
+if (import.meta.env.DEV) window.XLSX = XLSX;
+import iconFontUrl from './assets/material-symbols-rounded-subset.woff2?url';
+import { BerichtPdf, BRAND, CULTURE_COLORS, formatHa, formatHaExact, haExactFixed, formatPct } from './gesamtbericht.js';
+import { renderFlaechenuebersicht, countUp } from './flaechenuebersicht.js';
+import { dbfDoppelteErgaenzen } from './dbf-felder.js';
+import { fnnZeilen, fnnAuswerten, fnnZeileFuer } from './fnn.js';
+import { kulturZuordnen, kulturEintrag, kategorieFuer, INTACT_KULTUREN, INTACT_KATEGORIEN, LANDSCHAFTSELEMENT_RE, LANDSCHAFTSELEMENT_FLIK_RE } from './kulturen.js';
+import { slStatusTexteLernen, slParse, slAbgleich, slStufe, slExportZeilen, slIsoAusDe, slDeAusIso, slFlikKern, slFlikLand, slFlikPasst, SL_STATUS_STANDARD, SL_STUFEN } from './schlagliste.js';
+import { parseHitPdf, computeTierbestand, tbFmtDate, tbAlterText, tbStatus, TB_ZUGANG_ARTEN, TB_ABGANG_ARTEN, TB_N_GRENZE } from './tierbestand.js';
+import { WF_MODULE, createWarenfluss, openWarenfluss, initWarenflussUi, warenflussRowInfo } from './warenfluss.js';
+import { rankBackCameras, drawScaled, rotateCanvas, defaultQuad, detectDocumentQuad, QuadTracker, quadDistance, warpDocument, applyScanFilter, SCAN_FILTERS, targetSizeForQuad } from './scan-engine.js';
+
+// Fehler und Klicks ab dem Start mitschreiben — für "Fehler melden" (src/fehlerbericht.js)
+protokollStarten();
+// Icon-Font selbst NICHT über das npm-Paket eingebunden (5+ MB Variable-Font
+// mit allen ~3000 Icons) — stattdessen ein auf die tatsächlich genutzten
+// Icon-Namen zugeschnittenes, auf eine feste Achsen-Instanz reduziertes
+// woff2 (~270 KB, siehe scripts/subset-icons.mjs), per @font-face in
+// style.css eingebunden.
+
 // ---------- Hell-/Dunkelmodus ----------
 // Die eigentliche Anwendung des gespeicherten Themes passiert schon synchron
 // im <head> (index.html), damit beim Neuladen nichts falsch aufblitzt — hier
 // nur noch der Umschalt-Klick.
+// Der Button zeigt das Symbol des Modus, zu dem umgeschaltet wird (Sonne im
+// Dunkelmodus, Mond im Hellmodus, per CSS) — Beschriftung passend dazu.
+function updateThemeToggleLabel() {
+  const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+  const label = isLight ? 'Zum Dunkelmodus wechseln' : 'Zum Hellmodus wechseln';
+  const btn = document.getElementById('theme-toggle');
+  btn.setAttribute('aria-label', label);
+  btn.title = label;
+}
 document.getElementById('theme-toggle').addEventListener('click', () => {
   const isLight = document.documentElement.getAttribute('data-theme') === 'light';
   if (isLight) {
@@ -11,7 +56,32 @@ document.getElementById('theme-toggle').addEventListener('click', () => {
     document.documentElement.setAttribute('data-theme', 'light');
     localStorage.setItem('oekoviewer-theme', 'light');
   }
+  updateThemeToggleLabel();
 });
+updateThemeToggleLabel();
+
+// ---------- Design (Test): Standard / Feldbuch ----------
+// Zweite Gestaltung zum Ausprobieren (src/design-feldbuch.css), gewählt über
+// <html data-design="feldbuch">. Die gespeicherte Wahl wird wie das Theme
+// schon im <head> angewendet; hier der Umschalter und das Nachladen der
+// Schriften (IBM Plex, Fraunces) liefert die App selbst aus (siehe
+// design-feldbuch.css); geladen werden sie erst, wenn das Design aktiv ist.
+function applyDesign(name) {
+  const feldbuch = name === 'feldbuch';
+  if (feldbuch) document.documentElement.setAttribute('data-design', 'feldbuch');
+  else document.documentElement.removeAttribute('data-design');
+  const btn = document.getElementById('design-toggle');
+  btn.setAttribute('aria-pressed', String(feldbuch));
+  btn.title = feldbuch ? 'Design: Feldbuch (Test) — zum Standard wechseln' : 'Design: Standard — zum Feldbuch (Test) wechseln';
+}
+function toggleDesign() {
+  const next = document.documentElement.getAttribute('data-design') === 'feldbuch' ? 'standard' : 'feldbuch';
+  try { localStorage.setItem('feldfolio-design', next); } catch {}
+  applyDesign(next);
+}
+document.getElementById('design-toggle').addEventListener('click', toggleDesign);
+document.getElementById('btn-design-mobile').addEventListener('click', toggleDesign);
+applyDesign(document.documentElement.getAttribute('data-design') || 'standard');
 
 // ---------- Mobile: Sidebar als Einschub ----------
 // Ab der Media-Query-Breite in style.css wird #sidebar per CSS zu einem
@@ -23,6 +93,26 @@ document.getElementById('theme-toggle').addEventListener('click', () => {
 function closeMobileSidebar() { document.body.classList.remove('sidebar-open'); }
 function toggleMobileSidebar() { document.body.classList.toggle('sidebar-open'); }
 document.getElementById('btn-sidebar-toggle').addEventListener('click', toggleMobileSidebar);
+// Anzeige der aktuellen Funktion in der Kopfzeile: am Handy (Schublade) ein
+// Button, der die Schublade mit der Funktionsliste öffnet; auf breiten
+// Bildschirmen stehen die Funktionen direkt in der Sidebar — dort reine
+// Anzeige, nicht fokussierbar.
+const MOBILE_LAYOUT_QUERY = window.matchMedia('(max-width: 860px)');
+const btnCurrentView = document.getElementById('btn-current-view');
+function updateCurrentViewButtonMode() {
+  const mobile = MOBILE_LAYOUT_QUERY.matches;
+  btnCurrentView.tabIndex = mobile ? 0 : -1;
+  if (mobile) btnCurrentView.removeAttribute('aria-disabled');
+  else btnCurrentView.setAttribute('aria-disabled', 'true');
+  // Desktop: kein aria-label, damit der Funktionsname selbst vorgelesen wird.
+  if (mobile) btnCurrentView.setAttribute('aria-label', 'Funktion wechseln');
+  else btnCurrentView.removeAttribute('aria-label');
+}
+MOBILE_LAYOUT_QUERY.addEventListener('change', updateCurrentViewButtonMode);
+updateCurrentViewButtonMode();
+btnCurrentView.addEventListener('click', () => { if (MOBILE_LAYOUT_QUERY.matches) toggleMobileSidebar(); });
+// Am Handy steckt der Hell/Dunkel-Schalter in der Schublade (Kopfzeile zu eng).
+document.getElementById('btn-theme-mobile').addEventListener('click', () => document.getElementById('theme-toggle').click());
 document.getElementById('sidebar-backdrop').addEventListener('click', closeMobileSidebar);
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMobileSidebar(); });
 
@@ -58,9 +148,11 @@ let highlightedEntry = null;
 //  - schlag_nr/bez/flaeche_ha/nutz_code (Baden-Württemberg/Brandenburg "fiona"-Export)
 //  - GEOWD_ID/GEOWD_GEO_ (Thüringen "Antragsflächen Hauptnutzung": mehrere
 //    DBF-Felder werden beim 10-Zeichen-Kürzen auf denselben Namen abgeschnitten,
-//    z.B. 6x "GEOWD_GEO_" — props behält dadurch nur den JEWEILS LETZTEN
-//    gleichnamigen Wert; Name/Kulturart/Flächenidentifikator gehen so verloren,
-//    siehe TODO in todo.txt)
+//    z.B. 8x "GEOWD_GEO_". Der Feldname behält den letzten Wert (Fläche ha),
+//    dbfDoppelteErgaenzen() (dbf-felder.js) liest die übrigen Spalten nach
+//    Position und setzt daraus FLIK und TH_SCHLAG (Schlagnummer — nicht
+//    eindeutig, ein Schlag besteht aus mehreren FLIK-Stücken, daher bleibt
+//    GEOWD_ID die Flächennummer). Name und Kulturart enthält der Export nicht.)
 // Achtung bei "kultur": manche Felder, die wie Kulturarten aussehen, sind es
 // nicht — ZWECK/MASSNAHME (Sachsen) und "interventi"/GEOWD_FREE (NRW/RLP/BW/
 // Thüringen) sind Förderkulissen-Kürzel (z.B. "EGS,AZL,OEBL"), keine Kulturarten,
@@ -68,13 +160,13 @@ let highlightedEntry = null;
 // ncode_aktu/Nutzung/SC_HA_CODE/KTA_AJ/NCODE) ohne Klartext-Zuordnung existiert,
 // wird der Code selbst angezeigt statt einer erfundenen Übersetzung.
 const FIELD_CANDIDATES = {
-  nummer: ['NUMMER', 'SCHLAG_NR', 'SCHLAGNR', 'SCHLAG_ID', 'TF_ID', 'SCHLAG', 'FSNr', 'schlagnr_a', 'schlag_nr', 'GEOWD_ID', 'ID', 'NR'],
+  nummer: ['FS_SCHLAG', 'NUMMER', 'SCHLAG_NR', 'SCHLAGNR', 'SCHLAG_ID', 'TF_ID', 'SCHLAG', 'FSNr', 'schlagnr_a', 'schlag_nr', 'GEOWD_ID', 'ID', 'NR'],
   name: ['NAME', 'Name', 'BEZEICHNUNG', 'FLAECHENNAME', 'SCHLAGNAME', 'SCHLAGBEZ', 'SCHLAG_BEZ', 'TF_BEZ', 'lage_bez', 'LAGE_BEZ', 'bez'],
-  kultur: ['NUTZ_BEZ', 'CODE_BEZ', 'KULTURART', 'FRUCHTART', 'NUTZUNG', 'Nutzung', 'NC', 'nutz_code', 'ncode_aktu', 'SC_HA_CODE', 'KTA_AJ', 'NCODE'],
+  kultur: ['NUTZ_BEZ', 'CODE_BEZ', 'KULTURART', 'FRUCHTART', 'NUTZUNG', 'Nutzung', 'NC', 'nutz_code', 'ncode_aktu', 'SC_HA_CODE', 'KTA_AJ', 'NCODE', 'KULTUR_FNN'],
   // Zusätzlicher, von Nummer/Name unabhängiger amtlicher Flächenidentifikator
   // (FLIK/FLEK-Code o.ä.) — heißt je nach Bundesland anders und ist nicht
   // überall vorhanden (siehe todo.txt).
-  flaechenid: ['FLEK', 'FLIK', 'FB_BEZEICH', 'FLIK_FLEK', 'FID', 'flik_aktue']
+  flaechenid: ['FLEK', 'FLIK', 'FBI', 'FB_BEZEICH', 'FLIK_FLEK', 'FID', 'flik_aktue']
 };
 
 // Die Flächengröße braucht eine Sonderbehandlung: manche Quellen liefern sie
@@ -153,16 +245,55 @@ function renderBesichtigtSummary(elId, rows) {
   const fmtHa = n => n.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   el.innerHTML =
     `<span>Besichtigt: <strong>${stats.checkedCount} / ${stats.totalCount}</strong> Flächen (${pctCount} %)</span>` +
-    `<span><strong>${fmtHa(stats.checkedHa)} / ${fmtHa(stats.totalHa)}</strong> ha (${pctHa} %)</span>`;
+    `<span><strong>${fmtHa(stats.checkedHa)} / ${fmtHa(stats.totalHa)}</strong> ha (${pctHa} %)</span>` +
+    `<span class="besichtigt-bar" aria-hidden="true"><span style="width:${pctCount}%"></span></span>`;
 }
 
 const map = L.map('map', { zoomControl: true, attributionControl: true }).setView([51.16, 10.45], 6);
+// Nur im Dev-Server sichtbar (import.meta.env.DEV wird im Produktions-Build
+// zu `false` und der Zweig per Dead-Code-Elimination entfernt) — die
+// Playwright-Regressionstests (tests/e2e/) brauchen Zugriff auf die
+// modul-interne map-Instanz, z.B. um map.fire('draw:created', {...}) direkt
+// auszulösen, da Leaflet.draw synthetische Maus-Events unzuverlässig
+// verarbeitet.
+if (import.meta.env.DEV) window.__ffTestMap = map;
+
+// Flächennamen erst ab dieser Zoomstufe — weiter herausgezoomt würden sie
+// sich überlagern; dann ist nur der Betriebspin zu sehen. Gesteuert über
+// eine Klasse am Kartencontainer (style.css .feature-label), Karten-Exporte
+// blenden die Namen per .ff-capture immer ein (captureMapElement).
+const FEATURE_LABEL_MIN_ZOOM = 15;
+function updateFeatureLabelVisibility() {
+  map.getContainer().classList.toggle('ff-labels-far', map.getZoom() < FEATURE_LABEL_MIN_ZOOM);
+}
+map.on('zoomend', updateFeatureLabelVisibility);
+updateFeatureLabelVisibility();
+async function captureMapElement(el, opts) {
+  el.classList.add('ff-capture');
+  try { return await html2canvas(el, opts); } finally { el.classList.remove('ff-capture'); }
+}
+// Beschriftung einer Fläche: Nummer (bzw. Kategorie) hervorgehoben, darunter der Name.
+function featureLabelHtml(top, name) {
+  const t = String(top ?? '').trim(), n = String(name ?? '').trim();
+  return (t ? `<b>${escapeHtml(t)}</b>` : '') + (n ? `<span>${escapeHtml(n)}</span>` : '');
+}
 
 // Alle Werkzeuge (Zeichnen, Baum setzen, Bienenstock setzen) teilen sich jetzt
 // denselben Karten-Klick-Event — armedTool sorgt dafür, dass immer nur genau
 // ein Werkzeug auf einen Kartenklick reagiert, statt dass sich mehrere
 // gegenseitig ins Gehege kommen.
-let armedTool = null; // null | 'draw-polygon' | 'place-tree' | 'place-hive'
+let armedTool = null; // null | 'draw-polygon' | 'place-tree' | 'place-hive' | 'split-line'
+
+// ---------- Flächen-Werkzeugleiste (oberhalb der Karte) ----------
+// mapToolMode bestimmt, was ein Klick auf eine vorhandene Fläche auf der
+// Karte auslöst, solange "Bearbeiten"/"Löschen"/"Teilen" in der
+// Werkzeugleiste aktiv ist — unabhängig von armedTool, das nur läuft, wenn
+// tatsächlich ein Leaflet.draw-Zeichenmodus aktiv ist (Polygon/Schnittlinie).
+let mapToolMode = null; // null | 'edit' | 'delete' | 'split'
+const shapeUndoStack = [];
+const shapeRedoStack = [];
+const SHAPE_UNDO_MAX = 20;
+let shapeEditBeforeGeometry = null; // Geometrie-Schnappschuss beim Start einer Eckpunkt-Bearbeitung, fürs Rückgängig
 
 // Eine Leaflet-Kachelebene kann immer nur auf EINER Karte aktiv sein — Viewer,
 // Jahresvergleich und Flächenzeichner haben je eine eigene Leaflet-Map-Instanz
@@ -198,8 +329,17 @@ function setBasemap(key) {
   basemaps[currentBasemap].remove();
   currentBasemap = key;
   basemaps[currentBasemap].addTo(map);
-  document.getElementById('btn-basemap').textContent = 'Basiskarte: ' + basemapLabels[currentBasemap];
+  document.getElementById('btn-basemap-label').textContent = 'Basiskarte: ' + basemapLabels[currentBasemap];
+  document.getElementById('btn-basemap').title = 'Basiskarte: ' + basemapLabels[currentBasemap] + ' — antippen zum Wechseln';
+  document.querySelectorAll('#basemap-seg [data-basemap]').forEach(b => {
+    b.setAttribute('aria-checked', String(b.getAttribute('data-basemap') === currentBasemap));
+  });
 }
+// Desktop: Segment-Umschalter (Standard/Topo/Luftbild), Handy: runder
+// Button, der durchschaltet (siehe style.css #basemap-seg/#btn-basemap).
+document.querySelectorAll('#basemap-seg [data-basemap]').forEach(b => {
+  b.addEventListener('click', () => { if (b.getAttribute('data-basemap') !== currentBasemap) setBasemap(b.getAttribute('data-basemap')); });
+});
 
 function cycleBasemap() {
   const nextIdx = (basemapOrder.indexOf(currentBasemap) + 1) % basemapOrder.length;
@@ -487,6 +627,7 @@ async function parseShapefileZip(file) {
   const groups = {};
   let flaechenuebersichtEntry = null;
   let nrwNutzungXmlEntry = null;
+  const fnnPdfEntries = []; // Ausdruck des Nutzungsnachweises (PDF) im Zip, z.B. Bayern
   const otherXmlEntries = []; // Kandidaten für die Niedersachsen-Sammelantrag-XML (kein festes Namensmuster, siehe extractNiedersachsenSchlagMap)
   const relevantExt = ['shp', 'shx', 'dbf', 'prj', 'cpg'];
   zip.forEach((path, entry) => {
@@ -502,6 +643,7 @@ async function parseShapefileZip(file) {
     const base = fileName.slice(0, dot);
     const ext = fileName.slice(dot + 1).toLowerCase();
     if (ext === 'xlsx' && /flaechenuebersicht/i.test(fileName)) flaechenuebersichtEntry = entry;
+    if (ext === 'pdf' && /nutzungsnachweis|fnn|hauptnutzung|nutzungen|fl(ä|ae)chenverzeichnis/i.test(fileName)) fnnPdfEntries.push(entry);
     if (ext === 'xml') {
       if (/NTNW/i.test(fileName)) nrwNutzungXmlEntry = entry;
       else otherXmlEntries.push(entry);
@@ -517,6 +659,8 @@ async function parseShapefileZip(file) {
     if (!g.shp) continue; // ohne .shp keine Geometrie
     try {
       const shpBuf = await g.shp.async('arraybuffer');
+      // leere Ebene (z.B. "hinweispunkte" ohne Einträge, Shape-Typ 0) still überspringen
+      if (shpBuf.byteLength <= 100 || new DataView(shpBuf).getInt32(32, true) === 0) continue;
       // Rohgeometrien im Quell-Koordinatensystem, KEINE automatische Umprojektion
       const rawGeometries = shp.parseShp(shpBuf);
 
@@ -541,6 +685,8 @@ async function parseShapefileZip(file) {
         const dbfBuf = await g.dbf.async('arraybuffer');
         const cpgText = g.cpg ? (await g.cpg.async('text')).trim() : detectDbfEncoding(dbfBuf);
         properties = shp.parseDbf(dbfBuf, cpgText);
+        // gleichnamige (auf 10 Zeichen gekürzte) Spalten nicht verlieren, z.B. FLIK in Thüringen
+        properties = dbfDoppelteErgaenzen(properties, dbfBuf, cpgText);
       }
 
       const fc = shp.combine([geometries, properties]);
@@ -582,6 +728,20 @@ async function parseShapefileZip(file) {
     if (schlagMap) { mergeNiedersachsenSchlaege(results, schlagMap); break; }
   }
 
+  // Antragsjahr aus einer Begleit-XML (z.B. Nutzungsnachweis Sachsen-Anhalt "*.nn.xml") an die
+  // Flächen schreiben, falls dort kein Jahresfeld steht — damit Jahresvergleich/Fruchtfolge das Jahr kennen.
+  for (const entry of otherXmlEntries) {
+    let text;
+    try { text = await entry.async('text'); } catch (err) { continue; }
+    const m = /<(?:\w+:)?antragsjahr>\s*((?:19|20)\d{2})\s*</i.exec(text);
+    if (!m) continue;
+    results.forEach(r => (r.fc.features || []).forEach(f => {
+      f.properties = f.properties || {};
+      if (!Object.keys(f.properties).some(k => /jahr/i.test(k))) f.properties.ANTRAGSJAHR = m[1];
+    }));
+    break;
+  }
+
   // Bundesland-spezifische Nutzungscodes zuletzt übersetzen, nachdem alle
   // XML-Anreicherungen oben (die z.T. selbst erst NCODE befüllen) gelaufen
   // sind.
@@ -589,7 +749,160 @@ async function parseShapefileZip(file) {
     (r.fc.features || []).forEach(f => applyBundeslandNutzungscode(f.properties || {}));
   });
 
+  // Übrige reine Nutzungscodes: früher gelernte Bedeutung, sonst aus einem
+  // mitgelieferten Nutzungsnachweis (PDF) lernen (siehe fnn.js)
+  const alleFeatures = results.flatMap(r => r.fc.features || []);
+  fnnCodesAnwenden(alleFeatures);
+  for (const entry of fnnPdfEntries) {
+    if (!fnnOffen(alleFeatures)) break;
+    try { await fnnLernenUndAnwenden(await entry.async('arraybuffer'), alleFeatures); }
+    catch (err) { console.warn('Nutzungsnachweis nicht lesbar:', err.message); }
+  }
+
   return results;
+}
+
+// ---- Nutzungscodes aus dem Nutzungsnachweis (FNN) lernen, siehe fnn.js ----
+// Gelernte Bedeutungen je Bundesland (aus der FLIK, z.B. "BY", "TH") für alle Betriebe merken.
+// Dazu kommen die von der Verwaltung freigegebenen Codes ALLER Nutzer (Tabelle
+// "nutzungscodes", siehe supabase/nutzungscodes.sql). Eigene Funde gehen dort als
+// Vorschlag hin, damit nach der Freigabe alle die fehlenden Kulturen bekommen.
+const FNN_CODES_KEY = 'feldfolio-nutzungscodes';                    // eigene { land: { code: kultur } }
+const CODES_GETEILT_KEY = 'feldfolio-nutzungscodes-geteilt';        // freigegebene aller Nutzer (Kopie für offline)
+const CODES_AUSSTEHEND_KEY = 'feldfolio-nutzungscodes-ausstehend';  // noch nicht gesendete Vorschläge
+const lsJson = (key, leer) => { try { return JSON.parse(localStorage.getItem(key) || 'null') || leer; } catch { return leer; } };
+const lsSetzen = (key, wert) => { try { localStorage.setItem(key, JSON.stringify(wert)); } catch { /* ohne Speicher */ } };
+// Eigene Funde haben Vorrang (eigener Nachweis), freigegebene füllen die Lücken.
+function fnnGelernt() {
+  const geteilt = lsJson(CODES_GETEILT_KEY, {}), eigene = lsJson(FNN_CODES_KEY, {});
+  const out = {};
+  new Set([...Object.keys(geteilt), ...Object.keys(eigene)]).forEach(l => { out[l] = { ...(geteilt[l] || {}), ...(eigene[l] || {}) }; });
+  return out;
+}
+function fnnMerken(land, codes, quelle = 'fnn') {
+  const g = lsJson(FNN_CODES_KEY, {});
+  g[land] = { ...(g[land] || {}), ...Object.fromEntries(codes) };
+  lsSetzen(FNN_CODES_KEY, g);
+  codesVormerken([...codes].map(([code, kultur]) => ({ land, code: String(code), kultur: String(kultur).trim(), quelle })));
+}
+// Vorschläge für die gemeinsame Tabelle sammeln (nur gültiges Bundesland,
+// nicht schon so freigegeben); gesendet wird beim nächsten Abgleich.
+function codesVormerken(rows) {
+  const geteilt = lsJson(CODES_GETEILT_KEY, {});
+  const offen = lsJson(CODES_AUSSTEHEND_KEY, []);
+  rows.filter(r => /^[A-Z]{2}$/.test(r.land) && /^\d{1,8}$/.test(r.code) && r.kultur && (geteilt[r.land] || {})[r.code] !== r.kultur)
+    .forEach(r => { if (!offen.some(o => o.land === r.land && o.code === r.code && o.kultur === r.kultur)) offen.push(r); });
+  lsSetzen(CODES_AUSSTEHEND_KEY, offen);
+  if (offen.length) setTimeout(() => nutzungscodesAbgleichen({ erzwingen: true }), 0);
+}
+// Abgleich mit der gemeinsamen Tabelle: Vorschläge senden, Freigaben holen.
+let codesZeilen = [];          // zuletzt geladene Zeilen (freigegeben + eigene Vorschläge, Admins: alle)
+let codesZuletzt = 0;
+let codesLaeuft = null;
+let codesFehler = '';
+function nutzungscodesAbgleichen({ erzwingen = false } = {}) {
+  if (!accountSession || (typeof navigator !== 'undefined' && navigator.onLine === false)) return Promise.resolve();
+  if (!erzwingen && Date.now() - codesZuletzt < 10 * 60 * 1000) return Promise.resolve();
+  if (codesLaeuft) return codesLaeuft.then(() => (erzwingen ? nutzungscodesAbgleichen({ erzwingen: false }) : undefined));
+  codesLaeuft = (async () => {
+    try {
+      const offen = lsJson(CODES_AUSSTEHEND_KEY, []);
+      if (offen.length) {
+        await schlageNutzungscodesVor(offen);
+        const gesendet = new Set(offen.map(o => o.land + '|' + o.code + '|' + o.kultur));
+        lsSetzen(CODES_AUSSTEHEND_KEY, lsJson(CODES_AUSSTEHEND_KEY, []).filter(o => !gesendet.has(o.land + '|' + o.code + '|' + o.kultur)));
+      }
+      codesZeilen = await ladeNutzungscodes();
+      const geteilt = {};
+      codesZeilen.filter(r => r.status === 'freigegeben').forEach(r => { (geteilt[r.land] = geteilt[r.land] || {})[r.code] = r.kultur; });
+      lsSetzen(CODES_GETEILT_KEY, geteilt);
+      codesZuletzt = Date.now();
+      codesFehler = '';
+      nutzungscodesUeberallAnwenden();
+    } catch (err) {
+      codesFehler = err.message || 'Abgleich der Nutzungscodes fehlgeschlagen.';
+      console.warn('Nutzungscodes:', codesFehler);
+    } finally {
+      codesLaeuft = null;
+      if (document.body.dataset.view === 'uebersicht') renderUeCodes();
+    }
+  })();
+  return codesLaeuft;
+}
+// Bekannte Codes auf alle geladenen Flächen (Karte + Jahresvergleich) anwenden
+function nutzungscodesUeberallAnwenden({ geaendert = false } = {}) {
+  const feats = [...Object.values(layers).flatMap(l => (l.geojson && l.geojson.features) || []), ...compareYears.flatMap(y => (y.fc && y.fc.features) || [])];
+  const n = fnnCodesAnwenden(feats);
+  if (!n && !geaendert) return 0;
+  featureIndex.forEach(e => { e.kultur = pickField(e.props, FIELD_CANDIDATES.kultur); });
+  slGeoCache = null;
+  persistLocalState().catch(() => {});
+  if (document.getElementById('feature-table')) renderFeatureTable();
+  refreshFlaechenuebersichtIfOpen();
+  return n;
+}
+const fnnLand = (p) => (/^DE([A-Z]{2})LI/.exec(String(pickField(p, FIELD_CANDIDATES.flaechenid) || '').toUpperCase()) || [])[1] || '';
+// Feld, in dem die Kultur steht (erstes befülltes Kandidatenfeld)
+const fnnKulturFeld = (p) => FIELD_CANDIDATES.kultur.find(k => p[k] !== undefined && p[k] !== null && String(p[k]).trim() !== '');
+const fnnRohcode = (p) => { const k = fnnKulturFeld(p); return k && /^\d+$/.test(String(p[k]).trim()) ? String(p[k]).trim() : null; };
+// Bayern: offizielle Tabelle hat Vorrang (die greift erst beim Zusammenführen von Feldstück + Nutzung)
+const fnnAmtlich = (land, code) => land === 'BY' && !!bayernNutzungscodeKlartext(code);
+// Reine Codes mit gelernter Bedeutung übersetzen. Ergebnis: Anzahl übersetzter Flächen
+function fnnCodesAnwenden(features, gelernt = fnnGelernt()) {
+  let n = 0;
+  features.forEach(f => {
+    const p = f.properties || {};
+    const code = fnnRohcode(p);
+    if (!code) return;
+    const land = fnnLand(p);
+    if (fnnAmtlich(land, code)) return;
+    const text = (gelernt[land] || {})[code];
+    if (!text) return;
+    const k = fnnKulturFeld(p);
+    p[k + '_Code'] = code;
+    p[k] = text;
+    n++;
+  });
+  return n;
+}
+// Gibt es Flächen mit reinem Code oder ganz ohne Kultur (aber mit FLIK)?
+const fnnOffen = (features) => features.some(f => { const p = f.properties || {}; return (fnnRohcode(p) && !fnnAmtlich(fnnLand(p), fnnRohcode(p))) || (!fnnKulturFeld(p) && pickField(p, FIELD_CANDIDATES.flaechenid)); });
+async function fnnZeilenAusPdf(arrayBuffer) {
+  await ensurePdfJs();
+  const pdf = await window.pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer), ...PDFJS_SICHER }).promise;
+  const seiten = [];
+  for (let s = 1; s <= pdf.numPages; s++) {
+    const inhalt = await (await pdf.getPage(s)).getTextContent();
+    seiten.push(inhalt.items.map(it => ({ x: Math.round(it.transform[4]), y: it.transform[5], s: it.str })));
+  }
+  return fnnZeilen(seiten);
+}
+// Ausdruck mit den Flächen vergleichen: Codes lernen (nur solche, die in den Shapes
+// vorkommen) und Flächen ohne Kultur über FLIK (+ Größe/Schlag) ergänzen.
+async function fnnLernenUndAnwenden(arrayBuffer, features) {
+  const zeilen = await fnnZeilenAusPdf(arrayBuffer);
+  // Codes je Land der Flächen lernen
+  const jeLand = new Map();
+  features.forEach(f => { const p = f.properties || {}; const c = fnnRohcode(p); if (c) { const l = fnnLand(p); jeLand.set(l, (jeLand.get(l) || new Set()).add(c)); } });
+  let gelernt = 0;
+  jeLand.forEach((codes, land) => {
+    const erg = fnnAuswerten(zeilen, { codes });
+    if (erg.codes.size) { fnnMerken(land, erg.codes); gelernt += erg.codes.size; }
+  });
+  const uebersetzt = fnnCodesAnwenden(features);
+  // Flächen ganz ohne Kultur über die FLIK-Zeilen des Ausdrucks
+  const alleZeilen = fnnAuswerten(zeilen).zeilen;
+  let ergaenzt = 0;
+  features.forEach(f => {
+    const p = f.properties || {};
+    if (fnnKulturFeld(p)) return;
+    const z = fnnZeileFuer({ flik: pickField(p, FIELD_CANDIDATES.flaechenid), ha: parseHa(pickGroesse(p)), schlag: p.TH_SCHLAG || pickField(p, FIELD_CANDIDATES.nummer) }, alleZeilen);
+    if (!z) return;
+    p.KULTUR_FNN = z.text;
+    p.KULTUR_FNN_Code = z.code;
+    ergaenzt++;
+  });
+  return { gelernt, uebersetzt, ergaenzt };
 }
 
 // Amtliche Codierungsliste für das bayerische Flächen- und Nutzungsnachweis
@@ -604,6 +917,8 @@ const BAYERN_NUTZUNGSCODE_KLARTEXT = {
   114: 'Winterdinkel', 120: 'Sommerdinkel',
   115: 'Winterweizen (Weichweizen)', 116: 'Sommerweizen (Weichweizen)',
   118: 'Winteremmer, Wintereinkorn', 119: 'Sommeremmer, Sommereinkorn',
+  // seit der Liste 2022 dazugekommen, Klartext aus einem Flächen- und Nutzungsnachweis 2025 (Kurzfassung)
+  434: 'Kleegras, Klee-/Luzernegras-Gemisch (Leguminosen überwiegen)',
   121: 'Winterroggen, Winter-Waldstaudenroggen', 122: 'Sommerroggen, Sommer-Waldstaudenroggen',
   125: 'Wintermenggetreide mit Weizen', 126: 'Wintermenggetreide ohne Weizen',
   131: 'Wintergerste', 132: 'Sommergerste',
@@ -1719,7 +2034,31 @@ const RP_NUTZUNGSCODE_KLARTEXT = {
 // FIELD_CANDIDATES.kultur bereits kennt — pickField() findet den übersetzten
 // Klartext dadurch automatisch, ohne dass FIELD_CANDIDATES selbst geändert
 // werden muss.
+// Thüringen (VERONA "Antragsflächen Hauptnutzung", ab Antragsjahr 2026 mit
+// Feldern SCHLAG/KULTURART/FBI): 6-stelliger Kulturart-Code -> Klartext.
+// Quelle: "Liste Hauptnutzungen_Teilflächen 2026" aus VERONA (Ausdruck eines
+// Antrags) — enthält bisher nur die dort vorkommenden Codes; unbekannte Codes
+// bleiben als Code stehen.
+const TH_KULTURART_KLARTEXT = {
+  111150: 'Winterweichweizen', 171003: 'Körnermais oder CCM-Mais mit Untersaat', 190600: 'Rispenhirse, Rutenhirse',
+  190700: 'Winter-Emmer/-Einkorn', 210004: 'Sommer-Futtererbse (Felderbse, Peluschke)', 320003: 'Sonnenblumen mit Untersaat',
+  330000: 'Sojabohnen', 418210: 'Klee-Luzerne-Gemisch',
+  418280: 'Klee (Rot-, Weiß-, Alexandriner-, Inkarnat-, Erd-, Schweden-, Persischer Klee), einschließlich Vermehrung',
+  420999: 'Mischkultur von kleinkörnigen Leguminosen auch zusammen mit Nichtleguminosen, sofern die kleinkörnigen Leguminosen im Feldbestand dominieren',
+  451000: 'Wiesen', 454000: 'Streuobstfläche mit Grünlandnutzung',
+  510062: 'Blühstreifen mehrjährig auf Ackerland (ÖR1a + ÖR1b)', 510063: 'Blühflächen einjährig auf Ackerland (ÖR1a + ÖR1b)',
+  510064: 'Blühflächen mehrjährig auf Ackerland (ÖR1a + ÖR1b)', 510075: 'Altgrasstreifen und -flächen', 610110: 'Kartoffeln',
+  710112: 'Riesenkürbis (Riesenkürbis, Hokkaidokürbis)', 710113: 'Gartenkürbis (Gartenkürbis, Steirischer Kürbis, Zucchini, Spaghettikürbis)',
+  720250: 'Färberdisteln', 793000: 'Hanf', 960010: 'Hecke', 960020: 'Baumreihen'
+};
 const BUNDESLAND_NC_CONFIGS = [
+  {
+    name: 'Thüringen',
+    quelle: 'VERONA "Liste Hauptnutzungen_Teilflächen 2026"',
+    codeField: 'KULTURART',
+    table: TH_KULTURART_KLARTEXT,
+    detect: props => 'KULTURART' in props && 'FBI' in props
+  },
   // Bayern läuft separat über mergeFeldstueckNutzung() (zwei-Shapefile-Format).
   {
     name: 'Baden-Württemberg',
@@ -1814,35 +2153,41 @@ function mergeFeldstueckNutzung(results) {
 
   const keyOf = (props) => String(props.FID ?? props.Fid ?? props.fid ?? '') + '|' + String(props.FSNr ?? props.Fsnr ?? props.fsnr ?? '');
 
-  const nutzung = results[nutzIdx];
-  const nutzByKey = new Map();
-  (nutzung.fc.features || []).forEach(f => {
-    const props = f.properties || {};
-    const key = keyOf(props);
-    if (!nutzByKey.has(key)) nutzByKey.set(key, props);
-  });
-
+  // Ein Feldstück kann mehrere Nutzungen (Schläge) haben, jede mit eigener
+  // Geometrie, Fläche und Kultur — die Schlagliste führt genau diese Schläge.
+  // Ergebnis daher je SCHLAG eine Fläche (Geometrie + Flaeche + Nutzung der
+  // Nutzung, Name/FLIK/Feldstücksgröße vom Feldstück). Nummer: Feldstücknummer,
+  // bei mehreren Schlägen "FSNr/Schlag" (wie in iBALIS), damit sie eindeutig bleibt.
+  // Feldstücke ohne Nutzung bleiben, wie sie sind.
   const feldstueck = results[feldIdx];
-  const mergedFeatures = (feldstueck.fc.features || []).map(f => {
-    const props = { ...(f.properties || {}) };
-    const nutzProps = nutzByKey.get(keyOf(props));
-    if (nutzProps) Object.assign(props, nutzProps);
-    // Nutzung enthält bislang nur den rohen Nutzungscode (z.B. "115") — in
-    // die Kulturart im Klartext übersetzen, roh-Code als NutzungCode für
-    // Nachvollziehbarkeit zusätzlich aufheben. Unbekannte Codes (z.B. neu
-    // hinzugekommene, noch nicht in der Liste erfasste) bleiben unverändert
-    // als Code stehen statt eine erfundene Übersetzung zu zeigen.
+  const fsByKey = new Map((feldstueck.fc.features || []).map(f => [keyOf(f.properties || {}), f]));
+  const nutzungen = (results[nutzIdx].fc.features || []).filter(f => fsByKey.has(keyOf(f.properties || {})) || f.geometry);
+  const schlaegeJeFs = new Map();
+  nutzungen.forEach(f => { const k = keyOf(f.properties || {}); schlaegeJeFs.set(k, (schlaegeJeFs.get(k) || 0) + 1); });
+  const kultur = (props) => {
+    // Nutzung enthält nur den Code (z.B. "115") — in Klartext übersetzen, Code
+    // als NutzungCode aufheben. Unbekannte Codes bleiben als Code stehen.
     if (props.Nutzung) {
       const klartext = bayernNutzungscodeKlartext(props.Nutzung);
-      if (klartext) {
-        props.NutzungCode = props.Nutzung;
-        props.Nutzung = klartext;
-      }
+      if (klartext) { props.NutzungCode = props.Nutzung; props.Nutzung = klartext; }
     }
-    return { ...f, properties: props };
+  };
+  const schlagFeatures = nutzungen.map(f => {
+    const np = f.properties || {};
+    const fs = fsByKey.get(keyOf(np));
+    const fp = fs ? (fs.properties || {}) : {};
+    const props = { ...fp, ...np };
+    if (fp.Name !== undefined) props.Name = fp.Name;          // Name gibt es nur am Feldstück
+    if (fp.LFlaeche !== undefined) props.FS_Flaeche = fp.LFlaeche;
+    delete props.LFlaeche;                                     // Größe = die des Schlags (Flaeche)
+    const fsnr = String(np.FSNr ?? fp.FSNr ?? '').trim();
+    const schlag = String(np.Schlag ?? '').trim();
+    if (fsnr) props.FS_SCHLAG = schlaegeJeFs.get(keyOf(np)) > 1 && schlag ? fsnr + '/' + schlag : fsnr;
+    kultur(props);
+    return { ...f, geometry: f.geometry || (fs && fs.geometry), properties: props };
   });
-
-  const merged = { name: feldstueck.name, fc: { type: 'FeatureCollection', features: mergedFeatures } };
+  const ohneNutzung = (feldstueck.fc.features || []).filter(f => !schlaegeJeFs.has(keyOf(f.properties || {}))).map(f => ({ ...f, properties: { ...(f.properties || {}) } }));
+  const merged = { name: feldstueck.name, fc: { type: 'FeatureCollection', features: [...schlagFeatures, ...ohneNutzung] } };
   const rest = results.filter((_, i) => i !== feldIdx && i !== nutzIdx);
   return [merged, ...rest];
 }
@@ -1852,6 +2197,46 @@ function mergeFeldstueckNutzung(results) {
 // Erstaufbau und von addFeatureToLayer() für nachträglich einzeln
 // hinzugefügte Features (z.B. im Flächenzeichner gezeichnete Flächen)
 // gemeinsam genutzt, damit beide Wege exakt dieselbe Eintragsform erzeugen.
+// Ein Fotoeintrag ist {path, name} (name = Jahr_Betrieb_Art-Anzeigename,
+// siehe zuordnungFileName) — ältere gespeicherte Stände kennen nur den
+// nackten Storage-Pfad als String, daher hier normalisieren statt überall
+// sonst zwei Formen unterscheiden zu müssen.
+function normalizePhotoEntry(v) {
+  return typeof v === 'string' ? { path: v, name: null } : v;
+}
+
+// Liest die Foto-Pfadliste robust aus GeoJSON-properties ein — normalerweise
+// bereits ein Array (siehe setParcelNotes/addParcelPhoto unten), aber falls
+// eine Datei extern bearbeitet oder manuell hochgeladen wurde, auch ein
+// JSON-String oder ein fehlerhafter Wert möglich, statt daran zu crashen.
+function parsePhotoList(value) {
+  if (Array.isArray(value)) return value.filter(v => typeof v === 'string' || (v && typeof v.path === 'string')).map(normalizePhotoEntry);
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed.filter(v => typeof v === 'string' || (v && typeof v.path === 'string')).map(normalizePhotoEntry) : [];
+    } catch { return []; }
+  }
+  return [];
+}
+
+// Ein Kulturplan-Eintrag: { id, jahr, kultur, startMonth, endMonth, duengung }
+// — startMonth/endMonth sind 1-12 (Monatsraster, siehe Anbauplanung weiter
+// unten). Liest robust wie parsePhotoList, statt bei kaputten/fremden Daten
+// abzustürzen.
+function parseKulturplan(value) {
+  const isValid = e => e && typeof e === 'object' && typeof e.kultur === 'string'
+    && Number.isFinite(e.startMonth) && Number.isFinite(e.endMonth) && Number.isFinite(e.jahr);
+  if (Array.isArray(value)) return value.filter(isValid);
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed.filter(isValid) : [];
+    } catch { return []; }
+  }
+  return [];
+}
+
 function buildFeatureEntry(feature, lyr, layerId, layerName, isTeilflaechen, color) {
   const props = feature.properties || {};
   const center = lyr.getBounds ? lyr.getBounds().getCenter() : lyr.getLatLng();
@@ -1871,15 +2256,50 @@ function buildFeatureEntry(feature, lyr, layerId, layerName, isTeilflaechen, col
     groesse: pickGroesse(props),
     kultur: pickField(props, FIELD_CANDIDATES.kultur),
     flaechenId: pickField(props, FIELD_CANDIDATES.flaechenid),
-    besichtigt: false
+    besichtigt: false,
+    notes: typeof props.feldfolio_notes === 'string' ? props.feldfolio_notes : '',
+    photos: parsePhotoList(props.feldfolio_photos),
+    kulturplan: parseKulturplan(props.feldfolio_kulturplan)
   };
   featureIndex.push(entry);
+  // Solange ein Flächen-Werkzeug (Bearbeiten/Löschen/Teilen) in der
+  // Werkzeugleiste über der Karte aktiv ist, lenkt ein Klick auf die Fläche
+  // dieses Werkzeug um, statt sie nur auszuwählen — siehe mapToolMode weiter
+  // oben und die Werkzeugleisten-Verdrahtung weiter unten.
   lyr.on('click', () => {
+    if (mapToolMode === 'edit') { toggleShapeEdit(entry); return; }
+    if (mapToolMode === 'delete') { deleteShapeViaTool(entry); return; }
+    if (mapToolMode === 'split') { mapToolMode = null; updateShapeToolbar(); startParcelSplit(entry); return; }
+    // Beim Setzen von Bäumen/Bienenstöcken gehört der Klick dem Setz-Werkzeug
+    // (map.on('click') in initObstbaumMap/initBienenflugMap läuft nach
+    // diesem Handler) — weder auswählen noch die Funktion wechseln, sonst
+    // setzt setActiveSegment() das Werkzeug zurück, bevor der Baum entsteht.
+    if (armedTool === 'place-tree' || armedTool === 'place-hive') return;
+    // Selbst gezeichnete Flächen (Flächenzeichner) landen technisch als ganz
+    // normaler Eintrag in derselben layers-Ebenenliste wie hochgeladene
+    // Shapefiles (siehe addFeatureToLayer) — ein Klick darauf in der
+    // Ansicht "Karte" wechselt direkt in den Flächenzeichner, damit man sie
+    // dort sofort bearbeiten kann. In anderen Funktionen (Obstbaum, Hofplan,
+    // Jahresvergleich …) bleibt man dagegen, wo man ist.
+    const view = document.body.dataset.view || 'viewer';
+    if ((view === 'viewer' || view === 'zeichner') && zeichnerParcels.some(p => p.id === entry.id)) {
+      highlightFeature(entry);
+      setActiveSegment('zeichner');
+      const row = document.querySelector(`#zeichner-list [data-id="${entry.id}"]`)?.closest('.parcel-item');
+      if (row) row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      return;
+    }
     highlightFeature(entry);
     selectFeatureInTable(entry);
   });
-  const labelText = escapeHtml(entry.nummer) + (entry.featName ? '<br>' + escapeHtml(entry.featName) : '');
-  if (labelText.trim()) entry.labelAnchor = createLabelAnchorAt(center, labelText);
+  const labelText = featureLabelHtml(entry.nummer, entry.featName);
+  if (labelText) entry.labelAnchor = createLabelAnchorAt(center, labelText);
+  // Leaflet.draw stattet jedes Polygon automatisch mit einer .editing-Instanz
+  // aus (L.Edit.Poly), unabhängig davon, ob es gezeichnet, hochgeladen oder
+  // aus der Cloud wiederhergestellt wurde — universell hier verdrahtet, damit
+  // "Form bearbeiten" für JEDE Fläche verfügbar ist (siehe toggleShapeEdit
+  // weiter unten). Das 'edit'-Ereignis feuert bei jedem Eckpunkt-Zug.
+  lyr.on('edit', () => syncShapeGeometryLive(entry));
   return entry;
 }
 
@@ -1891,7 +2311,9 @@ function addLayer(name, geojson) {
   // aus, da meist nur die Parzellen selbst von Interesse sind. Über den
   // Sichtbarkeits-Schalter in der Ebenenliste bzw. die Checkbox in der
   // Tabelle bleiben sie optional zuschaltbar.
-  const isTeilflaechen = /teilfl(ä|ae)che/i.test(name);
+  // Zusatzebenen (Teilflächen, bayerische Gewässerrandstreifen) liegen in
+  // anderen Flächen und zählen nicht mit (Tabelle, Übersicht, Exporte).
+  const isTeilflaechen = /teilfl(ä|ae)che|gew(ä|ae)sserrand/i.test(name);
   const startVisible = !isTeilflaechen;
 
   // Labelanker (Nummer + Name je Fläche, wie im Jahresvergleich) können erst
@@ -1899,6 +2321,7 @@ function addLayer(name, geojson) {
   // läuft synchron WÄHREND des Konstruktoraufrufs, die Variable leafletLayer
   // ist zu diesem Zeitpunkt noch nicht zugewiesen.
   const labelAnchors = [];
+  const builtEntries = [];
 
   const leafletLayer = L.geoJSON(geojson, {
     // Canvas- statt SVG-Renderer für alle Ebenen — verhindert einen html2canvas/
@@ -1912,6 +2335,7 @@ function addLayer(name, geojson) {
     onEachFeature: (feature, lyr) => {
       const entry = buildFeatureEntry(feature, lyr, id, name, isTeilflaechen, color);
       if (entry.labelAnchor) labelAnchors.push(entry.labelAnchor);
+      builtEntries.push(entry);
     }
   });
   labelAnchors.forEach(anchor => leafletLayer.addLayer(anchor));
@@ -1921,8 +2345,23 @@ function addLayer(name, geojson) {
   (geojson.features || []).forEach(() => count++);
 
   layers[id] = { name, geojson, leafletLayer, color, visible: startVisible, isTeilflaechen, count };
+  // Eine wiederhergestellte/erneut hochgeladene "Flächenzeichner"-Ebene (z.B.
+  // nach Neuladen oder Betrieb-Wechsel) muss ihre Flächen wieder in
+  // zeichnerParcels eintragen, sonst kennt der Flächenzeichner sie nicht mehr
+  // (keine "Form bearbeiten"/"Teilen"-Buttons in dessen eigener Liste, und die
+  // Nummerierung neu gezeichneter Flächen würde wieder bei 1 anfangen, siehe
+  // nextZeichnerNummer()).
+  if (name === 'Flächenzeichner' && !isTeilflaechen) {
+    zeichnerLayerId = id;
+    // areaHa ist ein Flächenzeichner-eigenes Feld (buildFeatureEntry kennt nur
+    // das allgemeine groesse-Feld) — für wiederhergestellte Flächen fehlt es
+    // sonst und lässt renderParcelList() beim Formatieren abstürzen.
+    builtEntries.forEach(entry => { entry.areaHa = turf.area(entry.leafletLayer.toGeoJSON()) / 10000; });
+    zeichnerParcels.push(...builtEntries);
+  }
   renderLayerList();
   renderFeatureTable();
+  renderParcelList();
   fitAllLayers();
   // Neue Fläche könnte bereits gesetzte Obstbäume neu "einfangen" — ohne
   // geladene Flächen bleiben Bäume sonst dauerhaft ohne Flächen-Zuordnung,
@@ -1984,16 +2423,53 @@ function updateDrawnParcelEntry(entry, { name, kultur }) {
   if (kultur !== undefined) { entry.kultur = kultur; entry.props.KULTURART = kultur; }
   if (entry.leafletLayer.feature) entry.leafletLayer.feature.properties = entry.props;
   if (entry.labelAnchor && entry.labelAnchor.setTooltipContent) {
-    const labelText = escapeHtml(entry.nummer) + (entry.featName ? '<br>' + escapeHtml(entry.featName) : '');
-    entry.labelAnchor.setTooltipContent(labelText);
+    entry.labelAnchor.setTooltipContent(featureLabelHtml(entry.nummer, entry.featName));
   }
   renderFeatureTable();
+}
+
+// Schreibt Notiz/Fotos einer Fläche synchron in entry.props UND
+// leafletLayer.feature.properties zurück (gleiches Muster wie
+// updateDrawnParcelEntry oben) — dadurch landet die Änderung automatisch im
+// geteilten layers[id].geojson (dieselbe Objektreferenz) und damit ohne
+// zusätzlichen Code auch in serializeCurrentState() fürs Cloud-Speichern.
+function setParcelNotes(entry, notes) {
+  entry.notes = notes;
+  entry.props.feldfolio_notes = notes;
+  if (entry.leafletLayer.feature) entry.leafletLayer.feature.properties = entry.props;
+}
+
+// name (optional) ist der Anzeige-/Downloadname nach dem Jahr_Betrieb_Art-
+// Schema (siehe zuordnungFileName weiter unten) — null, wenn beim Hochladen
+// kein Betrieb/Termin zugeordnet war.
+function addParcelPhoto(entry, path, name) {
+  entry.photos.push({ path, name: name || null });
+  entry.props.feldfolio_photos = entry.photos;
+  if (entry.leafletLayer.feature) entry.leafletLayer.feature.properties = entry.props;
+}
+
+function removeParcelPhoto(entry, path) {
+  entry.photos = entry.photos.filter(p => p.path !== path);
+  entry.props.feldfolio_photos = entry.photos;
+  if (entry.leafletLayer.feature) entry.leafletLayer.feature.properties = entry.props;
+}
+
+// Gleiches Muster wie setParcelNotes — schreibt den kompletten Kulturplan
+// (alle Jahre) synchron in entry.props zurück, damit er automatisch mit dem
+// geteilten layers[id].geojson und damit dem Cloud-Speichern mitreist.
+function setParcelKulturplan(entry, plan) {
+  entry.kulturplan = plan;
+  entry.props.feldfolio_kulturplan = plan;
+  if (entry.leafletLayer.feature) entry.leafletLayer.feature.properties = entry.props;
 }
 
 function renderLayerList() {
   const list = document.getElementById('layer-list');
   const ids = Object.keys(layers);
-  document.getElementById('empty-hint').style.display = ids.length ? 'none' : 'block';
+  document.getElementById('empty-hint').hidden = ids.length > 0;
+  document.getElementById('layer-section-count').textContent = String(ids.length);
+  refreshFlaechenuebersichtIfOpen();
+  if (typeof renderCompareLayerPick === 'function' && document.body.dataset.view === 'compare') renderCompareLayerPick();
   list.innerHTML = '';
   ids.forEach(id => {
     const l = layers[id];
@@ -2001,22 +2477,24 @@ function renderLayerList() {
     item.className = 'layer-item';
     item.innerHTML = `
       <div class="layer-row">
-        <div class="vis-toggle ${l.visible ? 'on' : ''}" data-id="${id}" data-action="toggle">
-          <svg viewBox="0 0 12 12"><path d="M2 6l3 3 5-6" stroke="currentColor" stroke-width="1.6" fill="none"/></svg>
-        </div>
+        <div class="vis-toggle ${l.visible ? 'on' : ''}" data-id="${id}" data-action="toggle" role="switch" tabindex="0" aria-checked="${l.visible}" aria-label="${escapeHtml(l.name)} anzeigen" title="Auf der Karte anzeigen"></div>
         <div class="swatch" style="background:${l.color}"></div>
-        <div class="layer-name" title="${l.name}">${l.name}</div>
-        <div class="layer-count">${l.count}</div>
-      </div>
-      <div class="layer-actions">
-        <button data-id="${id}" data-action="zoom">Zoom</button>
-        <button data-id="${id}" data-action="table">Tabelle</button>
-        <button data-id="${id}" data-action="remove" class="danger">Entfernen</button>
+        <div class="layer-name" title="${escapeHtml(l.name)}">${escapeHtml(l.name)}</div>
+        <div class="layer-count" title="${l.count} Flächen">${l.count}</div>
+        <div class="layer-icon-btns">
+          <button type="button" class="icon-btn" data-id="${id}" data-action="zoom" title="Auf Ebene zoomen" aria-label="Auf ${escapeHtml(l.name)} zoomen"><span class="material-symbols-rounded icon">zoom_in</span></button>
+          <button type="button" class="icon-btn" data-id="${id}" data-action="table" title="Flächentabelle öffnen" aria-label="Flächentabelle öffnen"><span class="material-symbols-rounded icon">table_view</span></button>
+          <button type="button" class="icon-btn danger" data-id="${id}" data-action="remove" title="Ebene entfernen" aria-label="${escapeHtml(l.name)} entfernen"><span class="material-symbols-rounded icon">delete</span></button>
+        </div>
       </div>
     `;
     list.appendChild(item);
   });
 
+  // Schalter auch per Tastatur (Leertaste/Enter), wie ein echtes Bedienelement.
+  list.querySelectorAll('.vis-toggle').forEach(el => el.addEventListener('keydown', (e) => {
+    if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); el.click(); }
+  }));
   list.querySelectorAll('[data-action]').forEach(el => {
     el.addEventListener('click', () => {
       const id = el.getAttribute('data-id');
@@ -2051,10 +2529,24 @@ function removeLayer(id) {
   for (let i = featureIndex.length - 1; i >= 0; i--) {
     if (featureIndex[i].layerId === id) {
       if (highlightedEntry === featureIndex[i]) highlightedEntry = null;
+      if (shapeEditingEntryId === featureIndex[i].id) shapeEditingEntryId = null;
       featureIndex.splice(i, 1);
     }
   }
   featureIndex.forEach((entry, i) => { entry.idx = i; }); // Indizes neu durchnummerieren
+  // Wird die komplette Flächenzeichner-Ebene entfernt (z.B. über "Entfernen"
+  // in der Ebenenliste statt einzeln über den Flächenzeichner), müssen ihre
+  // Einträge auch aus zeichnerParcels verschwinden — sonst blieben dort
+  // Karteileichen mit toten leafletLayer-Referenzen zurück.
+  if (id === zeichnerLayerId) {
+    zeichnerLayerId = null;
+    zeichnerParcels.length = 0;
+    renderParcelList();
+  } else {
+    for (let i = zeichnerParcels.length - 1; i >= 0; i--) {
+      if (zeichnerParcels[i].layerId === id) zeichnerParcels.splice(i, 1);
+    }
+  }
   renderLayerList();
   renderFeatureTable();
   reassignAllTreesToParcels(); // Bäume, deren Fläche gerade entfernt wurde, wieder als "ohne Fläche" markieren
@@ -2096,14 +2588,45 @@ function getVisibleFeatureRows() {
     });
 }
 
+// Anbauplanung ist vorerst aus der Oberfläche genommen (Spalte in der
+// Flächentabelle). Dialog, Daten (entry.kulturplan) und Speicherung bleiben
+// erhalten — zum Wiedereinschalten auf true setzen.
+const ANBAUPLANUNG_AKTIV = false;
+const featureTableMobile = window.matchMedia('(max-width: 860px)');
+// Spalten der Flächentabelle. "Besichtigt" gibt es nur angemeldet
+// (body[data-auth], siehe updateAccountButton); am Handy steht es als erste,
+// fest stehende Spalte mit großem Haken, damit man es ohne seitliches
+// Scrollen sieht und trifft.
+function featureTableColumns() {
+  const loggedIn = document.body.dataset.auth === 'in';
+  const cols = ['nummer', 'name', 'flid', 'groesse', 'kultur', 'baeume'];
+  if (loggedIn && !featureTableMobile.matches) cols.push('besichtigt');
+  if (!NUR_FRONTEND) cols.push('notiz'); // Notizen und Fotos brauchen ein Konto
+  if (ANBAUPLANUNG_AKTIV) cols.push('kulturplan');
+  cols.push('route');
+  if (loggedIn && featureTableMobile.matches) cols.unshift('besichtigt');
+  return cols;
+}
+const FEATURE_TABLE_HEAD = {
+  nummer: 'Schlagnr. / Flächennr.', name: 'Flächenname', flid: 'Flächenidentifikator', groesse: 'Größe', kultur: 'Kulturart', baeume: 'Bäume',
+  besichtigt: 'Besichtigt',
+  notiz: 'Notiz', kulturplan: 'Anbauplanung', route: 'Route'
+};
+featureTableMobile.addEventListener('change', () => renderFeatureTable());
+
 function renderFeatureTable() {
   const tbody = document.getElementById('feature-table-body');
   const rows = getVisibleFeatureRows();
+  const cols = featureTableColumns();
+  const mitBesichtigt = cols.includes('besichtigt');
   document.getElementById('table-count').textContent = rows.length;
-  renderBesichtigtSummary('table-besichtigt-summary', rows);
+  document.getElementById('table-besichtigt-summary').hidden = !mitBesichtigt;
+  document.querySelector('#feature-table thead tr').innerHTML = cols.map(c => `<th${c === 'besichtigt' ? ' class="besichtigt-cell"' : ''}>${c === 'besichtigt' && cols[0] === c ? '<span class="material-symbols-rounded icon besichtigt-th-icon" title="Besichtigt" aria-label="Besichtigt">task_alt</span>' : FEATURE_TABLE_HEAD[c]}</th>`).join('');
+  document.getElementById('feature-table').classList.toggle('besichtigt-first', cols[0] === 'besichtigt');
+  if (mitBesichtigt) renderBesichtigtSummary('table-besichtigt-summary', rows);
 
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="8" style="color:var(--muted); padding:14px;">' +
+    tbody.innerHTML = '<tr><td colspan="' + cols.length + '" style="color:var(--muted); padding:14px;">' +
       (featureIndex.length ? 'Keine Flächen in dieser Ansicht (Teilflächen sind ausgeblendet).' : 'Noch keine Flächen geladen.') +
       '</td></tr>';
     return;
@@ -2112,34 +2635,54 @@ function renderFeatureTable() {
   const treeCounts = computeObstbaumParcelTreeCounts();
   tbody.innerHTML = rows.map(entry => {
     const num = parseFloat(String(entry.groesse).replace(',', '.'));
-    const groesseText = isFinite(num) ? num.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ha' : (entry.groesse || '–');
+    const groesseText = isFinite(num) ? formatHaExact(num) + ' ha' : (entry.groesse || '–');
     const routeCell = entry.center
-      ? `<a class="table-route-link" href="${googleMapsDirectionsUrl(entry.center.lat, entry.center.lng)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Route ↗</a>`
+      ? `<a class="table-route-link" href="${googleMapsDirectionsUrl(entry.center.lat, entry.center.lng)}" target="_blank" rel="noopener" data-kein-zeilenklick>Route <span class="material-symbols-rounded icon">open_in_new</span></a>`
       : '–';
     const counts = treeCounts.get(entry.id);
     const treesCell = counts && counts.size
       ? [...counts.entries()].map(([key, n]) => fruitChipHtml(key, ` <span class="n">${n}</span>`)).join('')
       : '<span style="color:var(--muted);">–</span>';
-    return `<tr data-idx="${entry.idx}">
-      <td>${escapeHtml(entry.nummer || '–')}</td>
-      <td>${escapeHtml(entry.featName || '–')}</td>
-      <td>${escapeHtml(entry.flaechenId || '–')}</td>
-      <td>${groesseText}</td>
-      <td>${escapeHtml(entry.kultur || '–')}</td>
-      <td>${treesCell}</td>
-      <td class="besichtigt-cell"><input type="checkbox" class="besichtigt-checkbox" ${entry.besichtigt ? 'checked' : ''} onclick="event.stopPropagation()"></td>
-      <td>${routeCell}</td>
-    </tr>`;
+    const hasNotes = entry.notes || entry.photos.length;
+    const hasKulturplan = entry.kulturplan.length > 0;
+    const cells = {
+      nummer: `<td>${escapeHtml(entry.nummer || '–')}</td>`,
+      name: `<td>${escapeHtml(entry.featName || '–')}</td>`,
+      flid: `<td>${escapeHtml(entry.flaechenId || '–')}</td>`,
+      groesse: `<td class="groesse-cell">${groesseText}</td>`,
+      kultur: `<td>${escapeHtml(entry.kultur || '–')}</td>`,
+      baeume: `<td>${treesCell}</td>`,
+      besichtigt: `<td class="besichtigt-cell"><label class="besichtigt-toggle" data-kein-zeilenklick title="Besichtigt"><input type="checkbox" class="besichtigt-checkbox" aria-label="Fläche ${escapeHtml(entry.nummer || '')} besichtigt" ${entry.besichtigt ? 'checked' : ''}><span class="besichtigt-mark material-symbols-rounded icon" aria-hidden="true">check</span></label></td>`,
+      notiz: `<td><button class="notes-btn${hasNotes ? ' has-notes' : ''}" data-action="notes" data-idx="${entry.idx}" data-kein-zeilenklick title="Notiz &amp; Fotos"><span class="material-symbols-rounded icon">sticky_note_2</span></button></td>`,
+      kulturplan: `<td><button class="notes-btn${hasKulturplan ? ' has-notes' : ''}" data-action="kulturplan" data-idx="${entry.idx}" data-kein-zeilenklick title="Anbauplanung"><span class="material-symbols-rounded icon">eco</span></button></td>`,
+      route: `<td>${routeCell}</td>`
+    };
+    return `<tr data-idx="${entry.idx}"${mitBesichtigt && entry.besichtigt ? ' class="is-besichtigt"' : ''}>${cols.map(c => cells[c]).join('')}</tr>`;
   }).join('');
 
   tbody.querySelectorAll('tr[data-idx]').forEach(tr => {
-    tr.addEventListener('click', () => selectFeatureFromTable(parseInt(tr.getAttribute('data-idx'), 10)));
+    // Route-Link, Besichtigt-Haken, Notiz- und Anbauplan-Knopf wählen die Zeile nicht aus
+    // (statt eingebetteter onclick-Attribute, die eine Content-Security-Policy blockiert)
+    tr.addEventListener('click', (e) => { if (e.target.closest('[data-kein-zeilenklick]')) return; selectFeatureFromTable(parseInt(tr.getAttribute('data-idx'), 10)); });
   });
   tbody.querySelectorAll('.besichtigt-checkbox').forEach(cb => {
     cb.addEventListener('change', () => {
       const idx = parseInt(cb.closest('tr').getAttribute('data-idx'), 10);
       featureIndex[idx].besichtigt = cb.checked;
+      cb.closest('tr').classList.toggle('is-besichtigt', cb.checked);
       renderBesichtigtSummary('table-besichtigt-summary', getVisibleFeatureRows());
+    });
+  });
+  tbody.querySelectorAll('[data-action="notes"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt(btn.getAttribute('data-idx'), 10);
+      openNotesModal('parcel', featureIndex[idx]);
+    });
+  });
+  tbody.querySelectorAll('[data-action="kulturplan"]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = parseInt(btn.getAttribute('data-idx'), 10);
+      openKulturplanModal(featureIndex[idx]);
     });
   });
 }
@@ -2192,7 +2735,7 @@ function initResizablePanel({ panel, handle, minimizeBtn, closeBtn, boundsWrap, 
     // die ganze Karte.
     const maxHeight = boundsWrap.getBoundingClientRect().height * 0.85;
     panel.style.height = Math.min(lastExpandedHeight, maxHeight) + 'px';
-    minimizeBtn.textContent = '▁';
+    minimizeBtn.querySelector('.icon').textContent = 'expand_more';
     panel.classList.add('open');
   }
 
@@ -2204,11 +2747,11 @@ function initResizablePanel({ panel, handle, minimizeBtn, closeBtn, boundsWrap, 
     if (minimizing) {
       lastExpandedHeight = panel.getBoundingClientRect().height;
       panel.classList.add('minimized');
-      minimizeBtn.textContent = '▲';
+      minimizeBtn.querySelector('.icon').textContent = 'expand_less';
     } else {
       panel.classList.remove('minimized');
       panel.style.height = lastExpandedHeight + 'px';
-      minimizeBtn.textContent = '▁';
+      minimizeBtn.querySelector('.icon').textContent = 'expand_more';
     }
   });
 
@@ -2316,12 +2859,56 @@ document.getElementById('btn-locate').addEventListener('click', () => {
 // Wechseln nie neu aufgebaut oder verschoben wird — nur die Sidebar-Sektion,
 // eventuelle Topbar-Zusatzelemente und das gerade "scharfe" Kartenwerkzeug
 // (Zeichnen/Baum setzen/Bienenstock setzen) ändern sich.
+// Ebenen einklappbar: in "Karte" und Jahresvergleich sind sie die
+// Hauptsache (offen), in den Werkzeugen Nebensache (zu). Eigenes Auf-/
+// Zuklappen gilt für die jeweilige Ansicht bis zum Neuladen.
+const LAYERS_OPEN_BY_DEFAULT = new Set(['viewer', 'compare', 'uebersicht']);
+const layersOpenByView = {};
+function applyLayerSectionState() {
+  const view = document.body.dataset.view || 'viewer';
+  const open = view in layersOpenByView ? layersOpenByView[view] : LAYERS_OPEN_BY_DEFAULT.has(view);
+  document.body.classList.toggle('layers-collapsed', !open);
+  document.getElementById('layer-section-toggle').setAttribute('aria-expanded', String(open));
+}
+document.getElementById('layer-section-toggle').addEventListener('click', () => {
+  const view = document.body.dataset.view || 'viewer';
+  layersOpenByView[view] = document.body.classList.contains('layers-collapsed');
+  applyLayerSectionState();
+});
+
+// Kurzhinweis ("So geht's") nur, bis eine Funktion einmal benutzt wurde —
+// danach bleibt nur "Tipps". Gemerkt je Gerät (localStorage).
+const TOOL_HINTS_DONE_KEY = 'feldfolio-hints-done';
+let toolHintsDone = [];
+try { toolHintsDone = JSON.parse(localStorage.getItem(TOOL_HINTS_DONE_KEY) || '[]'); } catch {}
+if (!Array.isArray(toolHintsDone)) toolHintsDone = [];
+document.body.dataset.hintsDone = toolHintsDone.join(' ');
+function markToolHintDone(view) {
+  if (toolHintsDone.includes(view)) return;
+  toolHintsDone.push(view);
+  document.body.dataset.hintsDone = toolHintsDone.join(' ');
+  try { localStorage.setItem(TOOL_HINTS_DONE_KEY, JSON.stringify(toolHintsDone)); } catch {}
+}
+
+// Eine kurze Zeile unter der Funktionsauswahl: was die Funktion tut.
 const SEGMENT_CAPTIONS = {
-  viewer: 'Shapefiles & GeoJSON lokal auf der Karte darstellen',
-  compare: 'Zwei Parzellen-Stände gegenüberstellen — Zugänge, Abgänge, Änderungen',
-  zeichner: 'Eigene Parzellen direkt auf der Karte zeichnen',
-  obstbaum: 'Obstbäume als farbige Punkte auf der Karte erfassen',
-  bienenflug: 'Bienenstöcke markieren — theoretischer Flugradius 3 km'
+  viewer: 'Shapefiles und GeoJSON auf der Karte ansehen',
+  uebersicht: 'Flächen, Kulturen und Fruchtfolge auf einen Blick',
+  compare: 'Mehrere Jahre vergleichen: Zugänge, Abgänge, Änderungen',
+  zeichner: 'Eigene Flächen auf der Karte zeichnen',
+  obstbaum: 'Obstbäume auf der Karte erfassen',
+  bienenflug: 'Bienenstöcke mit 3-km-Flugradius markieren',
+  hofplan: 'Gebäude auf dem Luftbild einzeichnen',
+  kontrolle: 'Übersicht, Kalender und Dokumente deiner Kontrollen',
+  stallplaner: 'Stall vermessen, in Abteile teilen, Öko-VO prüfen',
+  tiere: 'HIT-Auszug: Bestand, Zu- und Abgänge, Stickstoff, Tierbesatz'
+};
+
+// Kurzer Funktionsname für die Handy-Kopfzeile (dort ist die Funktionsliste
+// in der Schublade versteckt — ohne Titel wüsste man nicht, wo man ist).
+const SEGMENT_TITLES = {
+  viewer: 'Karte', uebersicht: 'Flächenübersicht', compare: 'Jahresvergleich', zeichner: 'Flächenzeichner', obstbaum: 'Obstbaumkataster',
+  bienenflug: 'Bienenflugkarte', hofplan: 'Hofplan', kontrolle: 'Dashboard', stallplaner: 'Stallplaner', tiere: 'Tierbestand'
 };
 
 function setActiveSegment(target) {
@@ -2331,15 +2918,42 @@ function setActiveSegment(target) {
   // Zuerst das ggf. scharfe Werkzeug der vorherigen Sektion entwaffnen, bevor
   // die neue Sektion (ggf. mit eigenem Werkzeug) aktiv wird.
   if (armedTool === 'draw-polygon' && zeichnerDrawPolygon) zeichnerDrawPolygon.disable();
+  if (armedTool === 'split-line' && zeichnerDrawLine) zeichnerDrawLine.disable();
+  disableShapeEditing();
   if (armedTool === 'place-tree') setActiveFruitKey(null);
+  if (armedTool === 'draw-hofplan-rect' && hofplanDrawRect) hofplanDrawRect.disable();
+  if (armedTool === 'draw-hofplan-poly' && hofplanDrawPoly) hofplanDrawPoly.disable();
+  disableHofplanEditing();
+  disableStallplanerDrawing();
   armedTool = null;
+  // Die schwebende Werkzeugleiste (#edit-toolbar) zeigt je nach Tab nur eine
+  // ihrer beiden Gruppen (Zeichner/Hofplan) — ein weiterhin "scharfes"
+  // Bearbeiten/Löschen/Teilen-Werkzeug der GERADE VERLASSENEN Gruppe wäre
+  // dann unsichtbar und damit verwirrend, deshalb hier immer zurückgesetzt.
+  if (target !== 'zeichner' && mapToolMode) mapToolMode = null;
+  updateShapeToolbar();
+  if (target !== 'hofplan' && hofplanToolMode) hofplanToolMode = null;
+  updateHofplanToolbar();
+  if (target !== 'viewer' && ffMapActive) setKulturenMap(false);
   if (target !== 'compare') { restoreCompareHiddenLayer(); compareTablePanel.close(); }
   document.getElementById('map').classList.toggle('placing', target === 'bienenflug');
 
   document.querySelectorAll('.segment-btn').forEach(b => b.classList.toggle('active', b.getAttribute('data-view') === target));
   document.querySelectorAll('.sidebar-section').forEach(el => el.classList.toggle('active', el.getAttribute('data-view') === target));
   document.querySelectorAll('.topbar-extra').forEach(el => el.classList.toggle('active', el.getAttribute('data-view') === target));
+  // #edit-toolbar selbst trägt keine eigene .topbar-extra-Sichtbarkeit (das
+  // generische data-view-Matching oben ist auf genau EINEN Tab zugeschnitten,
+  // die Leiste soll aber auf zwei Tabs erscheinen) — daher hier separat
+  // sichtbar geschaltet, sobald eine ihrer beiden Gruppen aktiv sein könnte.
+  document.getElementById('edit-toolbar').classList.toggle('active', target === 'zeichner' || target === 'hofplan');
   document.getElementById('brand-caption').textContent = SEGMENT_CAPTIONS[target] || '';
+  document.body.dataset.view = target; // für funktionsabhängiges Seitenleisten-Layout (style.css)
+  applyLayerSectionState();
+  document.getElementById('current-view-title').textContent = SEGMENT_TITLES[target] || 'Karte';
+  const activeSegIcon = document.querySelector(`#view-switcher .segment-btn[data-view="${target}"] .icon`);
+  document.getElementById('current-view-icon').textContent = activeSegIcon ? activeSegIcon.textContent : 'map';
+  // Nach dem Wechsel (armedTool wird unten ggf. neu gesetzt) aktualisieren.
+  setTimeout(updateMapPlaceChip, 0);
   // "Auf Inhalt zoomen" fittet auf layers/featureIndex — im Jahresvergleich
   // wird stattdessen automatisch auf das Vergleichsergebnis gezoomt, daher
   // dort ausgeblendet statt einer Funktion ohne Bezug zur aktuellen Ansicht.
@@ -2351,59 +2965,109 @@ function setActiveSegment(target) {
   if (target === 'zeichner') initZeichnerMap();
   else if (target === 'obstbaum') initObstbaumMap();
   else if (target === 'bienenflug') { initBienenflugMap(); armedTool = 'place-hive'; }
-  else if (target === 'compare') refreshCompareJahrBOptions();
+  else if (target === 'compare') refreshCompareView();
+  else if (target === 'hofplan') initHofplanMap();
+  else if (target === 'stallplaner') initStallplaner();
+  if (target === 'stallplaner') requestStallplanerWakeLock(); else releaseStallplanerWakeLock();
+
+  // Die Kontrolle hat eine eigene Ansicht (Kalender mit eigener, zweiter
+  // Leaflet-Karte), Stallplaner gar keine Karte (eigenes SVG) — #map-wrap
+  // schließt sich mit beiden aus statt wie die anderen Funktionen nur Layer
+  // auf derselben Karte umzuschalten.
+  document.getElementById('map-wrap').hidden = target === 'kontrolle' || target === 'stallplaner' || target === 'uebersicht' || target === 'tiere';
+  document.getElementById('tiere-view').hidden = target !== 'tiere';
+  if (target === 'tiere') renderTierbestand(true);
+  document.getElementById('uebersicht-view').hidden = target !== 'uebersicht';
+  if (target === 'uebersicht') openFlaechenuebersicht({ animate: true });
+  document.getElementById('kontrolle-view').hidden = target !== 'kontrolle';
+  if (target !== 'kontrolle') closeKontrollmappe();
+  document.getElementById('stallplaner-view').hidden = target !== 'stallplaner';
+  // Shapefile-/GeoJSON-Upload und die geteilte Ebenenliste ergeben in
+  // Terminkalender/Stallplaner keinen Sinn (andere Datenwelt, keine geteilte
+  // Karte) — dort ausgeblendet statt immer sichtbar wie in den anderen
+  // Funktionen.
+  document.getElementById('dropzone').hidden = target === 'kontrolle' || target === 'stallplaner';
+  document.getElementById('layer-section').hidden = target === 'kontrolle' || target === 'stallplaner';
+  if (target === 'kontrolle') {
+    openKontrolle();
+    // Dokumentenscanner sitzt im Terminkalender: OpenCV fürs Offline-Scannen vorhalten.
+    prefetchScanLibsForOffline();
+  }
 }
 
-// Es gibt keinen eigenen "Viewer"-Button mehr — Viewer ist die Standardansicht.
-// Klick auf den bereits aktiven Funktions-Button schaltet dorthin zurück,
-// klick auf einen anderen wechselt direkt zur neuen Funktion.
+// "Karte" (viewer) ist die Standardansicht und hat einen eigenen Button.
+// Klick auf den bereits aktiven Funktions-Button schaltet ebenfalls dorthin
+// zurück, Klick auf einen anderen wechselt direkt zur neuen Funktion.
 document.querySelectorAll('.segment-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     const target = btn.getAttribute('data-view');
+    if (btn.dataset.koBereich) kontrolleStart = btn.dataset.koBereich; // "dashboard" | "betrieb"
     setActiveSegment(btn.classList.contains('active') ? 'viewer' : target);
   });
 });
 
 // ---------- Jahresvergleich ----------
+// Mehrere Jahre: je Jahr eine hinterlegte Shape-Datei (compareYears, gehört
+// zum Betrieb und wird mit ihm gespeichert, siehe serializeWorkspace). Zwei
+// davon werden verglichen (älteres → neueres); über der Karte gibt es je
+// hinterlegtem Jahr einen Knopf mit der Jahreszahl.
 let compareGeoLayer = null;
-let compareViewMode = 'diff'; // 'diff' | 'onlyA' | 'onlyB'
-let compareDataA = null; // { fc, fileName, layerName }
-let compareDataB = null;
+let compareYears = []; // { id, jahr, fileName, layerName, fc }
+let compareResult = null; // { a, b } — die verglichenen Jahre (a älter)
+let compareViewMode = 'diff'; // 'diff' | id eines Jahres
 let compareRecords = [];
-let compareHiddenLayerId = null; // Jahr-B-Quellebene, während der Vergleichsansicht ausgeblendet (sonst doppelte Darstellung)
+// Fruchtfolge (Flächenübersicht › Reiter "Fruchtfolge", Karte › "Kulturen") — siehe unten.
+let ffGeoLayer = null;
+let ffYearId = null;
+let ffData = null; // { years, rows, colorOf, stats }
+let ffOnlyHints = false;
+let ffKnownYears = '';
+let ffMapActive = false; // Karte nach Kultur eingefärbt
+let ueTab = 'flaechen'; // Reiter der Flächenübersicht
+// Tierbestand des Betriebs aus dem HIT-Auszug (siehe "Tierbestand" weiter unten):
+// { von, bis, tiere, kontrolle, importiertAm, lfHa, kuhNutzung } | null
+let tierbestandData = null;
+let compareHiddenLayerIds = []; // normale Kartenebenen, während der Jahresansicht ausgeblendet (sonst doppelte Darstellung)
 
-// Blendet die als Jahr B genutzte Ebene wieder ein, falls sie für die
-// Vergleichsansicht ausgeblendet wurde — beim Verlassen des Jahresvergleichs
-// oder vor einem neuen Vergleichslauf aufgerufen.
+// Normale Ebenen ausblenden, solange Vergleich/Jahresansicht auf der Karte liegt.
+function hideMapLayersForCompare() {
+  Object.keys(layers).forEach(id => {
+    const l = layers[id];
+    if (map.hasLayer(l.leafletLayer)) { map.removeLayer(l.leafletLayer); compareHiddenLayerIds.push(id); }
+  });
+}
+// Blendet die ausgeblendeten Ebenen wieder ein und entfernt die
+// Vergleichsdarstellung — beim Verlassen des Jahresvergleichs.
 function restoreCompareHiddenLayer() {
-  if (compareHiddenLayerId && layers[compareHiddenLayerId] && layers[compareHiddenLayerId].visible) {
-    layers[compareHiddenLayerId].leafletLayer.addTo(map);
-  }
-  compareHiddenLayerId = null;
+  compareHiddenLayerIds.forEach(id => { if (layers[id] && layers[id].visible) layers[id].leafletLayer.addTo(map); });
+  compareHiddenLayerIds = [];
   if (compareGeoLayer) { map.removeLayer(compareGeoLayer); compareGeoLayer = null; }
 }
+const compareYearById = (id) => compareYears.find(y => y.id === id) || null;
+const compareYearLabel = (y) => (y && y.jahr) || 'Jahr ?';
 
 const STATUS_COLORS = {
   zugang: '#6FBF73',
   abgang: '#D97757',
+  umnummeriert: '#7C8CD8',
   veraendert: '#C9A24F',
   unveraendert: '#5A6270'
 };
 const STATUS_LABELS = {
   zugang: 'Zugang',
   abgang: 'Abgang',
+  umnummeriert: 'Umnummeriert',
   veraendert: 'Verändert',
   unveraendert: 'Unverändert'
 };
 
 
-document.querySelectorAll('.cvt-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('.cvt-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    compareViewMode = btn.getAttribute('data-mode');
-    if (compareRecords.length) renderCompareMapLayers(compareRecords, false);
-  });
+document.getElementById('compare-view-toggle').addEventListener('click', (e) => {
+  const btn = e.target.closest('.cvt-btn');
+  if (!btn || btn.disabled) return;
+  compareViewMode = btn.getAttribute('data-mode');
+  renderCompareToggle();
+  showCompareView(false);
 });
 
 const compareTablePanel = initResizablePanel({
@@ -2463,87 +3127,228 @@ function extractJahrAusMetadaten(fc, fileName) {
   return null;
 }
 
-// Jahr B kommt jetzt aus dem geteilten Datenbestand (layers) statt aus einem
-// eigenen Upload — Kandidaten sind alle nicht-Teilflächen-Ebenen mit
-// Flächengeometrie. Bei mehreren geladenen Ebenen wählt eine kleine Auswahlliste,
-// Standardwert ist die zuletzt hinzugefügte (Objektschlüssel-Reihenfolge = Einfügereihenfolge).
-function getCompareJahrBCandidates() {
+// ---- Jahre hinterlegen ----
+function compareYearsSorted() {
+  return compareYears.slice().sort((a, b) => String(a.jahr || '9999').localeCompare(String(b.jahr || '9999')) || a.fileName.localeCompare(b.fileName));
+}
+function compareYearHa(fc) {
+  return (fc.features || []).reduce((s, f) => s + (parseHa(pickGroesse(f.properties || {})) || 0), 0);
+}
+// Standardauswahl: die beiden neuesten Jahre.
+function ensureCompareSelection() {
+  const sorted = compareYearsSorted().filter(y => y.jahr);
+  const selA = document.getElementById('compare-sel-a');
+  const selB = document.getElementById('compare-sel-b');
+  const valid = (v) => sorted.some(y => y.id === v);
+  if (!valid(selB.dataset.value)) selB.dataset.value = sorted.length ? sorted[sorted.length - 1].id : '';
+  if (!valid(selA.dataset.value) || selA.dataset.value === selB.dataset.value) {
+    const rest = sorted.filter(y => y.id !== selB.dataset.value);
+    selA.dataset.value = rest.length ? rest[rest.length - 1].id : '';
+  }
+}
+function renderCompareYears() {
+  ensureCompareSelection();
+  const list = document.getElementById('compare-years');
+  const sorted = compareYearsSorted();
+  list.innerHTML = sorted.length ? sorted.map(y => `<div class="cy-row${y.jahr ? '' : ' is-missing'}" data-cy="${y.id}">
+      <input class="cy-jahr" value="${escapeHtml(y.jahr || '')}" placeholder="Jahr" inputmode="numeric" maxlength="4" aria-label="Jahr für ${escapeHtml(y.fileName)}">
+      <span class="cy-text"><span class="cy-file" title="${escapeHtml(y.fileName)}">${escapeHtml(y.fileName)}</span>
+        <span class="cy-sub">${y.jahr ? '' : '<b>Jahr eintragen</b> · '}${(y.fc.features || []).length} Flächen · ${compareYearHa(y.fc).toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ha</span></span>
+      <button type="button" class="cy-del" data-cy-del="${y.id}" title="Jahr entfernen" aria-label="${escapeHtml(compareYearLabel(y))} entfernen"><span class="material-symbols-rounded icon" aria-hidden="true">delete</span></button>
+    </div>`).join('')
+    : '<p class="cy-empty">Noch keine Jahre hinterlegt.</p>';
+  const opts = (sel) => compareYearsSorted().filter(y => y.jahr).map(y => `<option value="${y.id}"${sel === y.id ? ' selected' : ''}>${escapeHtml(y.jahr)}</option>`).join('');
+  const selA = document.getElementById('compare-sel-a');
+  const selB = document.getElementById('compare-sel-b');
+  selA.innerHTML = opts(selA.dataset.value);
+  selB.innerHTML = opts(selB.dataset.value);
+  document.getElementById('compare-pair').hidden = compareYears.filter(y => y.jahr).length < 2;
+  updateCompareRunEnabled();
+  renderCompareLayerPick();
+  renderCompareToggle();
+  refreshFruchtfolgeIfOpen();
+  renderSchlaglisteBox();
+}
+function updateCompareRunEnabled() {
+  const a = document.getElementById('compare-sel-a').dataset.value, b = document.getElementById('compare-sel-b').dataset.value;
+  document.getElementById('btn-compare-run').disabled = !(a && b && a !== b);
+}
+// Knöpfe über der Karte: "Vergleich" + je hinterlegtem Jahr die Jahreszahl.
+function renderCompareToggle() {
+  const toggle = document.getElementById('compare-view-toggle');
+  const years = compareYearsSorted().filter(y => y.jahr);
+  if (compareViewMode !== 'diff' && !compareYearById(compareViewMode)) compareViewMode = 'diff';
+  const diffLabel = compareResult ? `${compareResult.a.jahr} → ${compareResult.b.jahr}` : 'Vergleich';
+  toggle.innerHTML = `<button class="cvt-btn${compareViewMode === 'diff' ? ' active' : ''}" data-mode="diff"${compareResult ? '' : ' disabled title="Erst zwei Jahre vergleichen"'}>${escapeHtml(diffLabel)}</button>`
+    + years.map(y => `<button class="cvt-btn${compareViewMode === y.id ? ' active' : ''}" data-mode="${y.id}" title="Nur ${escapeHtml(y.jahr)} anzeigen">${escapeHtml(y.jahr)}</button>`).join('');
+}
+// Geladene Kartenebene als Jahr übernehmen (bisheriger Weg "Jahr B = Ebene").
+function getCompareLayerCandidates() {
   return Object.keys(layers)
     .filter(id => !layers[id].isTeilflaechen && (layers[id].geojson.features || []).some(f =>
       f.geometry && (f.geometry.type === 'Polygon' || f.geometry.type === 'MultiPolygon')))
     .map(id => ({ id, name: layers[id].name }));
 }
-
-function getSelectedJahrBLayerId() {
-  const candidates = getCompareJahrBCandidates();
-  if (!candidates.length) return null;
-  const select = document.getElementById('compare-jahrb-picker');
-  if (candidates.length === 1) return candidates[0].id;
-  return candidates.some(c => c.id === select.value) ? select.value : candidates[candidates.length - 1].id;
+function renderCompareLayerPick() {
+  const wrap = document.getElementById('compare-layer-pick');
+  const select = document.getElementById('compare-layer-select');
+  const candidates = getCompareLayerCandidates();
+  wrap.hidden = !candidates.length;
+  const prev = select.value;
+  select.innerHTML = candidates.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+  if (candidates.some(c => c.id === prev)) select.value = prev;
 }
-
-function updateCompareRunEnabled() {
-  document.getElementById('btn-compare-run').disabled = !(compareDataA && getSelectedJahrBLayerId());
+// Zweite Datei desselben Jahres (z.B. Flächen eines Betriebs in zwei
+// Bundesländern) an ein hinterlegtes Jahr anhängen.
+function mergeCompareYear(ziel, fc, fileName) {
+  ziel.fc = { type: 'FeatureCollection', features: [...(ziel.fc.features || []), ...((fc && fc.features) || [])] };
+  ziel.fileName = `${ziel.fileName} + ${fileName}`;
+  if (compareResult && (compareResult.a === ziel || compareResult.b === ziel)) clearCompareResult();
+  slGeoCache = null;
+  renderCompareYears();
+  setCompareStatus(`${fileName} zu ${ziel.jahr} hinzugefügt.`);
+  persistLocalState().catch(() => {});
+  return ziel;
 }
-
-// Aktualisiert die Jahr-B-Auswahlliste (nur sichtbar bei mehr als einer
-// Kandidaten-Ebene) — aufgerufen beim Wechsel in den Jahresvergleich sowie
-// jedes Mal, wenn sich der geteilte Datenbestand ändert (neue Ebene geladen/entfernt).
-function refreshCompareJahrBOptions() {
-  const candidates = getCompareJahrBCandidates();
-  const wrap = document.getElementById('compare-jahrb-picker-wrap');
-  const select = document.getElementById('compare-jahrb-picker');
-  wrap.hidden = candidates.length <= 1;
-  if (candidates.length > 1) {
-    const prevValue = select.value;
-    select.innerHTML = candidates.map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
-    select.value = candidates.some(c => c.id === prevValue) ? prevValue : candidates[candidates.length - 1].id;
+const mergeFrage = (jahr, alt, neu) => confirm(`Für ${jahr} ist schon „${alt}“ hinterlegt.\n\nOK: „${neu}“ dazunehmen (beide zusammen, z. B. Flächen aus einem zweiten Bundesland)\nAbbrechen: nicht zusammenführen`);
+function addCompareYear({ fc, fileName, layerName }) {
+  const jahr = extractJahrAusMetadaten(fc, fileName);
+  const existing = jahr && compareYears.find(y => y.jahr === jahr);
+  if (existing) {
+    if (mergeFrage(jahr, existing.fileName, fileName)) return mergeCompareYear(existing, fc, fileName);
+    if (!confirm(`Stattdessen „${existing.fileName}“ durch „${fileName}“ ersetzen?`)) return null;
+    compareYears = compareYears.filter(y => y !== existing);
+    if (compareResult && (compareResult.a === existing || compareResult.b === existing)) clearCompareResult();
   }
-  updateCompareYearButtons();
-  updateCompareRunEnabled();
+  const y = { id: 'cy-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), jahr: jahr || '', fileName, layerName, fc };
+  compareYears.push(y);
+  // Neues Jahr -> Auswahl wieder auf die beiden neuesten Jahre
+  document.getElementById('compare-sel-a').dataset.value = '';
+  document.getElementById('compare-sel-b').dataset.value = '';
+  renderCompareYears();
+  setCompareStatus(jahr ? `${jahr} hinterlegt (${fileName}).` : `${fileName}: kein Jahr erkannt — bitte eintragen.`);
+  persistLocalState().catch(() => {});
+  if (!jahr) setTimeout(() => document.querySelector(`.cy-row[data-cy="${y.id}"] .cy-jahr`)?.focus(), 0);
+  return y;
 }
-document.getElementById('compare-jahrb-picker').addEventListener('change', () => {
-  updateCompareYearButtons();
-  updateCompareRunEnabled();
-});
-
-function updateCompareYearButtons() {
-  const btnA = document.querySelector('.cvt-btn[data-mode="onlyA"]');
-  const btnB = document.querySelector('.cvt-btn[data-mode="onlyB"]');
-  if (btnA) btnA.textContent = (compareDataA && compareDataA.jahr) ? 'Nur ' + compareDataA.jahr : 'Nur Jahr A';
-  const jahrBLayerId = getSelectedJahrBLayerId();
-  const jahrB = jahrBLayerId ? extractJahrAusMetadaten(layers[jahrBLayerId].geojson, layers[jahrBLayerId].name) : null;
-  if (btnB) btnB.textContent = jahrB ? 'Nur ' + jahrB : 'Nur Jahr B';
-}
-
+function setCompareStatus(text) { document.getElementById('compare-status').textContent = text; }
 async function loadCompareFile(file) {
   try {
-    let results = await parseShapefileZip(file);
-    if (!results.length) {
-      showCompareError(file.name + ': Keine Shapefile-Bestandteile gefunden.');
-      return;
+    const ext = file.name.split('.').pop().toLowerCase();
+    let chosen;
+    if (ext === 'geojson' || ext === 'json') {
+      chosen = { fc: JSON.parse(await file.text()), name: file.name.replace(/\.\w+$/, '') };
+    } else {
+      let results = await parseShapefileZip(file);
+      if (!results.length) { showCompareError(file.name + ': Keine Shapefile-Bestandteile gefunden.'); return; }
+      results = mergeFeldstueckNutzung(results);
+      // Für den Vergleich zählt nur die Parzellen-Ebene — Teilflächen o.ä. werden ignoriert.
+      // Flächenebenen: Parzellen/Feldstücke bevorzugt, sonst Antrags-/Hauptnutzungsflächen, sonst die
+      // einzige (bzw. größte) Polygon-Ebene. Teilflächen, Hinweispunkte, Landschaftselemente nicht.
+      const poly = results.filter(r => !/teilfl|hinweis|landschaft|gew(ä|ae)sserrand/i.test(r.name) && (r.fc.features || []).some(f => f.geometry && /Polygon/.test(f.geometry.type)));
+      chosen = results.find(r => /parzelle/i.test(r.name)) || results.find(r => /feldst(ü|ue)ck/i.test(r.name))
+        || poly.find(r => /hauptnutzung|schlag|antrag/i.test(r.name)) || (poly.length === 1 ? poly[0] : null);
+      if (!chosen) {
+        chosen = poly.sort((a, b) => (b.fc.features || []).length - (a.fc.features || []).length)[0] || results[0];
+        showCompareError(file.name + ': Keine Ebene mit "Parzellen" im Namen gefunden — verwende stattdessen "' + chosen.name + '".');
+      }
     }
-    results = mergeFeldstueckNutzung(results);
-    // Für den Vergleich zählt nur die Parzellen-Ebene — Teilflächen o.ä. werden ignoriert.
-    let chosen = results.find(r => /parzelle/i.test(r.name)) || results.find(r => /feldst(ü|ue)ck/i.test(r.name));
-    if (!chosen) {
-      chosen = results[0];
-      showCompareError(file.name + ': Keine Ebene mit "Parzellen" im Namen gefunden — verwende stattdessen "' + chosen.name + '".');
-    }
-    compareDataA = { fc: chosen.fc, fileName: file.name, layerName: chosen.name, jahr: extractJahrAusMetadaten(chosen.fc, file.name) };
-    document.getElementById('compare-file-a-name').textContent = file.name;
-    document.getElementById('compare-drop-a').classList.add('filled');
-    updateCompareYearButtons();
-    updateCompareRunEnabled();
+    addCompareYear({ fc: chosen.fc, fileName: file.name, layerName: chosen.name });
   } catch (err) {
     console.error(err);
     showCompareError(file.name + ': Konnte Datei nicht lesen — ' + (err.message || 'unbekannter Fehler'));
   }
 }
-
-document.getElementById('compare-file-a').addEventListener('change', (e) => {
-  if (e.target.files[0]) loadCompareFile(e.target.files[0]);
+document.getElementById('compare-file-add').addEventListener('change', async (e) => {
+  for (const f of [...e.target.files]) await loadCompareFile(f);
+  e.target.value = '';
 });
+document.getElementById('compare-layer-add').addEventListener('click', () => {
+  const l = layers[document.getElementById('compare-layer-select').value];
+  if (l) addCompareYear({ fc: structuredClone(l.geojson), fileName: l.name, layerName: l.name });
+});
+document.getElementById('compare-years').addEventListener('click', (e) => {
+  const del = e.target.closest('[data-cy-del]');
+  if (!del) return;
+  const y = compareYearById(del.dataset.cyDel);
+  if (!y || !confirm(`${compareYearLabel(y)} („${y.fileName}“) aus dem Jahresvergleich entfernen?`)) return;
+  compareYears = compareYears.filter(x => x !== y);
+  if (compareResult && (compareResult.a === y || compareResult.b === y)) clearCompareResult();
+  if (compareViewMode === y.id) { compareViewMode = 'diff'; restoreCompareHiddenLayer(); }
+  renderCompareYears();
+  persistLocalState().catch(() => {});
+});
+document.getElementById('compare-years').addEventListener('change', (e) => {
+  const input = e.target.closest('.cy-jahr');
+  if (!input) return;
+  const y = compareYearById(input.closest('.cy-row').dataset.cy);
+  const v = input.value.trim();
+  if (!/^(19|20)\d{2}$/.test(v)) { setCompareStatus('Bitte ein Jahr wie 2024 eintragen.'); input.value = y.jahr; return; }
+  const schonDa = compareYears.find(x => x !== y && x.jahr === v);
+  if (schonDa) {
+    if (!mergeFrage(v, schonDa.fileName, y.fileName)) { setCompareStatus(`${v} ist schon hinterlegt.`); input.value = y.jahr; return; }
+    compareYears = compareYears.filter(x => x !== y);
+    if (compareResult && (compareResult.a === y || compareResult.b === y)) clearCompareResult();
+    mergeCompareYear(schonDa, y.fc, y.fileName);
+    return;
+  }
+  y.jahr = v;
+  if (compareResult && (compareResult.a === y || compareResult.b === y)) runComparison();
+  renderCompareYears();
+  setCompareStatus('');
+  persistLocalState().catch(() => {});
+});
+['compare-sel-a', 'compare-sel-b'].forEach(id => document.getElementById(id).addEventListener('change', (e) => {
+  e.target.dataset.value = e.target.value;
+  updateCompareRunEnabled();
+  if (compareResult && !document.getElementById('btn-compare-run').disabled) runComparison();
+}));
+function clearCompareResult() {
+  compareResult = null;
+  compareRecords = [];
+  if (compareGeoLayer) { map.removeLayer(compareGeoLayer); compareGeoLayer = null; }
+  document.getElementById('compare-summary').classList.remove('show');
+  document.getElementById('compare-legend').classList.remove('show');
+  compareTablePanel.close();
+}
+// Beim Öffnen des Jahresvergleichs und nach Datenänderungen.
+function refreshCompareView() {
+  renderCompareYears();
+  if (document.body.dataset.view === 'compare' && (compareResult || compareViewMode !== 'diff')) showCompareView(false);
+}
+
+// Paare (alte Nummer -> neue Nummer) von Flächen, die nur in einem der beiden
+// Jahre unter ihrer Nummer vorkommen, aber geometrisch dieselbe Fläche sind:
+// Überdeckung (Schnitt ÷ Vereinigung) mindestens 85 %. Jede Fläche höchstens einmal.
+const UMNUMMERIERT_MIN_DECKUNG = 0.85;
+function findeUmnummerierungen(nurAlt, nurNeu) {
+  if (typeof turf === 'undefined' || !nurAlt.length || !nurNeu.length) return [];
+  const kandidaten = [];
+  nurAlt.forEach(a => {
+    if (!a.f || !a.f.geometry) return;
+    let bA;
+    try { bA = turf.bbox(a.f); } catch { return; }
+    nurNeu.forEach(n => {
+      if (!n.f || !n.f.geometry) return;
+      try {
+        const bN = turf.bbox(n.f);
+        if (bA[2] < bN[0] || bN[2] < bA[0] || bA[3] < bN[1] || bN[3] < bA[1]) return;
+        const schnitt = turf.intersect(a.f, n.f);
+        if (!schnitt) return;
+        const s = turf.area(schnitt);
+        const deckung = s / (turf.area(a.f) + turf.area(n.f) - s);
+        if (deckung >= UMNUMMERIERT_MIN_DECKUNG) kandidaten.push({ alt: a.nr, neu: n.nr, deckung });
+      } catch (err) { /* ungültige Geometrie: kein Paar */ }
+    });
+  });
+  kandidaten.sort((x, y) => y.deckung - x.deckung);
+  const usedA = new Set(), usedN = new Set();
+  return kandidaten.filter(k => {
+    if (usedA.has(k.alt) || usedN.has(k.neu)) return false;
+    usedA.add(k.alt); usedN.add(k.neu);
+    return true;
+  });
+}
 
 function parseHa(v) {
   if (v === null || v === undefined || v === '') return null;
@@ -2551,22 +3356,16 @@ function parseHa(v) {
   return isFinite(n) ? n : null;
 }
 
-function runComparison() {
-  const jahrBLayerId = getSelectedJahrBLayerId();
-  if (!compareDataA || !jahrBLayerId) return;
-
-  // Jahr B ist jetzt eine ganz normal geladene Ebene — sie bleibt gleichzeitig
-  // "normale Kartenebene" UND "Vergleichs-Eingabe"; damit sie nicht doppelt
-  // (einmal normal, einmal als farbige Status-Fläche) übereinander liegt, wird
-  // sie für die Dauer der Vergleichsansicht ausgeblendet (restoreCompareHiddenLayer()
-  // blendet sie beim Verlassen des Jahresvergleichs oder vor dem nächsten Lauf
-  // wieder ein).
-  restoreCompareHiddenLayer();
-  const jahrBLayer = layers[jahrBLayerId];
-  compareDataB = { fc: jahrBLayer.geojson, fileName: jahrBLayer.name, layerName: jahrBLayer.name, jahr: extractJahrAusMetadaten(jahrBLayer.geojson, jahrBLayer.name) };
-  updateCompareYearButtons();
-  map.removeLayer(jahrBLayer.leafletLayer);
-  compareHiddenLayerId = jahrBLayerId;
+function runComparison({ auto = false } = {}) {
+  markToolHintDone('compare');
+  let A = compareYearById(document.getElementById('compare-sel-a').dataset.value);
+  let B = compareYearById(document.getElementById('compare-sel-b').dataset.value);
+  if (!A || !B || A === B) return;
+  // Immer älteres → neueres Jahr (Zugang/Abgang hängen an der Richtung).
+  if (String(A.jahr) > String(B.jahr)) [A, B] = [B, A];
+  compareResult = { a: A, b: B };
+  compareViewMode = 'diff';
+  const compareDataA = A, compareDataB = B;
 
   const compareCritGroesse = document.getElementById('crit-groesse').checked;
   const compareCritKultur = document.getElementById('crit-kultur').checked;
@@ -2618,7 +3417,25 @@ function runComparison() {
     records.push({ nummer: nr, name, status, groesseA, groesseB, delta, kulturA, kulturB, featureA: fA, featureB: fB, _mapLayer: null });
   });
 
-  const order = { zugang: 0, abgang: 1, veraendert: 2, unveraendert: 3 };
+  // Nur die Nummer geändert? Abgang + Zugang mit (fast) gleicher Geometrie
+  // werden zu einem Eintrag "Umnummeriert" zusammengefasst.
+  findeUmnummerierungen(
+    records.filter(r => r.status === 'abgang').map(r => ({ nr: r.nummer, f: r.featureA })),
+    records.filter(r => r.status === 'zugang').map(r => ({ nr: r.nummer, f: r.featureB }))
+  ).forEach(({ alt, neu }) => {
+    const rA = records.find(r => r.status === 'abgang' && r.nummer === alt);
+    const rB = records.find(r => r.status === 'zugang' && r.nummer === neu);
+    const hA = parseHa(rA.groesseA), hB = parseHa(rB.groesseB);
+    records.splice(records.indexOf(rA), 1);
+    records.splice(records.indexOf(rB), 1);
+    records.push({
+      nummer: `${alt} → ${neu}`, nummerAlt: alt, nummerNeu: neu, name: rB.name || rA.name, status: 'umnummeriert',
+      groesseA: rA.groesseA, groesseB: rB.groesseB, delta: hA !== null && hB !== null ? hB - hA : null,
+      kulturA: rA.kulturA, kulturB: rB.kulturB, featureA: rA.featureA, featureB: rB.featureB, _mapLayer: null
+    });
+  });
+
+  const order = { zugang: 0, abgang: 1, umnummeriert: 2, veraendert: 3, unveraendert: 4 };
   records.sort((a, b) => {
     if (order[a.status] !== order[b.status]) return order[a.status] - order[b.status];
     return String(a.nummer).localeCompare(String(b.nummer), undefined, { numeric: true });
@@ -2627,8 +3444,63 @@ function runComparison() {
   compareRecords = records;
   renderCompareSummary(records);
   renderCompareTable(records);
-  renderCompareMapLayers(records);
-  compareTablePanel.open();
+  renderCompareToggle();
+  updateCompareTableHeaders();
+  showCompareView(!auto);
+  if (!auto) compareTablePanel.open();
+}
+// Abgleich mit mehreren Jahren: Abgleichsjahr automatisch mit seinem Vorjahr vergleichen
+function slVergleichSicherstellen() {
+  const y = slJahr();
+  const vor = y && slVorjahr(y);
+  if (!vor) return;
+  if (compareResult && compareResult.a === vor && compareResult.b === y) return;
+  document.getElementById('compare-sel-a').dataset.value = vor.id;
+  document.getElementById('compare-sel-b').dataset.value = y.id;
+  renderCompareYears();
+  runComparison({ auto: true });
+}
+
+// Aktuelle Ansicht (Vergleich oder einzelnes Jahr) auf die Karte bringen.
+function showCompareView(fitView) {
+  if (compareGeoLayer) map.removeLayer(compareGeoLayer);
+  compareGeoLayer = L.featureGroup().addTo(map);
+  if (!compareHiddenLayerIds.length) hideMapLayersForCompare();
+  const abgleichOffen = schlaglisteData && !document.getElementById('sl-overlay').hidden;
+  if (abgleichOffen) {
+    // Abgleich offen: "Vergleich" zeigt die Abgleich-Ebene, eine Jahreszahl NUR dieses Jahr
+    const nurJahr = compareViewMode !== 'diff';
+    [slMapLayer, slFocusLayer].forEach(l => { if (l) { if (nurJahr) map.removeLayer(l); else l.addTo(map); } });
+    if (!nurJahr) { map.removeLayer(compareGeoLayer); return; }
+  } else if (compareViewMode === 'diff') {
+    if (compareRecords.length) renderCompareMapLayers(compareRecords, fitView);
+    return;
+  }
+  const y = compareYearById(compareViewMode);
+  if (!y) return;
+  if (compareResult && (compareResult.a === y || compareResult.b === y)) {
+    renderSingleYearLayers(compareRecords, compareResult.a === y ? 'onlyA' : 'onlyB', fitView);
+    return;
+  }
+  // Jahr außerhalb des Vergleichs: neutral darstellen.
+  (y.fc.features || []).forEach(f => {
+    if (!f.geometry) return;
+    const p = f.properties || {};
+    const nr = pickField(p, FIELD_CANDIDATES.nummer), name = pickField(p, FIELD_CANDIDATES.name);
+    const g = parseHa(pickGroesse(p));
+    const layer = L.geoJSON(f, { style: { color: '#5F7A93', weight: 1.4, fillColor: '#5F7A93', fillOpacity: 0.25 } });
+    layer.bindPopup('<b>' + escapeHtml(nr || '–') + '</b>' + (name ? ' – ' + escapeHtml(name) : '') + '<br>' +
+      'Jahr: ' + escapeHtml(y.jahr) + '<br>Größe: ' + (g !== null ? formatHaExact(g) + ' ha' : '–') + '<br>Kultur: ' + escapeHtml(pickField(p, FIELD_CANDIDATES.kultur) || '–'));
+    layer.addTo(compareGeoLayer);
+    addFeatureLabel(f, featureLabelHtml(nr, name), compareGeoLayer);
+  });
+  if (fitView !== false && compareGeoLayer.getLayers().length) map.fitBounds(compareGeoLayer.getBounds(), { padding: [30, 30] });
+}
+function updateCompareTableHeaders() {
+  const ja = compareResult ? compareResult.a.jahr : 'A', jb = compareResult ? compareResult.b.jahr : 'B';
+  document.getElementById('compare-th-a').textContent = 'Größe ' + ja;
+  document.getElementById('compare-th-b').textContent = 'Größe ' + jb;
+  document.getElementById('compare-th-kultur').textContent = `Kultur ${ja} → ${jb}`;
 }
 
 document.getElementById('btn-compare-run').addEventListener('click', runComparison);
@@ -2647,7 +3519,7 @@ document.getElementById('btn-compare-run').addEventListener('click', runComparis
 });
 
 function renderCompareSummary(records) {
-  const counts = { zugang: 0, abgang: 0, veraendert: 0, unveraendert: 0 };
+  const counts = { zugang: 0, abgang: 0, umnummeriert: 0, veraendert: 0, unveraendert: 0 };
   let deltaSum = 0;
   records.forEach(r => {
     counts[r.status]++;
@@ -2660,6 +3532,7 @@ function renderCompareSummary(records) {
     '<div class="stat"><span class="n">' + counts.zugang + '</span><span class="l">Zugänge</span></div>' +
     '<div class="stat"><span class="n">' + counts.abgang + '</span><span class="l">Abgänge</span></div>' +
     '<div class="stat"><span class="n">' + counts.veraendert + '</span><span class="l">Verändert</span></div>' +
+    (counts.umnummeriert ? '<div class="stat"><span class="n">' + counts.umnummeriert + '</span><span class="l">Umnummeriert</span></div>' : '') +
     '<div class="stat"><span class="n">' + deltaText + '</span><span class="l">Nettodifferenz</span></div>';
   document.getElementById('compare-legend').classList.add('show');
 }
@@ -2668,15 +3541,16 @@ function renderCompareTable(records) {
   const tbody = document.getElementById('compare-table-body');
   document.getElementById('compare-table-count').textContent = records.length;
   if (!records.length) {
-    tbody.innerHTML = '<tr><td colspan="7" style="color:var(--muted); padding:14px;">Keine gemeinsamen oder abweichenden Flächennummern gefunden.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" style="color:var(--muted); padding:14px;">Keine gemeinsamen oder abweichenden Flächennummern gefunden.</td></tr>';
     return;
   }
+  const umst = !document.getElementById('compare-th-umst').hidden ? slStatusJeNummer() : null;
   tbody.innerHTML = records.map((r, i) => {
     const gA = parseHa(r.groesseA);
     const gB = parseHa(r.groesseB);
-    const gAText = gA !== null ? gA.toFixed(2) : (r.groesseA || '–');
-    const gBText = gB !== null ? gB.toFixed(2) : (r.groesseB || '–');
-    const deltaText = r.delta !== null ? (r.delta >= 0 ? '+' : '') + r.delta.toFixed(2) : '–';
+    const gAText = gA !== null ? formatHaExact(gA) : (r.groesseA || '–');
+    const gBText = gB !== null ? formatHaExact(gB) : (r.groesseB || '–');
+    const deltaText = r.delta !== null ? (r.delta >= 0 ? '+' : '−') + formatHaExact(Math.abs(r.delta)) : '–';
     const kulturText = escapeHtml(r.kulturA || '–') + (r.kulturA !== r.kulturB ? ' → ' + escapeHtml(r.kulturB || '–') : '');
     return '<tr data-idx="' + i + '">' +
       '<td><span class="status-pill" style="background:' + STATUS_COLORS[r.status] + '">' + STATUS_LABELS[r.status] + '</span></td>' +
@@ -2686,6 +3560,7 @@ function renderCompareTable(records) {
       '<td>' + gBText + '</td>' +
       '<td>' + deltaText + '</td>' +
       '<td>' + kulturText + '</td>' +
+      (umst ? '<td class="sl-col">' + (r.featureB ? slBadge(umst.get(r.nummerNeu || r.nummer) || null) : '–') + '</td>' : '') +
       '</tr>';
   }).join('');
   tbody.querySelectorAll('tr[data-idx]').forEach(tr => {
@@ -2696,12 +3571,20 @@ function renderCompareTable(records) {
 function compareRecordPopupHtml(r) {
   const gA = parseHa(r.groesseA);
   const gB = parseHa(r.groesseB);
-  const gAText = gA !== null ? gA.toFixed(2) + ' ha' : '–';
-  const gBText = gB !== null ? gB.toFixed(2) + ' ha' : '–';
+  const gAText = gA !== null ? formatHaExact(gA) + ' ha' : '–';
+  const gBText = gB !== null ? formatHaExact(gB) + ' ha' : '–';
   return '<b>' + escapeHtml(r.nummer) + '</b>' + (r.name ? ' – ' + escapeHtml(r.name) : '') + '<br>' +
     'Status: ' + STATUS_LABELS[r.status] + '<br>' +
-    'Größe A: ' + gAText + ' · Größe B: ' + gBText + '<br>' +
-    'Kultur: ' + escapeHtml(r.kulturA || '–') + (r.kulturA !== r.kulturB ? ' → ' + escapeHtml(r.kulturB || '–') : '');
+    'Größe ' + escapeHtml(compareResult ? compareResult.a.jahr : 'A') + ': ' + gAText + ' · Größe ' + escapeHtml(compareResult ? compareResult.b.jahr : 'B') + ': ' + gBText + '<br>' +
+    'Kultur: ' + escapeHtml(r.kulturA || '–') + (r.kulturA !== r.kulturB ? ' → ' + escapeHtml(r.kulturB || '–') : '') +
+    slPopupZeile(r);
+}
+// Umstellungsstatus im Popup (nur angemeldet und mit Schlagliste)
+function slPopupZeile(r) {
+  if (!schlaglisteData || document.body.dataset.auth !== 'in' || !r.featureB) return '';
+  const info = slStatusJeNummer().get(r.nummerNeu || r.nummer);
+  if (!info) return '<br>Umstellung: –';
+  return '<br>Umstellung: ' + escapeHtml(info.label) + (info.key === 'oeko' ? '' : ' (ökologisch ab ' + slDeAusIso(info.oekoAb) + ')');
 }
 
 // Berechnet geometrisch, welches Stück einer Fläche zwischen den beiden Jahren
@@ -2751,28 +3634,34 @@ function addFeatureLabel(feature, text, group) {
   createLabelAnchorAt(latlng, text).addTo(group);
 }
 
+const cmpChip = (text, cls) => `<em class="cmp-chip ${cls}">${escapeHtml(text)}</em>`;
 function renderCompareMapLayers(records, fitView) {
   if (fitView === undefined) fitView = true;
-  if (compareGeoLayer) map.removeLayer(compareGeoLayer);
-  compareGeoLayer = L.featureGroup().addTo(map);
-
-  if (compareViewMode === 'onlyA' || compareViewMode === 'onlyB') {
-    renderSingleYearLayers(records, compareViewMode, fitView);
-    return;
-  }
+  if (!compareGeoLayer) compareGeoLayer = L.featureGroup().addTo(map);
 
   records.forEach(r => {
     const color = STATUS_COLORS[r.status];
     let mapLayer = null;
-    const labelText = escapeHtml(r.nummer) + (r.name ? '<br>' + escapeHtml(r.name) : '');
+    // Größenänderung ab 0,01 ha — sonst ist "verändert" nur die Kultur
+    const groesseGeaendert = r.delta !== null && r.delta !== undefined && Math.abs(r.delta) > 0.01;
+    const nurKultur = r.status === 'veraendert' && !groesseGeaendert;
+    const chip = r.status === 'zugang' ? cmpChip('neu', 'is-plus') : r.status === 'abgang' ? cmpChip('weg', 'is-minus')
+      : groesseGeaendert ? cmpChip((r.delta > 0 ? '+' : '−') + formatHaExact(Math.abs(r.delta)) + ' ha', r.delta > 0 ? 'is-plus' : 'is-minus')
+      : nurKultur ? cmpChip('Kultur', 'is-kultur') : '';
+    const labelText = featureLabelHtml(r.nummer, r.name) + chip;
 
-    if (r.status === 'zugang' && r.featureB) {
+    if (nurKultur) {
+      // nur die Kultur hat sich geändert: dezent, damit echte Flächenänderungen auffallen
+      const feat = r.featureB || r.featureA;
+      mapLayer = L.geoJSON(feat, { style: { color: '#C9A24F', weight: 1.2, dashArray: '2,4', fillColor: '#5A6270', fillOpacity: 0.1 } });
+      addFeatureLabel(feat, labelText, compareGeoLayer);
+    } else if (r.status === 'zugang' && r.featureB) {
       mapLayer = L.geoJSON(r.featureB, { style: { color, weight: 1.8, fillColor: color, fillOpacity: 0.35 } });
       addFeatureLabel(r.featureB, labelText, compareGeoLayer);
     } else if (r.status === 'abgang' && r.featureA) {
       mapLayer = L.geoJSON(r.featureA, { style: { color, weight: 1.8, fillColor: color, fillOpacity: 0.35, dashArray: '4,3' } });
       addFeatureLabel(r.featureA, labelText, compareGeoLayer);
-    } else if (r.status === 'veraendert') {
+    } else if (r.status === 'veraendert' || r.status === 'umnummeriert') {
       const parts = [];
       // Kontext: alte Grenze gestrichelt-grau, neue Grenze farbig als dünner Umriss
       if (r.featureA) parts.push(L.geoJSON(r.featureA, { style: { color: '#9096a1', weight: 1.4, fillOpacity: 0, dashArray: '4,3' } }));
@@ -2783,13 +3672,13 @@ function renderCompareMapLayers(records, fitView) {
       if (r.featureA && r.featureB) {
         const diff = computeGeometryDiff(r.featureA, r.featureB);
         if (diff.core) {
-          parts.push(L.geoJSON(diff.core, { style: { color: '#5F7A93', weight: 0, fillColor: '#5F7A93', fillOpacity: 0.45 } }));
+          parts.push(L.geoJSON(diff.core, { style: { color: '#5F7A93', weight: 0, fillColor: '#5F7A93', fillOpacity: 0.25 } }));
         }
         if (diff.gained) {
-          parts.push(L.geoJSON(diff.gained, { style: { color: '#1B9C7D', weight: 1, fillColor: '#2EE6B8', fillOpacity: 0.75 } }));
+          parts.push(L.geoJSON(diff.gained, { style: { color: '#1B9C7D', weight: 2, fillColor: '#2EE6B8', fillOpacity: 0.8, className: 'cmp-plus' } }));
         }
         if (diff.lost) {
-          parts.push(L.geoJSON(diff.lost, { style: { color: '#A32E52', weight: 1, fillColor: '#E0507A', fillOpacity: 0.75 } }));
+          parts.push(L.geoJSON(diff.lost, { style: { color: '#A32E52', weight: 2, dashArray: '5,3', fillColor: '#E0507A', fillOpacity: 0.7, className: 'cmp-minus' } }));
         }
         if (!diff.core && !diff.gained && !diff.lost) {
           // Geometrie-Diff nicht berechenbar (z.B. ungültiges Polygon) — Fläche
@@ -2830,7 +3719,7 @@ function renderSingleYearLayers(records, which, fitView) {
     const feat = r[featKey];
     if (!feat) return; // existiert in diesem Jahr nicht
     const color = STATUS_COLORS[r.status];
-    const labelText = escapeHtml(r.nummer) + (r.name ? '<br>' + escapeHtml(r.name) : '');
+    const labelText = featureLabelHtml(r.nummer, r.name);
     const mapLayer = L.geoJSON(feat, { style: { color, weight: 1.6, fillColor: color, fillOpacity: 0.3 } });
     mapLayer.bindPopup(compareRecordPopupHtml(r));
     mapLayer.addTo(compareGeoLayer);
@@ -2841,6 +3730,1733 @@ function renderSingleYearLayers(records, which, fitView) {
   if (fitView && compareGeoLayer.getLayers().length) {
     map.fitBounds(compareGeoLayer.getBounds(), { padding: [30, 30] });
   }
+}
+
+// ---------- Schlagliste (Umstellung) ----------
+// Jahresvergleich › "Umstellung (Schlagliste)", nur angemeldet: eine extern
+// geführte Schlagliste (Excel) mit den Flächen eines hinterlegten Jahres
+// abgleichen, Umstellungsstatus je Fläche berechnen (1. Jahr konventionell,
+// 2. Jahr Umstellung, ab 3. Jahr ökologisch — ab dem Datum "Zugang Fläche"),
+// Zweifelsfälle und Neuzugänge vom Kontrolleur klären lassen und die Liste im
+// gleichen Format für den Wiederimport exportieren. Logik in schlagliste.js.
+// Je Betrieb gespeichert: { fileName, sheetName, header, rows, cols, jahr,
+//   stichtag, statusTexte, manuell: {zeile: key|null}, zugangNeu: {key: iso},
+//   abgangAm: {zeile: iso}, importiertAm }
+let schlaglisteData = null;
+const SL_TEXTE_KEY = 'feldfolio-sl-status';
+function slGemerkteTexte() {
+  try { const t = JSON.parse(localStorage.getItem(SL_TEXTE_KEY) || 'null'); if (t && t.konv && t.umst && t.oeko) return t; } catch { /* ohne Speicher */ }
+  return { ...SL_STATUS_STANDARD };
+}
+const slHeute = () => new Date().toISOString().slice(0, 10);
+const slStichtag = () => (schlaglisteData && schlaglisteData.stichtag) || slHeute();
+function slJahr() {
+  const years = compareYearsSorted().filter(y => y.jahr);
+  if (!schlaglisteData || !years.length) return null;
+  return years.find(y => y.jahr === schlaglisteData.jahr) || years[years.length - 1];
+}
+// Flächen eines hinterlegten Jahres als Abgleich-Kandidaten (Schlüssel = Nummer)
+function slFlaechen(y) {
+  if (!y) return [];
+  const seen = new Set();
+  return (y.fc.features || []).map((f, i) => {
+    const p = f.properties || {};
+    const nummer = pickField(p, FIELD_CANDIDATES.nummer);
+    let key = nummer ? 'n:' + nummer : 'i:' + i;
+    if (seen.has(key)) key += '#' + i;
+    seen.add(key);
+    const flik = pickField(p, FIELD_CANDIDATES.flaechenid), kultur = pickField(p, FIELD_CANDIDATES.kultur);
+    // Bayern: Feldstücknummer (in der Liste vorn in der Bezeichnung) und Kultur im Katalog
+    const fsnr = p.FSNr !== undefined && p.FSNr !== null ? String(p.FSNr).trim() : '';
+    const kulturKat = kultur ? (kulturZuordnen(kultur, slKulturGemerkt()).name || '') : '';
+    // Landschaftselement (Hecke, Baumreihe …): gehört zum Schlag, kein eigener Umstellungsfall.
+    // Vom Kontrolleur ausgeblendete Flächen (z. B. nicht erkanntes Feldgehölz) zählen genauso.
+    const leAuto = LANDSCHAFTSELEMENT_RE.test(kultur) || LANDSCHAFTSELEMENT_FLIK_RE.test(flik);
+    const leManuell = !leAuto && !!((schlaglisteData && schlaglisteData.ausgeblendet) || {})[key];
+    return { key, nummer, fsnr, kulturKat, name: pickField(p, FIELD_CANDIDATES.name), ha: parseHa(pickGroesse(p)), flik, kultur, le: leAuto || leManuell, leManuell, feature: f };
+  });
+}
+// Umnummerierungen zum Vorjahr (geometrisch) als Hilfe für den Abgleich
+function slUmnummeriert(y) {
+  const years = compareYearsSorted().filter(x => x.jahr);
+  const vor = years[years.indexOf(y) - 1];
+  const map = new Map();
+  if (!vor) return map;
+  const nrs = (yy) => new Map((yy.fc.features || []).map(f => [pickField(f.properties || {}, FIELD_CANDIDATES.nummer), f]).filter(([nr]) => nr));
+  const a = nrs(vor), b = nrs(y);
+  findeUmnummerierungen([...a].filter(([nr]) => !b.has(nr)).map(([nr, f]) => ({ nr, f })), [...b].filter(([nr]) => !a.has(nr)).map(([nr, f]) => ({ nr, f })))
+    .forEach(p => map.set(String(p.alt).replace(/^0+(?=\d)/, ''), String(p.neu).replace(/^0+(?=\d)/, '')));
+  return map;
+}
+// Aktueller Abgleich (wird bei jeder Änderung neu berechnet)
+function slBerechne() {
+  const y = slJahr();
+  const feats = slFlaechen(y);
+  const sl = { header: schlaglisteData.header, rows: schlaglisteData.rows, col: slParse([schlaglisteData.header, ...schlaglisteData.rows]).col };
+  const abgleich = slAbgleich(sl, feats, { manuell: schlaglisteData.manuell, zurPruefung: schlaglisteData.zurPruefung || {}, umnummeriert: y ? slUmnummeriert(y) : null });
+  const ctx = { y, feats, sl, abgleich, featByKey: new Map(feats.map(f => [f.key, f])) };
+  ctx.teile = slTeileErkennen(ctx);
+  slTeileAktuell = ctx.teile;
+  return ctx;
+}
+// Teilstücke, die in der Liste als eigene Zeile stehen (z. B. "23 … Teilstück 2026",
+// eigener Zugang), in den Shapes aber Teil einer Fläche sind: Zeile ohne Fläche,
+// gleiche Nummer vorn in der Bezeichnung wie eine zugeordnete Zeile, und beide
+// zusammen ergeben genau die Größe der Fläche. -> kein Abgang, die Hauptzeile
+// bekommt beim Export nur den Rest. Ergebnis: Map teilIdx -> { haupt, f }
+let slTeileAktuell = new Map();
+function slTeileErkennen(ctx) {
+  const d = schlaglisteData;
+  const teile = new Map();
+  const zugeordnet = ctx.abgleich.zeilen.filter(e => e.key && (e.art === 'sicher' || e.art === 'manuell' || e.art === 'pruefen'));
+  const ohne = ctx.abgleich.zeilen.filter(e => (e.art === 'fehlt' || e.art === 'abgang') && e.z.bezNr && e.z.ha
+    && !d.abgangAm[e.idx] && (d.nachAntrag || {})[e.idx] === undefined);
+  const passt = (soll, ist) => Math.abs(soll - ist) <= Math.max(0.002, ist * 0.002);
+  zugeordnet.forEach(h => {
+    const f = ctx.featByKey.get(h.key);
+    if (!f || f.ha === null || f.ha === undefined || h.z.ha === null) return;
+    const kandidaten = ohne.filter(t => t.z.bezNr === h.z.bezNr && !teile.has(t.idx));
+    if (!kandidaten.length || passt(h.z.ha, f.ha)) return;
+    const einer = kandidaten.find(t => passt(h.z.ha + t.z.ha, f.ha));
+    const gewaehlt = einer ? [einer] : (passt(h.z.ha + kandidaten.reduce((s, t) => s + t.z.ha, 0), f.ha) ? kandidaten : []);
+    gewaehlt.forEach(t => teile.set(t.idx, { haupt: h, f }));
+  });
+  return teile;
+}
+// Status einer Zeile / neuen Fläche am Stichtag
+function slStatusInfo(beginn) {
+  const s = slStufe(beginn, slStichtag());
+  return s ? { ...s, ...SL_STUFEN[s.key], beginn } : null;
+}
+function slBadge(info) {
+  if (!info) return '<span class="sl-badge is-leer" title="Kein Umstellungsbeginn bekannt">ohne Datum</span>';
+  const tip = info.key === 'oeko' ? `ökologisch seit ${slDeAusIso(info.oekoAb)}` : info.key === 'umst' ? `Umstellung, ökologisch ab ${slDeAusIso(info.oekoAb)}` : `konventionell, Umstellung ab ${slDeAusIso(info.umstAb)}, ökologisch ab ${slDeAusIso(info.oekoAb)}`;
+  return `<span class="sl-badge is-${info.key}" title="${escapeHtml(tip)}">${escapeHtml(info.kurz)}</span>`;
+}
+// Status je Flächennummer des Abgleichsjahres — für Tabelle/Popup im Jahresvergleich
+function slStatusJeNummer() {
+  const out = new Map();
+  if (!schlaglisteData || document.body.dataset.auth !== 'in') return out;
+  const { abgleich, featByKey } = slBerechne();
+  abgleich.zeilen.forEach(e => { if (e.key && featByKey.get(e.key).nummer) out.set(featByKey.get(e.key).nummer, slStatusInfo(e.z.zugang)); });
+  abgleich.neu.forEach(f => { const b = schlaglisteData.zugangNeu[f.key]; if (b && f.nummer) out.set(f.nummer, slStatusInfo(b)); });
+  return out;
+}
+
+// Nach dem Agrarantrag (15.05. des Abgleichsjahres) zugegangene Flächen stehen
+// schon in der Liste, aber noch nicht in den Shapes — sie bleiben ohne Abgang.
+// Automatisch bei Zugang nach dem 15.05.; sonst (z. B. Bio-Zugang mit älterem
+// Umstellungsdatum vom Vorbewirtschafter) vom Kontrolleur markiert.
+// schlaglisteData.nachAntrag: { [idx]: true (markiert) | false (doch nicht) }
+const SL_ANTRAG_STICHTAG = '05-15';
+function slNachAntrag(e) {
+  const d = schlaglisteData;
+  if (!d || !(e.art === 'fehlt' || e.art === 'abgang')) return null;
+  const m = (d.nachAntrag || {})[e.idx];
+  if (m === true) return 'markiert';
+  if (m === 'gleich') return 'gleich';
+  if (m === false) return null;
+  if (slTeileAktuell.has(e.idx)) return 'teil';
+  const jahr = d.jahr || (slJahr() || {}).jahr;
+  return jahr && e.z.zugang && e.z.zugang > `${jahr}-${SL_ANTRAG_STICHTAG}` ? 'auto' : null;
+}
+function slZaehle(abgleich) {
+  const n = { sicher: 0, pruefen: 0, neu: 0, fehlt: 0, unvollstaendig: 0, offenNeu: 0 };
+  abgleich.zeilen.forEach(e => {
+    if (e.art === 'sicher' || e.art === 'manuell') n.sicher++;
+    else if (e.art === 'pruefen') n.pruefen++;
+    else if (e.art === 'unvollstaendig') n.unvollstaendig++;
+    else n.fehlt++;
+  });
+  n.neu = abgleich.neu.filter(f => !f.le).length;
+  n.offenNeu = abgleich.neu.filter(f => !f.le && !schlaglisteData.zugangNeu[f.key]).length;
+  n.offenFehlt = abgleich.zeilen.filter(e => (e.art === 'fehlt' || e.art === 'abgang') && !schlaglisteData.abgangAm[e.idx] && !slNachAntrag(e)).length;
+  n.nachAntrag = abgleich.zeilen.filter(e => slNachAntrag(e)).length;
+  return n;
+}
+function renderSchlaglisteBox() {
+  const has = !!schlaglisteData;
+  document.getElementById('sl-actions').hidden = !has;
+  document.getElementById('sl-drop-label').textContent = has ? 'Andere Schlagliste laden (.xlsx)…' : 'Schlagliste laden (.xlsx)…';
+  const sum = document.getElementById('sl-summary');
+  if (!has) { sum.innerHTML = '<p class="sl-empty">Schlagliste aus dem externen Programm laden — FeldFolio ordnet die Flächen zu und berechnet den Umstellungsstatus.</p>'; return; }
+  const y = slJahr();
+  if (!y) { sum.innerHTML = `<p class="sl-empty"><b>${escapeHtml(schlaglisteData.fileName)}</b><br>Erst Shape-Dateien eines Jahres hinterlegen.</p>`; return; }
+  const ctx = slBerechne();
+  const n = slZaehle(ctx.abgleich);
+  const faelle = slFaelle(ctx, slGeoAnalyse(ctx.y, ctx.feats));
+  const offen = faelle.filter(f => !f.erledigt).length;
+  const kritOffen = faelle.filter(f => f.typ === 'kritisch' && !f.erledigt).length;
+  const pct = faelle.length ? Math.round((faelle.length - offen) / faelle.length * 100) : 100;
+  sum.innerHTML = `<div class="sl-file" title="${escapeHtml(schlaglisteData.fileName)}"><span class="material-symbols-rounded icon" aria-hidden="true">table_view</span>${escapeHtml(schlaglisteData.fileName)}</div>
+    <div class="sl-mini">
+      <span class="is-ok"><b>${n.sicher}</b> zugeordnet</span>
+      <span class="${n.pruefen ? 'is-warn' : ''}"><b>${n.pruefen}</b> prüfen</span>
+      <span class="${n.offenNeu ? 'is-warn' : ''}"><b>${n.neu}</b> neu</span>
+      <span class="${n.offenFehlt ? 'is-warn' : ''}"><b>${n.fehlt - n.nachAntrag}</b> nicht in ${escapeHtml(y.jahr)}</span>${n.nachAntrag ? `
+      <span><b>${n.nachAntrag}</b> nach Antrag</span>` : ''}
+    </div>
+    <div class="sl-prog-bar is-mini${offen ? '' : ' is-done'}" title="${pct} % geklärt"><span style="width:${pct}%"></span></div>
+    <p class="sl-hint">${offen ? `Noch <b>${offen}</b> ${offen === 1 ? 'Fall' : 'Fälle'} zu klären${kritOffen ? `, davon <b>${kritOffen} kritisch</b>` : ''}.` : 'Alles geklärt.'} Flächen aus ${escapeHtml(y.jahr)} · Stichtag ${slDeAusIso(slStichtag())}</p>`;
+}
+
+async function loadSchlaglisteFile(file) {
+  try {
+    if (typeof XLSX === 'undefined') throw new Error('Excel-Bibliothek nicht geladen.');
+    const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+    const sheetName = wb.SheetNames[0];
+    const ws = wb.Sheets[sheetName];
+    const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: '' });
+    const parsed = slParse(aoa);
+    if (schlaglisteData && !confirm(`Die bisherige Schlagliste „${schlaglisteData.fileName}“ samt Zuordnungen ersetzen?`)) return;
+    const years = compareYearsSorted().filter(y => y.jahr);
+    schlaglisteData = {
+      fileName: file.name, sheetName, header: parsed.header, rows: parsed.rows,
+      cols: (ws['!cols'] || []).map(c => (c && c.wch ? { wch: c.wch } : null)),
+      jahr: years.length ? years[years.length - 1].jahr : '', stichtag: slHeute(),
+      // Statustexte: gemerkt bzw. Vorgabe, überschrieben von dem, was in der Liste selbst steht
+      statusTexte: { ...slGemerkteTexte(), ...slStatusTexteLernen(parsed, slHeute()) }, manuell: {}, zugangNeu: {}, abgangAm: {}, importiertAm: new Date().toISOString()
+    };
+    slUndoStapel = [];
+    Object.keys(slSecZustand).forEach(k => delete slSecZustand[k]);
+    renderSchlaglisteBox();
+    refreshCompareStatusColumn();
+    persistLocalState().catch(() => {});
+    setCompareStatus(`${file.name}: ${parsed.rows.length} Zeilen gelesen.`);
+    if (years.length) openSchlaglisteReview();
+  } catch (err) {
+    console.error(err);
+    showCompareError(file.name + ': ' + (err.message || 'Schlagliste konnte nicht gelesen werden.'));
+  }
+}
+document.getElementById('sl-file').addEventListener('change', async (e) => {
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (f) await loadSchlaglisteFile(f);
+});
+document.getElementById('btn-sl-review').addEventListener('click', () => openSchlaglisteReview());
+document.getElementById('btn-sl-export').addEventListener('click', () => exportSchlagliste());
+document.getElementById('sl-export2').addEventListener('click', () => exportSchlagliste());
+document.getElementById('btn-sl-reset').addEventListener('click', () => slZuruecksetzen());
+document.getElementById('btn-sl-remove').addEventListener('click', () => {
+  if (!schlaglisteData || !confirm(`Schlagliste „${schlaglisteData.fileName}“ samt Zuordnungen entfernen?`)) return;
+  closeSchlaglisteReview();
+  schlaglisteData = null;
+  renderSchlaglisteBox();
+  refreshCompareStatusColumn();
+  persistLocalState().catch(() => {});
+});
+
+// Flächendifferenz Liste -> Shape als Text (nur wenn sie über 0,0001 ha liegt)
+function slHaDiff(listeHa, shapeHa) {
+  if (listeHa === null || listeHa === undefined || shapeHa === null || shapeHa === undefined || shapeHa === false) return '';
+  const d = shapeHa - listeHa;
+  if (Math.abs(d) < 0.00005) return '';
+  return ` · Shape ${d > 0 ? '+' : '−'}${formatHaExact(Math.abs(d))} ha gegenüber Liste`;
+}
+// Listenzeile kurz: Bezeichnung, Schlagnummer nur davor, wenn sie dort nicht schon steht
+const slZeileName = (z) => ((z.nr && !z.bezNr ? z.nr + ' ' : '') + (z.bez || '–')).trim();
+// ---- Abgleich auf der Karte ----
+// Der Abgleich läuft als Panel neben der Karte: jede Fläche des Abgleichsjahres
+// ist eingefärbt (zugeordnet / prüfen / neu), kritische Änderungen gegenüber
+// dem Vorjahr sind sichtbar (dazugekommenes Teilstück rot, weggefallenes
+// gestrichelt). Fall antippen -> Karte fliegt hin; Fläche antippen -> Fall
+// im Panel. Ein dazugekommenes Teilstück kann als Unterfläche mit eigenem
+// Umstellungsbeginn angelegt werden (eigene Zeile im Export).
+// Leicht spielerisch: Fortschritt "x von y geklärt", Häkchen beim Erledigen,
+// Auge für "auf der Karte angesehen", kleine Feier, wenn alles geklärt ist.
+const SL_MIN_HA = 0.01;
+const SL_FARBEN = { le: '#7FA36B', zugeordnet: '#5F7A93', pruefen: '#E8A33D', neu: '#4C9BE8', plus: '#E0507A', weg: '#E0507A', fehlt: '#D97757' };
+let slGeoCache = null;
+let slMapLayer = null;
+let slFocusLayer = null;
+let slFokus = null;            // id des Falls, der gerade auf der Karte gezeigt wird
+let slVorherErledigt = null;   // Set der erledigten Fälle beim letzten Zeichnen (für den Häkchen-Effekt)
+let slWarFertig = false;
+const slSecZustand = {};       // Abschnitt -> { offen, fertig } wie zuletzt vom Nutzer gesetzt
+function slSecMerken(det) {
+  if (!det || !det.dataset.slSec) return;
+  slSecZustand[det.dataset.slSec] = { offen: det.open, fertig: det.dataset.slFertig === 'null' ? null : det.dataset.slFertig === 'true' };
+}
+const slOhneNullen = (s) => String(s || '').replace(/^0+(?=\d)/, '');
+const slHaVon = (g) => { try { return g ? turf.area(g) / 10000 : 0; } catch { return 0; } };
+// Nur "echte" Teilstücke behalten: Splitter aus leicht versetzten Grenzlinien
+// (mittlere Breite unter 5 m) und Kleinststücke unter 0,01 ha fallen weg.
+const SL_MIN_BREITE_M = 5;
+function slEchteTeile(geom) {
+  if (!geom || !geom.geometry) return null;
+  const polys = geom.geometry.type === 'Polygon' ? [geom.geometry.coordinates] : geom.geometry.type === 'MultiPolygon' ? geom.geometry.coordinates : [];
+  const behalten = polys.filter(coords => {
+    try {
+      const p = turf.polygon(coords);
+      const m2 = turf.area(p);
+      const umfang = turf.length(turf.polygonToLine(p), { units: 'kilometers' }) * 1000;
+      return m2 / 10000 >= SL_MIN_HA && umfang > 0 && (2 * m2 / umfang) >= SL_MIN_BREITE_M;
+    } catch { return false; }
+  });
+  if (!behalten.length) return null;
+  return behalten.length === 1 ? turf.polygon(behalten[0]) : turf.multiPolygon(behalten);
+}
+function slVorjahr(y) {
+  const years = compareYearsSorted().filter(x => x.jahr);
+  return years[years.indexOf(y) - 1] || null;
+}
+// Je Fläche des Abgleichsjahres: neues Teilstück (nicht in den Vorjahresflächen),
+// weggefallenes Stück des Vorgängers, Vorgänger (gleiche Nummer, umnummeriert
+// oder größte Überdeckung) und Anteil "Neuland".
+function slGeoAnalyse(y, feats) {
+  const vor = y ? slVorjahr(y) : null;
+  const cacheKey = y ? `${y.id}|${vor ? vor.id : '-'}|${feats.length}|${(y.fc.features || []).length}|${vor ? (vor.fc.features || []).length : 0}` : '-';
+  if (slGeoCache && slGeoCache.key === cacheKey) return slGeoCache.data;
+  const data = { vor, byKey: new Map(), vorByNr: new Map() };
+  slGeoCache = { key: cacheKey, data };
+  if (!vor || typeof turf === 'undefined') return data;
+  const vorFeats = (vor.fc.features || []).filter(f => f.geometry && /Polygon/.test(f.geometry.type));
+  vorFeats.forEach(f => { const nr = pickField(f.properties || {}, FIELD_CANDIDATES.nummer); if (nr) data.vorByNr.set(slOhneNullen(nr), f); });
+  let union = null;
+  vorFeats.forEach(f => { try { union = union ? turf.union(union, f) : f; } catch { /* ungültige Geometrie */ } });
+  const neuZuAlt = new Map([...slUmnummeriert(y)].map(([alt, neu]) => [neu, alt]));
+  feats.forEach(f => {
+    const g = f.feature;
+    if (!g || !g.geometry || !/Polygon/.test(g.geometry.type)) return;
+    const info = { neuGeom: null, neuHa: 0, wegGeom: null, wegHa: 0, vorgaenger: null, vorgaengerNr: '', anteilNeu: 1, ganzNeu: false, umnummeriert: false };
+    try {
+      const total = slHaVon(g);
+      if (union) {
+        const d = slEchteTeile(turf.difference(g, union));
+        info.neuHa = slHaVon(d);
+        info.anteilNeu = total ? info.neuHa / total : 1;
+        // Ganz neue Fläche: kein "Teilstück", sondern eine eigene neue Fläche
+        if (info.anteilNeu >= 0.9) info.ganzNeu = true;
+        else if (d) info.neuGeom = d;
+      }
+      const nr = slOhneNullen(f.nummer);
+      let v = data.vorByNr.get(nr) || null;
+      let vnr = v ? nr : '';
+      if (!v && neuZuAlt.has(nr)) { vnr = neuZuAlt.get(nr); v = data.vorByNr.get(vnr) || null; info.umnummeriert = !!v; }
+      if (!v) {
+        let best = 0;
+        vorFeats.forEach(ff => { try { const a = slHaVon(turf.intersect(g, ff)); if (a > best) { best = a; v = ff; } } catch { /* ungültig */ } });
+        if (best < SL_MIN_HA) v = null;
+        vnr = v ? slOhneNullen(pickField(v.properties || {}, FIELD_CANDIDATES.nummer)) : '';
+      }
+      info.vorgaenger = v;
+      info.vorgaengerNr = vnr;
+    } catch (err) { console.warn('Geometrievergleich (Schlagliste):', err.message); }
+    data.byKey.set(f.key, info);
+  });
+  // "weggefallen" = Teil des Vorgängers, den KEINE der Flächen mit diesem Vorgänger mehr
+  // abdeckt. Wurde eine Fläche geteilt (3 -> 3/1, 3/2, 3/3), ist der Rest nicht weg.
+  const jeVorgaenger = new Map();
+  feats.forEach(f => { const i = data.byKey.get(f.key); if (i && i.vorgaenger && f.feature) jeVorgaenger.set(i.vorgaenger, [...(jeVorgaenger.get(i.vorgaenger) || []), f]); });
+  jeVorgaenger.forEach((gruppe, v) => {
+    try {
+      let rest = v;
+      gruppe.forEach(f => { if (rest) rest = turf.difference(rest, f.feature); });
+      const w = rest ? slEchteTeile(rest) : null;
+      gruppe.forEach(f => { const i = data.byKey.get(f.key); i.geteilt = gruppe.length > 1; if (w) { i.wegGeom = w; i.wegHa = slHaVon(w); } });
+    } catch (err) { console.warn('Geometrievergleich (Schlagliste):', err.message); }
+  });
+  return data;
+}
+// Alle Fälle des Abgleichs (für Fortschritt und Panel)
+function slFaelle(ctx, geo) {
+  const d = schlaglisteData;
+  const zeileByKey = new Map(ctx.abgleich.zeilen.filter(e => e.key).map(e => [e.key, e]));
+  const faelle = [];
+  ctx.feats.forEach(f => {
+    const g = geo.byKey.get(f.key);
+    if (!g || !g.neuGeom) return;
+    const u = (d.unterflaechen || {})[f.key];
+    faelle.push({ id: 'k:' + f.key, typ: 'kritisch', key: f.key, erledigt: !!(u && u.beginn) || !!(d.teilstueckOk || {})[f.key] });
+  });
+  ctx.abgleich.zeilen.forEach(e => {
+    if (e.art === 'pruefen') faelle.push({ id: 'p:' + e.idx, typ: 'pruefen', idx: e.idx, key: e.key, erledigt: false });
+    else if (e.art === 'manuell') faelle.push({ id: 'p:' + e.idx, typ: 'pruefen', idx: e.idx, key: e.key, erledigt: true });
+    else if ((e.art === 'fehlt' || e.art === 'abgang') && !slNachAntrag(e)) faelle.push({ id: 'f:' + e.idx, typ: 'fehlt', idx: e.idx, erledigt: !!d.abgangAm[e.idx] });
+  });
+  ctx.abgleich.neu.filter(f => !f.le).forEach(f => faelle.push({ id: 'n:' + f.key, typ: 'neu', key: f.key, erledigt: !!d.zugangNeu[f.key] }));
+  // Kulturen ohne eindeutige Zuordnung zum Katalog des externen Programms
+  slKulturen(ctx).forEach(k => { if (k.offen || k.bestaetigt) faelle.push({ id: 'c:' + k.quelle, typ: 'kultur', quelle: k.quelle, erledigt: !k.offen }); });
+  return faelle;
+}
+// Geteilt? Eine Listenzeile ist in mehrere Flächen aufgegangen (z. B. Feldstück 3
+// -> Schläge 3/1 + 3/2): die Flächen gehören zur Zeile (gleiche Feldstücknummer,
+// gleiche FLIK oder derselbe Vorgänger im Vorjahr), sind noch frei, und ihre
+// Summe ergibt die Größe der Zeile. Nur ein VORSCHLAG — der Kontrolleur bestätigt.
+// Ergebnis: Zeilen-Index -> { teile: [Fläche, größte zuerst], summe }
+function slTeilungen(ctx, geo) {
+  const d = schlaglisteData;
+  const out = new Map();
+  const frei = new Set(ctx.abgleich.neu.filter(f => !f.le).map(f => f.key));
+  const passt = (soll, ist) => Math.abs(soll - ist) <= Math.max(0.01, soll * 0.005);
+  ctx.abgleich.zeilen.forEach(e => {
+    if (!['pruefen', 'fehlt'].includes(e.art) || !e.z.ha) return;
+    if (d.abgangAm[e.idx] || slNachAntrag(e)) return;
+    if (e.art === 'pruefen' && e.key && passt(e.z.ha, ctx.featByKey.get(e.key).ha || 0)) return; // passt schon allein
+    const vorF = slVorjahrFlaeche(ctx, geo, e);
+    const kand = ctx.feats.filter(f => !f.le && f.ha && (frei.has(f.key) || f.key === e.key) && (
+      (f.fsnr && e.z.bezNr && slOhneNullen(f.fsnr) === e.z.bezNr) || slFlikPasst(e.z, f) === 'gleich'
+      || (vorF && (geo.byKey.get(f.key) || {}).vorgaenger === vorF)));
+    if (kand.length < 2 || kand.length > 8) return;
+    let best = null;
+    for (let m = 3; m < (1 << kand.length); m++) {
+      const teile = kand.filter((_, i) => m & (1 << i));
+      if (teile.length < 2) continue;
+      const summe = teile.reduce((sum, f) => sum + f.ha, 0);
+      const diff = Math.abs(summe - e.z.ha);
+      if (passt(e.z.ha, summe) && (!best || diff < best.diff)) best = { teile, summe, diff };
+    }
+    if (best) out.set(e.idx, { teile: best.teile.slice().sort((a, b) => b.ha - a.ha), summe: best.summe });
+  });
+  return out;
+}
+// Übernommene Teilungen: schlaglisteData.teilVon = { [flächenKey]: zeilenIdx } — die
+// Zeile selbst ist der größten Fläche zugeordnet (manuell), die übrigen Teile werden
+// neue Zeilen mit dem Umstellungsdatum der Zeile. Gilt nur, solange die Zeile zugeordnet ist.
+function slTeilVon(ctx, key) {
+  const idx = (schlaglisteData.teilVon || {})[key];
+  if (idx === undefined) return null;
+  const e = ctx.abgleich.zeilen[idx];
+  return e && e.art === 'manuell' ? e : null;
+}
+// Zusammengelegt? Mehrere Listenzeilen mit gleicher FLIK ergeben zusammen genau
+// die Größe einer Fläche (z.B. zwei Teilschläge 2026 als ein Schlag beantragt).
+// Ergebnis: Zeilen-Index -> { f, zeilen, summe }
+function slZusammenlegungen(ctx) {
+  const out = new Map();
+  ctx.feats.filter(f => !f.le && f.flik && f.ha).forEach(f => {
+    const zeilen = ctx.abgleich.zeilen.filter(e => e.art !== 'unvollstaendig' && e.z.ha !== null
+      && (e.key === f.key || ['fehlt', 'abgang', 'pruefen'].includes(e.art)) && slFlikPasst(e.z, f) === 'gleich');
+    if (zeilen.length < 2) return;
+    const summe = zeilen.reduce((sum, e) => sum + e.z.ha, 0);
+    if (Math.abs(summe - f.ha) > Math.max(0.01, f.ha * 0.002)) return;
+    zeilen.forEach(e => out.set(e.idx, { f, zeilen, summe }));
+  });
+  return out;
+}
+// ---- Kulturen (Katalog des externen Programms, siehe kulturen.js) ----
+const SL_KULTUR_KEY = 'feldfolio-kultur-zuordnung';
+function slKulturGemerkt() {
+  let global = {};
+  try { global = JSON.parse(localStorage.getItem(SL_KULTUR_KEY) || '{}') || {}; } catch { /* ohne Speicher */ }
+  return { ...global, ...((schlaglisteData && schlaglisteData.kulturen) || {}) };
+}
+function slKulturMerken(quelle, name) {
+  schlaglisteData.kulturen = { ...(schlaglisteData.kulturen || {}), [quelle]: name };
+  try {
+    const g = JSON.parse(localStorage.getItem(SL_KULTUR_KEY) || '{}') || {};
+    g[quelle] = name;
+    localStorage.setItem(SL_KULTUR_KEY, JSON.stringify(g));
+  } catch { /* ohne Speicher */ }
+}
+const slKulturVon = (f) => (f && f.kultur && !f.le ? kulturZuordnen(f.kultur, slKulturGemerkt()) : null);
+// Verschiedene Kulturen der Flächen (ohne Landschaftselemente) mit ihrer Zuordnung
+// Kategorie (Spalte "Kategorie") je Katalogkultur: festgelegt > aus der Liste gelernt > Regel
+const SL_KATEGORIE_KEY = 'feldfolio-kultur-kategorie';
+function slGelernteKategorien(ctx) {
+  const m = new Map();
+  if (ctx.sl.col.kultur !== undefined && ctx.sl.col.kategorie !== undefined) {
+    ctx.sl.rows.forEach(r => { const k = String(r[ctx.sl.col.kultur] || '').trim(), c = String(r[ctx.sl.col.kategorie] || '').trim(); if (k && c && !m.has(k)) m.set(k, c); });
+  }
+  let global = {};
+  try { global = JSON.parse(localStorage.getItem(SL_KATEGORIE_KEY) || '{}') || {}; } catch { /* ohne Speicher */ }
+  Object.entries({ ...global, ...((schlaglisteData && schlaglisteData.kategorien) || {}) }).forEach(([k, c]) => m.set(k, c));
+  return m;
+}
+function slKategorieMerken(kultur, kategorie) {
+  schlaglisteData.kategorien = { ...(schlaglisteData.kategorien || {}), [kultur]: kategorie };
+  try {
+    const g = JSON.parse(localStorage.getItem(SL_KATEGORIE_KEY) || '{}') || {};
+    g[kultur] = kategorie;
+    localStorage.setItem(SL_KATEGORIE_KEY, JSON.stringify(g));
+  } catch { /* ohne Speicher */ }
+}
+// Auswahl für "Kategorie": Kategorien des externen Programms (+ abweichende aus der Liste)
+function slKategorieOptionen(ctx) {
+  const set = new Set(INTACT_KATEGORIEN);
+  if (ctx.sl.col.kategorie !== undefined) ctx.sl.rows.forEach(r => { const c = String(r[ctx.sl.col.kategorie] || '').trim(); if (c) set.add(c); });
+  Object.values((schlaglisteData && schlaglisteData.kategorien) || {}).forEach(c => set.add(c));
+  return [...set].sort((a, b) => a.localeCompare(b, 'de'));
+}
+function slKulturen(ctx) {
+  const d = schlaglisteData;
+  const kategorien = slGelernteKategorien(ctx);
+  const map = new Map();
+  ctx.feats.filter(f => f.kultur && !f.le).forEach(f => {
+    const e = map.get(f.kultur) || { quelle: f.kultur, anzahl: 0, ha: 0, keys: [] };
+    e.anzahl++; e.ha += f.ha || 0; e.keys.push(f.key);
+    map.set(f.kultur, e);
+  });
+  // Hinweis aus der Schlagliste: Welche Kultur steht dort bisher bei den Flächen
+  // mit dieser Kultur? (Vorjahreskultur — bei mehrjährigen Kulturen meist dieselbe)
+  const zeileJeKey = new Map(ctx.abgleich.zeilen.filter(z => z.key).map(z => [z.key, z]));
+  return [...map.values()].map(e => {
+    let zu = slKulturVon({ kultur: e.quelle });
+    const unsicher = zu.sicherheit === 'aehnlich' || zu.sicherheit === 'unbekannt';
+    const listeZaehl = new Map();
+    // nur bei unsicherer Zuordnung — bei eindeutigen Kulturen wäre der Vorjahreswert nur Fruchtwechsel
+    if (unsicher) e.keys.forEach(k => { const z = zeileJeKey.get(k); if (!z || !z.z.kultur) return; const n = kulturZuordnen(z.z.kultur).name || z.z.kultur; listeZaehl.set(n, [...(listeZaehl.get(n) || []), slZeileName(z.z)]); });
+    const liste = [...listeZaehl.entries()].map(([name, zeilen]) => ({ name, zeilen })).sort((a, b) => b.zeilen.length - a.zeilen.length);
+    // Unsicherer Vorschlag, den die Liste genau so führt -> bestätigt
+    if ((zu.sicherheit === 'aehnlich' || zu.sicherheit === 'unbekannt') && zu.name && liste.some(l => l.name === zu.name)) zu = { ...zu, sicherheit: 'liste' };
+    const bestaetigt = !!(d.kulturen || {})[e.quelle];
+    const kategorie = zu.name ? kategorieFuer(zu.name, kategorien) : null;
+    const kulturOffen = !bestaetigt && (zu.sicherheit === 'aehnlich' || zu.sicherheit === 'unbekannt');
+    const kategorieOffen = d.kulturUebernehmen !== false && !!zu.name && !kategorie;
+    // Fälle nur, wenn die Kulturen auch exportiert werden
+    const aktiv = d.kulturUebernehmen !== false;
+    return { ...e, zu, liste, bestaetigt: bestaetigt || !!(d.kategorien || {})[zu.name], kategorie, kulturOffen: aktiv && kulturOffen, kategorieOffen, offen: aktiv && (kulturOffen || kategorieOffen) };
+  }).sort((a, b) => Number(b.offen) - Number(a.offen) || b.ha - a.ha);
+}
+const SL_KULTUR_LABEL = { gleich: 'gleich', regel: 'Regel', aehnlich: 'ähnlich – prüfen', unbekannt: 'unbekannt', manuell: 'festgelegt', liste: 'wie in der Liste' };
+const slKulturBadge = (zu) => `<span class="sl-kbadge is-${zu.sicherheit}">${SL_KULTUR_LABEL[zu.sicherheit]}</span>`;
+const slKulturText = (f) => { const zu = slKulturVon(f); return zu && zu.name ? ` <span class="sl-kultur" title="${escapeHtml(f.kultur)}">→ ${escapeHtml(zu.name)}</span>` : ''; };
+const SL_KATALOG_OPTIONEN = INTACT_KULTUREN.slice().sort((a, b) => a.name.localeCompare(b.name, 'de'));
+// Je Feldblock (FLIK-Kern) die Listenzeile, deren Umstellungsdatum als Vorschlag für
+// weitere Flächen dieses Feldblocks dient: die GRÖSSTE zugehörige Zeile (auch ein noch
+// offener Zweifelsfall) — nicht ein kleines Teilstück mit eigenem, späterem Datum.
+function slFeldblockDaten(ctx) {
+  const m = new Map();
+  ctx.abgleich.zeilen.filter(e => e.key && e.z.zugang).forEach(e => {
+    const kern = slFlikKern(ctx.featByKey.get(e.key).flik);
+    if (!kern) return;
+    const bisher = m.get(kern);
+    if (!bisher || (e.z.ha || 0) > (bisher.z.ha || 0)) m.set(kern, e);
+  });
+  return m;
+}
+// Umstellungsdatum der Listenzeile, die zur Vorjahresfläche mit dieser Nummer gehört
+function slDatumVonNummer(ctx, nr) {
+  if (!nr) return null;
+  const e = ctx.abgleich.zeilen.find(z => z.key && z.art !== 'pruefen' && slOhneNullen(ctx.featByKey.get(z.key).nummer) === nr)
+    || ctx.abgleich.zeilen.find(z => z.z.nr === nr || z.z.bezNr === nr);
+  return e && e.z.zugang ? { datum: e.z.zugang, name: slZeileName(e.z) } : null;
+}
+function slChips(geo, f) {
+  const g = f && geo.byKey.get(f.key);
+  if (!g) return '';
+  const vj = geo.vor ? geo.vor.jahr : 'Vorjahr';
+  const out = [];
+  if (g.neuGeom) out.push(`<span class="sl-chip is-plus" title="Teilstück, das ${escapeHtml(vj)} zu keiner Fläche gehörte">+${formatHaExact(g.neuHa)} ha neu</span>`);
+  if (g.wegGeom) out.push(`<span class="sl-chip is-minus" title="Stück der Fläche aus ${escapeHtml(vj)}, das jetzt fehlt">−${formatHaExact(g.wegHa)} ha weg</span>`);
+  if (g.ganzNeu) out.push(`<span class="sl-chip is-plus" title="Fläche gehörte ${escapeHtml(vj)} zu keiner Fläche des Betriebs">neu seit ${escapeHtml(vj)}</span>`);
+  if (g.umnummeriert) out.push(`<span class="sl-chip">Nr. ${escapeHtml(g.vorgaengerNr)} → ${escapeHtml(slOhneNullen(f.nummer))}</span>`);
+  if (g.geteilt && g.vorgaengerNr) out.push(`<span class="sl-chip" title="Mehrere Flächen liegen auf der Fläche Nr. ${escapeHtml(g.vorgaengerNr)} aus ${escapeHtml(vj)}">geteilt aus Nr. ${escapeHtml(g.vorgaengerNr)}</span>`);
+  return out.join('');
+}
+const slAuge = (id) => ((schlaglisteData.angesehen || {})[id] ? '<span class="sl-eye" title="Auf der Karte angesehen"><span class="material-symbols-rounded icon" aria-hidden="true">visibility</span></span>' : '');
+const slKarteBtn = (id) => `<button type="button" class="sl-mapbtn" data-sl-focus="${escapeHtml(id)}" title="Auf der Karte zeigen" aria-label="Auf der Karte zeigen"><span class="material-symbols-rounded icon" aria-hidden="true">my_location</span></button>`;
+
+function openSchlaglisteReview() {
+  if (!schlaglisteData) return;
+  if (!slJahr()) { showCompareError('Erst Shape-Dateien eines Jahres hinterlegen.'); return; }
+  const panel = document.getElementById('sl-overlay');
+  const warOffen = !panel.hidden;
+  panel.hidden = false;
+  document.body.classList.add('sl-review-open');
+  if (compareGeoLayer) map.removeLayer(compareGeoLayer);
+  if (!compareHiddenLayerIds.length) hideMapLayersForCompare();
+  compareViewMode = 'diff';
+  slVergleichSicherstellen();
+  renderCompareToggle();
+  slVorherErledigt = null;
+  slWarFertig = false;
+  renderSchlaglisteReview(!warOffen);
+}
+function closeSchlaglisteReview() {
+  const panel = document.getElementById('sl-overlay');
+  if (panel.hidden) return;
+  panel.hidden = true;
+  document.body.classList.remove('sl-review-open');
+  if (slMapLayer) { map.removeLayer(slMapLayer); slMapLayer = null; }
+  if (slFocusLayer) { map.removeLayer(slFocusLayer); slFocusLayer = null; }
+  slFokus = null;
+  renderSchlaglisteBox();
+  refreshCompareStatusColumn();
+  if (document.body.dataset.view === 'compare' && (compareResult || compareViewMode !== 'diff')) showCompareView(false);
+  else restoreCompareHiddenLayer();
+}
+document.getElementById('sl-close').addEventListener('click', closeSchlaglisteReview);
+// Funktion gewechselt -> Panel schließen
+new MutationObserver(() => { if (document.body.dataset.view !== 'compare') closeSchlaglisteReview(); })
+  .observe(document.body, { attributes: true, attributeFilter: ['data-view'] });
+
+const slFmtHa = (ha) => (ha === null || ha === undefined ? '–' : formatHaExact(ha) + ' ha');
+const slFlaecheText = (f) => `${f.nummer || '–'} ${f.name || ''} · ${slFmtHa(f.ha)}`.replace(/\s+/g, ' ').trim();
+function slZeileHtml(e, sl) {
+  const z = e.z;
+  const nr = sl.col.schlagnr !== undefined ? String(sl.rows[e.idx][sl.col.schlagnr] || '') : '';
+  return `<div class="sl-liste"><span class="sl-tag">Liste</span><b>${escapeHtml(nr || '–')}</b> ${escapeHtml(z.bez || '–')} · ${slFmtHa(z.ha)}
+    <span class="sl-meta">${z.zugang ? 'Umstellungsdatum ' + slDeAusIso(z.zugang) : 'ohne Umstellungsdatum'}</span> ${slBadge(slStatusInfo(z.zugang))}</div>`;
+}
+function slAuswahl(e, ctx, freieKeys, leerText = '— keine Fläche (nicht im Betrieb) —') {
+  const vorschlaege = ctx.abgleich.vorschlaege(e.idx);
+  const sichtbar = new Set([e.key, ...freieKeys].filter(Boolean));
+  const opts = [];
+  const nimm = (f, why) => opts.push(`<option value="${escapeHtml(f.key)}"${f.key === e.key ? ' selected' : ''}>${escapeHtml(slFlaecheText(f))}${why ? ' — ' + escapeHtml(why) : ''}</option>`);
+  vorschlaege.filter(v => sichtbar.has(v.f.key)).forEach(v => nimm(v.f, v.gruende.join(', ')));
+  ctx.feats.filter(f => sichtbar.has(f.key) && !vorschlaege.some(v => v.f.key === f.key)).forEach(f => nimm(f, ''));
+  return `<select class="sl-select" data-sl-match="${e.idx}" aria-label="Fläche für Zeile ${e.idx + 1}">
+      <option value="">${leerText}</option>${opts.join('')}</select>`;
+}
+// Fortschritt (spielerisch) oben im Panel
+function slFortschrittHtml(faelle) {
+  const ges = faelle.length, fertig = faelle.filter(f => f.erledigt).length;
+  const pct = ges ? Math.round(fertig / ges * 100) : 100;
+  const kritOffen = faelle.filter(f => f.typ === 'kritisch' && !f.erledigt).length;
+  const krit = faelle.filter(f => f.typ === 'kritisch' || f.typ === 'neu');
+  const gesehen = krit.filter(f => (schlaglisteData.angesehen || {})[f.id]).length;
+  const done = fertig === ges;
+  return `<div class="sl-progress${done ? ' is-done' : ''}">
+      <div class="sl-prog-top">
+        <span class="sl-prog-count"><b>${fertig}</b> von <b>${ges}</b> ${ges === 1 ? 'Fall' : 'Fällen'} geklärt</span>
+        <span class="sl-prog-pct">${pct} %</span>
+      </div>
+      <div class="sl-prog-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><span style="width:${pct}%"></span></div>
+      <p class="sl-prog-hint">${done
+        ? '<span class="material-symbols-rounded icon" aria-hidden="true">celebration</span> Alles geklärt — bereit für den Export.'
+        : `Noch ${ges - fertig} offen${kritOffen ? ` · <b>${kritOffen} kritische ${kritOffen === 1 ? 'Änderung' : 'Änderungen'}</b>` : ''}`}
+        ${krit.length ? `<span class="sl-prog-eyes" title="Kritische Fälle auf der Karte angesehen"><span class="material-symbols-rounded icon" aria-hidden="true">visibility</span>${gesehen}/${krit.length}</span>` : ''}</p>
+    </div>`;
+}
+function slKonfetti() {
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const panel = document.getElementById('sl-overlay');
+  const box = document.createElement('div');
+  box.className = 'sl-confetti';
+  const farben = ['#8CB26B', '#E8A33D', '#4C9BE8', '#E0507A', '#F2D16B'];
+  for (let i = 0; i < 28; i++) {
+    const s = document.createElement('span');
+    s.style.left = (5 + Math.random() * 90) + '%';
+    s.style.background = farben[i % farben.length];
+    s.style.animationDelay = (Math.random() * 0.25) + 's';
+    s.style.setProperty('--dx', ((Math.random() - 0.5) * 80) + 'px');
+    s.style.setProperty('--rot', (Math.random() * 540) + 'deg');
+    box.appendChild(s);
+  }
+  panel.appendChild(box);
+  setTimeout(() => box.remove(), 1800);
+}
+
+function renderSchlaglisteReview(fitMap = false) {
+  const ctx = slBerechne();
+  const { y, abgleich, sl, featByKey } = ctx;
+  const d = schlaglisteData;
+  d.unterflaechen = d.unterflaechen || {};
+  d.teilstueckOk = d.teilstueckOk || {};
+  d.angesehen = d.angesehen || {};
+  const geo = slGeoAnalyse(y, ctx.feats);
+  const faelle = slFaelle(ctx, geo);
+  const fallById = new Map(faelle.map(f => [f.id, f]));
+  const vj = geo.vor ? geo.vor.jahr : null;
+  document.getElementById('sl-sub').textContent = `${d.fileName} · ${d.rows.length} Zeilen${vj ? ` · Karte: ${y.jahr} gegen ${vj}` : ''}`;
+  const years = compareYearsSorted().filter(x => x.jahr);
+  document.getElementById('sl-jahr').innerHTML = years.map(x => `<option value="${escapeHtml(x.jahr)}"${x === y ? ' selected' : ''}>${escapeHtml(x.jahr)}</option>`).join('');
+  document.getElementById('sl-stichtag').value = slStichtag();
+  document.getElementById('sl-kultur-uebernehmen').checked = d.kulturUebernehmen !== false;
+  document.querySelectorAll('[data-sl-text]').forEach(inp => { inp.value = d.statusTexte[inp.dataset.slText] || ''; });
+  document.getElementById('sl-progress-wrap').innerHTML = slFortschrittHtml(faelle);
+
+  const freieKeys = abgleich.neu.map(f => f.key);
+  const pruefen = abgleich.zeilen.filter(e => e.art === 'pruefen');
+  const manuell = abgleich.zeilen.filter(e => e.art === 'manuell');
+  const fehlt = abgleich.zeilen.filter(e => e.art === 'fehlt' || e.art === 'abgang');
+  const sicher = abgleich.zeilen.filter(e => e.art === 'sicher' || e.art === 'manuell');
+  const unv = abgleich.zeilen.filter(e => e.art === 'unvollstaendig');
+  const kritisch = faelle.filter(f => f.typ === 'kritisch');
+  const zeileByKey = new Map(abgleich.zeilen.filter(e => e.key).map(e => [e.key, e]));
+  const jahrNeu = Number(slStichtag().slice(0, 4));
+  const item = (id, inner, extraCls = '') => {
+    const fall = fallById.get(id);
+    return `<div class="sl-item${fall && fall.erledigt ? ' is-done' : ''}${extraCls}${slFokus === id ? ' is-focus' : ''}" data-sl-fall="${escapeHtml(id)}">
+      <span class="sl-done-mark" aria-hidden="true"><span class="material-symbols-rounded icon">check</span></span>${inner}</div>`;
+  };
+  const sec = (cls, icon, title, liste, hint, inner, open = true, nochZuTun = false) => {
+    if (!inner) return '';
+    const offen = liste ? liste.filter(f => !f.erledigt).length : null;
+    const chip = liste ? (offen ? `<span class="sl-sec-chip">${offen} offen</span>` : '<span class="sl-sec-chip is-done"><span class="material-symbols-rounded icon" aria-hidden="true">check</span>erledigt</span>') : '';
+    // Erledigte Abschnitte sind zu. Selbst auf-/zugeklappt bleibt so, solange
+    // sich am "erledigt" nichts ändert (wird ein Abschnitt fertig, klappt er zu).
+    const key = cls || icon;
+    const fertig = liste ? offen === 0 && !nochZuTun : null;
+    if (fertig) open = false;
+    const z = slSecZustand[key];
+    if (z && z.fertig === fertig) open = z.offen;
+    return `<details class="sl-sec ${cls}" data-sl-sec="${key}" data-sl-fertig="${fertig}"${open ? ' open' : ''}><summary><span class="material-symbols-rounded icon" aria-hidden="true">${icon}</span><span class="sl-sec-title">${title}</span>${chip}</summary>${hint ? `<p class="sl-sec-hint">${hint}</p>` : ''}${inner}</details>`;
+  };
+
+  // 1) Kritische Änderungen: Teilstück dazugekommen
+  const kritHtml = kritisch.map(fall => {
+    const f = featByKey.get(fall.key), g = geo.byKey.get(fall.key);
+    const e = zeileByKey.get(fall.key);
+    const u = d.unterflaechen[fall.key];
+    const basis = e ? slStatusInfo(e.z.zugang) : (d.zugangNeu[fall.key] ? slStatusInfo(d.zugangNeu[fall.key]) : null);
+    const beginn = (u && u.beginn) || '';
+    let aktion;
+    if (u && u.beginn) {
+      aktion = `<div class="sl-unter"><span class="material-symbols-rounded icon" aria-hidden="true">call_split</span>
+          Unterfläche ${formatHaExact(u.ha)} ha ab ${slDeAusIso(u.beginn)} ${slBadge(slStatusInfo(u.beginn))}
+          <button type="button" class="sl-undo" data-sl-unter-weg="${escapeHtml(fall.key)}">entfernen</button></div>`;
+    } else if (d.teilstueckOk[fall.key]) {
+      aktion = `<div class="sl-unter is-ok"><span class="material-symbols-rounded icon" aria-hidden="true">task_alt</span>Teilstück gehört mit gleichem Status zur Fläche
+          <button type="button" class="sl-undo" data-sl-teil-reset="${escapeHtml(fall.key)}">ändern</button></div>`;
+    } else {
+      aktion = `<div class="sl-match">
+          <label class="sl-date">Umstellungsbeginn Teilstück <input type="date" data-sl-unter-datum="${escapeHtml(fall.key)}" value="${beginn || `${jahrNeu}-01-01`}"></label>
+          <button type="button" class="betrieb-btn primary" data-sl-unter="${escapeHtml(fall.key)}"><span class="material-symbols-rounded icon" aria-hidden="true">call_split</span>Unterfläche anlegen</button>
+          <button type="button" class="betrieb-btn" data-sl-teil-ok="${escapeHtml(fall.key)}">Gehört dazu (gleicher Status)</button>
+        </div>`;
+    }
+    return item(fall.id, `<div class="sl-liste"><span class="sl-tag is-shape">${escapeHtml(y.jahr)}</span><b>${escapeHtml(f.nummer || '–')}</b> ${escapeHtml(f.name || '')} · ${slFmtHa(f.ha)} ${basis ? slBadge(basis) : ''} ${slAuge(fall.id)} ${slKarteBtn(fall.id)}</div>
+      <p class="sl-krit"><span class="material-symbols-rounded icon" aria-hidden="true">warning</span><span><b>+${formatHaExact(g.neuHa)} ha Teilstück dazugekommen</b> — gehörte ${escapeHtml(vj)} zu keiner Fläche des Betriebs. Hat es einen eigenen Umstellungsbeginn, als Unterfläche anlegen.</span></p>
+      ${aktion}`, ' is-krit');
+  }).join('');
+
+  const zusammen = slZusammenlegungen(ctx);
+  const zusammenHtml = (e) => {
+    const z = zusammen.get(e.idx);
+    if (!z) return '';
+    const andere = z.zeilen.filter(x => x !== e);
+    const erledigt = z.zeilen.some(x => x.key === z.f.key && x.art !== 'pruefen') && z.zeilen.filter(x => x.key !== z.f.key).every(x => !!d.abgangAm[x.idx]);
+    return `<p class="sl-krit sl-zus${erledigt ? ' is-done' : ''}"><span class="material-symbols-rounded icon" aria-hidden="true">merge</span><span><b>${erledigt ? 'Zusammengelegt — übernommen:' : 'Zusammengelegt?'}</b> ${escapeHtml(slZeileName(e.z))} + ${andere.map(x => escapeHtml(slZeileName(x.z))).join(' + ')}
+      = ${formatHaExact(z.summe)} ha — genau Fläche ${escapeHtml(z.f.nummer || '–')} (${formatHaExact(z.f.ha)} ha).</span>
+      ${erledigt ? '' : `<button type="button" class="betrieb-btn primary" data-sl-zusammen="${e.idx}">Als zusammengelegt übernehmen</button>`}</p>`;
+  };
+
+  const teilungen = slTeilungen(ctx, geo);
+  const teilVonKandidat = new Map();  // Fläche -> Zeile, zu deren vorgeschlagener Teilung sie gehört
+  teilungen.forEach((t, idx) => t.teile.forEach(f => teilVonKandidat.set(f.key, abgleich.zeilen[idx])));
+  const teilungHtml = (e) => {
+    const t = teilungen.get(e.idx);
+    if (!t) return '';
+    const rest = t.teile.length - 1;
+    return `<p class="sl-krit sl-zus sl-teilung"><span class="material-symbols-rounded icon" aria-hidden="true">call_split</span><span><b>Geteilt?</b> ${escapeHtml(slZeileName(e.z))} (${slFmtHa(e.z.ha)})
+      = ${t.teile.map(f => `${escapeHtml(f.nummer || '–')} (${slFmtHa(f.ha)})`).join(' + ')} = ${formatHaExact(t.summe)} ha.
+      Die Zeile bekommt die größte Fläche (${escapeHtml(t.teile[0].nummer || '–')}), ${rest === 1 ? 'die andere wird eine neue Zeile' : `die ${rest} anderen werden neue Zeilen`} mit demselben Umstellungsdatum.</span>
+      <button type="button" class="betrieb-btn primary" data-sl-teilung="${e.idx}">Als Teilung übernehmen</button></p>`;
+  };
+  // schon übernommene Teilung an der Zeile
+  const geteiltInfo = (e) => {
+    const teile = ctx.feats.filter(f => slTeilVon(ctx, f.key) === e);
+    return teile.length ? `<div class="sl-unter is-ok"><span class="material-symbols-rounded icon" aria-hidden="true">call_split</span>
+        Geteilt: zusätzlich ${teile.map(f => `<b>${escapeHtml(f.nummer || '–')}</b> (${slFmtHa(f.ha)})`).join(', ')} als neue ${teile.length === 1 ? 'Zeile' : 'Zeilen'}
+        <button type="button" class="sl-undo" data-sl-teilung-weg="${e.idx}">Teilung lösen</button></div>` : '';
+  };
+  // 2) Zweifelsfälle
+  const pruefenHtml = pruefen.map(e => {
+    const f = e.key && featByKey.get(e.key);
+    return item('p:' + e.idx, `${slZeileHtml(e, sl)}
+      <div class="sl-match"><span class="sl-tag is-shape">${escapeHtml(y.jahr)}</span>${slAuswahl(e, ctx, freieKeys)}
+        <button type="button" class="betrieb-btn primary sl-ok" data-sl-ok="${e.idx}"><span class="material-symbols-rounded icon" aria-hidden="true">check</span>Passt</button>${slKarteBtn('p:' + e.idx)}</div>
+      <p class="sl-why">${escapeHtml(e.gruende.join(' · ') || 'nur schwache Übereinstimmung')}${slHaDiff(e.z.ha, f && f.ha)} ${slChips(geo, f)} ${slAuge('p:' + e.idx)}</p>
+      ${teilungHtml(e)}
+      ${zusammenHtml(e)}`);
+  }).join('') + manuell.map(e => {
+    // schon entschieden: bleibt hier stehen (abgehakt), mit "ändern" zurück in die Prüfung
+    const f = e.key && featByKey.get(e.key);
+    return item('p:' + e.idx, `${slZeileHtml(e, sl)}
+      <div class="sl-unter is-ok"><span class="material-symbols-rounded icon" aria-hidden="true">task_alt</span>
+        ${f ? `zugeordnet: <b>${escapeHtml(f.nummer || '–')}</b> ${escapeHtml(f.name || '')} · ${slFmtHa(f.ha)}` : `keine Fläche — Abgang ${d.abgangAm[e.idx] ? 'am ' + slDeAusIso(d.abgangAm[e.idx]) : ''}`}
+        ${f ? slKarteBtn('p:' + e.idx) : ''}<button type="button" class="sl-undo" data-sl-reset="${e.idx}">ändern</button></div>
+      ${geteiltInfo(e)}`);
+  }).join('');
+
+  // 3) Neu in den Shapes (ohne Landschaftselemente)
+  const neuOhneLe = abgleich.neu.filter(f => !f.le);
+  const leFlaechen = abgleich.neu.filter(f => f.le);
+  // gleicher Feldblock (FLIK) wie eine zugeordnete Fläche -> deren Umstellungsdatum
+  const feldblockDatum = new Map();
+  slFeldblockDaten(ctx).forEach((e, kern) => feldblockDatum.set(kern, { datum: e.z.zugang, name: slZeileName(e.z) }));
+  // häufigstes Zugangsdatum der Liste je Bundesland (Vorschlag für ganz neue Flächen)
+  const haeufigJeLand = new Map();
+  abgleich.zeilen.filter(e => e.z.zugang).forEach(e => {
+    const m = haeufigJeLand.get(e.z.land || '') || new Map();
+    m.set(e.z.zugang, (m.get(e.z.zugang) || 0) + 1);
+    haeufigJeLand.set(e.z.land || '', m);
+  });
+  const haeufigFuer = (f) => {
+    const m = haeufigJeLand.get(slFlikLand(f.flik)) || haeufigJeLand.get('');
+    if (!m) return null;
+    return [...m.entries()].sort((a, b) => b[1] - a[1])[0][0];
+  };
+  const vorschlagFuer = (f) => {
+    // Teil einer (vorgeschlagenen oder übernommenen) Teilung: Datum der geteilten Zeile
+    const tz = slTeilVon(ctx, f.key) || teilVonKandidat.get(f.key);
+    if (tz && tz.z.zugang) return { art: 'teilung', datum: tz.z.zugang, text: `${slTeilVon(ctx, f.key) ? 'Aus der Teilung von' : 'Vermutlich aus der Teilung von'} ${slZeileName(tz.z)} (Umstellungsdatum ${slDeAusIso(tz.z.zugang)})${slTeilVon(ctx, f.key) ? '' : ' — dort „Als Teilung übernehmen“'}` };
+    const fb = feldblockDatum.get(slFlikKern(f.flik));
+    if (fb) return { art: 'feldblock', datum: fb.datum, text: `Gleicher Feldblock wie ${fb.name} (Umstellungsdatum ${slDeAusIso(fb.datum)})` };
+    const g = geo.byKey.get(f.key);
+    const herkunft = g && g.vorgaenger && g.anteilNeu < 0.9 ? slDatumVonNummer(ctx, g.vorgaengerNr) : null;
+    if (herkunft) return { art: 'vorjahr', datum: herkunft.datum, text: `War ${geo.vor.jahr} Teil von Nr. ${g.vorgaengerNr} (${herkunft.name}, Umstellungsdatum ${slDeAusIso(herkunft.datum)})` };
+    return null;
+  };
+  const offeneNeu = neuOhneLe.filter(f => !d.zugangNeu[f.key]);
+  const mitFeldblock = offeneNeu.filter(f => vorschlagFuer(f)?.art === 'feldblock');
+  const ohneVorschlag = offeneNeu.filter(f => !vorschlagFuer(f));
+  const landText = { TH: 'Thüringen', ST: 'Sachsen-Anhalt', BY: 'Bayern', SN: 'Sachsen', BB: 'Brandenburg', HE: 'Hessen', NI: 'Niedersachsen', NW: 'NRW', RP: 'Rheinland-Pfalz', BW: 'Baden-Württemberg', MV: 'Mecklenburg-Vorpommern', SH: 'Schleswig-Holstein', SL: 'Saarland' };
+  const haeufigGruppen = new Map();
+  ohneVorschlag.forEach(f => { const dt = haeufigFuer(f); if (dt) { const k = slFlikLand(f.flik) + '|' + dt; haeufigGruppen.set(k, [...(haeufigGruppen.get(k) || []), f.key]); } });
+  const sammel = (mitFeldblock.length ? `<button type="button" class="betrieb-btn sl-bulk" data-sl-bulk="feldblock"><span class="material-symbols-rounded icon" aria-hidden="true">done_all</span>Feldblock-Datum für alle ${mitFeldblock.length} übernehmen</button>` : '')
+    + [...haeufigGruppen.entries()].map(([k, keys]) => { const [land, dt] = k.split('|');
+      return `<button type="button" class="betrieb-btn sl-bulk" data-sl-bulk-datum="${dt}" data-sl-bulk-keys="${escapeHtml(keys.join(','))}" title="Häufigstes Umstellungsdatum der Liste${land ? ' in ' + escapeHtml(landText[land] || land) : ''}"><span class="material-symbols-rounded icon" aria-hidden="true">event_available</span>${slDeAusIso(dt)}${land ? ' (' + escapeHtml(land) + ')' : ''} für ${keys.length} ohne Vorschlag</button>`; }).join('');
+  const neuHtml = (sammel ? `<div class="sl-bulkbar">${sammel}</div>` : '') + neuOhneLe.map(f => {
+    const id = 'n:' + f.key;
+    const b = d.zugangNeu[f.key] || '';
+    const g = geo.byKey.get(f.key);
+    const vorschlag = vorschlagFuer(f);
+    const istNeuland = !vorschlag && (!g || !geo.vor || g.anteilNeu >= 0.9);
+    const info = vorschlag
+      ? `<p class="sl-why${vorschlag.art === 'teilung' ? ' sl-teil-hinweis' : ''}"><span class="material-symbols-rounded icon sl-inline-icon" aria-hidden="true">${vorschlag.art === 'feldblock' ? 'grid_view' : 'call_split'}</span>${escapeHtml(vorschlag.text)}.
+          ${vorschlag.datum !== b ? `<button type="button" class="betrieb-btn sl-uebernehmen" data-sl-datum="${escapeHtml(f.key)}" data-sl-datum-wert="${vorschlag.datum}">Datum übernehmen</button>` : ''}</p>`
+      : istNeuland && geo.vor ? `<p class="sl-krit"><span class="material-symbols-rounded icon" aria-hidden="true">warning</span><span><b>Neue Fläche</b> — ${escapeHtml(geo.vor.jahr)} noch nicht im Betrieb. Umstellungsbeginn eintragen.</span></p>`
+      : '';
+    return item(id, `<div class="sl-liste"><span class="sl-tag is-shape">${escapeHtml(y.jahr)}</span><b>${escapeHtml(f.nummer || '–')}</b> ${escapeHtml(f.name || '')} · ${slFmtHa(f.ha)}${f.flik ? ` <span class="sl-meta">${escapeHtml(f.flik)}</span>` : ''}${slKulturText(f)} ${b ? slBadge(slStatusInfo(b)) : ''} ${slAuge(id)} ${slKarteBtn(id)}</div>
+      ${info}
+      <div class="sl-match">
+        <label class="sl-date">Umstellungsbeginn <input type="date" data-sl-beginn="${escapeHtml(f.key)}" value="${b}"></label>
+        <button type="button" class="betrieb-btn sl-jan" data-sl-jan="${escapeHtml(f.key)}" title="Auf den 1.1. zurückdatieren (z.B. Bayern)">1.1.${jahrNeu}</button>
+        <button type="button" class="betrieb-btn sl-aus" data-sl-aus="${escapeHtml(f.key)}" title="Hecke, Feldgehölz o. ä. — gehört nicht in die Schlagliste"><span class="material-symbols-rounded icon" aria-hidden="true">visibility_off</span>Ausblenden</button>
+        ${fehlt.length ? `<select class="sl-select" data-sl-assign="${escapeHtml(f.key)}" aria-label="Listenzeile zuordnen"><option value="">… oder Listenzeile zuordnen</option>${fehlt.map(e => `<option value="${e.idx}">${escapeHtml(slZeileName(e.z) + ' · ' + slFmtHa(e.z.ha))}</option>`).join('')}</select>` : ''}
+      </div>`, istNeuland && geo.vor ? ' is-krit' : '');
+  }).join('');
+  const leHtml = leFlaechen.length ? `<ul class="sl-unv">${leFlaechen.map(f => `<li class="sl-le-item" data-sl-fall="l:${escapeHtml(f.key)}">${escapeHtml(f.nummer || '–')} · ${escapeHtml(f.kultur || 'Landschaftselement')} · ${slFmtHa(f.ha)}${f.flik ? ' · ' + escapeHtml(f.flik) : ''}${f.leManuell ? ` <span class="sl-meta">ausgeblendet</span> <button type="button" class="sl-undo" data-sl-ein="${escapeHtml(f.key)}">wieder einblenden</button>` : ''}</li>`).join('')}</ul>` : '';
+
+  // Kulturen: Zuordnung zum Katalog des externen Programms
+  const kulturen = slKulturen(ctx);
+  const kulturZeile = (k) => `<div class="sl-item sl-kitem${k.offen ? '' : ' is-done'}" data-sl-fall="c:${escapeHtml(k.quelle)}">
+      <span class="sl-done-mark" aria-hidden="true"><span class="material-symbols-rounded icon">check</span></span>
+      <div class="sl-liste"><span class="sl-tag is-shape">${escapeHtml(y.jahr)}</span>${escapeHtml(k.quelle)} <span class="sl-meta">${k.anzahl}× · ${formatHaExact(k.ha)} ha</span> ${slKulturBadge(k.zu)}</div>
+      ${k.liste && k.liste.length ? `<p class="sl-why sl-kliste"><span class="sl-tag">Liste</span>Bisher: ${k.liste.map(l => `<b>${escapeHtml(l.name)}</b> (${l.zeilen.map(escapeHtml).join(', ')})${l.name !== k.zu.name && kulturEintrag(l.name) ? ` <button type="button" class="sl-undo" data-sl-kultur-liste="${escapeHtml(k.quelle)}" data-sl-kultur-name="${escapeHtml(l.name)}">übernehmen</button>` : ''}`).join(' · ')}</p>` : ''}
+      <div class="sl-match">
+        <input type="search" class="sl-select sl-kultur-suche" data-sl-kultur="${escapeHtml(k.quelle)}" list="sl-katalog" value="${escapeHtml(k.zu.name || '')}" data-sl-kultur-vorher="${escapeHtml(k.zu.name || '')}" placeholder="Kultur suchen …" autocomplete="off" aria-label="Kultur im externen Programm (suchen)">
+        <button type="button" class="betrieb-btn primary" data-sl-kultur-ok="${escapeHtml(k.quelle)}"${k.kulturOffen && k.zu.name ? '' : ' hidden'}><span class="material-symbols-rounded icon" aria-hidden="true">check</span>Passt</button>
+        <span class="sl-kultur-fehler" hidden>Nicht im Katalog — bitte aus der Liste wählen</span>
+      </div>
+      ${k.zu.name && d.kulturUebernehmen !== false ? `<div class="sl-match"><label class="sl-date">Kategorie
+        <select class="sl-select sl-kat" data-sl-kategorie="${escapeHtml(k.zu.name)}" aria-label="Kategorie für ${escapeHtml(k.zu.name)}">
+          <option value="">— bitte wählen —</option>${katOptionen.map(c => `<option${c === k.kategorie ? ' selected' : ''}>${escapeHtml(c)}</option>`).join('')}
+        </select></label>${k.kategorieOffen ? '<span class="sl-kbadge is-unbekannt">Kategorie fehlt</span>' : ''}</div>` : ''}
+    </div>`;
+  const katOptionen = slKategorieOptionen(ctx);
+  const kulturOffen = kulturen.filter(k => k.offen || k.bestaetigt);
+  const kulturEindeutig = kulturen.filter(k => !k.offen && !k.bestaetigt);
+  // Nutzungsnachweis (PDF) laden: Codes lernen, Flächen ohne Kultur ergänzen (fnn.js)
+  const ohneKultur = ctx.feats.filter(f => !f.le && !f.kultur).length;
+  const nurCode = kulturen.filter(k => /^\d+$/.test(k.quelle)).reduce((s, k) => s + k.anzahl, 0);
+  const fnnHtml = `<div class="sl-fnn">
+      <p class="sl-sec-hint">${ohneKultur || nurCode
+        ? `<b>${[ohneKultur ? `${ohneKultur} ${ohneKultur === 1 ? 'Fläche' : 'Flächen'} ohne Kultur` : '', nurCode ? `${nurCode} nur mit Nutzungscode` : ''].filter(Boolean).join(', ')}.</b> Den Flächen- und Nutzungsnachweis (PDF) laden — die App vergleicht ihn mit den Shapes und ergänzt die Kulturen.`
+        : 'Fehlt eine Kultur oder steht nur ein Nutzungscode da, hilft der Flächen- und Nutzungsnachweis (PDF).'}</p>
+      <label class="betrieb-btn sl-bulk"><span class="material-symbols-rounded icon" aria-hidden="true">upload_file</span>Nutzungsnachweis (PDF) laden<input type="file" id="sl-fnn-file" accept=".pdf,application/pdf" hidden></label>
+      ${d.fnnInfo ? `<p class="sl-why" id="sl-fnn-info">${escapeHtml(d.fnnInfo)}</p>` : ''}
+    </div>`;
+  const kulturHtml = fnnHtml + `<datalist id="sl-katalog">${SL_KATALOG_OPTIONEN.map(e => `<option value="${escapeHtml(e.name)}">${escapeHtml(e.v !== e.name ? e.v : '')}</option>`).join('')}</datalist>` + kulturOffen.map(kulturZeile).join('')
+    + (kulturEindeutig.length ? `<details class="sl-kfold"><summary>Eindeutig zugeordnet (${kulturEindeutig.length})</summary>${kulturEindeutig.map(kulturZeile).join('')}</details>` : '');
+
+  // 4) Nicht mehr in den Shapes
+  const nachAntrag = fehlt.filter(e => slNachAntrag(e));
+  const fehltEcht = fehlt.filter(e => !slNachAntrag(e));
+  const antragDatum = `15.05.${y.jahr}`;
+  const nachAntragGrund = { auto: 'Umstellungsdatum nach dem ' + antragDatum, markiert: 'nach Antrag zugegangen', gleich: 'unverändert gelassen' };
+  const grundText = (e) => {
+    const g = slNachAntrag(e);
+    if (g !== 'teil') return nachAntragGrund[g];
+    const t = ctx.teile.get(e.idx);
+    return `Teilstück von ${slZeileName(t.haupt.z)} — in Fläche ${t.f.nummer || '–'} (${formatHaExact(t.f.ha)} ha) enthalten`;
+  };
+  const nachAntragHtml = nachAntrag.length ? `<ul class="sl-unv sl-nachantrag">${nachAntrag.map(e => `<li data-sl-fall="a:${e.idx}">${escapeHtml(slZeileName(e.z))} · ${slFmtHa(e.z.ha)}${e.z.zugang ? ` · Umstellungsdatum ${slDeAusIso(e.z.zugang)}` : ''} ${e.z.zugang ? slBadge(slStatusInfo(e.z.zugang)) : ''}
+      <span class="sl-meta">${escapeHtml(grundText(e))}</span>
+      <button type="button" class="sl-undo" data-sl-nach-nein="${e.idx}">doch nicht</button></li>`).join('')}</ul>` : '';
+  // Zeilen mit Fläche, in die eine Zeile ohne Fläche aufgehen kann
+  const zusammenZiele = abgleich.zeilen.filter(x => x.key && x.art !== 'unvollstaendig');
+  const zusammenMit = d.zusammenMit || {};
+  const fehltHtml = fehltEcht.map(e => {
+    const id = 'f:' + e.idx;
+    const am = d.abgangAm[e.idx] || '';
+    const warDa = slVorjahrFlaeche(ctx, geo, e);
+    const ziel = zusammenMit[e.idx] !== undefined ? abgleich.zeilen[zusammenMit[e.idx]] : null;
+    return item(id, `${slZeileHtml(e, sl)}
+      ${warDa ? `<p class="sl-why">${escapeHtml(geo.vor.jahr)} noch auf der Karte (gestrichelt) ${slKarteBtn(id)} ${slAuge(id)}</p>` : ''}
+      ${teilungHtml(e)}
+      ${zusammenHtml(e)}
+      ${ziel ? `<div class="sl-unter is-ok"><span class="material-symbols-rounded icon" aria-hidden="true">merge</span>
+          Zusammengefügt mit <b>${escapeHtml(slZeileName(ziel.z))}</b> — Abgang am ${slDeAusIso(am)}
+          <button type="button" class="sl-undo" data-sl-zusammen-weg="${e.idx}">lösen</button></div>` : `<div class="sl-match">
+        <label class="sl-check"><input type="checkbox" data-sl-abgang="${e.idx}"${am ? ' checked' : ''}> Abgang eintragen am</label>
+        <input type="date" class="sl-date-input" data-sl-abgang-am="${e.idx}" value="${am || slStichtag()}"${am ? '' : ' disabled'}>
+      </div>
+      <div class="sl-match">
+        <button type="button" class="betrieb-btn" data-sl-gleich="${e.idx}" title="Zeile bleibt beim Export, wie sie ist (kein Abgang)"><span class="material-symbols-rounded icon" aria-hidden="true">block</span>Unverändert lassen</button>
+        <button type="button" class="betrieb-btn sl-nach" data-sl-nach="${e.idx}" title="Fläche ist nach dem Agrarantrag (${antragDatum}) zugegangen und noch nicht in den Shapes — Zeile bleibt ohne Abgang"><span class="material-symbols-rounded icon" aria-hidden="true">event_upcoming</span>Nach Antrag zugegangen</button>
+        ${zusammenZiele.length ? `<select class="sl-select" data-sl-zusammen-mit="${e.idx}" aria-label="Mit einer anderen Zeile zusammenfügen"><option value="">… mit Zeile zusammenfügen</option>${zusammenZiele.map(x => `<option value="${x.idx}">${escapeHtml(slZeileName(x.z) + ' · ' + slFmtHa(x.z.ha))}</option>`).join('')}</select>` : ''}
+        ${freieKeys.length ? slAuswahl({ ...e, key: null }, ctx, freieKeys, '… oder Fläche zuordnen') : ''}
+      </div>`}`);
+  }).join('');
+
+  // 5) Automatisch zugeordnet
+  const sicherHtml = sicher.length ? `<table class="sl-table"><thead><tr><th>Liste</th><th>ha</th><th>Fläche ${escapeHtml(y.jahr)}</th><th>ha</th><th>Status</th><th></th></tr></thead><tbody>${sicher.map(e => {
+    const f = featByKey.get(e.key);
+    const diff = e.z.ha !== null && f.ha !== null && Math.abs(e.z.ha - f.ha) > 0.00005;
+    return `<tr data-sl-row-key="${escapeHtml(e.key)}"${slFokus === 'z:' + e.key ? ' class="is-focus"' : ''}><td>${escapeHtml(slZeileName(e.z))}</td><td>${slFmtHa(e.z.ha)}</td><td>${escapeHtml((f.nummer || '–') + ' ' + (f.name || ''))}${e.art === 'manuell' ? ' <span class="sl-meta">manuell</span>' : ''} ${slChips(geo, f)}</td><td${diff ? ' class="is-diff"' : ''}>${slFmtHa(f.ha)}</td><td>${slBadge(slStatusInfo(e.z.zugang))}</td>
+      <td class="sl-td-btns">${slKarteBtn('z:' + e.key)}<button type="button" class="sl-undo" data-sl-reset="${e.idx}" title="Zuordnung prüfen">ändern</button></td></tr>`;
+  }).join('')}</tbody></table>` : '';
+  const unvHtml = unv.length ? `<ul class="sl-unv">${unv.map(e => `<li>Zeile ${e.idx + 2}${e.z.nr ? ' · Schlagnummer ' + escapeHtml(e.z.nr) : ''} — ohne Bezeichnung und Fläche, bleibt unverändert</li>`).join('')}</ul>` : '';
+  const liste = (typ) => faelle.filter(f => f.typ === typ);
+
+  document.getElementById('sl-body').innerHTML =
+    sec('is-krit', 'warning', `Kritische Änderungen (${kritisch.length})`, kritisch, vj ? `Flächen, an die seit ${escapeHtml(vj)} ein Teilstück dazugekommen ist (auf der Karte rot). Ein neues Teilstück hat oft einen eigenen Umstellungsbeginn.` : '', kritHtml)
+    + sec('is-warn', 'help', `Zweifelsfälle prüfen (${pruefen.length + manuell.length})`, liste('pruefen'), 'Vorschlag ansehen, ggf. andere Fläche wählen und mit „Passt“ bestätigen. Bis dahin bleibt die Zeile beim Export unverändert.', pruefenHtml)
+    + sec('is-neu', 'add_circle', `Neu in den Shapes (${neuOhneLe.length})`, liste('neu'), 'Nicht in der Schlagliste. Umstellungsbeginn eintragen — dann kommen sie beim Export als neue Zeile dazu. Teilstücke eines schon zugeordneten Feldblocks (gleiche FLIK) bekommen dessen Datum vorgeschlagen. Ist es eine umbenannte Fläche, die passende Listenzeile zuordnen.', neuHtml)
+    + sec('is-kultur', 'eco', `Kulturen (${kulturen.length})`, liste('kultur'), 'Kulturen aus den Shapes, übersetzt in den Kulturkatalog des externen Programms. „ähnlich“ und „unbekannt“ bitte prüfen — die Wahl merkt sich die App auch für andere Betriebe.', kulturHtml, kulturOffen.length > 0 || ohneKultur > 0, ohneKultur > 0)
+    + sec('is-le', 'park', `Landschaftselemente und ausgeblendet (${leFlaechen.length})`, null, 'Hecken, Baumreihen, Feldgehölze u. ä. gehören zum Schlag — kein eigener Umstellungsfall, kommen nicht in den Export. Erkennt die App ein solches Element nicht, blendest du es unter „Neu in den Shapes“ mit „Ausblenden“ aus.', leHtml, false)
+    + sec('is-fehlt', 'remove_circle', `Nicht in den Shapes ${escapeHtml(y.jahr)} (${fehltEcht.length})`, liste('fehlt'), `Diese Zeilen der Liste haben keine Fläche in den Shapes. Abgang eintragen, unverändert lassen, mit einer anderen Zeile zusammenfügen (diese Zeile bekommt dann den Abgang) oder einer Fläche zuordnen. Ist die Fläche erst nach dem Agrarantrag (${antragDatum}) zum Betrieb gekommen — z. B. ein Bio-Zugang mit dem Umstellungsdatum des Vorbewirtschafters —, „Nach Antrag zugegangen“ wählen.`, fehltHtml)
+    + sec('is-nachantrag', 'event_upcoming', `Ohne Fläche, bleiben unverändert (${nachAntrag.length})`, null, `In der Liste, aber nicht in den Shapes ${escapeHtml(y.jahr)} — kein Abgang, die Zeilen bleiben beim Export unverändert (nur der Umstellungsstatus wird zum Stichtag fortgeschrieben). Zeilen mit Umstellungsdatum nach dem ${antragDatum} (nach dem Agrarantrag) erkennt die App von selbst.`, nachAntragHtml, false)
+    + sec('is-ok', 'task_alt', `Automatisch zugeordnet (${sicher.length})`, null, '', sicherHtml, false)
+    + sec('', 'block', `Unvollständige Zeilen (${unv.length})`, null, '', unvHtml, false);
+
+  // Häkchen-Effekt für gerade erledigte Fälle, Feier bei 100 %
+  const erledigt = new Set(faelle.filter(f => f.erledigt).map(f => f.id));
+  if (slVorherErledigt) erledigt.forEach(id => { if (!slVorherErledigt.has(id)) document.querySelector(`#sl-body [data-sl-fall="${CSS.escape(id)}"]`)?.classList.add('just-done'); });
+  const fertig = faelle.length > 0 && erledigt.size === faelle.length;
+  if (fertig && slVorherErledigt && !slWarFertig) slKonfetti();
+  slWarFertig = fertig;
+  slVorherErledigt = erledigt;
+  slUndoKnopf();
+  renderSlMap(ctx, geo, fitMap);
+}
+
+// ---- Rückgängig / Zurücksetzen ----
+// Vor jeder Entscheidung im Panel wird der Stand gemerkt (slVorAenderung);
+// slSpeichern legt ihn auf den Stapel, wenn sich wirklich etwas geändert hat.
+const SL_ENTSCHEIDUNGEN = ['manuell', 'ausgeblendet', 'nachAntrag', 'zusammenMit', 'teilVon', 'zugangNeu', 'abgangAm', 'zurPruefung', 'unterflaechen', 'teilstueckOk', 'angesehen', 'kulturen', 'kategorien', 'kulturUebernehmen', 'stichtag', 'fnnInfo'];
+let slUndoStapel = [];
+let slVorAenderung = null;
+function slSchnappschuss(fallId = null) {
+  const d = schlaglisteData;
+  const werte = {};
+  SL_ENTSCHEIDUNGEN.forEach(k => { if (d[k] !== undefined) werte[k] = JSON.parse(JSON.stringify(d[k])); });
+  let lsKultur = null, lsKategorie = null;
+  try { lsKultur = localStorage.getItem(SL_KULTUR_KEY); lsKategorie = localStorage.getItem(SL_KATEGORIE_KEY); } catch { /* ohne Speicher */ }
+  return { werte, lsKultur, lsKategorie, fallId };
+}
+const slStandGleich = (a, b) => JSON.stringify(a.werte) === JSON.stringify(b.werte) && a.lsKultur === b.lsKultur && a.lsKategorie === b.lsKategorie;
+function slUndoMerken() {
+  if (!slVorAenderung || !schlaglisteData) return;
+  if (!slStandGleich(slVorAenderung, slSchnappschuss())) {
+    slUndoStapel.push(slVorAenderung);
+    if (slUndoStapel.length > 30) slUndoStapel.shift();
+  }
+  slVorAenderung = null;
+}
+function slUndoKnopf() {
+  const b = document.getElementById('sl-undo');
+  b.disabled = !slUndoStapel.length;
+  b.title = slUndoStapel.length ? `Letzte Entscheidung rückgängig machen (${slUndoStapel.length} gemerkt)` : 'Noch nichts zum Rückgängigmachen';
+}
+function slUndo() {
+  const s = slUndoStapel.pop();
+  if (!s || !schlaglisteData) return;
+  const d = schlaglisteData;
+  SL_ENTSCHEIDUNGEN.forEach(k => { if (k in s.werte) d[k] = s.werte[k]; else delete d[k]; });
+  try {
+    if (s.lsKultur === null) localStorage.removeItem(SL_KULTUR_KEY); else localStorage.setItem(SL_KULTUR_KEY, s.lsKultur);
+    if (s.lsKategorie === null) localStorage.removeItem(SL_KATEGORIE_KEY); else localStorage.setItem(SL_KATEGORIE_KEY, s.lsKategorie);
+  } catch { /* ohne Speicher */ }
+  slVorherErledigt = null; // kein Häkchen-Effekt beim Zurücknehmen
+  slGeoCache = null;
+  persistLocalState().catch(() => {});
+  renderSchlaglisteReview();
+  renderSchlaglisteBox();
+  // zur betroffenen Fläche zurück
+  if (s.fallId && document.querySelector(`#sl-body [data-sl-fall="${CSS.escape(s.fallId)}"]`)) slFocus(s.fallId);
+}
+function slZuruecksetzen() {
+  const d = schlaglisteData;
+  if (!d) return;
+  if (!confirm('Alle Entscheidungen dieses Abgleichs verwerfen (Zuordnungen, Umstellungsdaten, Abgänge, Unterflächen, ausgeblendete Flächen, Kulturen)? Die Schlagliste selbst bleibt geladen. Mit „Rückgängig“ lässt sich das zurücknehmen.')) return;
+  slVorAenderung = slSchnappschuss(null);
+  // hier gelernte Kulturen/Kategorien auch aus dem Gedächtnis nehmen, sonst wären sie gleich wieder "geklärt"
+  try {
+    [[SL_KULTUR_KEY, d.kulturen], [SL_KATEGORIE_KEY, d.kategorien]].forEach(([key, lokal]) => {
+      if (!lokal) return;
+      const g = JSON.parse(localStorage.getItem(key) || '{}') || {};
+      Object.entries(lokal).forEach(([k, v]) => { if (g[k] === v) delete g[k]; });
+      localStorage.setItem(key, JSON.stringify(g));
+    });
+  } catch { /* ohne Speicher */ }
+  Object.assign(d, { manuell: {}, ausgeblendet: {}, nachAntrag: {}, zusammenMit: {}, teilVon: {}, zugangNeu: {}, abgangAm: {}, zurPruefung: {}, unterflaechen: {}, teilstueckOk: {}, angesehen: {}, kulturen: {}, kategorien: {} });
+  slGeoCache = null;
+  delete d.fnnInfo;
+  slFokus = null;
+  slVorherErledigt = null;
+  slWarFertig = false;
+  slSpeichern();
+  renderSchlaglisteBox();
+  refreshCompareStatusColumn();
+}
+
+// ---- Karte ----
+function slPanelPadding() {
+  const panel = document.getElementById('sl-overlay');
+  const r = panel.getBoundingClientRect();
+  const mapR = map.getContainer().getBoundingClientRect();
+  if (featureTableMobile.matches) return { paddingTopLeft: [20, 20], paddingBottomRight: [20, Math.max(20, mapR.bottom - r.top + 20)] };
+  return { paddingTopLeft: [30, 30], paddingBottomRight: [Math.max(30, mapR.right - r.left + 30), 30] };
+}
+function renderSlMap(ctx, geo, fit) {
+  if (slMapLayer) map.removeLayer(slMapLayer);
+  slMapLayer = L.featureGroup();
+  if (compareViewMode === 'diff') slMapLayer.addTo(map);
+  const d = schlaglisteData;
+  const zeileByKey = new Map(ctx.abgleich.zeilen.filter(e => e.key).map(e => [e.key, e]));
+  const neuKeys = new Set(ctx.abgleich.neu.map(f => f.key));
+  const fallFuer = (f) => {
+    const e = zeileByKey.get(f.key);
+    if (geo.byKey.get(f.key)?.neuGeom) return 'k:' + f.key;
+    if (e && e.art === 'pruefen') return 'p:' + e.idx;
+    if (neuKeys.has(f.key)) return f.le ? 'l:' + f.key : 'n:' + f.key;
+    return 'z:' + f.key;
+  };
+  const klick = (id) => (ev) => { L.DomEvent.stopPropagation(ev); slFocus(id, { vonKarte: true }); };
+  ctx.feats.forEach(f => {
+    if (!f.feature || !f.feature.geometry) return;
+    const e = zeileByKey.get(f.key);
+    const farbe = f.le && neuKeys.has(f.key) ? SL_FARBEN.le : neuKeys.has(f.key) ? SL_FARBEN.neu : e && e.art === 'pruefen' ? SL_FARBEN.pruefen : SL_FARBEN.zugeordnet;
+    const id = fallFuer(f);
+    const lyr = L.geoJSON(f.feature, { style: { color: farbe, weight: f.le ? 1 : 1.6, dashArray: f.le ? '2,3' : null, fillColor: farbe, fillOpacity: f.le ? 0.12 : 0.22, className: f.le ? 'sl-flaeche sl-le' : 'sl-flaeche' } });
+    lyr.on('click', klick(id));
+    lyr.addTo(slMapLayer);
+    addFeatureLabel(f.feature, featureLabelHtml(f.nummer, f.name), slMapLayer);
+    const g = geo.byKey.get(f.key);
+    if (g && g.wegGeom) L.geoJSON(g.wegGeom, { interactive: false, style: { color: SL_FARBEN.weg, weight: 1.6, dashArray: '5,4', fillColor: SL_FARBEN.weg, fillOpacity: 0.08, className: 'sl-weg' } }).addTo(slMapLayer);
+    if (g && g.neuGeom) {
+      const u = d.unterflaechen[f.key];
+      const st = u && u.beginn ? slStatusInfo(u.beginn) : null;
+      const c = st ? { konv: '#6B7480', umst: '#E8A33D', oeko: '#2F6B3A' }[st.key] : SL_FARBEN.plus;
+      const tl = L.geoJSON(g.neuGeom, { style: { color: c, weight: 2, dashArray: st ? '6,4' : null, fillColor: c, fillOpacity: st ? 0.5 : 0.65, className: 'sl-teilstueck' } });
+      tl.on('click', klick(id));
+      tl.addTo(slMapLayer);
+    }
+  });
+  // Listenzeilen ohne Fläche: Vorjahresform gestrichelt — nur wenn der Abgleich
+  // die Zeile im Vorjahr sicher zugeordnet hat (sonst gar nicht auf der Karte)
+  ctx.abgleich.zeilen.filter(e => e.art === 'fehlt' || e.art === 'abgang').forEach(e => {
+    const v = slVorjahrFlaeche(ctx, geo, e);
+    if (!v) return;
+    const lyr = L.geoJSON(v, { style: { color: SL_FARBEN.fehlt, weight: 1.6, dashArray: '4,4', fillColor: SL_FARBEN.fehlt, fillOpacity: 0.06, className: 'sl-fehlt' } });
+    lyr.on('click', klick('f:' + e.idx));
+    lyr.addTo(slMapLayer);
+    addFeatureLabel(v, featureLabelHtml(e.z.nr || e.z.bezNr, e.z.name), slMapLayer);
+  });
+  if (fit && slMapLayer.getLayers().length) map.fitBounds(slMapLayer.getBounds(), slPanelPadding());
+  if (slFokus) slZeigeFokus(slFokus, false);
+}
+// Vorjahresfläche einer Listenzeile ohne Fläche: dieselbe Zuordnung wie im
+// Abgleich, nur gegen die Flächen des Vorjahres — und nur, wenn sie sicher ist.
+let slVorCache = null;
+function slVorjahrFlaeche(ctx, geo, e) {
+  if (!geo.vor) return null;
+  const d = schlaglisteData;
+  const key = geo.vor.id + '|' + (geo.vor.fc.features || []).length + '|' + d.rows.length + '|' + d.fileName;
+  if (!slVorCache || slVorCache.key !== key) {
+    const vorFeats = slFlaechen(geo.vor);
+    const ab = slAbgleich(ctx.sl, vorFeats, {});
+    const byKey = new Map(vorFeats.map(f => [f.key, f.feature]));
+    slVorCache = { key, map: new Map(ab.zeilen.filter(z => z.art === 'sicher' && z.key).map(z => [z.idx, byKey.get(z.key)])) };
+  }
+  return slVorCache.map.get(e.idx) || null;
+}
+// Geometrien eines Falls (für Hervorhebung und Zoom)
+function slFallGeometrien(id) {
+  const ctx = slBerechne();
+  const geo = slGeoAnalyse(ctx.y, ctx.feats);
+  const [typ, rest] = [id.slice(0, 1), id.slice(2)];
+  const out = [];
+  const fl = (key) => ctx.featByKey.get(key);
+  if (typ === 'k' || typ === 'n' || typ === 'z' || typ === 'l') {
+    const f = fl(rest);
+    if (f && f.feature) out.push(f.feature);
+    const g = geo.byKey.get(rest);
+    if (g && g.neuGeom) out.push(g.neuGeom);
+  } else if (typ === 'p') {
+    const e = ctx.abgleich.zeilen[Number(rest)];
+    if (e && e.key && fl(e.key)) out.push(fl(e.key).feature);
+  } else if (typ === 'f') {
+    const e = ctx.abgleich.zeilen[Number(rest)];
+    const v = e && slVorjahrFlaeche(ctx, geo, e);
+    if (v) out.push(v);
+  }
+  return out;
+}
+function slZeigeFokus(id, fliegen = true) {
+  if (slFocusLayer) { map.removeLayer(slFocusLayer); slFocusLayer = null; }
+  const geoms = slFallGeometrien(id);
+  if (!geoms.length) return false;
+  slFocusLayer = L.featureGroup(geoms.map(g => L.geoJSON(g, { interactive: false, style: { color: '#FFFFFF', weight: 4, fill: false, className: 'sl-focus' } }))).addTo(map);
+  if (fliegen) map.flyToBounds(slFocusLayer.getBounds(), { ...slPanelPadding(), maxZoom: 17, duration: 0.6 });
+  return true;
+}
+function slFocus(id, { vonKarte = false } = {}) {
+  const d = schlaglisteData;
+  if (compareViewMode !== 'diff') { compareViewMode = 'diff'; renderCompareToggle(); showCompareView(false); }
+  slFokus = id;
+  const gezeigt = slZeigeFokus(id, !vonKarte);
+  const wasNew = gezeigt && !(d.angesehen || {})[id];
+  if (gezeigt) { d.angesehen = d.angesehen || {}; d.angesehen[id] = true; }
+  document.querySelectorAll('#sl-body .is-focus').forEach(el => el.classList.remove('is-focus'));
+  const el = document.querySelector(`#sl-body [data-sl-fall="${CSS.escape(id)}"]`) || document.querySelector(`#sl-body [data-sl-row-key="${CSS.escape(id.slice(2))}"]`);
+  if (el) {
+    el.closest('.sl-sec')?.querySelectorAll('details').forEach(x => { if (x.contains(el)) x.open = true; });
+    const sec = el.closest('.sl-sec');
+    if (sec && !sec.open) { sec.open = true; slSecMerken(sec); }
+    el.classList.add('is-focus');
+    if (vonKarte) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+  if (wasNew) {
+    persistLocalState().catch(() => {});
+    // nur Fortschritt (Augen) auffrischen, Panel-Inhalt bleibt stehen
+    const ctx = slBerechne();
+    document.getElementById('sl-progress-wrap').innerHTML = slFortschrittHtml(slFaelle(ctx, slGeoAnalyse(ctx.y, ctx.feats)));
+    if (el && !el.querySelector('.sl-eye')) el.querySelector('.sl-liste, td')?.insertAdjacentHTML('beforeend', ' ' + slAuge(id));
+  }
+}
+
+// Nutzungsnachweis (PDF) auf alle hinterlegten Jahre anwenden
+async function slFnnLaden(datei) {
+  const d = schlaglisteData;
+  try {
+    const features = compareYears.flatMap(y => y.fc.features || []);
+    d.fnnInfo = 'Lese Nutzungsnachweis …';
+    renderSchlaglisteReview();
+    const r = await fnnLernenUndAnwenden(await datei.arrayBuffer(), features);
+    const teile = [];
+    if (r.gelernt) teile.push(`${r.gelernt} Nutzungscodes erkannt`);
+    if (r.uebersetzt) teile.push(`${r.uebersetzt} Flächen mit Kultur statt Code`);
+    if (r.ergaenzt) teile.push(`${r.ergaenzt} Flächen über die FLIK ergänzt`);
+    d.fnnInfo = `${datei.name}: ${teile.length ? teile.join(', ') : 'nichts Passendes gefunden (Codes bzw. FLIK stimmen nicht mit den Shapes überein)'}.`;
+    slGeoCache = null;
+    renderCompareYears();
+  } catch (err) {
+    console.error(err);
+    d.fnnInfo = `${datei.name}: konnte nicht gelesen werden (${err.message || 'unbekannter Fehler'}).`;
+  }
+  slSpeichern();
+}
+function slSpeichern() {
+  slUndoMerken();
+  persistLocalState().catch(() => {});
+  renderSchlaglisteReview();
+}
+// Teilung einer Zeile zurücknehmen: die übrigen Teile sind wieder "neu" ohne Datum
+function slTeilungLoesen(idx) {
+  const d = schlaglisteData;
+  Object.entries(d.teilVon || {}).forEach(([key, i]) => { if (i === idx) { delete d.teilVon[key]; delete d.zugangNeu[key]; } });
+}
+const slOverlay = document.getElementById('sl-overlay');
+// Kultur-Suchfeld: Auswahl ändert noch nichts — "Passt" erscheint, erst das übernimmt.
+function slKulturFehler(inp, an) {
+  const zeile = inp.closest('.sl-match');
+  const f = zeile && zeile.querySelector('.sl-kultur-fehler');
+  if (f) f.hidden = !an;
+  inp.classList.toggle('is-invalid', an);
+}
+slOverlay.addEventListener('input', (e) => {
+  const inp = e.target.closest('[data-sl-kultur]');
+  if (!inp) return;
+  slKulturFehler(inp, false);
+  const ok = inp.closest('.sl-match').querySelector('[data-sl-kultur-ok]');
+  const offen = !inp.closest('.sl-item').classList.contains('is-done');
+  if (ok) ok.hidden = !(inp.value.trim() && (offen || inp.value.trim() !== inp.dataset.slKulturVorher));
+});
+slOverlay.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.matches('[data-sl-kultur]')) { e.preventDefault(); e.target.closest('.sl-match').querySelector('[data-sl-kultur-ok]')?.click(); }
+});
+slOverlay.addEventListener('click', (e) => {
+  const d = schlaglisteData;
+  if (!d) return;
+  const t = e.target;
+  const sum = t.closest('#sl-body .sl-sec > summary');
+  if (sum) { setTimeout(() => slSecMerken(sum.parentElement)); return; } // Auf-/Zuklappen merken
+  if (t.closest('#sl-undo')) return slUndo();
+  if (t.closest('#sl-reset2')) return slZuruecksetzen();
+  slVorAenderung = slSchnappschuss(t.closest('[data-sl-fall]')?.dataset.slFall || null);
+  const ok = t.closest('[data-sl-ok]');
+  if (ok) {
+    const idx = Number(ok.dataset.slOk);
+    const sel = slOverlay.querySelector(`[data-sl-match="${idx}"]`);
+    d.manuell[idx] = sel.value || null;
+    if (d.zurPruefung) delete d.zurPruefung[idx];
+    if (!sel.value) d.abgangAm[idx] = d.abgangAm[idx] || slStichtag();
+    return slSpeichern();
+  }
+  const nach = t.closest('[data-sl-nach]');
+  if (nach) {
+    const idx = Number(nach.dataset.slNach);
+    d.nachAntrag = { ...(d.nachAntrag || {}), [idx]: true };
+    delete d.abgangAm[idx];
+    return slSpeichern();
+  }
+  const teilung = t.closest('[data-sl-teilung]');
+  if (teilung) {
+    const idx = Number(teilung.dataset.slTeilung);
+    const ctx = slBerechne();
+    const tl = slTeilungen(ctx, slGeoAnalyse(ctx.y, ctx.feats)).get(idx);
+    if (!tl) return;
+    const e = ctx.abgleich.zeilen[idx];
+    d.manuell[idx] = tl.teile[0].key;
+    if (d.zurPruefung) delete d.zurPruefung[idx];
+    delete d.abgangAm[idx];
+    d.teilVon = { ...(d.teilVon || {}) };
+    tl.teile.slice(1).forEach(f => { d.teilVon[f.key] = idx; if (e.z.zugang) d.zugangNeu[f.key] = e.z.zugang; });
+    return slSpeichern();
+  }
+  const teilungWeg = t.closest('[data-sl-teilung-weg]');
+  if (teilungWeg) { slTeilungLoesen(Number(teilungWeg.dataset.slTeilungWeg)); delete d.manuell[Number(teilungWeg.dataset.slTeilungWeg)]; return slSpeichern(); }
+  const gleich = t.closest('[data-sl-gleich]');
+  if (gleich) {
+    const idx = Number(gleich.dataset.slGleich);
+    d.nachAntrag = { ...(d.nachAntrag || {}), [idx]: 'gleich' };
+    delete d.abgangAm[idx];
+    return slSpeichern();
+  }
+  const zusWeg = t.closest('[data-sl-zusammen-weg]');
+  if (zusWeg) {
+    const idx = Number(zusWeg.dataset.slZusammenWeg);
+    d.zusammenMit = { ...(d.zusammenMit || {}) };
+    delete d.zusammenMit[idx];
+    delete d.abgangAm[idx];
+    return slSpeichern();
+  }
+  const nachNein = t.closest('[data-sl-nach-nein]');
+  if (nachNein) {
+    d.nachAntrag = { ...(d.nachAntrag || {}), [Number(nachNein.dataset.slNachNein)]: false };
+    return slSpeichern();
+  }
+  const aus = t.closest('[data-sl-aus]');
+  if (aus) {
+    d.ausgeblendet = { ...(d.ausgeblendet || {}), [aus.dataset.slAus]: true };
+    delete d.zugangNeu[aus.dataset.slAus];
+    slGeoCache = null;
+    return slSpeichern();
+  }
+  const ein = t.closest('[data-sl-ein]');
+  if (ein) {
+    d.ausgeblendet = { ...(d.ausgeblendet || {}) };
+    delete d.ausgeblendet[ein.dataset.slEin];
+    slGeoCache = null;
+    return slSpeichern();
+  }
+  const jan = t.closest('[data-sl-jan]');
+  if (jan) { d.zugangNeu[jan.dataset.slJan] = `${slStichtag().slice(0, 4)}-01-01`; return slSpeichern(); }
+  const bulk = t.closest('[data-sl-bulk="feldblock"]');
+  if (bulk) {
+    const ctx = slBerechne();
+    const datumJeKern = new Map();
+    slFeldblockDaten(ctx).forEach((e, k) => datumJeKern.set(k, e.z.zugang));
+    ctx.abgleich.neu.filter(f => !f.le && !d.zugangNeu[f.key]).forEach(f => { const dt = datumJeKern.get(slFlikKern(f.flik)); if (dt) d.zugangNeu[f.key] = dt; });
+    return slSpeichern();
+  }
+  const bulkDatum = t.closest('[data-sl-bulk-datum]');
+  if (bulkDatum) {
+    const keys = bulkDatum.dataset.slBulkKeys.split(',');
+    if (!confirm(`${keys.length} neue Flächen ohne anderen Hinweis bekommen den Umstellungsbeginn ${slDeAusIso(bulkDatum.dataset.slBulkDatum)}. Einzelne kannst du danach noch ändern. Übernehmen?`)) return;
+    keys.forEach(k => { if (!d.zugangNeu[k]) d.zugangNeu[k] = bulkDatum.dataset.slBulkDatum; });
+    return slSpeichern();
+  }
+  const zus = t.closest('[data-sl-zusammen]');
+  if (zus) {
+    const z = slZusammenlegungen(slBerechne()).get(Number(zus.dataset.slZusammen));
+    if (!z) return;
+    const { f, zeilen } = z;
+    const haupt = zeilen.slice().sort((a, b) => b.z.ha - a.z.ha)[0];
+    zeilen.forEach(x => {
+      if (x === haupt) { d.manuell[x.idx] = f.key; delete d.abgangAm[x.idx]; if (d.zurPruefung) delete d.zurPruefung[x.idx]; }
+      else { d.manuell[x.idx] = null; d.abgangAm[x.idx] = d.abgangAm[x.idx] || slStichtag(); }
+    });
+    return slSpeichern();
+  }
+  const kulturListe = t.closest('[data-sl-kultur-liste]');
+  if (kulturListe) { slKulturMerken(kulturListe.dataset.slKulturListe, kulturListe.dataset.slKulturName); return slSpeichern(); }
+  const kulturOk = t.closest('[data-sl-kultur-ok]');
+  if (kulturOk) {
+    const inp = slOverlay.querySelector(`[data-sl-kultur="${CSS.escape(kulturOk.dataset.slKulturOk)}"]`);
+    const name = inp ? inp.value.trim() : '';
+    if (name && !kulturEintrag(name)) { slKulturFehler(inp, true); return; }
+    if (name) slKulturMerken(kulturOk.dataset.slKulturOk, name);
+    return slSpeichern();
+  }
+  const uebernehmen = t.closest('[data-sl-datum]');
+  if (uebernehmen) { d.zugangNeu[uebernehmen.dataset.slDatum] = uebernehmen.dataset.slDatumWert; return slSpeichern(); }
+  const unter = t.closest('[data-sl-unter]');
+  if (unter) {
+    const key = unter.dataset.slUnter;
+    const datum = slOverlay.querySelector(`[data-sl-unter-datum="${CSS.escape(key)}"]`).value;
+    if (!datum) return;
+    const ctx = slBerechne();
+    const g = slGeoAnalyse(ctx.y, ctx.feats).byKey.get(key);
+    d.unterflaechen[key] = { beginn: datum, ha: Math.round(g.neuHa * 10000) / 10000 };
+    delete d.teilstueckOk[key];
+    return slSpeichern();
+  }
+  const unterWeg = t.closest('[data-sl-unter-weg]');
+  if (unterWeg) { delete d.unterflaechen[unterWeg.dataset.slUnterWeg]; return slSpeichern(); }
+  const teilOk = t.closest('[data-sl-teil-ok]');
+  if (teilOk) { d.teilstueckOk[teilOk.dataset.slTeilOk] = true; return slSpeichern(); }
+  const teilReset = t.closest('[data-sl-teil-reset]');
+  if (teilReset) { delete d.teilstueckOk[teilReset.dataset.slTeilReset]; return slSpeichern(); }
+  const reset = t.closest('[data-sl-reset]');
+  if (reset) {
+    // zurück in die Prüfung: Zuordnung als Vorschlag stehen lassen
+    const idx = Number(reset.dataset.slReset);
+    slTeilungLoesen(idx);
+    delete d.manuell[idx];
+    d.zurPruefung = { ...(d.zurPruefung || {}), [idx]: true };
+    return slSpeichern();
+  }
+  const fokus = t.closest('[data-sl-focus]');
+  if (fokus) return slFocus(fokus.dataset.slFocus);
+  // Klick auf eine Karte (nicht auf Bedienelemente) zeigt den Fall auf der Karte
+  if (t.closest('input, select, button, label, summary, a')) return;
+  const karte = t.closest('[data-sl-fall]');
+  if (karte) return slFocus(karte.dataset.slFall);
+  const zeile = t.closest('[data-sl-row-key]');
+  if (zeile) return slFocus('z:' + zeile.dataset.slRowKey);
+});
+slOverlay.addEventListener('change', (e) => {
+  const d = schlaglisteData;
+  if (!d) return;
+  const t = e.target;
+  slVorAenderung = slSchnappschuss(t.closest('[data-sl-fall]')?.dataset.slFall || null);
+  if (t.matches('[data-sl-match]')) {
+    const idx = Number(t.dataset.slMatch);
+    if (t.closest('.sl-sec.is-fehlt')) {
+      // Zeile ohne Fläche: Fläche direkt zuordnen
+      if (t.value) { d.manuell[idx] = t.value; delete d.abgangAm[idx]; return slSpeichern(); }
+      return;
+    }
+    return; // Zweifelsfall: erst mit "Passt" übernehmen
+  }
+  if (t.matches('[data-sl-unter-datum]')) return; // erst mit "Unterfläche anlegen"
+  if (t.matches('[data-sl-zusammen-mit]')) {
+    if (t.value === '') return;
+    const idx = Number(t.dataset.slZusammenMit);
+    d.zusammenMit = { ...(d.zusammenMit || {}), [idx]: Number(t.value) };
+    d.abgangAm[idx] = d.abgangAm[idx] || slStichtag();
+    return slSpeichern();
+  }
+  if (t.matches('[data-sl-kultur]')) return; // erst mit "Passt" übernehmen (input-Handler zeigt den Knopf)
+  if (t.matches('[data-sl-kategorie]')) { if (t.value) slKategorieMerken(t.dataset.slKategorie, t.value); return slSpeichern(); }
+  if (t.id === 'sl-kultur-uebernehmen') { d.kulturUebernehmen = t.checked; return slSpeichern(); }
+  if (t.id === 'sl-fnn-file') {
+    const datei = t.files[0];
+    t.value = '';
+    if (datei) slFnnLaden(datei);
+    return;
+  }
+  if (t.matches('[data-sl-beginn]')) { if (t.value) d.zugangNeu[t.dataset.slBeginn] = t.value; else delete d.zugangNeu[t.dataset.slBeginn]; return slSpeichern(); }
+  if (t.matches('[data-sl-assign]')) { if (t.value !== '') { d.manuell[Number(t.value)] = t.dataset.slAssign; delete d.abgangAm[Number(t.value)]; delete d.zugangNeu[t.dataset.slAssign]; } return slSpeichern(); }
+  if (t.matches('[data-sl-abgang]')) {
+    const idx = Number(t.dataset.slAbgang);
+    if (t.checked) d.abgangAm[idx] = slOverlay.querySelector(`[data-sl-abgang-am="${idx}"]`).value || slStichtag();
+    else delete d.abgangAm[idx];
+    return slSpeichern();
+  }
+  if (t.matches('[data-sl-abgang-am]')) { if (t.value) d.abgangAm[Number(t.dataset.slAbgangAm)] = t.value; return slSpeichern(); }
+  if (t.matches('[data-sl-text]')) {
+    d.statusTexte[t.dataset.slText] = t.value.trim() || SL_STATUS_STANDARD[t.dataset.slText];
+    try { localStorage.setItem(SL_TEXTE_KEY, JSON.stringify(d.statusTexte)); } catch { /* ohne Speicher */ }
+    return slSpeichern();
+  }
+  if (t.id === 'sl-jahr') {
+    if (t.value !== d.jahr && (Object.keys(d.manuell).length || Object.keys(d.zugangNeu).length || Object.keys(d.unterflaechen || {}).length) && !confirm('Für ein anderes Jahr gelten die bisherigen manuellen Zuordnungen nicht mehr. Wechseln?')) { t.value = d.jahr; return; }
+    Object.assign(d, { jahr: t.value, manuell: {}, ausgeblendet: {}, nachAntrag: {}, zusammenMit: {}, teilVon: {}, zugangNeu: {}, zurPruefung: {}, unterflaechen: {}, teilstueckOk: {}, angesehen: {} });
+    slFokus = null;
+    slUndoStapel = [];
+    Object.keys(slSecZustand).forEach(k => delete slSecZustand[k]);
+    slVorAenderung = null;
+    persistLocalState().catch(() => {});
+    slVorherErledigt = null;
+    compareViewMode = 'diff';
+    slVergleichSicherstellen();
+    return renderSchlaglisteReview(true);
+  }
+  if (t.id === 'sl-stichtag') { d.stichtag = t.value || slHeute(); return slSpeichern(); }
+});
+
+// ---- Export für den Wiederimport ----
+function exportSchlagliste() {
+  const d = schlaglisteData;
+  if (!d) return;
+  const ctx = slBerechne();
+  if (!ctx.y) { showCompareError('Erst Shape-Dateien eines Jahres hinterlegen.'); return; }
+  const n = slZaehle(ctx.abgleich);
+  const offen = [];
+  if (n.pruefen) offen.push(`${n.pruefen} Zweifelsfälle (bleiben unverändert)`);
+  if (n.offenNeu) offen.push(`${n.offenNeu} neue Flächen ohne Umstellungsbeginn (werden nicht angehängt)`);
+  const fehltOffen = n.offenFehlt;
+  if (fehltOffen) offen.push(`${fehltOffen} Zeilen ohne Fläche und ohne Abgang (bleiben unverändert)`);
+  const kritOffen = slFaelle(ctx, slGeoAnalyse(ctx.y, ctx.feats)).filter(f => f.typ === 'kritisch' && !f.erledigt).length;
+  if (kritOffen) offen.push(`${kritOffen} kritische Änderungen (Teilstück dazugekommen) nicht geklärt`);
+  if (offen.length && !confirm('Noch offen:\n• ' + offen.join('\n• ') + '\n\nTrotzdem exportieren?')) return;
+  // Kategorie je Kultur: festgelegt > aus der Liste gelernt (z.B. Winterweizen -> Getreide) > Regel
+  const gelernteKategorien = slGelernteKategorien(ctx);
+  const kulturListe = slKulturen(ctx);
+  const offeneKulturen = kulturListe.filter(k => k.kulturOffen).length, ohneKategorie = kulturListe.filter(k => k.kategorieOffen).length;
+  if (offeneKulturen && d.kulturUebernehmen !== false) offen.push(`${offeneKulturen} Kulturen ohne bestätigte Zuordnung (werden mit dem Vorschlag exportiert, „unbekannt“ bleibt unverändert)`);
+  if (ohneKategorie && d.kulturUebernehmen !== false) offen.push(`${ohneKategorie} Kulturen ohne Kategorie (dort bleiben Kultur und Kategorie unverändert)`);
+  // "Fläche besichtigt im Jahr": Häkchen "Besichtigt" der Flächentabelle (gleiche Nummer)
+  const besichtigtNr = new Set(featureIndex.filter(en => en.besichtigt && en.nummer).map(en => en.nummer));
+  const besichtigt = new Set(ctx.feats.filter(f => f.nummer && besichtigtNr.has(f.nummer)).map(f => f.key));
+  const aoa = slExportZeilen(ctx.sl, ctx.abgleich, {
+    featByKey: ctx.featByKey, stichtag: slStichtag(), statusTexte: d.statusTexte,
+    zugangNeu: d.zugangNeu, abgangAm: d.abgangAm, besichtigt, unterflaechen: d.unterflaechen || {},
+    abzug: [...ctx.teile.entries()].reduce((a, [idx, t]) => { a[t.haupt.idx] = (a[t.haupt.idx] || 0) + (ctx.abgleich.zeilen[idx].z.ha || 0); return a; }, {}),
+    kulturFuer: d.kulturUebernehmen === false ? null : (key, zeile) => {
+      const zu = slKulturVon(ctx.featByKey.get(key));
+      if (!zu || !zu.name) return null;
+      // gleiche Kultur wie bisher in der Liste: Schreibweise der Liste behalten
+      if (zeile && zeile.kultur && kulturZuordnen(zeile.kultur, slKulturGemerkt()).name === zu.name) return null;
+      const kategorie = kategorieFuer(zu.name, gelernteKategorien);
+      // ohne passende Kategorie lieber nichts ändern als "Getreide | Hanf" erzeugen
+      if (!kategorie && zeile) return null;
+      return { kultur: zu.name, kategorie };
+    }
+  });
+  // Gleiches Format wie die Vorlage: alles als Text ("@"), nur "ha" als Zahl.
+  const haCol = d.header.indexOf('ha');
+  const ws = {};
+  aoa.forEach((row, r) => row.forEach((v, c) => {
+    const ref = XLSX.utils.encode_cell({ r, c });
+    if (r > 0 && c === haCol && v !== '' && isFinite(Number(v))) ws[ref] = { t: 'n', v: Number(v), z: 'General' };
+    else if (v === '' || v === null || v === undefined) ws[ref] = { t: 'z', z: '@' };
+    else ws[ref] = { t: 's', v: String(v), z: '@' };
+  }));
+  ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: aoa.length - 1, c: d.header.length - 1 } });
+  if (d.cols && d.cols.length) ws['!cols'] = d.cols.map(c => c || {});
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, d.sheetName || 'Tabelle1');
+  const base = d.fileName.replace(/\.xlsx?$/i, '');
+  XLSX.writeFile(wb, `${base} (abgeglichen ${slStichtag()}).xlsx`);
+  setCompareStatus('Schlagliste für den Import exportiert.');
+}
+
+// Spalte "Umstellung" in der Vergleichstabelle (nur angemeldet und mit Schlagliste)
+function refreshCompareStatusColumn() {
+  const aktiv = !!schlaglisteData && document.body.dataset.auth === 'in';
+  document.getElementById('compare-th-umst').hidden = !aktiv;
+  if (compareRecords.length) renderCompareTable(compareRecords);
+}
+renderSchlaglisteBox();
+
+// ---------- Fruchtfolge ----------
+// Liest die im Jahresvergleich hinterlegten Jahre (compareYears, je Betrieb
+// gespeichert) und stellt je Schlag die Kulturfolge zusammen. Anzeige an zwei
+// Stellen: Flächenübersicht › Reiter "Fruchtfolge" (Kennzahlen,
+// Leguminosenanteil je Jahr, Hinweise, Tabelle Schlag × Jahr) und in der
+// Kartenansicht die Option "Kulturen" (Karte eingefärbt nach Kultur eines Jahres).
+// Schläge werden wie im Jahresvergleich über die Schlagnummer verbunden.
+// Die Hinweise sind Anhaltspunkte für die Kontrolle, keine Bewertung — die
+// Einordnung der Kulturen läuft über Namensmuster (unten, anpassbar).
+const FF_LEGUME = /klee|luzerne|erbse|bohne|lupine|wicke|soja|linse|esparsette|serradella|leguminos/i;
+const FF_HALM = /weizen|roggen|gerste|hafer|dinkel|triticale|emmer|einkorn|getreide/i;
+// Dauerkulturen/Grünland: keine Ackerfläche, keine Fruchtfolge-Hinweise.
+const FF_DAUER = /gr(ü|ue)nland|wiese|weide(?!l)|obst|wein|rebe|hopfen|spargel|dauerkultur|baumschule|brache|stilllegung|hecke/i;
+// Mehrjährig angebaut: dieselbe Kultur in Folge ist dort normal.
+const FF_MEHRJAEHRIG = /klee|luzerne|gras|feldfutter/i;
+const FF_MIN_YEARS_LEGUME = 5;
+
+const ffKultur = (cell) => (cell && cell.kultur) || 'Ohne Angabe';
+function buildFruchtfolge() {
+  const years = compareYearsSorted().filter(y => y.jahr);
+  const bySchlag = new Map();
+  const haByKultur = new Map();
+  years.forEach(y => (y.fc.features || []).forEach(f => {
+    const p = f.properties || {};
+    const nr = pickField(p, FIELD_CANDIDATES.nummer);
+    if (!nr) return;
+    let row = bySchlag.get(nr);
+    if (!row) { row = { nummer: nr, name: '', cells: {}, hints: [] }; bySchlag.set(nr, row); }
+    row.name = pickField(p, FIELD_CANDIDATES.name) || row.name;
+    const cell = { kultur: (pickField(p, FIELD_CANDIDATES.kultur) || '').trim(), ha: parseHa(pickGroesse(p)), feature: f };
+    row.cells[y.id] = cell;
+    haByKultur.set(ffKultur(cell), (haByKultur.get(ffKultur(cell)) || 0) + (cell.ha || 0));
+  }));
+  // Feste Farbe je Kultur über alle Jahre (größte zuerst), wie in der Flächenübersicht.
+  const colorOf = new Map();
+  [...haByKultur.entries()].filter(([k]) => k !== 'Ohne Angabe').sort((a, b) => b[1] - a[1])
+    .forEach(([k], i) => colorOf.set(k, CULTURE_COLORS[i % CULTURE_COLORS.length]));
+  colorOf.set('Ohne Angabe', '#B8BFB2');
+
+  const rows = [...bySchlag.values()].sort((a, b) => String(a.nummer).localeCompare(String(b.nummer), undefined, { numeric: true }));
+  rows.forEach(row => { row.hints = fruchtfolgeHints(row, years); });
+
+  const stats = years.map(y => {
+    let acker = 0, leg = 0, total = 0;
+    const kulturen = new Map();
+    rows.forEach(r => {
+      const c = r.cells[y.id];
+      if (!c) return;
+      const ha = c.ha || 0;
+      total += ha;
+      kulturen.set(ffKultur(c), (kulturen.get(ffKultur(c)) || 0) + ha);
+      if (FF_DAUER.test(c.kultur) && !FF_LEGUME.test(c.kultur)) return;
+      acker += ha;
+      if (FF_LEGUME.test(c.kultur)) leg += ha;
+    });
+    return { year: y, acker, leg, total, share: acker ? leg / acker * 100 : null, kulturen: [...kulturen.entries()].sort((a, b) => b[1] - a[1]) };
+  });
+  return { years, rows, colorOf, stats };
+}
+// Hinweise je Schlag. "In Folge" zählt nur über direkt aufeinanderfolgende Jahre.
+function fruchtfolgeHints(row, years) {
+  const hints = [];
+  const seq = years.map(y => ({ jahr: Number(y.jahr), cell: row.cells[y.id] || null }));
+  // Läufe aufeinanderfolgender Jahre, in denen test(cell) gilt und key gleich bleibt
+  const runs = (test, key = () => 1) => {
+    const out = [];
+    let cur = null;
+    seq.forEach(s => {
+      const ok = s.cell && test(s.cell);
+      const k = ok ? key(s.cell) : null;
+      if (ok && cur && cur.key === k && s.jahr === cur.to + 1) { cur.to = s.jahr; cur.n++; }
+      else { if (cur) out.push(cur); cur = ok ? { key: k, from: s.jahr, to: s.jahr, n: 1 } : null; }
+    });
+    if (cur) out.push(cur);
+    return out;
+  };
+  runs(c => c.kultur && !FF_DAUER.test(c.kultur) && !FF_MEHRJAEHRIG.test(c.kultur), c => c.kultur.toLowerCase())
+    .filter(r => r.n >= 2)
+    .forEach(r => hints.push({ type: 'selbstfolge', text: `${seq.find(s => s.jahr === r.from).cell.kultur} ${r.n} Jahre in Folge (${r.from}–${r.to})` }));
+  runs(c => FF_HALM.test(c.kultur)).filter(r => r.n >= 3)
+    .forEach(r => hints.push({ type: 'getreide', text: `${r.n} Jahre Getreide in Folge (${r.from}–${r.to})` }));
+  const acker = seq.filter(s => s.cell && s.cell.kultur && !(FF_DAUER.test(s.cell.kultur) && !FF_LEGUME.test(s.cell.kultur)));
+  if (acker.length >= FF_MIN_YEARS_LEGUME && !acker.some(s => FF_LEGUME.test(s.cell.kultur))) {
+    hints.push({ type: 'leguminose', text: `keine Leguminose in ${acker.length} Jahren` });
+  }
+  return hints;
+}
+
+const ffHa = (n) => (n || 0).toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+// ---- Flächenübersicht › Reiter "Fruchtfolge" ----
+// Kennzahlen, Leguminosenanteil je Jahr (Säulen, beim Öffnen animiert),
+// Hinweise und die Tabelle Schlag × Jahr. Reiterwahl: ueTab.
+function setUeTab(tab) {
+  ueTab = tab === 'fruchtfolge' ? 'fruchtfolge' : 'flaechen';
+  openFlaechenuebersicht({ animate: true });
+}
+function syncUeTab(animate) {
+  document.querySelectorAll('#ue-tabs [data-ue-tab]').forEach(b => b.setAttribute('aria-checked', String(b.dataset.ueTab === ueTab)));
+  document.getElementById('ue-tab-flaechen').hidden = ueTab !== 'flaechen';
+  document.getElementById('ue-tab-fruchtfolge').hidden = ueTab !== 'fruchtfolge';
+  document.body.dataset.ueTab = ueTab;
+  if (ueTab === 'fruchtfolge') renderFruchtfolgeTab(animate);
+}
+document.querySelectorAll('#ue-tabs [data-ue-tab]').forEach(b => b.addEventListener('click', () => setUeTab(b.dataset.ueTab)));
+
+function renderFruchtfolgeTab(animate) {
+  const anim = !!animate && !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  ffData = buildFruchtfolge();
+  const { years, rows, stats } = ffData;
+  document.getElementById('uebersicht-view').classList.toggle('ue-animating', anim);
+  document.getElementById('ff-empty').hidden = years.length > 0;
+  document.getElementById('ff-content').hidden = years.length === 0;
+  if (!years.length) return;
+  const afterPaint = (fn) => requestAnimationFrame(() => requestAnimationFrame(fn));
+  const withHints = rows.filter(r => r.hints.length);
+  const last = stats[stats.length - 1];
+
+  // Kennzahlen (wie in "Flächen": schweben ein, Zahlen zählen hoch)
+  const tiles = [
+    { label: 'Hinterlegte Jahre', value: years.length, decimals: 0, sub: years.length > 1 ? `${years[0].jahr}–${last.year.jahr}` : `nur ${last.year.jahr} — weitere Jahre hinzufügen`, primary: true, icon: 'calendar_month' },
+    { label: 'Schläge', value: rows.length, decimals: 0, sub: `${ffHa(last.total)} ha in ${last.year.jahr}`, icon: 'crop_square' },
+    { label: `Leguminosen ${last.year.jahr}`, value: last.share || 0, decimals: 0, unit: '%', sub: `${ffHa(last.leg)} von ${ffHa(last.acker)} ha Acker`, icon: 'eco' },
+    { label: 'Schläge mit Hinweis', value: withHints.length, decimals: 0, sub: withHints.length ? 'Details in der Tabelle' : 'keine Auffälligkeiten', icon: 'warning', warn: withHints.length > 0 }
+  ];
+  const kpis = document.getElementById('ff-kpis');
+  kpis.innerHTML = tiles.map((t, i) => `
+    <div class="ue-kpi${t.primary ? ' primary' : ''}${t.warn ? ' is-warn' : ''}${anim ? ' ue-anim' : ''}" style="--i:${i}">
+      <span class="material-symbols-rounded icon ue-kpi-icon" aria-hidden="true">${t.icon}</span>
+      <span class="ue-kpi-label">${escapeHtml(t.label)}</span>
+      <span class="ue-kpi-value"><span class="ue-count" data-i="${i}">0</span>${t.unit ? `<small>${t.unit}</small>` : ''}</span>
+      <span class="ue-kpi-sub">${escapeHtml(t.sub)}</span>
+    </div>`).join('');
+  kpis.querySelectorAll('.ue-count').forEach(el => {
+    const t = tiles[+el.dataset.i];
+    if (anim) countUp(el, t.value, { decimals: t.decimals, delay: 120 + +el.dataset.i * 70 });
+    else el.textContent = t.value.toLocaleString('de-DE', { maximumFractionDigits: t.decimals });
+  });
+
+  // Leguminosenanteil: eine Säule je Jahr, wächst von unten, Prozent zählt hoch.
+  const maxShare = Math.max(...stats.map(s => s.share || 0));
+  const scale = Math.max(40, Math.ceil(maxShare / 10) * 10);
+  const chart = document.getElementById('ff-stats');
+  chart.style.setProperty('--cols', stats.length);
+  chart.innerHTML = `<div class="uf-leg-axis" aria-hidden="true"><span>${scale} %</span><span>${scale / 2} %</span><span>0 %</span></div>` + stats.map((s, i) => {
+    const h = s.share == null ? 0 : (s.share / scale) * 100;
+    return `<div class="uf-leg-col${s.share === 0 ? ' is-zero' : ''}" data-ff-stat="${escapeHtml(s.year.jahr)}" title="${escapeHtml(s.year.jahr)}: ${ffHa(s.leg)} von ${ffHa(s.acker)} ha Acker">
+      <span class="uf-leg-val">${s.share == null ? '–' : `<span class="uf-count" data-v="${s.share}">${anim ? 0 : Math.round(s.share)}</span> %`}</span>
+      <span class="uf-leg-track"><span class="uf-leg-fill" data-h="${h}" style="height:${anim ? 0 : h}%; transition-delay:${anim ? 250 + i * 110 : 0}ms"></span></span>
+      <span class="uf-leg-jahr">${escapeHtml(s.year.jahr)}</span>
+      <span class="uf-leg-sub">${ffHa(s.leg)} von ${ffHa(s.acker)} ha</span>
+    </div>`;
+  }).join('');
+  if (anim) {
+    afterPaint(() => chart.querySelectorAll('.uf-leg-fill').forEach(el => { el.style.height = el.dataset.h + '%'; }));
+    chart.querySelectorAll('.uf-count').forEach((el, i) => countUp(el, +el.dataset.v, { decimals: 0, duration: 900, delay: 250 + i * 110 }));
+  }
+
+  // Hinweise
+  const byType = (t) => rows.filter(r => r.hints.some(h => h.type === t)).length;
+  document.getElementById('ff-hints').innerHTML = withHints.length
+    ? `<div class="ff-hint-sum"><span class="material-symbols-rounded icon" aria-hidden="true">warning</span><strong>${withHints.length} ${withHints.length === 1 ? 'Schlag' : 'Schläge'} mit Hinweis</strong></div>
+      <ul>${[['selbstfolge', 'gleiche Kultur in Folge'], ['getreide', '3+ Jahre Getreide in Folge'], ['leguminose', `keine Leguminose in ${FF_MIN_YEARS_LEGUME}+ Jahren`]]
+        .filter(([t]) => byType(t)).map(([t, label]) => `<li><b>${byType(t)} ×</b> ${label}</li>`).join('')}</ul>`
+    : `<div class="ff-hint-sum is-ok"><span class="material-symbols-rounded icon" aria-hidden="true">task_alt</span><strong>Keine Hinweise</strong></div>
+      <p class="ue-hint-line">Geprüft: gleiche Kultur in Folge, 3+ Jahre Getreide in Folge, keine Leguminose in ${FF_MIN_YEARS_LEGUME}+ Jahren.</p>`;
+  document.getElementById('ff-only-hints-wrap').hidden = !withHints.length;
+  if (!withHints.length) { ffOnlyHints = false; document.getElementById('ff-only-hints').checked = false; }
+  document.getElementById('ff-years-info').textContent = years.map(y => y.jahr).join(' · ');
+  renderFruchtfolgeTable(anim);
+}
+function ffVisibleRows() {
+  return ffData.rows.filter(r => !ffOnlyHints || r.hints.length);
+}
+function renderFruchtfolgeTable(anim = false) {
+  const { years, colorOf } = ffData;
+  const rows = ffVisibleRows();
+  document.getElementById('ff-table-count').textContent = rows.length;
+  document.querySelector('#ff-table thead').innerHTML = `<tr><th>Nr.</th><th>Name</th>${years.map(y => `<th>${escapeHtml(y.jahr)}</th>`).join('')}<th>Hinweise</th></tr>`;
+  document.getElementById('ff-table-body').innerHTML = rows.length ? rows.map((r, i) => `<tr data-ff-row="${escapeHtml(r.nummer)}" class="${r.hints.length ? 'has-hint' : ''}${anim && i < 40 ? ' ue-anim' : ''}" style="--i:${Math.min(i, 40) * 0.4 + 5}" title="Auf der Karte zeigen">
+      <td>${escapeHtml(r.nummer)}</td><td>${escapeHtml(r.name || '–')}</td>
+      ${years.map(y => {
+        const c = r.cells[y.id];
+        if (!c) return '<td class="ff-none">–</td>';
+        return `<td><span class="ff-cell${FF_LEGUME.test(c.kultur) ? ' is-leg' : ''}" title="${c.ha != null ? formatHaExact(c.ha) + ' ha' : ''}"><i style="background:${colorOf.get(ffKultur(c))}"></i>${escapeHtml(ffKultur(c))}</span></td>`;
+      }).join('')}
+      <td class="ff-hint-cell">${r.hints.map(h => `<span class="ff-hint-pill">${escapeHtml(h.text)}</span>`).join('') || '<span class="ff-none">–</span>'}</td>
+    </tr>`).join('')
+    : `<tr><td colspan="${years.length + 3}" style="color:var(--muted); padding:14px;">Keine Schläge.</td></tr>`;
+}
+// Zeile antippen: Karte öffnen, nach Kultur eingefärbt, auf den Schlag zoomen.
+document.getElementById('ff-table-body').addEventListener('click', (e) => {
+  const tr = e.target.closest('[data-ff-row]');
+  if (tr) showSchlagKulturOnMap(tr.dataset.ffRow);
+});
+function showSchlagKulturOnMap(nummer) {
+  const src = ffData && ffData.rows.find(x => String(x.nummer) === String(nummer));
+  if (!src) return;
+  // Schlag im gewählten Jahr nicht vorhanden -> neuestes Jahr mit diesem Schlag
+  const y = (src.cells[ffYearId] && ffData.years.find(x => x.id === ffYearId)) || ffData.years.slice().reverse().find(x => src.cells[x.id]);
+  if (!y) return;
+  setActiveSegment('viewer');
+  map.invalidateSize();
+  ffYearId = y.id;
+  setKulturenMap(true, { fit: false });
+  const r = ffData.rows.find(x => String(x.nummer) === String(nummer));
+  if (!r || !r._mapLayer) return;
+  const b = r._mapLayer.getBounds();
+  if (b.isValid()) { map.fitBounds(b, { padding: [60, 60], maxZoom: 17 }); r._mapLayer.openPopup(b.getCenter()); }
+}
+document.getElementById('ff-only-hints').addEventListener('change', (e) => {
+  ffOnlyHints = e.target.checked;
+  renderFruchtfolgeTable();
+});
+document.querySelectorAll('#ff-file-add, #ff-file-add-empty').forEach(input => input.addEventListener('change', async (e) => {
+  for (const f of [...e.target.files]) await loadCompareFile(f);
+  e.target.value = '';
+}));
+document.querySelectorAll('[data-ff-goto-compare]').forEach(b => b.addEventListener('click', () => setActiveSegment('compare')));
+
+// ---- Karte: nach Kultur einfärben (Option in der Kartenansicht) ----
+// Knopf "Kulturen" über der Karte (nur wenn Jahre hinterlegt sind): zeigt
+// statt der normalen Ebenen die Flächen eines hinterlegten Jahres, gefärbt
+// nach Kultur; je Jahr ein Knopf, Legende unten links.
+function updateKulturenButton() {
+  const has = compareYears.some(y => y.jahr);
+  document.getElementById('btn-kulturen').hidden = !has;
+  if (!has && ffMapActive) setKulturenMap(false);
+}
+function setKulturenMap(on, { fit = true } = {}) {
+  ffMapActive = !!on && compareYears.some(y => y.jahr);
+  const btn = document.getElementById('btn-kulturen');
+  btn.setAttribute('aria-pressed', String(ffMapActive));
+  document.getElementById('kulturen-extra').classList.toggle('is-on', ffMapActive);
+  document.getElementById('ff-year-toggle').hidden = !ffMapActive;
+  document.getElementById('ff-map-legend').hidden = !ffMapActive;
+  if (!ffMapActive) {
+    if (ffGeoLayer) { map.removeLayer(ffGeoLayer); ffGeoLayer = null; restoreCompareHiddenLayer(); }
+    return;
+  }
+  ffData = buildFruchtfolge();
+  const { years } = ffData;
+  const known = years.map(y => y.id).join('|');
+  // Neues Jahr hinzugekommen (oder gewähltes entfernt) -> neuestes Jahr zeigen
+  if ((ffKnownYears && known !== ffKnownYears) || !years.some(y => y.id === ffYearId)) ffYearId = years[years.length - 1].id;
+  ffKnownYears = known;
+  renderFruchtfolgeToggle();
+  renderKulturenLegend();
+  showFruchtfolgeMap(fit);
+}
+document.getElementById('btn-kulturen').addEventListener('click', () => setKulturenMap(!ffMapActive));
+function renderFruchtfolgeToggle() {
+  document.getElementById('ff-year-toggle').innerHTML = ffData.years.map(y =>
+    `<button type="button" role="radio" data-ff-year="${y.id}" aria-checked="${y.id === ffYearId}">${escapeHtml(y.jahr)}</button>`).join('');
+}
+function renderKulturenLegend() {
+  const stat = ffData.stats.find(s => s.year.id === ffYearId);
+  document.getElementById('ff-legend-title').textContent = stat ? `Kulturen ${stat.year.jahr}` : 'Kulturen';
+  document.getElementById('ff-legend').innerHTML = stat ? stat.kulturen.map(([k, ha]) =>
+    `<div><span class="legend-swatch" style="background:${ffData.colorOf.get(k)}"></span><span class="ff-legend-name">${escapeHtml(k)}${FF_LEGUME.test(k) ? ' <span class="ff-leg-tag">Leg.</span>' : ''}</span><span class="ff-legend-ha">${ffHa(ha)} ha</span></div>`).join('') : '';
+}
+document.getElementById('ff-year-toggle').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-ff-year]');
+  if (!btn) return;
+  ffYearId = btn.dataset.ffYear;
+  renderFruchtfolgeToggle();
+  renderKulturenLegend();
+  showFruchtfolgeMap(false);
+});
+function showFruchtfolgeMap(fitView) {
+  if (ffGeoLayer) map.removeLayer(ffGeoLayer);
+  ffGeoLayer = L.featureGroup().addTo(map);
+  const y = ffData.years.find(x => x.id === ffYearId);
+  if (!compareHiddenLayerIds.length) hideMapLayersForCompare();
+  ffData.rows.forEach(r => {
+    const c = y && r.cells[y.id];
+    r._mapLayer = null;
+    if (!c || !c.feature.geometry) return;
+    const color = ffData.colorOf.get(ffKultur(c));
+    const layer = L.geoJSON(c.feature, { style: { color, weight: r.hints.length ? 2.4 : 1.4, fillColor: color, fillOpacity: 0.45, dashArray: r.hints.length ? '5,4' : null } });
+    layer.bindPopup(fruchtfolgePopupHtml(r));
+    layer.addTo(ffGeoLayer);
+    addFeatureLabel(c.feature, featureLabelHtml(r.nummer, ffKultur(c)), ffGeoLayer);
+    r._mapLayer = layer;
+  });
+  if (fitView && ffGeoLayer.getLayers().length) map.fitBounds(ffGeoLayer.getBounds(), { padding: [30, 30] });
+}
+function fruchtfolgePopupHtml(r) {
+  return '<b>' + escapeHtml(r.nummer) + '</b>' + (r.name ? ' – ' + escapeHtml(r.name) : '') + '<br>' +
+    ffData.years.map(y => escapeHtml(y.jahr) + ': ' + escapeHtml(r.cells[y.id] ? ffKultur(r.cells[y.id]) : '–')).join('<br>') +
+    (r.hints.length ? '<br><i>' + r.hints.map(h => escapeHtml(h.text)).join('; ') + '</i>' : '');
+}
+// Hinterlegte Jahre geändert (hinzugefügt, entfernt, Betrieb gewechselt).
+function refreshFruchtfolgeIfOpen() {
+  updateKulturenButton();
+  if (ffMapActive) setKulturenMap(true, { fit: false });
+  if (document.body.dataset.view === 'uebersicht' && ueTab === 'fruchtfolge') renderFruchtfolgeTab(false);
+}
+
+function exportFruchtfolgeTable(type) {
+  if (!ffData || !ffData.rows.length) { showCompareError('Keine Fruchtfolge zum Exportieren — erst Jahre hinterlegen.'); return; }
+  const { years } = ffData;
+  const headers = ['Nummer', 'Name', ...years.map(y => y.jahr), 'Hinweise'];
+  const data = ffVisibleRows().map(r => [r.nummer, r.name || '', ...years.map(y => (r.cells[y.id] ? ffKultur(r.cells[y.id]) : '')), r.hints.map(h => h.text).join('; ')]);
+  const ts = new Date().toISOString().slice(0, 10);
+  if (type === 'csv') exportCsv(headers, data, zuordnungFileName('Fruchtfolge', 'csv') || `fruchtfolge_${ts}.csv`);
+  else if (type === 'xlsx') exportXlsx(headers, data, zuordnungFileName('Fruchtfolge', 'xlsx') || `fruchtfolge_${ts}.xlsx`, 'Fruchtfolge');
+  else if (type === 'pdf') exportPdf(headers, data, zuordnungFileName('Fruchtfolge', 'pdf') || `fruchtfolge_${ts}.pdf`, 'Fruchtfolge');
 }
 
 function zoomToCompareRecord(rec) {
@@ -2886,12 +5502,81 @@ function exportXlsx(headers, rows, filename, sheetName) {
   XLSX.writeFile(wb, filename);
 }
 
-function exportPdf(headers, rows, filename, title) {
+// ---------- FeldFolio Plus: dezenter Schriftzug in PDF-Exporten ----------
+// Rendert den kompletten Wortmarken-Schriftzug ("Feld" + "F" + Apfel-Grafik +
+// "lio", exakt dieselbe Struktur/Klassen wie #brand-logo in der Kopfzeile)
+// einmalig als Bild um (jsPDF kann kein SVG/Web-Font direkt einbetten, nur
+// Raster-Bilder) und cached das Ergebnis als {dataUrl, aspectRatio}, damit
+// nicht bei jedem Export erneut gerendert werden muss. Feste Markenfarbe
+// (Light-Mode-Grün) statt var(--accent), da das PDF-Papier immer weiß ist,
+// unabhängig vom gerade aktiven Dark-/Hellmodus der App.
+// transparent: ohne weißen Hintergrund (Wasserzeichen/Kopfzeile der
+// Gesamtübersicht, dort liegt das Logo auch über Luftbildern).
+const feldfolioLogoDataUrlPromises = {};
+function getFeldFolioLogoDataUrl({ transparent = false } = {}) {
+  const key = transparent ? 'transparent' : 'white';
+  if (!feldfolioLogoDataUrlPromises[key]) {
+    feldfolioLogoDataUrlPromises[key] = (async () => {
+      if (typeof html2canvas === 'undefined') return null;
+      const source = document.getElementById('brand-logo');
+      if (!source) return null;
+      const clone = source.cloneNode(true);
+      clone.style.position = 'fixed';
+      clone.style.left = '-99999px';
+      clone.style.top = '0';
+      clone.style.margin = '0';
+      clone.style.padding = '6px 10px';
+      clone.style.fontSize = '64px';
+      clone.style.color = '#607E60';
+      clone.style.background = transparent ? 'transparent' : '#ffffff';
+      // Am Handy blendet die Kopfzeile den Schriftzug aus (nur Apfel) — im
+      // PDF immer die volle Wortmarke "FeldFolio", ohne das "+".
+      clone.querySelectorAll('.ff-txt').forEach(el => { el.style.display = 'inline'; });
+      clone.querySelectorAll('.ff-plus').forEach(el => { el.style.display = 'none'; });
+      document.body.appendChild(clone);
+      try {
+        if (document.fonts && document.fonts.ready) await document.fonts.ready;
+        const canvas = await html2canvas(clone, { backgroundColor: transparent ? null : '#ffffff', scale: 2 });
+        return { dataUrl: canvas.toDataURL('image/png'), aspectRatio: canvas.width / canvas.height };
+      } catch {
+        return null;
+      } finally {
+        document.body.removeChild(clone);
+      }
+    })();
+  }
+  return feldfolioLogoDataUrlPromises[key];
+}
+
+// Stempelt den Schriftzug klein und halbtransparent in die untere rechte Ecke
+// jeder Seite eines fertigen PDF-Dokuments — rein dekoratives Branding, daher
+// bewusst zurückhaltend (kleine Größe, reduzierte Deckkraft) statt wie ein
+// aufdringliches Wasserzeichen über dem eigentlichen Seiteninhalt zu liegen.
+// logo darf null sein (z.B. wenn das Bild nicht gerendert werden konnte) —
+// dann wird einfach nichts gestempelt, kein Fehler.
+function stampFeldFolioLogo(doc, logo) {
+  if (!logo) return;
+  const h = 6;
+  const w = h * logo.aspectRatio;
+  const pageCount = doc.internal.getNumberOfPages();
+  for (let i = 1; i <= pageCount; i++) {
+    doc.setPage(i);
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
+    const hasGState = typeof doc.setGState === 'function' && typeof doc.GState === 'function';
+    if (hasGState) doc.setGState(new doc.GState({ opacity: 0.55 }));
+    doc.addImage(logo.dataUrl, 'PNG', pageW - w - 6, pageH - h - 6, w, h);
+    if (hasGState) doc.setGState(new doc.GState({ opacity: 1 }));
+  }
+}
+
+async function exportPdf(headers, rows, filename, title) {
   if (typeof window.jspdf === 'undefined') { showError('PDF-Export nicht verfügbar (Bibliothek konnte nicht geladen werden).'); return; }
   const doc = new window.jspdf.jsPDF({ orientation: 'landscape' });
   doc.setFontSize(12);
   doc.text(title || '', 14, 12);
   doc.autoTable({ head: [headers], body: rows, startY: 16, styles: { fontSize: 8 }, headStyles: { fillColor: [79, 184, 175] } });
+  stampFeldFolioLogo(doc, await getFeldFolioLogoDataUrl());
   doc.save(filename);
 }
 
@@ -2901,18 +5586,19 @@ function exportViewerTable(type) {
   const headers = ['Schlagnr./Flächennr.', 'Flächenname', 'Flächenidentifikator', 'Größe (ha)', 'Kulturart', 'Ebene'];
   const data = rows.map(e => {
     const n = parseFloat(String(e.groesse).replace(',', '.'));
-    const groesseText = isFinite(n) ? n.toFixed(2) : (e.groesse || '');
+    const groesseText = isFinite(n) ? haExactFixed(n) : (e.groesse || '');
     return [e.nummer || '', e.featName || '', e.flaechenId || '', groesseText, e.kultur || '', e.layerName || ''];
   });
   const ts = new Date().toISOString().slice(0, 10);
-  if (type === 'csv') exportCsv(headers, data, `flaechenuebersicht_${ts}.csv`);
-  else if (type === 'xlsx') exportXlsx(headers, data, `flaechenuebersicht_${ts}.xlsx`, 'Flächen');
-  else if (type === 'pdf') exportPdf(headers, data, `flaechenuebersicht_${ts}.pdf`, 'Flächenübersicht');
+  if (type === 'csv') exportCsv(headers, data, zuordnungFileName('Flächenübersicht', 'csv') || `flaechenuebersicht_${ts}.csv`);
+  else if (type === 'xlsx') exportXlsx(headers, data, zuordnungFileName('Flächenübersicht', 'xlsx') || `flaechenuebersicht_${ts}.xlsx`, 'Flächen');
+  else if (type === 'pdf') exportPdf(headers, data, zuordnungFileName('Flächenübersicht', 'pdf') || `flaechenuebersicht_${ts}.pdf`, 'Flächenübersicht');
 }
 
 function exportCompareTable(type) {
   if (!compareRecords.length) { showCompareError('Kein Vergleichsergebnis zum Exportieren — erst "Vergleichen" ausführen.'); return; }
-  const headers = ['Status', 'Nummer', 'Name', 'Größe A (ha)', 'Größe B (ha)', 'Δ ha', 'Kulturart A', 'Kulturart B'];
+  const ja = compareResult.a.jahr, jb = compareResult.b.jahr;
+  const headers = ['Status', 'Nummer', 'Name', `Größe ${ja} (ha)`, `Größe ${jb} (ha)`, 'Δ ha', `Kulturart ${ja}`, `Kulturart ${jb}`];
   const data = compareRecords.map(r => {
     const gA = parseHa(r.groesseA);
     const gB = parseHa(r.groesseB);
@@ -2920,17 +5606,17 @@ function exportCompareTable(type) {
       STATUS_LABELS[r.status],
       r.nummer || '',
       r.name || '',
-      gA !== null ? gA.toFixed(2) : (r.groesseA || ''),
-      gB !== null ? gB.toFixed(2) : (r.groesseB || ''),
-      r.delta !== null ? r.delta.toFixed(2) : '',
+      gA !== null ? haExactFixed(gA) : (r.groesseA || ''),
+      gB !== null ? haExactFixed(gB) : (r.groesseB || ''),
+      r.delta !== null ? haExactFixed(r.delta) : '',
       r.kulturA || '',
       r.kulturB || ''
     ];
   });
   const ts = new Date().toISOString().slice(0, 10);
-  if (type === 'csv') exportCsv(headers, data, `jahresvergleich_${ts}.csv`);
-  else if (type === 'xlsx') exportXlsx(headers, data, `jahresvergleich_${ts}.xlsx`, 'Vergleich');
-  else if (type === 'pdf') exportPdf(headers, data, `jahresvergleich_${ts}.pdf`, 'Jahresvergleich');
+  if (type === 'csv') exportCsv(headers, data, zuordnungFileName('Jahresvergleich', 'csv') || `jahresvergleich_${ts}.csv`);
+  else if (type === 'xlsx') exportXlsx(headers, data, zuordnungFileName('Jahresvergleich', 'xlsx') || `jahresvergleich_${ts}.xlsx`, 'Vergleich');
+  else if (type === 'pdf') exportPdf(headers, data, zuordnungFileName('Jahresvergleich', 'pdf') || `jahresvergleich_${ts}.pdf`, 'Jahresvergleich');
 }
 
 document.querySelectorAll('.export-btn').forEach(btn => {
@@ -2938,6 +5624,7 @@ document.querySelectorAll('.export-btn').forEach(btn => {
     const type = btn.getAttribute('data-export');
     const target = btn.getAttribute('data-target');
     if (target === 'viewer') exportViewerTable(type);
+    else if (target === 'fruchtfolge') exportFruchtfolgeTable(type);
     else exportCompareTable(type);
   });
 });
@@ -2999,7 +5686,7 @@ async function captureParcelScreenshot(targetMap, satelliteLayer, mapElId, featu
       targetMap.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
     }
     await waitForTilesFullyLoaded(satelliteLayer, mapElId, 6000);
-    return await html2canvas(document.getElementById(mapElId), { useCORS: true, logging: false });
+    return await captureMapElement(document.getElementById(mapElId), { useCORS: true, logging: false });
   } finally {
     targetMap.removeLayer(highlightLayer);
   }
@@ -3015,7 +5702,7 @@ function addFlaechenkartePage(doc, pageW, pageH, margin, canvas, row) {
   doc.setFontSize(11);
   const num = parseFloat(String(row.groesse).replace(',', '.'));
   const groesseText = isFinite(num)
-    ? num.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ha'
+    ? formatHaExact(num) + ' ha'
     : (row.groesse || '–');
   const subtitleParts = ['Größe: ' + groesseText, 'Kulturart: ' + (row.kultur || '–')];
   if (row.flaechenId) subtitleParts.push('Flächen-ID: ' + row.flaechenId);
@@ -3073,8 +5760,9 @@ async function exportFlaechenkarten() {
       addFlaechenkartePage(doc, pageW, pageH, margin, canvas, row);
     }
 
+    stampFeldFolioLogo(doc, await getFeldFolioLogoDataUrl());
     const ts = new Date().toISOString().slice(0, 10);
-    doc.save(`flaechenkarten_${ts}.pdf`);
+    doc.save(zuordnungFileName('Flächenkarte', 'pdf') || `flaechenkarten_${ts}.pdf`);
     setStatus('Flächenkarten exportiert.');
   } finally {
     // Ursprünglichen Kartenzustand vollständig wiederherstellen.
@@ -3095,10 +5783,27 @@ document.getElementById('btn-export-flaechenkarten').addEventListener('click', e
 // eintragbar, Export nutzt dieselbe Flächenkarten-PDF-Logik wie der Viewer.
 let zeichnerInitDone = false;
 let zeichnerDrawPolygon = null; // Leaflet.draw-Handler, damit setActiveSegment() das Zeichnen beim Verlassen des Tabs abbrechen kann
+let zeichnerDrawLine = null; // Leaflet.draw-Handler für die Schnittlinie bei "Fläche teilen"
 let zeichnerLayerId = null; // id der synthetischen "Flächenzeichner"-Ebene im geteilten layers-Bestand
-const zeichnerParcels = []; // featureIndex-Einträge der gezeichneten Flächen (gleicher Bestand wie überall sonst, nur gefiltert für diese Liste)
-let zeichnerParcelCounter = 0;
+const zeichnerParcels = []; // featureIndex-Einträge der gezeichneten Flächen (gleicher Bestand wie überall sonst, nur gefiltert für diese Liste) — bei Neuladen/Betrieb-Wechsel aus einer wiederhergestellten "Flächenzeichner"-Ebene erneut befüllt, siehe addLayer()
 let zeichnerColorIdx = 0;
+let shapeEditingEntryId = null; // id der Fläche (beliebiger Herkunft — gezeichnet, hochgeladen oder wiederhergestellt), deren Eckpunkte gerade per Ziehen bearbeitbar sind (immer nur eine gleichzeitig)
+let shapeGeometryCommitTimer = null;
+let zeichnerSplitTargetId = null; // id der Fläche, die gerade per Schnittlinie geteilt wird
+
+// Liefert die nächste freie, lückenlose Fläche-Nummer für neu gezeichnete
+// Flächen — aus dem aktuellen Bestand berechnet statt aus einem simplen
+// Zähler, der nach einem Neuladen/Betrieb-Wechsel nicht mehr zum tatsächlich
+// geladenen Stand passt (sonst fängt "Fläche 1" nach jedem Neuladen wieder
+// von vorne an, obwohl schon Flächen 1-3 existieren).
+function nextZeichnerNummer() {
+  let max = 0;
+  zeichnerParcels.forEach(p => {
+    const n = parseInt(p.props.NUMMER, 10);
+    if (isFinite(n) && n > max) max = n;
+  });
+  return max + 1;
+}
 
 // Legt beim allerersten Zeichnen die geteilte "Flächenzeichner"-Ebene an —
 // alle weiteren gezeichneten Flächen werden per addFeatureToLayer() an
@@ -3117,9 +5822,9 @@ function initZeichnerMap() {
   if (zeichnerInitDone) return;
   zeichnerInitDone = true;
 
-  const drawBtn = document.getElementById('btn-zeichner-draw');
   if (typeof L.Draw === 'undefined') {
-    drawBtn.disabled = true;
+    shapeToolDrawBtn.disabled = true;
+    shapeToolSplitBtn.disabled = true;
     showZeichnerError('Zeichenwerkzeug nicht verfügbar (Leaflet.draw konnte nicht geladen werden).');
     return;
   }
@@ -3130,26 +5835,49 @@ function initZeichnerMap() {
     metric: true,
     allowIntersection: false
   });
-  drawBtn.addEventListener('click', () => zeichnerDrawPolygon.enable());
 
-  map.on(L.Draw.Event.DRAWSTART, () => {
-    armedTool = 'draw-polygon';
-    drawBtn.classList.add('active');
-    drawBtn.textContent = 'Zeichnen läuft … (Esc zum Abbrechen)';
+  // Schnittlinien-Werkzeug für "Fläche teilen" — wird nicht direkt über die
+  // Werkzeugleiste scharf gestellt, sondern erst nach Anklicken einer
+  // konkreten Zielfläche (siehe startParcelSplit weiter unten), da es immer
+  // eine Zielfläche braucht (zeichnerSplitTargetId).
+  zeichnerDrawLine = new L.Draw.Polyline(map, {
+    shapeOptions: { color: '#EB5C4E', weight: 2.5, dashArray: '6,6' },
+    metric: true,
+    allowIntersection: true
   });
-  map.on(L.Draw.Event.DRAWSTOP, () => {
-    if (armedTool === 'draw-polygon') armedTool = null;
-    drawBtn.classList.remove('active');
-    drawBtn.textContent = 'Fläche zeichnen';
+
+  map.on(L.Draw.Event.DRAWSTART, (e) => {
+    if (e.layerType === 'polyline') {
+      armedTool = 'split-line';
+      setZeichnerStatus('Schnittlinie quer über die Fläche ziehen, mit Doppelklick abschließen (Esc zum Abbrechen).');
+    } else if (armedTool === 'draw-polygon') {
+      // armedTool wird vom "Zeichnen"-Button VOR dem enable() gesetzt (siehe
+      // shapeToolDrawBtn weiter unten) — layerType allein reicht hier nicht
+      // zur Unterscheidung, da der Hofplan-Abschnitt ebenfalls einen
+      // L.Draw.Polygon-Handler mit demselben layerType 'polygon' nutzt.
+      setZeichnerStatus('Zeichnen läuft … Eckpunkte anklicken, mit Doppelklick abschließen (Esc zum Abbrechen).');
+    }
+    // Andere Werte (z.B. 'draw-hofplan-rect'/'draw-hofplan-poly') gehören zu
+    // einem anderen Zeichenwerkzeug — dessen eigener DRAWSTART-Handler kümmert
+    // sich um Statuszeile/Toolbar, hier bewusst nichts tun.
+    updateShapeToolbar();
+  });
+  map.on(L.Draw.Event.DRAWSTOP, (e) => {
+    if (e.layerType === 'polyline') {
+      if (armedTool === 'split-line') { armedTool = null; zeichnerSplitTargetId = null; }
+    } else if (armedTool === 'draw-polygon') {
+      armedTool = null;
+    }
+    updateShapeToolbar();
   });
 
   // Rechtsklick während des Zeichnens entfernt den zuletzt gesetzten Punkt
-  // (deleteLastVertex ist eine öffentliche Methode von L.Draw.Polygon, sonst
-  // nur über die von uns nicht genutzte Standard-Toolbar erreichbar).
+  // (deleteLastVertex ist eine öffentliche Methode von L.Draw.Polygon/
+  // Polyline, sonst nur über die von uns nicht genutzte Standard-Toolbar
+  // erreichbar).
   map.on('contextmenu', (e) => {
-    if (armedTool !== 'draw-polygon') return;
-    L.DomEvent.preventDefault(e);
-    zeichnerDrawPolygon.deleteLastVertex();
+    if (armedTool === 'draw-polygon') { L.DomEvent.preventDefault(e); zeichnerDrawPolygon.deleteLastVertex(); }
+    else if (armedTool === 'split-line') { L.DomEvent.preventDefault(e); zeichnerDrawLine.deleteLastVertex(); }
   });
 
   // Gezeichnete Flächen landen direkt im geteilten Datenbestand (layers/
@@ -3157,24 +5885,34 @@ function initZeichnerMap() {
   // Liste — dadurch sind sie sofort auch im Viewer, im Jahresvergleich (als
   // Jahr B) und im Obstbaumkataster (Baum-Zuordnung) nutzbar.
   map.on(L.Draw.Event.CREATED, (e) => {
+    if (e.layerType === 'polyline') {
+      finishParcelSplit(e.layer);
+      return;
+    }
+    // Guard nötig, seit der Hofplan-Abschnitt ebenfalls Polygone (und
+    // Rechtecke) über denselben globalen CREATED-Event zeichnet — ohne diesen
+    // Check würde ein dort gezeichnetes Gebäude hier zusätzlich fälschlich
+    // als neue Flächenzeichner-Parzelle angelegt.
+    if (armedTool !== 'draw-polygon') return;
     const layer = e.layer;
     const areaHa = turf.area(layer.toGeoJSON()) / 10000;
     const color = COLORS[zeichnerColorIdx % COLORS.length];
     zeichnerColorIdx++;
-    zeichnerParcelCounter++;
+    const nummer = nextZeichnerNummer();
 
     const feature = {
       type: 'Feature',
       geometry: layer.toGeoJSON().geometry,
-      properties: { NUMMER: zeichnerParcelCounter, NAME: '', KULTURART: '', FLAECHE_HA: Number(areaHa.toFixed(4)) }
+      properties: { NUMMER: nummer, NAME: '', KULTURART: '', FLAECHE_HA: Number(areaHa.toFixed(4)) }
     };
     const layerId = ensureZeichnerLayer();
     const entry = addFeatureToLayer(layerId, feature, color);
-    entry.id = 'parcel-' + zeichnerParcelCounter;
+    entry.id = 'parcel-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
     entry.areaHa = areaHa;
     zeichnerParcels.push(entry);
+    pushShapeUndo({ type: 'add', entryId: entry.id });
     renderParcelList();
-    setZeichnerStatus(`Fläche ${zeichnerParcelCounter} gezeichnet (${areaHa.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ha).`);
+    setZeichnerStatus(`Fläche ${nummer} gezeichnet (${areaHa.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ha).`);
   });
 }
 
@@ -3196,16 +5934,560 @@ function zoomToParcel(id) {
 }
 
 function removeParcel(id) {
-  const idx = zeichnerParcels.findIndex(x => x.id === id);
-  if (idx === -1) return;
-  removeFeatureEntry(zeichnerParcels[idx]);
-  zeichnerParcels.splice(idx, 1);
+  const entry = zeichnerParcels.find(x => x.id === id);
+  if (!entry) return;
+  pushShapeUndo({
+    type: 'delete',
+    layerId: entry.layerId,
+    color: entry.color,
+    feature: cloneFeature(entry.leafletLayer.feature),
+    wasZeichnerOrigin: true
+  });
+  removeEntryEverywhere(entry);
+  updateShapeToolbar();
+}
+
+// Kurzer Statustext an der richtigen Stelle — je nachdem, ob die betroffene
+// Fläche zur Flächenzeichner-Ebene gehört (Zeichner-Statuszeile) oder
+// hochgeladen/wiederhergestellt ist (allgemeine Viewer-Statuszeile).
+function shapeStatus(entry, msg) {
+  if (entry.layerId === zeichnerLayerId) setZeichnerStatus(msg);
+  else setStatus(msg);
+}
+
+function cloneFeature(feature) { return JSON.parse(JSON.stringify(feature)); }
+
+// Entfernt eine Fläche vollständig aus allen Beständen (featureIndex über
+// removeFeatureEntry, zusätzlich zeichnerParcels und eine ggf. laufende
+// Eckpunkt-Bearbeitung) — gemeinsam genutzt von Löschen-Werkzeug, "Entfernen"
+// und den Rückgängig-Pfaden von Zeichnen/Teilen, damit diese Aufräum-Logik
+// nur an einer Stelle gepflegt werden muss.
+function removeEntryEverywhere(entry) {
+  if (shapeEditingEntryId === entry.id) { shapeEditingEntryId = null; shapeEditBeforeGeometry = null; }
+  const zIdx = zeichnerParcels.findIndex(p => p.id === entry.id);
+  if (zIdx !== -1) zeichnerParcels.splice(zIdx, 1);
+  removeFeatureEntry(entry); // rendert bereits Ebenenliste/Flächentabelle neu
   renderParcelList();
 }
 
+// ---------- Rückgängig ----------
+// Ein gemeinsamer Verlaufsspeicher für Zeichnen/Bearbeiten/Löschen/Teilen —
+// jeder Eintrag trägt genug Rohdaten (geklonte GeoJSON-Feature, betroffene
+// Ebene/Farbe), um die Aktion ohne separaten Code-Pfad je Aktionsart wieder
+// herzustellen.
+function pushShapeUndo(action) {
+  shapeUndoStack.push(action);
+  if (shapeUndoStack.length > SHAPE_UNDO_MAX) shapeUndoStack.shift();
+  // Eine echte neue Aktion verwirft die Redo-Historie (Standard-Undo/Redo-
+  // Semantik) — anders als pushShapeUndoKeepRedo(), das redoLastShapeAction()
+  // selbst benutzt, um die soeben wiederhergestellte Aktion erneut auf den
+  // Undo-Stack zu legen, ohne den Rest der Redo-Historie zu verwerfen.
+  shapeRedoStack.length = 0;
+  updateShapeToolbar();
+}
+
+function pushShapeUndoKeepRedo(action) {
+  shapeUndoStack.push(action);
+  if (shapeUndoStack.length > SHAPE_UNDO_MAX) shapeUndoStack.shift();
+  updateShapeToolbar();
+}
+
+// Baut beim Rückgängig-Machen zusätzlich die passende Redo-Gegenaktion —
+// da das rückgängig gemachte Objekt dabei gerade entfernt/verändert wird,
+// muss die Redo-Aktion alle nötigen Daten selbst mitbringen (nicht nur eine
+// ID, die es dann evtl. gar nicht mehr gibt).
+function undoLastShapeAction() {
+  const action = shapeUndoStack.pop();
+  if (!action) return;
+  let redoAction = null;
+  if (action.type === 'add') {
+    const entry = featureIndex.find(e => e.id === action.entryId);
+    if (entry) {
+      redoAction = {
+        type: 'add',
+        layerId: entry.layerId,
+        color: entry.color,
+        feature: cloneFeature(entry.leafletLayer.feature),
+        wasZeichnerOrigin: zeichnerParcels.some(p => p.id === entry.id)
+      };
+      removeEntryEverywhere(entry);
+    }
+    setZeichnerStatus('Zeichnen rückgängig gemacht.');
+  } else if (action.type === 'delete' || action.type === 'split') {
+    let removedPieces = null;
+    if (action.type === 'split') {
+      removedPieces = action.newEntryIds
+        .map(id => featureIndex.find(x => x.id === id))
+        .filter(Boolean)
+        .map(e => ({ feature: cloneFeature(e.leafletLayer.feature), color: e.color }));
+      action.newEntryIds.forEach(id => {
+        const e = featureIndex.find(x => x.id === id);
+        if (e) removeEntryEverywhere(e);
+      });
+    }
+    const entry = addFeatureToLayer(action.layerId, action.feature, action.color);
+    if (action.wasZeichnerOrigin) {
+      entry.areaHa = turf.area(entry.leafletLayer.toGeoJSON()) / 10000;
+      zeichnerParcels.push(entry);
+    }
+    renderParcelList();
+    redoAction = action.type === 'split'
+      ? { type: 'split', entryId: entry.id, pieces: removedPieces }
+      : { type: 'delete', entryId: entry.id };
+    setZeichnerStatus(action.type === 'split' ? 'Teilen rückgängig gemacht.' : 'Löschen rückgängig gemacht.');
+  } else if (action.type === 'edit') {
+    const entry = featureIndex.find(e => e.id === action.entryId);
+    if (entry) {
+      const currentGeometry = cloneFeature(entry.leafletLayer.feature).geometry;
+      applyGeometryToEntry(entry, action.beforeGeometry);
+      renderFeatureTable();
+      renderParcelList();
+      redoAction = { type: 'edit', entryId: entry.id, geometry: currentGeometry };
+    }
+    setZeichnerStatus('Bearbeitung rückgängig gemacht.');
+  }
+  if (redoAction) shapeRedoStack.push(redoAction);
+  reassignAllTreesToParcels();
+  updateShapeToolbar();
+}
+
+function redoLastShapeAction() {
+  const action = shapeRedoStack.pop();
+  if (!action) return;
+  if (action.type === 'add') {
+    const entry = addFeatureToLayer(action.layerId, action.feature, action.color);
+    if (action.wasZeichnerOrigin) {
+      entry.areaHa = turf.area(entry.leafletLayer.toGeoJSON()) / 10000;
+      zeichnerParcels.push(entry);
+    }
+    renderParcelList();
+    pushShapeUndoKeepRedo({ type: 'add', entryId: entry.id });
+    setZeichnerStatus('Zeichnen wiederhergestellt.');
+  } else if (action.type === 'delete') {
+    const entry = featureIndex.find(e => e.id === action.entryId);
+    if (entry) {
+      pushShapeUndoKeepRedo({
+        type: 'delete',
+        layerId: entry.layerId,
+        color: entry.color,
+        feature: cloneFeature(entry.leafletLayer.feature),
+        wasZeichnerOrigin: zeichnerParcels.some(p => p.id === entry.id)
+      });
+      removeEntryEverywhere(entry);
+    }
+    setZeichnerStatus('Löschen wiederhergestellt.');
+  } else if (action.type === 'split') {
+    const entry = featureIndex.find(e => e.id === action.entryId);
+    if (entry) {
+      const undoFeature = cloneFeature(entry.leafletLayer.feature);
+      const undoColor = entry.color;
+      const layerId = entry.layerId;
+      const isZeichnerOrigin = zeichnerParcels.some(p => p.id === entry.id);
+      removeEntryEverywhere(entry);
+      const newEntryIds = [];
+      (action.pieces || []).forEach(p => {
+        const newEntry = addFeatureToLayer(layerId, p.feature, p.color);
+        if (isZeichnerOrigin) {
+          newEntry.id = 'parcel-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+          newEntry.areaHa = turf.area(newEntry.leafletLayer.toGeoJSON()) / 10000;
+          zeichnerParcels.push(newEntry);
+        }
+        newEntryIds.push(newEntry.id);
+      });
+      renderParcelList();
+      pushShapeUndoKeepRedo({ type: 'split', layerId, color: undoColor, feature: undoFeature, wasZeichnerOrigin: isZeichnerOrigin, newEntryIds });
+    }
+    setZeichnerStatus('Teilen wiederhergestellt.');
+  } else if (action.type === 'edit') {
+    const entry = featureIndex.find(e => e.id === action.entryId);
+    if (entry) {
+      const beforeGeometry = cloneFeature(entry.leafletLayer.feature).geometry;
+      applyGeometryToEntry(entry, action.geometry);
+      renderFeatureTable();
+      renderParcelList();
+      pushShapeUndoKeepRedo({ type: 'edit', entryId: entry.id, beforeGeometry });
+    }
+    setZeichnerStatus('Bearbeitung wiederhergestellt.');
+  }
+  reassignAllTreesToParcels();
+  updateShapeToolbar();
+}
+
+// Setzt die Geometrie eines Eintrags direkt (ohne Eckpunkt-Bearbeitung) auf
+// einen früheren Stand zurück — für Rückgängig einer Formänderung.
+function applyGeometryToEntry(entry, geometry) {
+  const depth = geometry.type === 'MultiPolygon' ? 2 : 1;
+  entry.leafletLayer.setLatLngs(L.GeoJSON.coordsToLatLngs(geometry.coordinates, depth));
+  entry.leafletLayer.feature.geometry = geometry;
+  entry.center = entry.leafletLayer.getBounds().getCenter();
+  if (entry.labelAnchor && entry.labelAnchor.setLatLng) entry.labelAnchor.setLatLng(entry.center);
+  const areaHa = turf.area(entry.leafletLayer.toGeoJSON()) / 10000;
+  entry.areaHa = areaHa;
+  entry.groesse = String(areaHa);
+  entry.props.FLAECHE_HA = Number(areaHa.toFixed(4));
+}
+
+// Löschen-Werkzeug in der Kartenleiste: Klick auf eine Fläche entfernt sie
+// sofort (mit Rückgängig-Möglichkeit statt einer zusätzlichen Rückfrage).
+function deleteShapeViaTool(entry) {
+  const label = entry.nummer || entry.featName || '';
+  pushShapeUndo({
+    type: 'delete',
+    layerId: entry.layerId,
+    color: entry.color,
+    feature: cloneFeature(entry.leafletLayer.feature),
+    wasZeichnerOrigin: zeichnerParcels.some(p => p.id === entry.id)
+  });
+  removeEntryEverywhere(entry);
+  shapeStatus(entry, `Fläche ${label} gelöscht.`);
+  updateShapeToolbar();
+}
+
+// ---------- Eckpunkte einer Fläche per Ziehen anpassen ----------
+// Nutzt L.Edit.Poly aus Leaflet.draw (steckt automatisch in jedem Polygon,
+// egal ob gezeichnet, hochgeladen oder aus der Cloud wiederhergestellt, siehe
+// die .on('edit', …)-Verdrahtung in buildFeatureEntry) — kein eigenes
+// Zieh-Handling nötig, nur enable()/disable() und das Nachziehen von
+// Fläche/Mittelpunkt/Baum-Zuordnung, wenn sich die Form ändert. Funktioniert
+// für jede Fläche in featureIndex, nicht nur gezeichnete.
+function disableShapeEditing() {
+  if (!shapeEditingEntryId) return;
+  const entry = featureIndex.find(x => x.id === shapeEditingEntryId);
+  if (entry && entry.leafletLayer.editing) {
+    entry.leafletLayer.editing.disable();
+    if (shapeEditBeforeGeometry && JSON.stringify(shapeEditBeforeGeometry) !== JSON.stringify(entry.leafletLayer.feature.geometry)) {
+      pushShapeUndo({ type: 'edit', entryId: entry.id, beforeGeometry: shapeEditBeforeGeometry });
+    }
+  }
+  shapeEditBeforeGeometry = null;
+  shapeEditingEntryId = null;
+  updateShapeToolbar();
+}
+
+function toggleShapeEdit(entry) {
+  if (!entry || !entry.leafletLayer.editing) return;
+  if (shapeEditingEntryId === entry.id) {
+    disableShapeEditing();
+  } else {
+    disableShapeEditing(); // vorherige Bearbeitung zuerst sauber beenden (inkl. Rückgängig-Eintrag)
+    shapeEditBeforeGeometry = cloneFeature(entry.leafletLayer.feature).geometry;
+    entry.leafletLayer.editing.enable();
+    shapeEditingEntryId = entry.id;
+    shapeStatus(entry, `Fläche ${entry.nummer || ''}: Eckpunkte ziehen, um Form/Standort zu ändern.`);
+  }
+  renderFeatureTable();
+  renderParcelList();
+  updateShapeToolbar();
+}
+
+// Feuert bei JEDEM Eckpunkt-Zug (auch während des Ziehens) — hält Geometrie
+// und Label-Position sofort sichtbar aktuell, verschiebt die teureren
+// Neuberechnungen (Fläche, Baum-Zuordnung, Tabellen-Neuaufbau) aber per
+// Debounce ans Ende der Zieh-Geste, statt bei jedem Zwischenschritt neu zu
+// rendern.
+function syncShapeGeometryLive(entry) {
+  const freshGeoJson = entry.leafletLayer.toGeoJSON();
+  // Gleiche Objektreferenz wie in layers[id].geojson.features (siehe
+  // addFeatureToLayer) — die Mutation reicht, kein erneutes Einsetzen nötig.
+  entry.leafletLayer.feature.geometry = freshGeoJson.geometry;
+  entry.center = entry.leafletLayer.getBounds().getCenter();
+  if (entry.labelAnchor && entry.labelAnchor.setLatLng) entry.labelAnchor.setLatLng(entry.center);
+  clearTimeout(shapeGeometryCommitTimer);
+  shapeGeometryCommitTimer = setTimeout(() => commitShapeGeometry(entry), 200);
+}
+
+function commitShapeGeometry(entry) {
+  const newAreaHa = turf.area(entry.leafletLayer.toGeoJSON()) / 10000;
+  entry.areaHa = newAreaHa;
+  entry.groesse = String(newAreaHa);
+  entry.props.FLAECHE_HA = Number(newAreaHa.toFixed(4));
+  reassignAllTreesToParcels();
+  renderFeatureTable();
+  renderParcelList();
+  shapeStatus(entry, `Fläche ${entry.nummer || ''} angepasst (${newAreaHa.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ha).`);
+}
+
+// ---------- Fläche teilen ----------
+// Zerschneidet eine Fläche entlang einer frei gezeichneten Linie in zwei
+// Teilflächen — funktioniert für jede geladene Fläche, nicht nur gezeichnete.
+function startParcelSplit(entry) {
+  initZeichnerMap(); // stellt sicher, dass zeichnerDrawLine existiert, auch wenn der Flächenzeichner-Tab noch nie geöffnet wurde
+  if (!zeichnerDrawLine) { showZeichnerError('Schnittwerkzeug nicht verfügbar.'); return; }
+  disableShapeEditing();
+  zeichnerSplitTargetId = entry.id;
+  zeichnerDrawLine.enable();
+}
+
+// Verlängert die gezogene Linie an beiden Enden weit über die Fläche hinaus
+// und baut daraus ein großes Halbebenen-Rechteck auf einer Seite — turf.
+// intersect() liefert damit die eine Teilfläche, turf.difference() die
+// komplementäre andere. Robuster als ein direkter Linienschnitt, da die
+// gezogene Linie die Fläche nicht exakt bis zum Rand treffen muss.
+function splitPolygonByLine(polygonFeature, linePoints) {
+  const bbox = turf.bbox(polygonFeature);
+  const diagKm = turf.distance(turf.point([bbox[0], bbox[1]]), turf.point([bbox[2], bbox[3]]), { units: 'kilometers' });
+  const ext = Math.max(diagKm * 3, 0.5);
+
+  const first = linePoints[0];
+  const last = linePoints[linePoints.length - 1];
+  const bearingFwd = turf.bearing(turf.point(first), turf.point(last));
+  const startExt = turf.destination(turf.point(first), ext, bearingFwd + 180, { units: 'kilometers' }).geometry.coordinates;
+  const endExt = turf.destination(turf.point(last), ext, bearingFwd, { units: 'kilometers' }).geometry.coordinates;
+  const extendedLine = [startExt, ...linePoints, endExt];
+
+  const perpBearing = bearingFwd + 90;
+  const offsetSide = extendedLine.map(pt =>
+    turf.destination(turf.point(pt), ext, perpBearing, { units: 'kilometers' }).geometry.coordinates
+  );
+  const halfPoly = turf.polygon([[...extendedLine, ...offsetSide.slice().reverse(), extendedLine[0]]]);
+
+  let pieceA = null, pieceB = null;
+  try {
+    pieceA = turf.intersect(polygonFeature, halfPoly);
+    pieceB = turf.difference(polygonFeature, halfPoly);
+  } catch {
+    return null;
+  }
+  if (!pieceA || !pieceB) return null;
+  return { pieceA, pieceB };
+}
+
+function finishParcelSplit(lineLayer) {
+  const targetId = zeichnerSplitTargetId;
+  zeichnerSplitTargetId = null;
+  const entry = featureIndex.find(x => x.id === targetId);
+  if (!entry) { setZeichnerStatus('Zielfläche nicht mehr vorhanden — Teilen abgebrochen.'); return; }
+
+  const linePoints = lineLayer.toGeoJSON().geometry.coordinates;
+  if (linePoints.length < 2) { shapeStatus(entry, 'Schnittlinie braucht mindestens zwei Punkte.'); return; }
+
+  const result = splitPolygonByLine(entry.leafletLayer.feature, linePoints);
+  if (!result) {
+    showZeichnerError('Fläche konnte nicht geteilt werden — Schnittlinie muss die Fläche komplett durchqueren.');
+    return;
+  }
+  const { pieceA, pieceB } = result;
+  const areaA = turf.area(pieceA) / 10000;
+  const areaB = turf.area(pieceB) / 10000;
+  if (areaA <= 0 || areaB <= 0) {
+    showZeichnerError('Fläche konnte nicht geteilt werden — beide Teile müssen eine sichtbare Größe haben.');
+    return;
+  }
+
+  const layerId = entry.layerId;
+  const color = entry.color;
+  const isZeichnerOrigin = zeichnerParcels.some(p => p.id === entry.id);
+  const baseName = entry.featName || '';
+  const baseNummer = entry.props.NUMMER;
+
+  const undoAction = {
+    type: 'split',
+    layerId, color,
+    feature: cloneFeature(entry.leafletLayer.feature),
+    wasZeichnerOrigin: isZeichnerOrigin,
+    newEntryIds: []
+  };
+
+  removeEntryEverywhere(entry);
+
+  [[pieceA, areaA, 'A'], [pieceB, areaB, 'B']].forEach(([piece, areaHa, suffix]) => {
+    const nummer = isZeichnerOrigin ? nextZeichnerNummer() : `${baseNummer}-${suffix}`;
+    const feature = {
+      type: 'Feature',
+      geometry: piece.geometry,
+      properties: { ...entry.props, NUMMER: nummer, NAME: baseName ? `${baseName} (Teil ${suffix})` : '', FLAECHE_HA: Number(areaHa.toFixed(4)) }
+    };
+    const newEntry = addFeatureToLayer(layerId, feature, color);
+    if (isZeichnerOrigin) {
+      newEntry.id = 'parcel-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
+      newEntry.areaHa = areaHa;
+      zeichnerParcels.push(newEntry);
+    }
+    undoAction.newEntryIds.push(newEntry.id);
+  });
+  pushShapeUndo(undoAction);
+
+  renderParcelList();
+  reassignAllTreesToParcels();
+  shapeStatus(entry, `Fläche geteilt in ${areaA.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ha und ${areaB.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ha.`);
+}
+
+// ---------- Schwebende Werkzeugleiste: frei verschiebbar per Drag&Drop ----------
+// #edit-toolbar ist EIN gemeinsames, an Illustrator angelehntes Panel für
+// beide Zeichenwerkzeuge (Flächenzeichner-Gruppe hier, Hofplan-Gruppe weiter
+// unten) — schwebt über der Karte statt in #topbar zu stecken, damit es sich
+// unabhängig von den festen Kartensteuerungen (Basiskarte/Auf Inhalt zoomen/
+// GPS, bleiben in #topbar) verschieben lässt. Nach dem Muster von
+// wireKulturplanBarDrag() (Pointer Events: pointerdown auf dem Griff,
+// pointermove/pointerup am document, Start-Offset merken, Listener nach
+// pointerup wieder entfernen). Beim Loslassen nah am oberen/unteren
+// Kartenrand schaltet die Leiste auf horizontale Ausrichtung um und dockt
+// dort an, sonst bleibt sie vertikal an der losgelassenen Stelle.
+function wireEditToolbarDrag(toolbar, handle, boundsWrap) {
+  const DOCK_THRESHOLD = 50;
+
+  function clampToWrap(leftPx, topPx) {
+    const wrapRect = boundsWrap.getBoundingClientRect();
+    const left = Math.min(Math.max(leftPx, 0), Math.max(wrapRect.width - toolbar.offsetWidth, 0));
+    const top = Math.min(Math.max(topPx, 0), Math.max(wrapRect.height - toolbar.offsetHeight, 0));
+    return { left, top };
+  }
+
+  handle.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    const barRect = toolbar.getBoundingClientRect();
+    const offsetX = e.clientX - barRect.left;
+    const offsetY = e.clientY - barRect.top;
+    toolbar.classList.add('dragging');
+
+    function onMove(ev) {
+      const wrapRect = boundsWrap.getBoundingClientRect();
+      const { left, top } = clampToWrap(ev.clientX - wrapRect.left - offsetX, ev.clientY - wrapRect.top - offsetY);
+      toolbar.style.left = left + 'px';
+      toolbar.style.top = top + 'px';
+    }
+
+    function onUp() {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      toolbar.classList.remove('dragging');
+
+      const wrapRect = boundsWrap.getBoundingClientRect();
+      const barRect = toolbar.getBoundingClientRect();
+      const distTop = barRect.top - wrapRect.top;
+      const distBottom = wrapRect.bottom - barRect.bottom;
+      if (distTop <= DOCK_THRESHOLD || distBottom <= DOCK_THRESHOLD) {
+        toolbar.classList.add('horizontal');
+        const dockedTop = distTop <= DOCK_THRESHOLD ? 12 : wrapRect.height - toolbar.offsetHeight - 12;
+        const { left, top } = clampToWrap(barRect.left - wrapRect.left, dockedTop);
+        toolbar.style.left = left + 'px';
+        toolbar.style.top = top + 'px';
+      } else {
+        toolbar.classList.remove('horizontal');
+      }
+    }
+
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+  });
+}
+wireEditToolbarDrag(document.getElementById('edit-toolbar'), document.getElementById('edit-toolbar-handle'), document.getElementById('map-wrap'));
+
+// ---------- Werkzeugleiste: Flächenzeichner-Gruppe ----------
+// Bündelt Zeichnen/Bearbeiten/Teilen/Löschen/Rückgängig/Wiederherstellen an
+// einer Stelle, statt sie doppelt als Zeilen-Buttons in der Flächenzeichner-
+// Liste UND der Flächentabelle vorzuhalten — die Werkzeuge wirken auf jede
+// Fläche, die auf
+// der Karte angeklickt wird, unabhängig vom gerade aktiven Reiter.
+const shapeToolDrawBtn = document.getElementById('shape-tool-draw');
+const shapeToolEditBtn = document.getElementById('shape-tool-edit');
+const shapeToolSplitBtn = document.getElementById('shape-tool-split');
+const shapeToolDeleteBtn = document.getElementById('shape-tool-delete');
+const shapeToolUndoBtn = document.getElementById('shape-tool-undo');
+const shapeToolRedoBtn = document.getElementById('shape-tool-redo');
+
+function updateShapeToolbar() {
+  shapeToolDrawBtn.classList.toggle('active', armedTool === 'draw-polygon');
+  shapeToolEditBtn.classList.toggle('active', mapToolMode === 'edit');
+  shapeToolDeleteBtn.classList.toggle('active', mapToolMode === 'delete');
+  shapeToolSplitBtn.classList.toggle('active', mapToolMode === 'split' || armedTool === 'split-line');
+  shapeToolUndoBtn.disabled = shapeUndoStack.length === 0;
+  shapeToolRedoBtn.disabled = shapeRedoStack.length === 0;
+}
+
+// Bearbeiten/Löschen bleiben "scharf", bis man sie erneut anklickt (oder Esc
+// drückt) — man kann so mehrere Flächen hintereinander anklicken, ohne das
+// Werkzeug jedes Mal neu auswählen zu müssen. Die Werkzeugleiste zeigt nur
+// noch Icons (siehe #edit-toolbar) — Hinweistexte laufen daher über die
+// normale Statuszeile (setZeichnerStatus), nicht mehr über ein eigenes
+// Textfeld in der Werkzeugleiste selbst.
+function setMapToolMode(mode) {
+  disableShapeEditing();
+  mapToolMode = mapToolMode === mode ? null : mode;
+  if (mapToolMode === 'edit') setZeichnerStatus('Fläche anklicken, um ihre Eckpunkte zu bearbeiten.');
+  else if (mapToolMode === 'delete') setZeichnerStatus('Fläche anklicken, um sie zu löschen.');
+  updateShapeToolbar();
+}
+
+shapeToolDrawBtn.addEventListener('click', () => {
+  initZeichnerMap(); // funktioniert von jedem Reiter aus, auch ohne den Flächenzeichner-Tab je geöffnet zu haben
+  // Vor enable() setzen, nicht erst im DRAWSTART-Handler — der muss anhand von
+  // armedTool zwischen diesem Werkzeug und dem gleichartigen Hofplan-Freiform-
+  // Werkzeug unterscheiden (beide nutzen layerType 'polygon').
+  armedTool = 'draw-polygon';
+  if (zeichnerDrawPolygon) zeichnerDrawPolygon.enable();
+});
+shapeToolEditBtn.addEventListener('click', () => setMapToolMode('edit'));
+shapeToolDeleteBtn.addEventListener('click', () => setMapToolMode('delete'));
+shapeToolSplitBtn.addEventListener('click', () => {
+  if (mapToolMode === 'split' || armedTool === 'split-line') {
+    mapToolMode = null;
+    if (zeichnerDrawLine) zeichnerDrawLine.disable();
+  } else {
+    disableShapeEditing();
+    mapToolMode = 'split';
+    setZeichnerStatus('Fläche anklicken, um sie zu teilen.');
+  }
+  updateShapeToolbar();
+});
+shapeToolUndoBtn.addEventListener('click', undoLastShapeAction);
+shapeToolRedoBtn.addEventListener('click', redoLastShapeAction);
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && mapToolMode) { mapToolMode = null; updateShapeToolbar(); }
+});
+
+// ---- Zeichnen auf der Karte per Touch: Fertig / Letzter Punkt / Abbrechen ----
+// Leaflet.draw schließt eine Fläche sonst nur per Doppelklick bzw. Klick auf
+// den ersten Punkt ab und entfernt den letzten Punkt nur per Rechtsklick
+// (siehe contextmenu-Handler) — auf dem Handy gibt es beides nicht.
+function activeMapDrawHandler() {
+  if (armedTool === 'draw-polygon') return zeichnerDrawPolygon;
+  if (armedTool === 'split-line') return zeichnerDrawLine;
+  if (armedTool === 'draw-hofplan-poly') return hofplanDrawPoly;
+  if (armedTool === 'draw-hofplan-rect') return hofplanDrawRect;
+  return null;
+}
+function updateMapDrawActions() {
+  const handler = activeMapDrawHandler();
+  const drawing = !!(handler && handler.enabled());
+  document.getElementById('edit-toolbar').classList.toggle('is-drawing', drawing);
+  document.getElementById('map-draw-actions').hidden = !drawing;
+  if (!drawing) return;
+  // Rechteck wird gezogen, nicht Punkt für Punkt gesetzt — dort nur Abbrechen.
+  const pointBased = typeof handler.deleteLastVertex === 'function';
+  const count = pointBased && handler._markers ? handler._markers.length : 0;
+  const undoBtn = document.getElementById('map-draw-undo');
+  const finishBtn = document.getElementById('map-draw-finish');
+  undoBtn.hidden = !pointBased;
+  finishBtn.hidden = !pointBased;
+  undoBtn.disabled = count === 0;
+  finishBtn.disabled = count < (armedTool === 'split-line' ? 2 : 3);
+}
+map.on('draw:drawstart draw:drawstop draw:drawvertex', () => setTimeout(updateMapDrawActions, 0));
+document.getElementById('map-draw-undo').addEventListener('click', () => {
+  const handler = activeMapDrawHandler();
+  if (handler && handler.enabled() && handler.deleteLastVertex) handler.deleteLastVertex();
+  updateMapDrawActions();
+});
+document.getElementById('map-draw-finish').addEventListener('click', () => {
+  const handler = activeMapDrawHandler();
+  if (handler && handler.enabled() && handler.completeShape) handler.completeShape();
+  setTimeout(updateMapDrawActions, 0);
+});
+document.getElementById('map-draw-cancel').addEventListener('click', () => {
+  const handler = activeMapDrawHandler();
+  if (handler && handler.enabled()) handler.disable();
+  setTimeout(updateMapDrawActions, 0);
+});
+
+updateShapeToolbar();
+
 function renderParcelList() {
+  if (zeichnerParcels.length) markToolHintDone('zeichner');
+  refreshFlaechenuebersichtIfOpen();
   const list = document.getElementById('zeichner-list');
-  document.getElementById('zeichner-empty-hint').style.display = zeichnerParcels.length ? 'none' : 'block';
+  document.getElementById('zeichner-empty-hint').hidden = zeichnerParcels.length > 0;
   list.innerHTML = '';
   zeichnerParcels.forEach(p => {
     const item = document.createElement('div');
@@ -3257,7 +6539,7 @@ function exportZeichnerGeoJSON() {
   if (!zeichnerParcels.length) { showZeichnerError('Noch keine Fläche gezeichnet.'); return; }
   const fc = { type: 'FeatureCollection', features: zeichnerParcels.map(p => p.leafletLayer.feature) };
   const ts = new Date().toISOString().slice(0, 10);
-  downloadBlob(JSON.stringify(fc, null, 2), `flaechenzeichner_${ts}.geojson`, 'application/geo+json');
+  downloadBlob(JSON.stringify(fc, null, 2), zuordnungFileName('Flächen Zeichner', 'geojson') || `flaechenzeichner_${ts}.geojson`, 'application/geo+json');
   setZeichnerStatus('Als GeoJSON gespeichert.');
 }
 document.getElementById('btn-export-zeichner-geojson').addEventListener('click', exportZeichnerGeoJSON);
@@ -3308,8 +6590,9 @@ async function exportZeichnerFlaechenkarten() {
       });
     }
 
+    stampFeldFolioLogo(doc, await getFeldFolioLogoDataUrl());
     const ts = new Date().toISOString().slice(0, 10);
-    doc.save(`flaechenkarten_gezeichnet_${ts}.pdf`);
+    doc.save(zuordnungFileName('Flächenkarte Zeichner', 'pdf') || `flaechenkarten_gezeichnet_${ts}.pdf`);
     setZeichnerStatus('Flächenkarten exportiert.');
   } finally {
     map.zoomControl.addTo(map);
@@ -3488,16 +6771,46 @@ function showObstbaumError(msg) {
   showObstbaumError._t = setTimeout(() => el.style.display = 'none', 6000);
 }
 
+// Schwebender Hinweis auf der Karte, solange Bäume/Bienenstände gesetzt
+// werden (am Desktop per CSS ausgeblendet — dort steht das in der Seitenleiste).
+function updateMapPlaceChip() {
+  const chip = document.getElementById('map-place-chip');
+  const dot = document.getElementById('map-place-chip-dot');
+  const text = document.getElementById('map-place-chip-text');
+  const doneBtn = document.getElementById('map-place-chip-done');
+  if (armedTool === 'place-tree' && activeFruitKey) {
+    const fruit = fruitOf(activeFruitKey);
+    dot.style.background = fruit.color;
+    text.textContent = `${fruit.label} — auf die Karte tippen`;
+    doneBtn.hidden = false;
+    chip.hidden = false;
+  } else if (armedTool === 'place-hive') {
+    dot.style.background = '#E0A93B';
+    text.textContent = 'Tippen setzt einen Bienenstand';
+    doneBtn.hidden = true;
+    chip.hidden = false;
+  } else {
+    chip.hidden = true;
+  }
+}
+document.getElementById('map-place-chip-done').addEventListener('click', () => {
+  if (activeFruitKey) setActiveFruitKey(activeFruitKey); // erneuter Aufruf mit derselben Art = ausschalten
+});
+
 function setActiveFruitKey(key) {
   activeFruitKey = (activeFruitKey === key) ? null : key;
+  // Am Handy liegt die Obstart-Auswahl in der Schublade über der Karte —
+  // nach der Wahl direkt zur Karte, damit man gleich setzen kann.
+  if (activeFruitKey) closeMobileSidebar();
   armedTool = activeFruitKey ? 'place-tree' : (armedTool === 'place-tree' ? null : armedTool);
   document.querySelectorAll('.fruit-btn, .fruit-list-row').forEach(el => {
     el.classList.toggle('active', el.getAttribute('data-key') === activeFruitKey);
   });
   document.getElementById('map').classList.toggle('placing', !!activeFruitKey);
   setObstbaumStatus(activeFruitKey
-    ? `${fruitOf(activeFruitKey).label} aktiv — auf die Karte klicken, um Bäume zu setzen.`
-    : 'Bereit.');
+    ? `${fruitOf(activeFruitKey).label} aktiv — auf die Karte tippen, um Bäume zu setzen.`
+    : '');
+  updateMapPlaceChip();
 }
 
 // Baumpunkte als L.marker (mit farbigem DivIcon) statt L.circleMarker, weil
@@ -3514,6 +6827,7 @@ function createTreeIcon(color) {
 }
 
 function addTree(key, latlng) {
+  markToolHintDone('obstbaum');
   const fruit = fruitOf(key);
   obstbaumTreeCounter++;
   const entry = {
@@ -3522,12 +6836,14 @@ function addTree(key, latlng) {
     art: key,
     latlng,
     marker: null,
-    parcelId: findObstbaumParcelForLatLng(latlng)?.id || null
+    parcelId: findObstbaumParcelForLatLng(latlng)?.id || null,
+    notes: '',
+    photos: []
   };
 
   const marker = L.marker(latlng, { icon: createTreeIcon(fruit.color), draggable: true });
   marker.bindTooltip(fruit.label, { direction: 'top', offset: [0, -10] });
-  marker.on('click', (e) => { L.DomEvent.stopPropagation(e); zoomToTree(entry.id); });
+  marker.on('click', (e) => { L.DomEvent.stopPropagation(e); zoomToTree(entry.id); selectTreeInTable(entry.id); });
   // Rechtsklick auf einen Baum löscht ihn sofort — schnellste Korrektur bei
   // Fehlklicks beim Setzen, ohne erst die Baumtabelle öffnen zu müssen.
   marker.on('contextmenu', (e) => {
@@ -3613,19 +6929,25 @@ function renderObstbaumSummary() {
 function renderObstbaumTable() {
   const tbody = document.getElementById('obstbaum-table-body');
   if (!obstbaumTrees.length) {
-    tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted); padding:14px;">Noch keine Bäume erfasst.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted); padding:14px;">Noch keine Bäume erfasst.</td></tr>';
     return;
   }
-  tbody.innerHTML = obstbaumTrees.map(t => `<tr data-id="${t.id}">
+  tbody.innerHTML = obstbaumTrees.map(t => {
+    const hasNotes = t.notes || t.photos.length;
+    return `<tr data-id="${t.id}">
       <td>${t.nummer}</td>
       <td>${fruitChipHtml(t.art)}</td>
       <td>${parcelLabelFor(t.parcelId)}</td>
+      <td><button class="notes-btn${hasNotes ? ' has-notes' : ''}" data-id="${t.id}" data-action="notes" title="Notiz &amp; Fotos"><span class="material-symbols-rounded icon">sticky_note_2</span></button></td>
       <td><button data-id="${t.id}" data-action="remove" class="table-remove-btn">Entfernen</button></td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
   tbody.querySelectorAll('tr[data-id]').forEach(tr => {
     tr.addEventListener('click', (e) => {
-      if (e.target.closest('[data-action="remove"]')) return;
-      zoomToTree(tr.getAttribute('data-id'));
+      if (e.target.closest('[data-action="remove"]') || e.target.closest('[data-action="notes"]')) return;
+      const id = tr.getAttribute('data-id');
+      zoomToTree(id);
+      highlightTreeRow(id);
     });
   });
   tbody.querySelectorAll('[data-action="remove"]').forEach(btn => {
@@ -3634,6 +6956,32 @@ function renderObstbaumTable() {
       removeTree(btn.getAttribute('data-id'));
     });
   });
+  tbody.querySelectorAll('[data-action="notes"]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const t = obstbaumTrees.find(x => x.id === btn.getAttribute('data-id'));
+      if (t) openNotesModal('tree', t);
+    });
+  });
+}
+
+function highlightTreeRow(id) {
+  document.querySelectorAll('#obstbaum-table-body tr.row-selected').forEach(r => r.classList.remove('row-selected'));
+  const row = document.querySelector('#obstbaum-table-body tr[data-id="' + id + '"]');
+  if (row) row.classList.add('row-selected');
+}
+
+// Öffnet die Baumtabelle (schließt dafür die Flächentabelle, beide teilen
+// sich denselben Bereich unter der Karte) und markiert die Zeile des per
+// Klick auf der Karte ausgewählten Baums.
+function selectTreeInTable(id) {
+  document.getElementById('table-panel').classList.remove('open');
+  obstbaumTablePanel.open();
+  renderObstbaumTable();
+  renderObstbaumSummary();
+  highlightTreeRow(id);
+  const row = document.querySelector('#obstbaum-table-body tr[data-id="' + id + '"]');
+  if (row) row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
 function initObstbaumMap() {
@@ -3726,7 +7074,7 @@ function renderFruitPicker() {
     btn.type = 'button';
     btn.className = 'fruit-btn';
     btn.setAttribute('data-key', key);
-    btn.innerHTML = `<span class="fruit-dot" style="background:${fruit.color}"></span><span class="fruit-label">${escapeHtml(fruit.label)}</span>`;
+    btn.innerHTML = `<span class="fruit-dot" style="background:${fruit.color}"></span><span class="fruit-label">${escapeHtml(fruit.label).split('/').join('/<wbr>')}</span>`;
     btn.classList.toggle('active', key === activeFruitKey);
     btn.addEventListener('click', () => setActiveFruitKey(key));
     makeFruitDraggable(btn, key);
@@ -3749,7 +7097,7 @@ function renderFruitPicker() {
       row.type = 'button';
       row.className = 'fruit-list-row';
       row.setAttribute('data-key', fruit.key);
-      row.innerHTML = `<span class="fruit-dot" style="background:${fruit.color}"></span><span class="fruit-label">${escapeHtml(fruit.label)}</span>`;
+      row.innerHTML = `<span class="fruit-dot" style="background:${fruit.color}"></span><span class="fruit-label">${escapeHtml(fruit.label).split('/').join('/<wbr>')}</span>`;
       row.classList.toggle('active', fruit.key === activeFruitKey);
       row.addEventListener('click', () => setActiveFruitKey(fruit.key));
       makeFruitDraggable(row, fruit.key);
@@ -3816,6 +7164,7 @@ document.addEventListener('keydown', (e) => {
   // den Tastaturfokus hat, was nach einem Kartenklick nicht zuverlässig der
   // Fall ist.
   if (e.key === 'Escape' && armedTool === 'draw-polygon' && zeichnerDrawPolygon) zeichnerDrawPolygon.disable();
+  if (e.key === 'Escape' && armedTool === 'split-line' && zeichnerDrawLine) zeichnerDrawLine.disable();
 });
 
 // ---------- Baumkataster laden/speichern (Format: GeoJSON) ----------
@@ -3900,7 +7249,7 @@ function exportBaumkataster(includeParcels) {
   const parcelFeatures = includeParcels ? featureIndex.map(obstbaumParcelToGeoJSONFeature) : [];
   const fc = { type: 'FeatureCollection', features: [...parcelFeatures, ...treeFeatures] };
   const ts = new Date().toISOString().slice(0, 10);
-  downloadBlob(JSON.stringify(fc, null, 2), `baumkataster_${ts}.geojson`, 'application/geo+json');
+  downloadBlob(JSON.stringify(fc, null, 2), zuordnungFileName('Obstbaumkataster', 'geojson') || `baumkataster_${ts}.geojson`, 'application/geo+json');
   setObstbaumStatus(includeParcels ? 'Baumkataster inkl. Flächen gespeichert.' : 'Baumkataster gespeichert.');
 }
 
@@ -3998,7 +7347,7 @@ function addObstbaumParcelPage(doc, pageW, pageH, margin, canvas, parcelEntry, c
   doc.setFontSize(11);
   const num = parseFloat(String(parcelEntry.groesse).replace(',', '.'));
   const groesseText = isFinite(num)
-    ? num.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ha'
+    ? formatHaExact(num) + ' ha'
     : (parcelEntry.groesse || '–');
   const subtitleParts = ['Größe: ' + groesseText, 'Kulturart: ' + (parcelEntry.kultur || '–')];
   if (parcelEntry.flaechenId) subtitleParts.push('Flächen-ID: ' + parcelEntry.flaechenId);
@@ -4046,7 +7395,7 @@ async function captureTreeClusterScreenshot(targetMap, satelliteLayer, mapElId, 
       targetMap.fitBounds(L.latLngBounds(treeLatLngs), { padding: [70, 70], maxZoom: 20 });
     }
     await waitForTilesFullyLoaded(satelliteLayer, mapElId, 6000);
-    return await html2canvas(document.getElementById(mapElId), { useCORS: true, logging: false });
+    return await captureMapElement(document.getElementById(mapElId), { useCORS: true, logging: false });
   } finally {
     if (highlightLayer) targetMap.removeLayer(highlightLayer);
   }
@@ -4136,7 +7485,7 @@ async function addObstbaumClusterPages(doc, clusters, pageW, pageH, margin, page
 
     let canvas;
     try {
-      canvas = await html2canvas(document.getElementById('map'), { useCORS: true, logging: false });
+      canvas = await captureMapElement(document.getElementById('map'), { useCORS: true, logging: false });
     } catch (err) {
       console.error('Kartenbild-Erfassung fehlgeschlagen für Gruppe', i + 1, err);
       showObstbaumError('Kartenbild konnte nicht erfasst werden (evtl. CORS-Einschränkung der Kachel-Quelle).');
@@ -4250,8 +7599,9 @@ async function exportObstbaumFlaechenkarten() {
     doc.setFont('helvetica', 'bold');
     doc.text(`Gesamt: ${total} Bäume`, margin, y + 5);
 
+    stampFeldFolioLogo(doc, await getFeldFolioLogoDataUrl());
     const ts = new Date().toISOString().slice(0, 10);
-    doc.save(`obstbaumkataster_flaechenkarten_${ts}.pdf`);
+    doc.save(zuordnungFileName('Flächenkarte Obstbaum', 'pdf') || `obstbaumkataster_flaechenkarten_${ts}.pdf`);
     setObstbaumStatus('Flächenkarten exportiert.');
   } finally {
     map.zoomControl.addTo(map);
@@ -4317,6 +7667,7 @@ function beehiveLabel(entry) {
 }
 
 function addBeehive(latlng) {
+  markToolHintDone('bienenflug');
   bienenflugCounter++;
   const entry = { id: 'bienenstock-' + bienenflugCounter, nummer: bienenflugCounter, name: '', latlng, marker: null, circle: null };
 
@@ -4364,7 +7715,7 @@ function zoomToBeehive(id) {
 
 function renderBienenflugList() {
   const list = document.getElementById('bienenflug-list');
-  document.getElementById('bienenflug-empty-hint').style.display = bienenflugPoints.length ? 'none' : 'block';
+  document.getElementById('bienenflug-empty-hint').hidden = bienenflugPoints.length > 0;
   list.innerHTML = '';
   bienenflugPoints.forEach(entry => {
     const item = document.createElement('div');
@@ -4412,7 +7763,7 @@ function initBienenflugMap() {
 async function captureBeehiveScreenshot(entry) {
   map.fitBounds(entry.circle.getBounds(), { padding: [40, 40], maxZoom: 16 });
   await waitForTilesFullyLoaded(basemaps.satellite, 'map', 6000);
-  return await html2canvas(document.getElementById('map'), { useCORS: true, logging: false });
+  return await captureMapElement(document.getElementById('map'), { useCORS: true, logging: false });
 }
 
 function addBienenflugPage(doc, pageW, pageH, margin, canvas, entry) {
@@ -4474,8 +7825,9 @@ async function exportBienenflugFlaechenkarten() {
       addBienenflugPage(doc, pageW, pageH, margin, canvas, entry);
     }
 
+    stampFeldFolioLogo(doc, await getFeldFolioLogoDataUrl());
     const ts = new Date().toISOString().slice(0, 10);
-    doc.save(`bienenflugkarten_${ts}.pdf`);
+    doc.save(zuordnungFileName('Flächenkarte Bienenflug', 'pdf') || `bienenflugkarten_${ts}.pdf`);
     setBienenflugStatus('Flächenkarten exportiert.');
   } finally {
     map.zoomControl.addTo(map);
@@ -4487,10 +7839,12629 @@ async function exportBienenflugFlaechenkarten() {
 
 document.getElementById('btn-export-bienenflug-flaechenkarten').addEventListener('click', exportBienenflugFlaechenkarten);
 
-// ---------- Dev-Tooling: Jahresvergleich-Inputs aus test-shapes/ vorbefüllen ----------
-// Vorerst deaktiviert: test-shapes/ enthält jetzt 16 einzelne Bundesland-
-// Dateien statt eines Jahr-A/B-Paares, dev-prefill.js braucht ein Update auf
-// ein aktuelles Dateipaar, bevor das wieder sinnvoll aktiviert werden kann.
-// if (import.meta.env.DEV) {
-//   import('./dev-prefill.js').then(m => m.prefillCompareInputs());
-// }
+// ---------- Hofplan ----------
+// Freies Zeichentool für Hof-/Gebäudepläne auf der Satellitenkarte: Gebäude
+// (Wohnhaus, Maschinenhalle, Stall, …) als Rechteck oder Freiform-Polygon
+// direkt einzeichnen, Kategorie/Name per Dropdown bzw. Textfeld zuweisen.
+// Eigener, unabhängiger Datenbestand (hofplanShapes) auf einer eigenen
+// Kartenebene — bewusst NICHT über layers/featureIndex registriert wie
+// Flächenzeichner-Parzellen, da Gebäude-Metadaten (Typ/Name) nicht in die
+// Flächentabelle gehören. Architektur mischt zwei bestehende Muster: die
+// Zeichnen/Bearbeiten/Löschen/Undo-Werkzeugleiste des Flächenzeichners und
+// die eigene, lazy initialisierte Kartenebene + Kategorie-Katalog des
+// Obstbaumkatasters.
+const GEBAEUDE_KATALOG = [
+  { kategorie: 'Wohnhaus', farbe: '#B5533C' },
+  { kategorie: 'Hofgebäude/Betriebsgebäude', farbe: '#8C7A5E' },
+  { kategorie: 'Maschinenhalle', farbe: '#4A6FA5' },
+  { kategorie: 'Stall', farbe: '#6E5B3E' },
+  { kategorie: 'Lagerhalle/Scheune', farbe: '#A68A3C' },
+  { kategorie: 'Fahrsilo/Güllebehälter', farbe: '#5C7A7A' },
+  { kategorie: 'Sonstiges', farbe: '#7D7D7D' }
+];
+const HOFPLAN_DEFAULT_COLOR = '#7D7D7D';
+
+function gebaeudeColor(kategorie) {
+  const gruppe = GEBAEUDE_KATALOG.find(g => g.kategorie === kategorie);
+  return gruppe ? gruppe.farbe : HOFPLAN_DEFAULT_COLOR;
+}
+
+// Frei wählbare Farbe hat Vorrang vor der Kategorie-Standardfarbe — so lässt
+// sich z.B. ein zweiter Stall optisch von einem ersten unterscheiden, ohne
+// dafür eine eigene Kategorie anlegen zu müssen.
+function hofplanEffectiveColor(shape) {
+  return shape.color || gebaeudeColor(shape.kategorie);
+}
+
+let hofplanInitDone = false;
+let hofplanLayerGroup = null;
+let hofplanDrawRect = null;
+let hofplanDrawPoly = null;
+const hofplanShapes = []; // { id, kategorie, name, color, leafletLayer, labelAnchor, areaQm }
+let hofplanToolMode = null; // null | 'edit' | 'delete'
+let hofplanEditingId = null;
+let hofplanEditBeforeGeometry = null;
+let hofplanGeometryCommitTimer = null;
+const hofplanUndoStack = [];
+const hofplanRedoStack = [];
+const HOFPLAN_UNDO_MAX = 20;
+
+function setHofplanStatus(msg) { document.getElementById('hofplan-status').textContent = msg; }
+
+function showHofplanError(msg) {
+  const el = document.getElementById('hofplan-error-toast');
+  el.textContent = msg;
+  el.style.display = 'block';
+  clearTimeout(showHofplanError._t);
+  showHofplanError._t = setTimeout(() => el.style.display = 'none', 6000);
+}
+
+function hofplanLabelText(shape) {
+  const typ = shape.kategorie || 'Gebäude';
+  return featureLabelHtml(typ, shape.name);
+}
+
+function updateHofplanShapeStyle(shape) {
+  const color = hofplanEffectiveColor(shape);
+  if (shape.leafletLayer.setStyle) shape.leafletLayer.setStyle({ color, fillColor: color });
+  if (shape.labelAnchor && shape.labelAnchor.setTooltipContent) {
+    shape.labelAnchor.setTooltipContent(hofplanLabelText(shape));
+  }
+}
+
+function computeHofplanArea(shape) {
+  try { return turf.area(shape.leafletLayer.toGeoJSON()); } catch (err) { return 0; }
+}
+
+// Erzeugt einen Gebäude-Eintrag aus einem bereits vorhandenen Leaflet-Layer
+// (frisch gezeichnet, aus einem Rückgängig-Schritt rekonstruiert oder beim
+// Laden des Workspace wiederhergestellt) — verdrahtet Klick-Routing
+// (Bearbeiten/Löschen je nach hofplanToolMode) und das dauerhafte Label,
+// löst aber selbst KEINEN Rückgängig-Eintrag aus (das macht der jeweilige
+// Aufrufer gezielt, siehe CREATED-Handler weiter unten).
+function addHofplanShapeFromLayer(layer, kategorie, name, idOverride, colorOverride, stallplanIdOverride) {
+  markToolHintDone('hofplan');
+  const shape = {
+    id: idOverride || 'gebaeude-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7),
+    kategorie: kategorie || '',
+    name: name || '',
+    color: colorOverride || null,
+    // Verknüpfung mit einem Stallplan (siehe Stallplan-Aktionen weiter
+    // unten in renderHofplanList()) — nur bei kategorie==='Stall' über die
+    // UI gesetzt/genutzt, bleibt bei anderen Gebäudetypen ungenutzt null.
+    stallplanId: stallplanIdOverride || null,
+    leafletLayer: layer,
+    labelAnchor: null,
+    areaQm: 0
+  };
+  const color = hofplanEffectiveColor(shape);
+  layer.setStyle({ color, weight: 2, fillColor: color, fillOpacity: 0.32 });
+  layer.addTo(hofplanLayerGroup);
+  layer.on('click', () => {
+    if (hofplanToolMode === 'edit') { toggleHofplanEdit(shape); return; }
+    if (hofplanToolMode === 'delete') { deleteHofplanShape(shape); return; }
+    // Kein Hofplan-Werkzeug scharf (z.B. Klick von einem ganz anderen Tab
+    // aus, Hofplan-Gebäude bleiben nach dem ersten Öffnen überall auf der
+    // Karte sichtbar) — direkt in den Hofplaner wechseln und dorthin zoomen,
+    // statt dass der Klick ins Leere geht.
+    setActiveSegment('hofplan');
+    zoomToHofplanShape(shape.id);
+  });
+  layer.on('edit', () => syncHofplanGeometryLive(shape));
+  shape.areaQm = computeHofplanArea(shape);
+  const center = layer.getBounds().getCenter();
+  shape.labelAnchor = createLabelAnchorAt(center, hofplanLabelText(shape));
+  shape.labelAnchor.addTo(hofplanLayerGroup);
+  hofplanShapes.push(shape);
+  return shape;
+}
+
+function removeHofplanShapeEverywhere(shape) {
+  if (hofplanEditingId === shape.id) { hofplanEditingId = null; hofplanEditBeforeGeometry = null; }
+  const idx = hofplanShapes.findIndex(x => x.id === shape.id);
+  if (idx !== -1) hofplanShapes.splice(idx, 1);
+  hofplanLayerGroup.removeLayer(shape.leafletLayer);
+  if (shape.labelAnchor) hofplanLayerGroup.removeLayer(shape.labelAnchor);
+  renderHofplanList();
+}
+
+function restoreHofplanShapeFromFeature(feature, kategorie, name, idOverride, color, stallplanId) {
+  const layer = L.geoJSON(feature).getLayers()[0];
+  const shape = addHofplanShapeFromLayer(layer, kategorie, name, idOverride, color, stallplanId);
+  renderHofplanList();
+  return shape;
+}
+
+// ---------- Rückgängig (Hofplan) ----------
+// Eigener, kleiner Verlaufsspeicher statt Wiederverwendung des Flächenzeichner-
+// Stacks — Gebäude sind ein eigenständiger Datenbestand (siehe oben), analog
+// zur bereits bestehenden Trennung von clearAllLayers/clearAllTrees/
+// clearAllBeehives je Feature-Typ.
+function pushHofplanUndo(action) {
+  hofplanUndoStack.push(action);
+  if (hofplanUndoStack.length > HOFPLAN_UNDO_MAX) hofplanUndoStack.shift();
+  // Neue Aktion verwirft die Redo-Historie — siehe pushHofplanUndoKeepRedo(),
+  // das redoLastHofplanAction() selbst nutzt, um die wiederhergestellte
+  // Aktion erneut auf den Undo-Stack zu legen, ohne den Rest der Redo-
+  // Historie zu verwerfen.
+  hofplanRedoStack.length = 0;
+  updateHofplanToolbar();
+}
+
+function pushHofplanUndoKeepRedo(action) {
+  hofplanUndoStack.push(action);
+  if (hofplanUndoStack.length > HOFPLAN_UNDO_MAX) hofplanUndoStack.shift();
+  updateHofplanToolbar();
+}
+
+function undoLastHofplanAction() {
+  const action = hofplanUndoStack.pop();
+  if (!action) return;
+  let redoAction = null;
+  if (action.type === 'add') {
+    const shape = hofplanShapes.find(s => s.id === action.shapeId);
+    if (shape) {
+      redoAction = {
+        type: 'add',
+        kategorie: shape.kategorie,
+        name: shape.name,
+        color: shape.color,
+        stallplanId: shape.stallplanId,
+        feature: cloneFeature(shape.leafletLayer.toGeoJSON())
+      };
+      removeHofplanShapeEverywhere(shape);
+    }
+    setHofplanStatus('Zeichnen rückgängig gemacht.');
+  } else if (action.type === 'delete') {
+    const shape = restoreHofplanShapeFromFeature(action.feature, action.kategorie, action.name, undefined, action.color, action.stallplanId);
+    redoAction = { type: 'delete', shapeId: shape.id };
+    setHofplanStatus('Löschen rückgängig gemacht.');
+  } else if (action.type === 'edit') {
+    const shape = hofplanShapes.find(s => s.id === action.shapeId);
+    if (shape) {
+      const currentGeometry = cloneFeature(shape.leafletLayer.toGeoJSON()).geometry;
+      applyGeometryToHofplanShape(shape, action.beforeGeometry);
+      renderHofplanList();
+      redoAction = { type: 'edit', shapeId: shape.id, geometry: currentGeometry };
+    }
+    setHofplanStatus('Bearbeitung rückgängig gemacht.');
+  }
+  if (redoAction) hofplanRedoStack.push(redoAction);
+  updateHofplanToolbar();
+}
+
+function redoLastHofplanAction() {
+  const action = hofplanRedoStack.pop();
+  if (!action) return;
+  if (action.type === 'add') {
+    const layer = L.geoJSON(action.feature).getLayers()[0];
+    const shape = addHofplanShapeFromLayer(layer, action.kategorie, action.name, undefined, action.color, action.stallplanId);
+    renderHofplanList();
+    pushHofplanUndoKeepRedo({ type: 'add', shapeId: shape.id });
+    setHofplanStatus('Zeichnen wiederhergestellt.');
+  } else if (action.type === 'delete') {
+    const shape = hofplanShapes.find(s => s.id === action.shapeId);
+    if (shape) {
+      pushHofplanUndoKeepRedo({
+        type: 'delete',
+        kategorie: shape.kategorie,
+        name: shape.name,
+        color: shape.color,
+        stallplanId: shape.stallplanId,
+        feature: cloneFeature(shape.leafletLayer.toGeoJSON())
+      });
+      removeHofplanShapeEverywhere(shape);
+    }
+    setHofplanStatus('Löschen wiederhergestellt.');
+  } else if (action.type === 'edit') {
+    const shape = hofplanShapes.find(s => s.id === action.shapeId);
+    if (shape) {
+      const beforeGeometry = cloneFeature(shape.leafletLayer.toGeoJSON()).geometry;
+      applyGeometryToHofplanShape(shape, action.geometry);
+      renderHofplanList();
+      pushHofplanUndoKeepRedo({ type: 'edit', shapeId: shape.id, beforeGeometry });
+    }
+    setHofplanStatus('Bearbeitung wiederhergestellt.');
+  }
+  updateHofplanToolbar();
+}
+
+function deleteHofplanShape(shape) {
+  const label = shape.name || shape.kategorie;
+  pushHofplanUndo({
+    type: 'delete',
+    kategorie: shape.kategorie,
+    name: shape.name,
+    color: shape.color,
+    stallplanId: shape.stallplanId,
+    feature: cloneFeature(shape.leafletLayer.toGeoJSON())
+  });
+  removeHofplanShapeEverywhere(shape);
+  setHofplanStatus(label ? `Gebäude „${label}" gelöscht.` : 'Gebäude gelöscht.');
+  updateHofplanToolbar();
+}
+
+// ---------- Eckpunkte eines Gebäudes per Ziehen anpassen ----------
+// Nutzt dasselbe L.Edit.Poly/L.Edit.Rectangle aus Leaflet.draw wie der
+// Flächenzeichner (steckt automatisch in jedem per L.Draw oder L.GeoJSON
+// erzeugten Polygon/Rechteck) — nur enable()/disable() nötig.
+function disableHofplanEditing() {
+  if (!hofplanEditingId) return;
+  const shape = hofplanShapes.find(s => s.id === hofplanEditingId);
+  if (shape && shape.leafletLayer.editing) {
+    shape.leafletLayer.editing.disable();
+    const afterGeometry = shape.leafletLayer.toGeoJSON().geometry;
+    if (hofplanEditBeforeGeometry && JSON.stringify(hofplanEditBeforeGeometry) !== JSON.stringify(afterGeometry)) {
+      pushHofplanUndo({ type: 'edit', shapeId: shape.id, beforeGeometry: hofplanEditBeforeGeometry });
+    }
+  }
+  hofplanEditBeforeGeometry = null;
+  hofplanEditingId = null;
+  updateHofplanToolbar();
+}
+
+function toggleHofplanEdit(shape) {
+  if (!shape || !shape.leafletLayer.editing) return;
+  if (hofplanEditingId === shape.id) {
+    disableHofplanEditing();
+  } else {
+    disableHofplanEditing(); // vorherige Bearbeitung zuerst sauber beenden (inkl. Rückgängig-Eintrag)
+    hofplanEditBeforeGeometry = cloneFeature(shape.leafletLayer.toGeoJSON()).geometry;
+    shape.leafletLayer.editing.enable();
+    hofplanEditingId = shape.id;
+    const label = shape.name || shape.kategorie;
+    setHofplanStatus(`${label ? 'Gebäude „' + label + '"' : 'Gebäude'}: Eckpunkte ziehen, um Form/Standort zu ändern.`);
+  }
+  renderHofplanList();
+  updateHofplanToolbar();
+}
+
+function applyGeometryToHofplanShape(shape, geometry) {
+  const depth = geometry.type === 'MultiPolygon' ? 2 : 1;
+  shape.leafletLayer.setLatLngs(L.GeoJSON.coordsToLatLngs(geometry.coordinates, depth));
+  const center = shape.leafletLayer.getBounds().getCenter();
+  if (shape.labelAnchor && shape.labelAnchor.setLatLng) shape.labelAnchor.setLatLng(center);
+  shape.areaQm = computeHofplanArea(shape);
+}
+
+// Feuert bei jedem Eckpunkt-Zug — Label-Position sofort mitziehen, die
+// teurere Flächen-Neuberechnung + Listen-Update per Debounce ans Ende der
+// Zieh-Geste verschieben (gleiches Prinzip wie syncShapeGeometryLive beim
+// Flächenzeichner).
+function syncHofplanGeometryLive(shape) {
+  const center = shape.leafletLayer.getBounds().getCenter();
+  if (shape.labelAnchor && shape.labelAnchor.setLatLng) shape.labelAnchor.setLatLng(center);
+  clearTimeout(hofplanGeometryCommitTimer);
+  hofplanGeometryCommitTimer = setTimeout(() => {
+    shape.areaQm = computeHofplanArea(shape);
+    renderHofplanList();
+  }, 200);
+}
+
+function zoomToHofplanShape(id) {
+  const shape = hofplanShapes.find(s => s.id === id);
+  if (!shape || !shape.leafletLayer.getBounds) return;
+  const bounds = shape.leafletLayer.getBounds();
+  if (bounds.isValid()) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 20 });
+}
+
+function renderHofplanList() {
+  const list = document.getElementById('hofplan-list');
+  document.getElementById('hofplan-empty-hint').hidden = hofplanShapes.length > 0;
+  list.innerHTML = '';
+  hofplanShapes.forEach((s, i) => {
+    const item = document.createElement('div');
+    item.className = 'parcel-item';
+    const optionsHtml = GEBAEUDE_KATALOG.map(g =>
+      `<option value="${escapeHtml(g.kategorie)}" ${s.kategorie === g.kategorie ? 'selected' : ''}>${escapeHtml(g.kategorie)}</option>`
+    ).join('');
+    item.innerHTML = `
+      <div class="parcel-row">
+        <input type="color" class="hofplan-color-input" data-id="${s.id}" value="${hofplanEffectiveColor(s)}" title="Farbe ändern">
+        <div class="parcel-nummer">#${i + 1}</div>
+        <input class="parcel-name" data-id="${s.id}" placeholder="Gebäudename (optional)" value="${escapeHtml(s.name)}">
+        <div class="parcel-size">${Math.round(s.areaQm).toLocaleString('de-DE')} m²</div>
+      </div>
+      <select class="parcel-kultur" data-id="${s.id}">
+        <option value="" ${s.kategorie ? '' : 'selected'}>– Gebäudetyp wählen –</option>
+        ${optionsHtml}
+      </select>
+      <div class="layer-actions">
+        ${s.color ? `<button data-id="${s.id}" data-action="reset-color">Farbe zurücksetzen</button>` : ''}
+        ${s.kategorie === 'Stall' ? `<button data-id="${s.id}" data-action="open-stallplan">${hofplanLinkedStallplanExists(s) ? 'Stallplan öffnen' : 'Stallplan anlegen'}</button>` : ''}
+        <button data-id="${s.id}" data-action="zoom">Zoom</button>
+        <button data-id="${s.id}" data-action="remove" class="danger">Entfernen</button>
+      </div>
+    `;
+    list.appendChild(item);
+  });
+
+  list.querySelectorAll('.hofplan-color-input').forEach(input => {
+    input.addEventListener('input', () => {
+      const s = hofplanShapes.find(x => x.id === input.getAttribute('data-id'));
+      if (s) { s.color = input.value; updateHofplanShapeStyle(s); }
+    });
+    input.addEventListener('change', () => renderHofplanList());
+  });
+  list.querySelectorAll('.parcel-name').forEach(input => {
+    input.addEventListener('input', () => {
+      const s = hofplanShapes.find(x => x.id === input.getAttribute('data-id'));
+      if (s) { s.name = input.value; updateHofplanShapeStyle(s); }
+    });
+  });
+  list.querySelectorAll('.parcel-kultur').forEach(select => {
+    select.addEventListener('change', () => {
+      const s = hofplanShapes.find(x => x.id === select.getAttribute('data-id'));
+      if (s) { s.kategorie = select.value; updateHofplanShapeStyle(s); renderHofplanList(); }
+    });
+  });
+  list.querySelectorAll('[data-action]').forEach(el => {
+    el.addEventListener('click', () => {
+      const id = el.getAttribute('data-id');
+      const action = el.getAttribute('data-action');
+      const s = hofplanShapes.find(x => x.id === id);
+      if (action === 'zoom') zoomToHofplanShape(id);
+      if (action === 'remove' && s) deleteHofplanShape(s);
+      if (action === 'reset-color' && s) { s.color = null; updateHofplanShapeStyle(s); renderHofplanList(); }
+      if (action === 'open-stallplan' && s) openOrCreateStallplanFor(s);
+    });
+  });
+}
+// Verknüpfung Hofplan-Gebäude (kategorie==='Stall') <-> Stallplaner-Plan:
+// existiert schon einer, direkt dorthin wechseln; sonst neu anlegen und
+// verknüpfen. Bewusst nur in diese Richtung (Hofplan -> Stallplaner) —
+// löscht der Nutzer später das Gebäude, bleibt der Stallplan als
+// eigenständiger Datensatz erhalten (kein Datenverlust durch eine
+// Kartenänderung), nur die Verknüpfung verschwindet mit dem Gebäude.
+function hofplanLinkedStallplanExists(s) {
+  return !!(s.stallplanId && stallplaene.some(p => p.id === s.stallplanId));
+}
+function openOrCreateStallplanFor(shape) {
+  let plan = shape.stallplanId ? stallplaene.find(p => p.id === shape.stallplanId) : null;
+  if (!plan) {
+    plan = createEmptyStallplan(shape.name || shape.kategorie || 'Stall');
+    stallplaene.push(plan);
+    shape.stallplanId = plan.id;
+    renderHofplanList(); // Button-Beschriftung "anlegen" -> "öffnen"
+  }
+  setActiveSegment('stallplaner');
+  setActiveStallplan(plan.id);
+}
+// Dev-only Testhaken (analog window.__ffTestMap/__ffTestStallplaner) — für
+// die Hofplan<->Stallplaner-Verknüpfung.
+if (import.meta.env.DEV) {
+  window.__ffTestHofplan = {
+    getShapes() { return hofplanShapes; },
+    serializeShapes() { return serializeWorkspace().hofplanShapes; }
+  };
+}
+
+function initHofplanMap() {
+  if (hofplanInitDone) return;
+  hofplanInitDone = true;
+
+  hofplanLayerGroup = L.featureGroup().addTo(map);
+
+  if (typeof L.Draw === 'undefined') {
+    hofplanToolRectBtn.disabled = true;
+    hofplanToolPolyBtn.disabled = true;
+    showHofplanError('Zeichenwerkzeug nicht verfügbar (Leaflet.draw konnte nicht geladen werden).');
+    return;
+  }
+
+  hofplanDrawRect = new L.Draw.Rectangle(map, {
+    shapeOptions: { color: HOFPLAN_DEFAULT_COLOR, weight: 2, fillColor: HOFPLAN_DEFAULT_COLOR, fillOpacity: 0.32 }
+  });
+  hofplanDrawPoly = new L.Draw.Polygon(map, {
+    shapeOptions: { color: HOFPLAN_DEFAULT_COLOR, weight: 2, fillColor: HOFPLAN_DEFAULT_COLOR, fillOpacity: 0.32 },
+    showArea: true,
+    metric: true,
+    allowIntersection: false
+  });
+
+  // Eigene DRAWSTART/DRAWSTOP/CREATED-Handler, per armedTool von den
+  // gleichnamigen Flächenzeichner-Handlern unterschieden (siehe dortiger
+  // Guard bei layerType 'polygon' — Rechteck nutzt ohnehin einen eigenen,
+  // dort nicht behandelten layerType 'rectangle').
+  map.on(L.Draw.Event.DRAWSTART, () => {
+    if (armedTool === 'draw-hofplan-rect') setHofplanStatus('Rechteck aufziehen, um ein Gebäude zu zeichnen (Esc zum Abbrechen).');
+    else if (armedTool === 'draw-hofplan-poly') setHofplanStatus('Eckpunkte anklicken, mit Doppelklick abschließen (Esc zum Abbrechen).');
+    updateHofplanToolbar();
+  });
+  map.on(L.Draw.Event.DRAWSTOP, () => {
+    if (armedTool === 'draw-hofplan-rect' || armedTool === 'draw-hofplan-poly') armedTool = null;
+    updateHofplanToolbar();
+  });
+  map.on('contextmenu', (e) => {
+    if (armedTool === 'draw-hofplan-poly') { L.DomEvent.preventDefault(e); hofplanDrawPoly.deleteLastVertex(); }
+  });
+  map.on(L.Draw.Event.CREATED, (e) => {
+    if (armedTool !== 'draw-hofplan-rect' && armedTool !== 'draw-hofplan-poly') return;
+    const shape = addHofplanShapeFromLayer(e.layer, '', '');
+    pushHofplanUndo({ type: 'add', shapeId: shape.id });
+    renderHofplanList();
+    setHofplanStatus(`Gebäude gezeichnet (${Math.round(shape.areaQm).toLocaleString('de-DE')} m²) — Typ in der Liste zuweisen.`);
+  });
+}
+
+// ---------- Werkzeugleiste: Hofplan-Gruppe (Teil von #edit-toolbar) ----------
+const hofplanToolRectBtn = document.getElementById('hofplan-tool-rect');
+const hofplanToolPolyBtn = document.getElementById('hofplan-tool-poly');
+const hofplanToolEditBtn = document.getElementById('hofplan-tool-edit');
+const hofplanToolDeleteBtn = document.getElementById('hofplan-tool-delete');
+const hofplanToolUndoBtn = document.getElementById('hofplan-tool-undo');
+const hofplanToolRedoBtn = document.getElementById('hofplan-tool-redo');
+
+function updateHofplanToolbar() {
+  hofplanToolRectBtn.classList.toggle('active', armedTool === 'draw-hofplan-rect');
+  hofplanToolPolyBtn.classList.toggle('active', armedTool === 'draw-hofplan-poly');
+  hofplanToolEditBtn.classList.toggle('active', hofplanToolMode === 'edit');
+  hofplanToolDeleteBtn.classList.toggle('active', hofplanToolMode === 'delete');
+  hofplanToolUndoBtn.disabled = hofplanUndoStack.length === 0;
+  hofplanToolRedoBtn.disabled = hofplanRedoStack.length === 0;
+}
+
+// Bearbeiten/Löschen bleiben "scharf", bis man sie erneut anklickt (oder Esc
+// drückt) — mehrere Gebäude hintereinander anklicken, ohne das Werkzeug
+// jedes Mal neu auswählen zu müssen (gleiches Prinzip wie setMapToolMode).
+function setHofplanToolMode(mode) {
+  disableHofplanEditing();
+  hofplanToolMode = hofplanToolMode === mode ? null : mode;
+  if (hofplanToolMode === 'edit') setHofplanStatus('Gebäude anklicken, um seine Eckpunkte zu bearbeiten.');
+  else if (hofplanToolMode === 'delete') setHofplanStatus('Gebäude anklicken, um es zu löschen.');
+  updateHofplanToolbar();
+}
+
+hofplanToolRectBtn.addEventListener('click', () => {
+  initHofplanMap();
+  armedTool = 'draw-hofplan-rect';
+  if (hofplanDrawRect) hofplanDrawRect.enable();
+});
+hofplanToolPolyBtn.addEventListener('click', () => {
+  initHofplanMap();
+  armedTool = 'draw-hofplan-poly';
+  if (hofplanDrawPoly) hofplanDrawPoly.enable();
+});
+hofplanToolEditBtn.addEventListener('click', () => setHofplanToolMode('edit'));
+hofplanToolDeleteBtn.addEventListener('click', () => setHofplanToolMode('delete'));
+hofplanToolUndoBtn.addEventListener('click', undoLastHofplanAction);
+hofplanToolRedoBtn.addEventListener('click', redoLastHofplanAction);
+
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (hofplanToolMode) { hofplanToolMode = null; updateHofplanToolbar(); }
+  if (armedTool === 'draw-hofplan-rect' && hofplanDrawRect) hofplanDrawRect.disable();
+  if (armedTool === 'draw-hofplan-poly' && hofplanDrawPoly) hofplanDrawPoly.disable();
+});
+
+updateHofplanToolbar();
+
+// Speichert die gezeichneten Gebäude als reguläres GeoJSON, analog zum
+// Flächenzeichner-Export.
+function exportHofplanGeoJSON() {
+  if (!hofplanShapes.length) { showHofplanError('Noch kein Gebäude gezeichnet.'); return; }
+  const fc = {
+    type: 'FeatureCollection',
+    features: hofplanShapes.map(s => ({
+      type: 'Feature',
+      geometry: s.leafletLayer.toGeoJSON().geometry,
+      properties: { kategorie: s.kategorie, name: s.name, farbe: hofplanEffectiveColor(s), flaeche_qm: Math.round(s.areaQm) }
+    }))
+  };
+  const ts = new Date().toISOString().slice(0, 10);
+  downloadBlob(JSON.stringify(fc, null, 2), zuordnungFileName('Hofplan', 'geojson') || `hofplan_${ts}.geojson`, 'application/geo+json');
+  setHofplanStatus('Als GeoJSON gespeichert.');
+}
+document.getElementById('btn-export-hofplan-geojson').addEventListener('click', exportHofplanGeoJSON);
+
+// ---------- Lageplan exportieren (ein Satellitenbild mit allen Gebäuden + Legende) ----------
+// Im Unterschied zu den übrigen Flächenkarten-Exporten (eine Seite pro
+// Fläche) hier bewusst EINE Gesamtübersicht: alle Gebäude zusammen als ein
+// PDF, mit Legende statt Einzel-Infozeile — ein Hofplan ist als Ganzes
+// gedacht, nicht als Sammlung einzelner Blätter.
+async function captureHofplanScreenshot(targetMap, satelliteLayer, mapElId, featureCollection) {
+  const highlightLayer = L.geoJSON(featureCollection, {
+    renderer: L.canvas(),
+    style: (feature) => {
+      const color = feature.properties.farbe;
+      return { color, weight: 2.5, opacity: 1, fillColor: color, fillOpacity: 0.4 };
+    }
+  }).addTo(targetMap);
+  // Gebäudenamen (bzw. Kategorie ohne Namen) als Label direkt auf dem
+  // Kartenbild — dieselbe Beschriftung wie auf der Live-Karte
+  // (hofplanLabelText), nur als eigene temporäre Layer, da hofplanLayerGroup
+  // für den Export ausgeblendet ist und ihre Labels sonst fehlen würden.
+  const labelLayers = featureCollection.features
+    .filter(feature => feature.properties.label)
+    .map((feature) => {
+      const center = L.geoJSON(feature).getBounds().getCenter();
+      return createLabelAnchorAt(center, feature.properties.label).addTo(targetMap);
+    });
+  try {
+    const bounds = highlightLayer.getBounds();
+    if (bounds.isValid()) targetMap.fitBounds(bounds, { padding: [60, 60], maxZoom: 20 });
+    await waitForTilesFullyLoaded(satelliteLayer, mapElId, 6000);
+    return await captureMapElement(document.getElementById(mapElId), { useCORS: true, logging: false });
+  } finally {
+    targetMap.removeLayer(highlightLayer);
+    labelLayers.forEach(l => targetMap.removeLayer(l));
+  }
+}
+
+function computeHofplanLegend() {
+  const seen = new Map();
+  hofplanShapes.forEach(s => {
+    const label = s.kategorie || 'Ohne Typ';
+    const color = hofplanEffectiveColor(s);
+    seen.set(label + '|' + color, { label, color });
+  });
+  return [...seen.values()];
+}
+
+function addHofplanUebersichtPage(doc, pageW, pageH, margin, canvas, legendItems) {
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(15);
+  doc.text('Hofplan – Lageplan', margin, margin + 4);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9.5);
+  const legendY = margin + 11;
+  const swatch = 3.2;
+  let lx = margin;
+  legendItems.forEach((item) => {
+    doc.setFillColor(item.color);
+    doc.rect(lx, legendY - swatch, swatch, swatch, 'F');
+    doc.text(item.label, lx + swatch + 1.6, legendY);
+    lx += swatch + 1.6 + doc.getTextWidth(item.label) + 8;
+  });
+
+  const imageTop = legendY + 6;
+  const maxW = pageW - margin * 2;
+  const maxH = pageH - imageTop - margin;
+  const scale = Math.min(maxW / canvas.width, maxH / canvas.height);
+  const imgW = canvas.width * scale;
+  const imgH = canvas.height * scale;
+  const imgX = (pageW - imgW) / 2;
+  doc.addImage(canvas.toDataURL('image/jpeg', 0.85), 'JPEG', imgX, imageTop, imgW, imgH);
+}
+
+async function exportHofplanUebersicht() {
+  if (typeof html2canvas === 'undefined') { showHofplanError('Lageplan-Export nicht verfügbar (html2canvas konnte nicht geladen werden).'); return; }
+  if (typeof window.jspdf === 'undefined') { showHofplanError('Lageplan-Export nicht verfügbar (jsPDF konnte nicht geladen werden).'); return; }
+  if (!hofplanShapes.length) { showHofplanError('Noch kein Gebäude gezeichnet.'); return; }
+
+  const btn = document.getElementById('btn-export-hofplan-uebersicht');
+  btn.disabled = true;
+
+  // Ein noch scharf gestelltes Zeichenwerkzeug hinterlässt sonst seinen
+  // Hinweis-Tooltip ("Click and drag to draw rectangle." o.ä.) mitten im
+  // Screenshot, da der Tooltip Teil des Karten-DOM ist und von html2canvas
+  // mit erfasst wird.
+  if (armedTool === 'draw-hofplan-rect' && hofplanDrawRect) hofplanDrawRect.disable();
+  if (armedTool === 'draw-hofplan-poly' && hofplanDrawPoly) hofplanDrawPoly.disable();
+  disableHofplanEditing();
+
+  const savedCenter = map.getCenter();
+  const savedZoom = map.getZoom();
+  const savedBasemap = currentBasemap;
+
+  map.removeLayer(hofplanLayerGroup);
+  if (currentBasemap !== 'satellite') setBasemap('satellite');
+  map.removeControl(map.zoomControl);
+
+  try {
+    const fc = {
+      type: 'FeatureCollection',
+      features: hofplanShapes.map(s => ({
+        type: 'Feature',
+        geometry: s.leafletLayer.toGeoJSON().geometry,
+        properties: { kategorie: s.kategorie, farbe: hofplanEffectiveColor(s), label: hofplanLabelText(s) }
+      }))
+    };
+
+    setHofplanStatus('Exportiere Lageplan …');
+    let canvas;
+    try {
+      canvas = await captureHofplanScreenshot(map, basemaps.satellite, 'map', fc);
+    } catch (err) {
+      console.error('Kartenbild-Erfassung für Hofplan fehlgeschlagen', err);
+      showHofplanError('Kartenbild konnte nicht erfasst werden (evtl. CORS-Einschränkung der Kachel-Quelle).');
+      return;
+    }
+
+    const doc = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
+    addHofplanUebersichtPage(doc, pageW, pageH, 12, canvas, computeHofplanLegend());
+    stampFeldFolioLogo(doc, await getFeldFolioLogoDataUrl());
+    const ts = new Date().toISOString().slice(0, 10);
+    doc.save(zuordnungFileName('Hofplan Lageplan', 'pdf') || `hofplan_lageplan_${ts}.pdf`);
+    setHofplanStatus('Lageplan exportiert.');
+  } finally {
+    map.zoomControl.addTo(map);
+    if (currentBasemap !== savedBasemap) setBasemap(savedBasemap);
+    hofplanLayerGroup.addTo(map);
+    map.setView(savedCenter, savedZoom);
+    btn.disabled = false;
+  }
+}
+document.getElementById('btn-export-hofplan-uebersicht').addEventListener('click', exportHofplanUebersicht);
+
+// ---------- Gesamtexport (Flächenzeichner + Obstbaumkataster + Hofplan) ----------
+// Kombiniert genau die Funktionen, die auch einzeln als GeoJSON exportierbar
+// sind (Bienenflugkarte hat keinen eigenen GeoJSON-Export und bleibt daher
+// hier bewusst außen vor) als eine gemeinsame .geojson-Datei. Die
+// Gesamtübersicht als PDF (exportKombiniertesPDF weiter unten) hat ein
+// eigenes Layout im Markendesign (src/gesamtbericht.js).
+function exportKombiniertesGeoJSON() {
+  const zeichnerFeatures = zeichnerParcels.map(p => ({
+    ...cloneFeature(p.leafletLayer.feature),
+    properties: { ...p.leafletLayer.feature.properties, quelle: 'Flächenzeichner' }
+  }));
+  const obstbaumFeatures = obstbaumTrees.map(t => ({
+    type: 'Feature',
+    geometry: { type: 'Point', coordinates: [t.latlng.lng, t.latlng.lat] },
+    properties: { nummer: t.nummer, art: t.art, label: fruitOf(t.art).label, quelle: 'Obstbaumkataster' }
+  }));
+  const hofplanFeatures = hofplanShapes.map(s => ({
+    type: 'Feature',
+    geometry: s.leafletLayer.toGeoJSON().geometry,
+    properties: { kategorie: s.kategorie, name: s.name, farbe: hofplanEffectiveColor(s), flaeche_qm: Math.round(s.areaQm), quelle: 'Hofplan' }
+  }));
+  const allFeatures = [...zeichnerFeatures, ...obstbaumFeatures, ...hofplanFeatures];
+  if (!allFeatures.length) { showError('Noch keine Inhalte zum Exportieren vorhanden.'); return; }
+  const fc = { type: 'FeatureCollection', features: allFeatures };
+  const ts = new Date().toISOString().slice(0, 10);
+  downloadBlob(JSON.stringify(fc, null, 2), zuordnungFileName('FeldFolio', 'geojson') || `FeldFolio_${ts}.geojson`, 'application/geo+json');
+  setStatus('Gesamtübersicht als GeoJSON gespeichert.');
+}
+document.getElementById('btn-export-gesamt-geojson').addEventListener('click', exportKombiniertesGeoJSON);
+
+// ---- Gesamtübersicht als PDF (Markendesign, siehe src/gesamtbericht.js) ----
+// Aufbau: Deckblatt mit Inhalt → Flächenübersicht (Summen, Kulturen) →
+// Flächenliste (alle Flächen aus Shapedateien + gezeichnete) → Flächenkarten
+// (nur Flächenzeichner) → Obstbaumkataster → Bienenflugkarte → Hofplan.
+// Abschnitte ohne Inhalt entfallen.
+
+// Alle Flächen für Übersicht und Tabelle. Teilflächen-Ebenen liegen
+// innerhalb anderer Flächen und würden die Summe doppelt zählen — sie
+// werden nur gezählt und auf der Übersicht erwähnt. Größe aus dem
+// Shapedatei-Attribut; fehlt es, aus der Geometrie berechnet (markiert).
+function collectGesamtFlaechen() {
+  const treeLists = computeObstbaumParcelTreeLists();
+  const drawnIds = new Set(zeichnerParcels.map(p => p.id));
+  const rows = [];
+  let teilflaechen = 0;
+  featureIndex.forEach(e => {
+    if (e.isTeilflaechen) { teilflaechen++; return; }
+    const isDrawn = drawnIds.has(e.id);
+    let ha = parseFloat(String(e.groesse).replace(',', '.'));
+    let computed = false;
+    if (!Number.isFinite(ha)) {
+      computed = true;
+      ha = isDrawn && Number.isFinite(e.areaHa) ? e.areaHa : 0;
+      if (!ha) { try { ha = turf.area(e.leafletLayer.feature || e.leafletLayer.toGeoJSON()) / 10000; } catch { ha = 0; } }
+    }
+    rows.push({
+      id: e.id,
+      nummer: e.nummer ? String(e.nummer) : '',
+      name: e.featName || '',
+      kultur: (e.kultur || '').trim(),
+      flaechenId: e.flaechenId || '',
+      quelle: isDrawn ? 'Gezeichnet' : e.layerName,
+      isDrawn, ha, computed,
+      trees: (treeLists.get(e.id) || []).length
+    });
+  });
+  rows.sort((a, b) => (a.isDrawn - b.isDrawn) || a.quelle.localeCompare(b.quelle) ||
+    a.nummer.localeCompare(b.nummer, undefined, { numeric: true }));
+  return { rows, teilflaechen, treeLists };
+}
+
+// Kulturen summiert, größte zuerst, mit fester Farbe je Kultur (dieselbe in
+// Balken, Tabelle und Legenden). Mehr als 10 Kulturen: Rest zusammengefasst.
+function summarizeGesamtKulturen(rows) {
+  const byKultur = new Map();
+  rows.forEach(r => {
+    const key = r.kultur || 'Ohne Angabe';
+    const cur = byKultur.get(key) || { label: key, value: 0, count: 0 };
+    cur.value += r.ha;
+    cur.count++;
+    byKultur.set(key, cur);
+  });
+  const sorted = [...byKultur.values()].sort((a, b) => b.value - a.value);
+  const colorOf = new Map();
+  sorted.forEach((k, i) => colorOf.set(k.label, k.label === 'Ohne Angabe' ? '#B8BFB2' : CULTURE_COLORS[i % CULTURE_COLORS.length]));
+  sorted.forEach(k => { k.color = colorOf.get(k.label); });
+  let shown = sorted;
+  if (sorted.length > 10) {
+    const rest = sorted.slice(9);
+    shown = [...sorted.slice(0, 9), { label: `Weitere (${rest.length} Kulturen)`, value: rest.reduce((s, k) => s + k.value, 0), count: rest.reduce((s, k) => s + k.count, 0), color: '#B8BFB2' }];
+  }
+  return { all: sorted, shown, colorOf };
+}
+
+function gesamtFlaecheLabel(r) {
+  return [r.nummer, r.name].filter(Boolean).join(' – ') || 'Ohne Bezeichnung';
+}
+
+// Karte vorbereiten/zurücksetzen: je Kartenseite nur die jeweils passenden
+// Inhalte (keine 3-km-Kreise auf Flächenkarten, keine Bäume im Lageplan).
+function setGesamtMapOverlays({ trees = false, hives = false } = {}) {
+  if (obstbaumLayerGroup) { if (trees) obstbaumLayerGroup.addTo(map); else map.removeLayer(obstbaumLayerGroup); }
+  if (bienenflugLayerGroup) { if (hives) bienenflugLayerGroup.addTo(map); else map.removeLayer(bienenflugLayerGroup); }
+}
+async function safeGesamtCapture(fn, what) {
+  try { return await fn(); }
+  catch (err) { console.error('Kartenbild fehlgeschlagen:', what, err); return null; }
+}
+
+// ---- Flächenübersicht (eigene Ansicht, src/flaechenuebersicht.js) ----
+// Dieselben Daten wie die Übersichtsseite der Gesamtübersicht.
+// ---- Fehlende Kulturen (nur Nutzungscode / gar keine Kultur) ----
+// Liste je Code mit Eingabe; Nutzungsnachweis (PDF) laden lernt die Codes.
+// Gefundene Zuordnungen gehen als Vorschlag an die Verwaltung (s. o.).
+let ueCodesInfo = '';
+function ueCodesDaten() {
+  const jeCode = new Map();
+  let ohneKultur = 0;
+  featureIndex.forEach(e => {
+    if (e.isTeilflaechen) return;
+    const p = e.props || {};
+    const code = fnnRohcode(p);
+    if (code) {
+      const land = fnnLand(p);
+      if (fnnAmtlich(land, code)) return;
+      const k = land + '|' + code;
+      const c = jeCode.get(k) || { land, code, n: 0, ha: 0 };
+      c.n++; c.ha += parseHa(pickGroesse(p)) || 0;
+      jeCode.set(k, c);
+    } else if (!fnnKulturFeld(p) && pickField(p, FIELD_CANDIDATES.flaechenid)) ohneKultur++;
+  });
+  return { codes: [...jeCode.values()].sort((a, b) => b.ha - a.ha), ohneKultur };
+}
+const UE_LAND_NAME = { TH: 'Thüringen', ST: 'Sachsen-Anhalt', BY: 'Bayern', SN: 'Sachsen', BB: 'Brandenburg', HE: 'Hessen', NI: 'Niedersachsen', NW: 'NRW', RP: 'Rheinland-Pfalz', BW: 'Baden-Württemberg', MV: 'Mecklenburg-Vorpommern', SH: 'Schleswig-Holstein', SL: 'Saarland' };
+function renderUeCodes() {
+  const box = document.getElementById('ue-codes');
+  if (!box) return;
+  const { codes, ohneKultur } = ueCodesDaten();
+  const meineId = accountSession && accountSession.user && accountSession.user.id;
+  const wartend = codesZeilen.filter(r => r.status === 'vorschlag' && r.vorgeschlagen_von === meineId).length + lsJson(CODES_AUSSTEHEND_KEY, []).length;
+  if (!codes.length && !ohneKultur && !ueCodesInfo) { box.hidden = true; box.innerHTML = ''; return; }
+  // Vorschläge für die Eingabe: bekannte Kulturnamen (amtliche Tabellen + gelernte)
+  const namen = new Set();
+  BUNDESLAND_NC_CONFIGS.forEach(c => Object.values(c.table).forEach(v => namen.add(v)));
+  Object.values(fnnGelernt()).forEach(m => Object.values(m).forEach(v => namen.add(v)));
+  box.hidden = false;
+  box.innerHTML = `<div class="ue-card-head"><h3><span class="material-symbols-rounded icon" aria-hidden="true">pin</span>Fehlende Kulturen</h3></div>
+    <p class="ue-codes-hint">${[codes.length ? `<b>${codes.reduce((s, c) => s + c.n, 0)} Flächen</b> nur mit Nutzungscode (${codes.length} ${codes.length === 1 ? 'Code' : 'Codes'})` : '', ohneKultur ? `<b>${ohneKultur} Flächen</b> ganz ohne Kultur` : ''].filter(Boolean).join(', ') || 'Alle Flächen haben eine Kultur.'}.
+      Lade den Flächen- und Nutzungsnachweis (PDF) oder trage die Kultur zum Code selbst ein. ${accountSession ? 'Jede Zuordnung geht als Vorschlag an die Verwaltung — nach der Freigabe gilt sie für alle Nutzer.' : 'Mit Konto wird jede Zuordnung als Vorschlag für alle Nutzer geteilt.'}</p>
+    <div class="ue-codes-actions">
+      <label class="betrieb-btn"><span class="material-symbols-rounded icon" aria-hidden="true">upload_file</span>Nutzungsnachweis (PDF) laden<input type="file" id="ue-fnn-file" accept=".pdf,application/pdf" hidden></label>
+      ${wartend ? `<span class="ue-codes-wartend"><span class="material-symbols-rounded icon" aria-hidden="true">pending_actions</span>${wartend} ${wartend === 1 ? 'Vorschlag wartet' : 'Vorschläge warten'} auf Freigabe</span>` : ''}
+    </div>
+    ${ueCodesInfo ? `<p class="ue-codes-info" id="ue-codes-info">${escapeHtml(ueCodesInfo)}</p>` : ''}
+    ${codesFehler && accountSession ? `<p class="ue-codes-info is-error">${escapeHtml(codesFehler)}</p>` : ''}
+    ${codes.length ? `<div class="ue-codes-list">${codes.map(c => `<div class="ue-code-row" data-ue-code="${escapeHtml(c.land + '|' + c.code)}">
+        <span class="ue-code-id"><b>${escapeHtml(c.code)}</b><small>${escapeHtml(UE_LAND_NAME[c.land] || c.land || 'Bundesland unbekannt')} · ${c.n} ${c.n === 1 ? 'Fläche' : 'Flächen'} · ${formatHaExact(c.ha)} ha</small></span>
+        <input type="text" class="ue-code-input" list="ue-code-namen" placeholder="Kultur für Code ${escapeHtml(c.code)}" aria-label="Kultur für Code ${escapeHtml(c.code)}">
+        <button type="button" class="betrieb-btn primary" data-ue-code-ok>Übernehmen</button>
+      </div>`).join('')}</div>` : ''}
+    <datalist id="ue-code-namen">${[...namen].sort().map(n => `<option value="${escapeHtml(n)}">`).join('')}</datalist>`;
+}
+document.getElementById('ue-codes').addEventListener('click', (e) => {
+  const ok = e.target.closest('[data-ue-code-ok]');
+  if (!ok) return;
+  const row = ok.closest('[data-ue-code]');
+  const [land, code] = row.dataset.ueCode.split('|');
+  const kultur = row.querySelector('.ue-code-input').value.trim();
+  if (!kultur) { row.querySelector('.ue-code-input').focus(); return; }
+  fnnMerken(land, [[code, kultur]], 'manuell');
+  ueCodesInfo = `Code ${code} → „${kultur}“ übernommen${accountSession && /^[A-Z]{2}$/.test(land) ? ' und als Vorschlag gemeldet' : ''}.`;
+  nutzungscodesUeberallAnwenden({ geaendert: true });
+  renderUeCodes();
+});
+document.getElementById('ue-codes').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.matches('.ue-code-input')) e.target.closest('[data-ue-code]').querySelector('[data-ue-code-ok]').click();
+});
+document.getElementById('ue-codes').addEventListener('change', async (e) => {
+  if (e.target.id !== 'ue-fnn-file') return;
+  const datei = e.target.files[0];
+  e.target.value = '';
+  if (!datei) return;
+  ueCodesInfo = 'Lese Nutzungsnachweis …';
+  renderUeCodes();
+  try {
+    const feats = Object.values(layers).filter(l => !l.isTeilflaechen).flatMap(l => (l.geojson && l.geojson.features) || []);
+    const r = await fnnLernenUndAnwenden(await datei.arrayBuffer(), feats);
+    const teile = [];
+    if (r.gelernt) teile.push(`${r.gelernt} Nutzungscodes erkannt`);
+    if (r.uebersetzt) teile.push(`${r.uebersetzt} Flächen mit Kultur statt Code`);
+    if (r.ergaenzt) teile.push(`${r.ergaenzt} Flächen über die FLIK ergänzt`);
+    ueCodesInfo = `${datei.name}: ${teile.length ? teile.join(', ') : 'nichts Passendes gefunden (Codes bzw. FLIK stimmen nicht mit den Flächen überein)'}.`;
+    nutzungscodesUeberallAnwenden({ geaendert: true });
+  } catch (err) {
+    console.error(err);
+    ueCodesInfo = `${datei.name}: konnte nicht gelesen werden (${err.message || 'unbekannter Fehler'}).`;
+  }
+  renderUeCodes();
+});
+
+function openFlaechenuebersicht({ animate = false } = {}) {
+  renderUeCodes();
+  const { rows, teilflaechen } = collectGesamtFlaechen();
+  const kulturen = summarizeGesamtKulturen(rows);
+  const betrieb = activeZuordnung ? activeZuordnung.betrieb : 'Kein Betrieb zugeordnet';
+  renderFlaechenuebersicht({ rows, kulturen, teilflaechen }, {
+    animate,
+    onRowClick: showFlaecheOnMap,
+    subtitle: `${betrieb} · Stand ${new Date().toLocaleDateString('de-DE')}`
+  });
+  syncUeTab(animate);
+}
+// Daten geändert, während die Übersicht offen ist: neu zeichnen, ohne
+// die Einblend-Animationen zu wiederholen.
+let flaechenuebersichtRefreshTimer = null;
+function refreshFlaechenuebersichtIfOpen() {
+  if (document.body.dataset.view === 'kontrolle') { clearTimeout(flaechenuebersichtRefreshTimer); flaechenuebersichtRefreshTimer = setTimeout(refreshKontrolleBetrieb, 50); return; }
+  if (document.body.dataset.view !== 'uebersicht') return;
+  clearTimeout(flaechenuebersichtRefreshTimer);
+  flaechenuebersichtRefreshTimer = setTimeout(() => openFlaechenuebersicht({ animate: false }), 50);
+}
+// Fläche aus der Übersicht auf der Karte zeigen.
+function showFlaecheOnMap(id) {
+  const entry = featureIndex.find(e => e.id === id);
+  if (!entry) return;
+  setActiveSegment('viewer');
+  if (ffMapActive) setKulturenMap(false); // normale Ebenen wieder zeigen
+  map.invalidateSize();
+  if (entry.leafletLayer.getBounds) map.fitBounds(entry.leafletLayer.getBounds(), { padding: [60, 60], maxZoom: 17 });
+  highlightFeature(entry);
+}
+// ---------- Flächensuche (Kopfzeile) ----------
+// Durchsucht die geladenen Schläge (Shapefiles + gezeichnete Flächen) nach
+// Schlagnummer, Name und FLIK; ein Treffer springt wie ein Klick in der
+// Flächentabelle zur Fläche (selectFeatureFromTable). Aus Ansichten ohne
+// Karte (Übersicht, Terminkalender, Stallplaner) geht es vorher zur Karte.
+// Strg+K fokussiert die Suche; unter 900 px öffnet die Lupe das Feld über
+// der Leiste (body.topbar-search-open).
+const MAP_VIEWS = new Set(['viewer', 'compare', 'zeichner', 'obstbaum', 'bienenflug', 'hofplan']);
+const TOPBAR_SEARCH_LIMIT = 8;
+const topbarSearch = document.getElementById('topbar-search');
+const topbarSearchResults = document.getElementById('topbar-search-results');
+let topbarSearchHits = [];
+let topbarSearchActive = -1;
+
+function normalizeSearchText(str) {
+  return String(str || '').toLocaleLowerCase('de-DE').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+function findTopbarSearchHits(query) {
+  const q = normalizeSearchText(query).trim();
+  if (!q) return [];
+  const hits = [];
+  featureIndex.forEach(e => {
+    if (e.isTeilflaechen) return;
+    const fields = [e.nummer, e.featName, e.flaechenId].map(normalizeSearchText);
+    // Rang: exakte Nummer/FLIK zuerst, dann Anfang, dann irgendwo enthalten.
+    let rank = -1;
+    if (fields[0] === q || fields[2] === q) rank = 0;
+    else if (fields.some(v => v.startsWith(q))) rank = 1;
+    else if (fields.some(v => v.includes(q))) rank = 2;
+    if (rank >= 0) hits.push({ entry: e, rank });
+  });
+  hits.sort((a, b) => a.rank - b.rank ||
+    String(a.entry.nummer || '').localeCompare(String(b.entry.nummer || ''), undefined, { numeric: true }));
+  return hits.slice(0, TOPBAR_SEARCH_LIMIT).map(h => h.entry);
+}
+function setTopbarSearchActive(i) {
+  topbarSearchActive = i;
+  topbarSearchResults.querySelectorAll('.topbar-search-item').forEach((li, j) => {
+    li.classList.toggle('active', j === i);
+    li.setAttribute('aria-selected', String(j === i));
+  });
+  const active = topbarSearchResults.querySelector('.topbar-search-item.active');
+  if (active) { topbarSearch.setAttribute('aria-activedescendant', active.id); active.scrollIntoView({ block: 'nearest' }); }
+  else topbarSearch.removeAttribute('aria-activedescendant');
+}
+function closeTopbarSearchResults() {
+  topbarSearchResults.hidden = true;
+  topbarSearch.setAttribute('aria-expanded', 'false');
+  topbarSearch.removeAttribute('aria-activedescendant');
+}
+function renderTopbarSearchResults() {
+  const query = topbarSearch.value;
+  topbarSearchHits = findTopbarSearchHits(query);
+  topbarSearchResults.innerHTML = '';
+  if (!query.trim()) { closeTopbarSearchResults(); return; }
+  if (!topbarSearchHits.length) {
+    const li = document.createElement('li');
+    li.className = 'topbar-search-empty';
+    li.textContent = featureIndex.length ? 'Keine Fläche gefunden.' : 'Noch keine Flächen geladen.';
+    topbarSearchResults.appendChild(li);
+  }
+  topbarSearchHits.forEach((e, i) => {
+    const li = document.createElement('li');
+    li.className = 'topbar-search-item';
+    li.id = 'topbar-search-hit-' + i;
+    li.setAttribute('role', 'option');
+    const title = document.createElement('span');
+    title.textContent = [e.nummer ? 'Schlag ' + e.nummer : '', e.featName].filter(Boolean).join(' · ') || 'Fläche';
+    const meta = document.createElement('small');
+    meta.textContent = [e.flaechenId ? 'FLIK ' + e.flaechenId : '', e.kultur, e.layerName].filter(Boolean).join(' · ');
+    li.append(title, meta);
+    // mousedown statt click: sonst schließt das blur des Feldes die Liste,
+    // bevor der Klick ankommt.
+    li.addEventListener('mousedown', (ev) => { ev.preventDefault(); jumpToSearchHit(e); });
+    topbarSearchResults.appendChild(li);
+  });
+  topbarSearchResults.hidden = false;
+  topbarSearch.setAttribute('aria-expanded', 'true');
+  setTopbarSearchActive(topbarSearchHits.length ? 0 : -1);
+}
+function jumpToSearchHit(entry) {
+  if (!MAP_VIEWS.has(document.body.dataset.view)) {
+    setActiveSegment('viewer');
+    map.invalidateSize();
+  }
+  selectFeatureFromTable(featureIndex.indexOf(entry));
+  topbarSearch.value = '';
+  closeTopbarSearchResults();
+  closeTopbarSearchOverlay();
+  topbarSearch.blur();
+}
+function openTopbarSearchOverlay() {
+  document.body.classList.add('topbar-search-open');
+  topbarSearch.focus();
+}
+function closeTopbarSearchOverlay() {
+  document.body.classList.remove('topbar-search-open');
+}
+topbarSearch.addEventListener('input', renderTopbarSearchResults);
+topbarSearch.addEventListener('focus', () => { if (topbarSearch.value.trim()) renderTopbarSearchResults(); });
+topbarSearch.addEventListener('blur', () => setTimeout(closeTopbarSearchResults, 120));
+topbarSearch.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    if (!topbarSearchHits.length) return;
+    e.preventDefault();
+    const n = topbarSearchHits.length;
+    setTopbarSearchActive((topbarSearchActive + (e.key === 'ArrowDown' ? 1 : -1) + n) % n);
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    const hit = topbarSearchHits[topbarSearchActive];
+    if (hit) jumpToSearchHit(hit);
+  } else if (e.key === 'Escape') {
+    e.stopPropagation();
+    if (topbarSearch.value) { topbarSearch.value = ''; closeTopbarSearchResults(); }
+    else { closeTopbarSearchOverlay(); topbarSearch.blur(); }
+  }
+});
+document.getElementById('btn-topbar-search').addEventListener('click', openTopbarSearchOverlay);
+document.getElementById('btn-topbar-search-back').addEventListener('click', () => {
+  topbarSearch.value = '';
+  closeTopbarSearchResults();
+  closeTopbarSearchOverlay();
+});
+document.addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    if (window.matchMedia('(max-width: 899px)').matches) openTopbarSearchOverlay();
+    else { topbarSearch.focus(); topbarSearch.select(); }
+  }
+});
+
+document.querySelectorAll('#uebersicht-view [data-goto]').forEach(btn => {
+  btn.addEventListener('click', () => setActiveSegment(btn.getAttribute('data-goto')));
+});
+// Die Gesamtübersicht braucht die sichtbare Karte (Luftbild-Ausschnitte) —
+// kurz zur Karte, exportieren, zurück zur Übersicht.
+document.getElementById('btn-ue-pdf').addEventListener('click', async () => {
+  setActiveSegment('viewer');
+  map.invalidateSize();
+  try { await exportKombiniertesPDF(); } finally { setActiveSegment('uebersicht'); }
+});
+document.getElementById('btn-ue-xlsx').addEventListener('click', () => {
+  const { rows } = collectGesamtFlaechen();
+  if (!rows.length) { showError('Noch keine Flächen vorhanden.'); return; }
+  const headers = ['Nr.', 'Name', 'Kulturart', 'Flächen-ID', 'Herkunft', 'Größe (ha)', 'Größe berechnet'];
+  const data = rows.map(r => [r.nummer, r.name, r.kultur || 'Ohne Angabe', r.flaechenId, r.isDrawn ? 'Gezeichnet' : r.quelle, Math.round(r.ha * 10000) / 10000, r.computed ? 'ja' : '']);
+  exportXlsx(headers, data, zuordnungFileName('Flächenliste', 'xlsx') || `Flaechenliste_${new Date().toISOString().slice(0, 10)}.xlsx`, 'Flächen');
+  document.getElementById('ue-status').textContent = 'Flächenliste als Excel gespeichert.';
+});
+
+async function exportKombiniertesPDF() {
+  if (typeof html2canvas === 'undefined') { showError('Export nicht verfügbar (html2canvas konnte nicht geladen werden).'); return; }
+  if (typeof window.jspdf === 'undefined') { showError('Export nicht verfügbar (jsPDF konnte nicht geladen werden).'); return; }
+  const { rows, teilflaechen, treeLists } = collectGesamtFlaechen();
+  if (!rows.length && !obstbaumTrees.length && !hofplanShapes.length && !bienenflugPoints.length) {
+    showError('Noch keine Inhalte zum Exportieren vorhanden.');
+    return;
+  }
+
+  const btnPdf = document.getElementById('btn-export-gesamt-pdf');
+  const btnGeo = document.getElementById('btn-export-gesamt-geojson');
+  btnPdf.disabled = true;
+  btnGeo.disabled = true;
+
+  const savedCenter = map.getCenter();
+  const savedZoom = map.getZoom();
+  const savedBasemap = currentBasemap;
+  const visibleLayerIds = Object.keys(layers).filter(id => layers[id].visible);
+  const treesWereVisible = !!obstbaumLayerGroup && map.hasLayer(obstbaumLayerGroup);
+  const hivesWereVisible = !!bienenflugLayerGroup && map.hasLayer(bienenflugLayerGroup);
+  visibleLayerIds.forEach(id => map.removeLayer(layers[id].leafletLayer));
+  if (hofplanLayerGroup) map.removeLayer(hofplanLayerGroup);
+  if (armedTool === 'draw-hofplan-rect' && hofplanDrawRect) hofplanDrawRect.disable();
+  if (armedTool === 'draw-hofplan-poly' && hofplanDrawPoly) hofplanDrawPoly.disable();
+  disableHofplanEditing();
+  if (currentBasemap !== 'satellite') setBasemap('satellite');
+  map.removeControl(map.zoomControl);
+
+  try {
+    setStatus('Gesamtübersicht wird erstellt …');
+    const logo = await getFeldFolioLogoDataUrl({ transparent: true });
+    const betrieb = activeZuordnung ? activeZuordnung.betrieb : 'Kein Betrieb zugeordnet';
+    const datum = new Date().toLocaleDateString('de-DE', { day: '2-digit', month: 'long', year: 'numeric' });
+    const b = new BerichtPdf({ betrieb, datum, logo });
+    const M = b.M, W = b.W;
+
+    const totalHa = rows.reduce((s, r) => s + r.ha, 0);
+    const kulturen = summarizeGesamtKulturen(rows);
+    const drawnRows = rows.filter(r => r.isDrawn);
+
+    // ---- Deckblatt ----
+    const highlights = [];
+    if (rows.length) {
+      highlights.push({ value: `${formatHa(totalHa)} ha`, label: `Gesamtfläche · ${rows.length} ${rows.length === 1 ? 'Fläche' : 'Flächen'}` });
+      highlights.push({ value: String(kulturen.all.filter(k => k.label !== 'Ohne Angabe').length), label: 'Kulturarten' });
+    }
+    if (obstbaumTrees.length) highlights.push({ value: String(obstbaumTrees.length), label: 'Obstbäume im Kataster' });
+    if (bienenflugPoints.length) highlights.push({ value: String(bienenflugPoints.length), label: bienenflugPoints.length === 1 ? 'Bienenstock' : 'Bienenstöcke' });
+    if (hofplanShapes.length) highlights.push({ value: String(hofplanShapes.length), label: 'Gebäude im Hofplan' });
+    b.cover({ title: 'Gesamtübersicht', subtitle: 'Flächen, Kulturen und Karten des Betriebs', highlights: highlights.slice(0, 6) });
+
+    // ---- Flächenübersicht ----
+    if (rows.length) {
+      let y = b.addPage('Flächenübersicht', 'Summen über alle Flächen aus Shapedateien und Flächenzeichner', { section: 'Flächenübersicht' });
+      const tiles = [
+        { label: 'Gesamtfläche', value: formatHa(totalHa), unit: 'ha', sub: `${rows.length} ${rows.length === 1 ? 'Fläche' : 'Flächen'}` },
+        { label: 'Kulturarten', value: String(kulturen.all.filter(k => k.label !== 'Ohne Angabe').length), sub: kulturen.all[0] ? `größte: ${kulturen.all[0].label}` : '' },
+        { label: 'Ø Flächengröße', value: formatHa(totalHa / rows.length), unit: 'ha' }
+      ];
+      if (drawnRows.length) tiles.push({ label: 'Davon gezeichnet', value: formatHa(drawnRows.reduce((s, r) => s + r.ha, 0)), unit: 'ha', sub: `${drawnRows.length} ${drawnRows.length === 1 ? 'Fläche' : 'Flächen'}` });
+      if (obstbaumTrees.length) tiles.push({ label: 'Obstbäume', value: String(obstbaumTrees.length) });
+      y = b.kpiTiles(y, tiles) + 10;
+
+      y = b.sectionHeading('Flächenanteile nach Kulturart', M, y);
+      y = b.stackedBar(M, y, W - M * 2, 6, kulturen.shown, totalHa) + 9;
+
+      const leftW = (W - M * 2) * 0.62;
+      const rightX = M + leftW + 10;
+      const rightW = W - M - rightX;
+      const listTop = y;
+      b.sectionHeading('Kulturarten summiert', M, listTop);
+      b.barList(M, listTop + 8, leftW, kulturen.shown, totalHa);
+
+      // Herkunft: je Shapedatei (Ebene) und gezeichnete Flächen
+      const bySource = new Map();
+      rows.forEach(r => {
+        const cur = bySource.get(r.quelle) || { n: 0, ha: 0 };
+        cur.n++; cur.ha += r.ha;
+        bySource.set(r.quelle, cur);
+      });
+      const sourceRows = [...bySource.entries()].map(([quelle, s]) => ({
+        label: quelle === 'Gezeichnet' ? 'Flächenzeichner' : quelle,
+        value: `${s.n} ${s.n === 1 ? 'Fläche' : 'Flächen'} · ${formatHa(s.ha)} ha`
+      }));
+      let py = b.infoPanel(rightX, listTop - 4, rightW, 'Herkunft der Flächen', sourceRows) + 5;
+      const notes = [];
+      if (rows.some(r => r.computed)) notes.push('Größen ohne Angabe in der Shapedatei wurden aus der Geometrie berechnet (in der Flächenliste mit * markiert).');
+      if (teilflaechen) notes.push(`${teilflaechen} Teilfläche(n) aus Teilflächen-Ebenen sind in den Summen nicht enthalten, da sie innerhalb anderer Flächen liegen.`);
+      notes.forEach(n => { py = b.note(n, rightX, py + 3, rightW) + 1; });
+      if (rows.length > 1) {
+        const top = [...rows].sort((a, c) => c.ha - a.ha).slice(0, 5);
+        b.sectionHeading('Die größten Flächen', rightX, py + 7);
+        b.doc.autoTable({
+          body: top.map(r => [gesamtFlaecheLabel(r), r.kultur || 'Ohne Angabe', (r.computed ? formatHa(r.ha) : formatHaExact(r.ha)) + ' ha']),
+          startY: py + 10,
+          margin: { left: rightX, right: M, top: b.contentTop, bottom: 18 },
+          theme: 'plain',
+          styles: { fontSize: 8.5, textColor: BRAND.text, cellPadding: 1.8, lineWidth: 0 },
+          alternateRowStyles: { fillColor: BRAND.tintLight },
+          columnStyles: { 0: { fontStyle: 'bold' }, 2: { halign: 'right', cellWidth: 22 } },
+          pageBreak: 'avoid'
+        });
+      }
+
+      // ---- Flächenliste ----
+      const withTrees = obstbaumTrees.length > 0;
+      const head = [['Nr.', 'Name', 'Kulturart', 'Flächen-ID', 'Herkunft', ...(withTrees ? ['Bäume'] : []), 'Größe (ha)']];
+      const body = rows.map(r => [
+        r.nummer || '–', r.name || '–', r.kultur || 'Ohne Angabe', r.flaechenId || '–',
+        r.isDrawn ? 'Gezeichnet' : r.quelle,
+        ...(withTrees ? [r.trees ? String(r.trees) : '–'] : []),
+        (r.computed ? formatHa(r.ha) + '*' : formatHaExact(r.ha))
+      ]);
+      const right = (content) => ({ content, styles: { halign: 'right' } });
+      const foot = [['', `Summe (${rows.length} Flächen)`, '', '', '', ...(withTrees ? [right(String(rows.reduce((s, r) => s + r.trees, 0)))] : []), right(formatHa(totalHa))]];
+      const kulturCol = 2;
+      const lastCol = head[0].length - 1;
+      const columnStyles = { 0: { cellWidth: 20 }, [kulturCol]: { cellPadding: { top: 2.2, bottom: 2.2, left: 7, right: 2.5 } }, [lastCol]: { halign: 'right', cellWidth: 26 } };
+      if (withTrees) columnStyles[lastCol - 1] = { halign: 'right', cellWidth: 16 };
+      b.table({
+        title: 'Flächenliste', subtitle: `${rows.length} Flächen · ${formatHa(totalHa)} ha`, section: 'Flächenliste',
+        head, body, foot, columnStyles,
+        didDrawCell: (data) => {
+          // Farbfeld der Kultur (wie in der Übersicht) vor dem Namen
+          if (data.section !== 'body' || data.column.index !== kulturCol) return;
+          const color = kulturen.colorOf.get(data.cell.raw) || '#B8BFB2';
+          b.doc.setFillColor(color);
+          b.doc.rect(data.cell.x + 2.5, data.cell.y + data.cell.height / 2 - 1.4, 2.8, 2.8, 'F');
+        }
+      });
+    }
+
+    // ---- Flächenkarten: nur Flächen aus dem Flächenzeichner ----
+    setGesamtMapOverlays({ trees: false, hives: false });
+    for (let i = 0; i < drawnRows.length; i++) {
+      const r = drawnRows[i];
+      const parcel = zeichnerParcels.find(p => p.id === r.id);
+      setStatus(`Gesamtübersicht … Flächenkarten (${i + 1}/${drawnRows.length})`);
+      const canvas = parcel ? await safeGesamtCapture(() => captureParcelScreenshot(map, basemaps.satellite, 'map', parcel.leafletLayer.toGeoJSON()), r.nummer) : null;
+      const panel = [
+        { label: 'Größe', value: `${r.computed ? formatHa(r.ha) : formatHaExact(r.ha)} ha`, bold: true },
+        { label: 'Kulturart', value: r.kultur || 'Ohne Angabe' }
+      ];
+      if (r.name) panel.unshift({ label: 'Name', value: r.name });
+      if (r.trees) panel.push({ label: 'Obstbäume', value: String(r.trees) });
+      panel.push({ label: 'Anteil an Gesamtfläche', value: formatPct(r.ha, totalHa) });
+      b.mapPage(`Flächenkarte · ${gesamtFlaecheLabel(r)}`, 'Gezeichnete Fläche auf dem Luftbild', canvas,
+        `Fläche ${r.nummer || i + 1}`, panel, { section: i === 0 ? 'Flächenkarten (Flächenzeichner)' : null });
+    }
+
+    // ---- Obstbaumkataster ----
+    if (obstbaumTrees.length) {
+      const totals = new Map();
+      obstbaumTrees.forEach(t => totals.set(t.art, (totals.get(t.art) || 0) + 1));
+      const fruitItems = [...totals.entries()].sort((a, c) => c[1] - a[1])
+        .map(([key, n]) => ({ label: fruitOf(key).label, value: n, color: fruitOf(key).color }));
+      let y = b.addPage('Obstbaumkataster', `${obstbaumTrees.length} Bäume · ${fruitItems.length} Obstarten`, { section: 'Obstbaumkataster' });
+      const leftW = (W - M * 2) * 0.45;
+      b.sectionHeading('Bäume nach Obstart', M, y + 2);
+      b.barList(M, y + 10, leftW, fruitItems, obstbaumTrees.length, { valueFmt: (v) => `${v} ${v === 1 ? 'Baum' : 'Bäume'}` });
+
+      // Bäume je Fläche (mit Flächenbezug) + ohne Fläche
+      const parcelRows = [];
+      treeLists.forEach((trees, parcelId) => {
+        const entry = featureIndex.find(e => e.id === parcelId);
+        if (!entry) return;
+        const counts = new Map();
+        trees.forEach(t => counts.set(t.art, (counts.get(t.art) || 0) + 1));
+        parcelRows.push([
+          [entry.nummer, entry.featName].filter(Boolean).join(' – ') || 'Ohne Bezeichnung',
+          entry.kultur || '–',
+          [...counts.entries()].map(([k, n]) => `${fruitOf(k).label} ${n}`).join(' · '),
+          String(trees.length)
+        ]);
+      });
+      parcelRows.sort((a, c) => a[0].localeCompare(c[0], undefined, { numeric: true }));
+      const unassigned = obstbaumTrees.filter(t => !t.parcelId);
+      if (unassigned.length) {
+        const counts = new Map();
+        unassigned.forEach(t => counts.set(t.art, (counts.get(t.art) || 0) + 1));
+        parcelRows.push(['Ohne Flächenbezug', '–', [...counts.entries()].map(([k, n]) => `${fruitOf(k).label} ${n}`).join(' · '), String(unassigned.length)]);
+      }
+      const tableX = M + leftW + 10;
+      b.sectionHeading('Bäume je Fläche', tableX, y + 2);
+      b.doc.autoTable({
+        head: [['Fläche', 'Kulturart', 'Obstarten', 'Bäume']],
+        body: parcelRows,
+        startY: y + 6,
+        margin: { top: b.contentTop, bottom: 18, left: tableX, right: M },
+        theme: 'plain',
+        styles: { fontSize: 8.5, textColor: BRAND.text, cellPadding: 2, lineWidth: 0 },
+        headStyles: { fillColor: BRAND.green, textColor: BRAND.white, fontStyle: 'bold', lineWidth: 0 },
+        alternateRowStyles: { fillColor: BRAND.tintLight },
+        columnStyles: { 3: { halign: 'right', cellWidth: 14 } },
+        didDrawPage: (data) => { if (data.pageNumber > 1) b.drawHeader('Obstbaumkataster (Fortsetzung)'); }
+      });
+
+      // Kartenseiten: je Fläche mit Bäumen (eng gezoomte Ausschnitte), dann
+      // Bäume ohne Fläche als geografische Gruppen.
+      setGesamtMapOverlays({ trees: true, hives: false });
+      const legendFor = (trees) => {
+        const counts = new Map();
+        trees.forEach(t => counts.set(t.art, (counts.get(t.art) || 0) + 1));
+        return [...counts.entries()].map(([k, n]) => ({ label: `${fruitOf(k).label}: ${n}`, color: fruitOf(k).color, round: true }));
+      };
+      const parcelsWithTrees = featureIndex.filter(e => treeLists.has(e.id))
+        .sort((a, c) => String(a.nummer).localeCompare(String(c.nummer), undefined, { numeric: true }));
+      for (let i = 0; i < parcelsWithTrees.length; i++) {
+        const entry = parcelsWithTrees[i];
+        const trees = treeLists.get(entry.id);
+        const clusters = clusterTrees(trees, TREE_VISIBILITY_RADIUS);
+        for (let j = 0; j < clusters.length; j++) {
+          setStatus(`Gesamtübersicht … Obstbaumkataster (${i + 1}/${parcelsWithTrees.length})`);
+          const canvas = await safeGesamtCapture(() => captureTreeClusterScreenshot(map, basemaps.satellite, 'map', entry.leafletLayer.feature, clusters[j].map(t => t.latlng)), entry.nummer);
+          const label = [entry.nummer, entry.featName].filter(Boolean).join(' – ') || 'Fläche';
+          const part = clusters.length > 1 ? ` · Ausschnitt ${j + 1}/${clusters.length}` : '';
+          b.mapPage(`Obstbäume · ${label}${part}`, `Verknüpft mit Fläche ${label}${entry.kultur ? ' · ' + entry.kultur : ''}`, canvas,
+            `${clusters[j].length} ${clusters[j].length === 1 ? 'Baum' : 'Bäume'}`,
+            [{ label: 'Fläche', value: label }, ...(entry.kultur ? [{ label: 'Kulturart', value: entry.kultur }] : []), ...legendFor(clusters[j])]);
+        }
+      }
+      const groups = clusterTrees(unassigned, TREE_VISIBILITY_RADIUS);
+      for (let i = 0; i < groups.length; i++) {
+        setStatus(`Gesamtübersicht … Obstbäume ohne Fläche (${i + 1}/${groups.length})`);
+        const canvas = await safeGesamtCapture(() => captureTreeClusterScreenshot(map, basemaps.satellite, 'map', null, groups[i].map(t => t.latlng)), 'Gruppe ' + (i + 1));
+        b.mapPage(`Obstbäume ohne Flächenbezug · Gruppe ${i + 1}`, 'Bäume, die keiner geladenen Fläche zugeordnet sind', canvas,
+          `${groups[i].length} ${groups[i].length === 1 ? 'Baum' : 'Bäume'}`, legendFor(groups[i]));
+      }
+    }
+
+    // ---- Bienenflugkarte ----
+    if (bienenflugPoints.length) {
+      setGesamtMapOverlays({ trees: false, hives: true });
+      for (let i = 0; i < bienenflugPoints.length; i++) {
+        const entry = bienenflugPoints[i];
+        setStatus(`Gesamtübersicht … Bienenflugkarte (${i + 1}/${bienenflugPoints.length})`);
+        const canvas = await safeGesamtCapture(() => captureBeehiveScreenshot(entry), 'Bienenstock ' + entry.nummer);
+        const title = entry.name ? `${entry.name} (Bienenstock ${entry.nummer})` : `Bienenstock ${entry.nummer}`;
+        b.mapPage(`Bienenflugkarte · ${title}`, 'Theoretischer Flugradius 3 km um den Standort', canvas, `Bienenstock ${entry.nummer}`, [
+          ...(entry.name ? [{ label: 'Name', value: entry.name }] : []),
+          { label: 'Koordinaten', value: `${entry.latlng.lat.toFixed(5)}, ${entry.latlng.lng.toFixed(5)}` },
+          { label: 'Flugradius', value: '3 km (theoretisch)' },
+          { label: 'Radius auf der Karte', color: '#E0A93B', round: true }
+        ], { section: i === 0 ? 'Bienenflugkarte' : null });
+      }
+    }
+
+    // ---- Hofplan ----
+    if (hofplanShapes.length) {
+      setGesamtMapOverlays({ trees: false, hives: false });
+      setStatus('Gesamtübersicht … Hofplan');
+      const fc = {
+        type: 'FeatureCollection',
+        features: hofplanShapes.map(s => ({
+          type: 'Feature',
+          geometry: s.leafletLayer.toGeoJSON().geometry,
+          properties: { kategorie: s.kategorie, farbe: hofplanEffectiveColor(s), label: hofplanLabelText(s) }
+        }))
+      };
+      const canvas = await safeGesamtCapture(() => captureHofplanScreenshot(map, basemaps.satellite, 'map', fc), 'Hofplan');
+      const totalQm = hofplanShapes.reduce((s, x) => s + (x.areaQm || 0), 0);
+      const HOFPLAN_PANEL_MAX = 16;
+      const sortedShapes = [...hofplanShapes].sort((a, c) => (c.areaQm || 0) - (a.areaQm || 0));
+      const shapeRow = (s) => ({ label: `${s.name || s.kategorie || 'Gebäude'} · ${Math.round(s.areaQm || 0).toLocaleString('de-DE')} m²`, color: hofplanEffectiveColor(s) });
+      const panelRows = hofplanShapes.length <= HOFPLAN_PANEL_MAX
+        ? [...sortedShapes.map(shapeRow), { label: 'Grundfläche gesamt', value: `${Math.round(totalQm).toLocaleString('de-DE')} m²`, bold: true }]
+        : computeHofplanLegend().map(l => ({ label: l.label, color: l.color }));
+      b.mapPage('Hofplan · Lageplan', `${hofplanShapes.length} Gebäude · ${Math.round(totalQm).toLocaleString('de-DE')} m² Grundfläche`, canvas,
+        hofplanShapes.length <= HOFPLAN_PANEL_MAX ? 'Gebäude' : 'Legende', panelRows, { section: 'Hofplan' });
+      if (hofplanShapes.length > HOFPLAN_PANEL_MAX) b.table({
+        title: 'Hofplan · Gebäude', subtitle: `${hofplanShapes.length} Gebäude`,
+        head: [['Gebäudetyp', 'Name', 'Grundfläche (m²)']],
+        body: hofplanShapes.map(s => [s.kategorie || 'Ohne Typ', s.name || '–', Math.round(s.areaQm || 0).toLocaleString('de-DE')]),
+        foot: [['Summe', '', { content: Math.round(totalQm).toLocaleString('de-DE'), styles: { halign: 'right' } }]],
+        columnStyles: { 2: { halign: 'right', cellWidth: 40 } },
+        didDrawCell: (data) => {
+          if (data.section !== 'body' || data.column.index !== 0) return;
+          const s = hofplanShapes[data.row.index];
+          if (!s) return;
+          b.doc.setFillColor(hofplanEffectiveColor(s));
+          b.doc.rect(data.cell.x + data.cell.width - 5, data.cell.y + data.cell.height / 2 - 1.4, 2.8, 2.8, 'F');
+        }
+      });
+    }
+
+    b.finalize();
+    if (import.meta.env.DEV) {
+      window.__ffTestLastGesamt = {
+        sections: b.sections.map(x => x.title),
+        pages: b.doc.internal.getNumberOfPages(),
+        mapPages: b.mapPages.size,
+        totalHa,
+        rows: rows.map(r => ({ nummer: r.nummer, kultur: r.kultur, quelle: r.quelle, ha: r.ha, trees: r.trees, computed: r.computed })),
+        kulturen: kulturen.all.map(k => ({ label: k.label, value: k.value, count: k.count }))
+      };
+    }
+    const ts = new Date().toISOString().slice(0, 10);
+    b.doc.save(zuordnungFileName('FeldFolio Gesamtübersicht', 'pdf') || `FeldFolio_Gesamtuebersicht_${ts}.pdf`);
+    setStatus('Gesamtübersicht als PDF exportiert.');
+  } catch (err) {
+    console.error('Gesamtübersicht fehlgeschlagen', err);
+    showError('Gesamtübersicht konnte nicht erstellt werden: ' + (err.message || err));
+  } finally {
+    map.zoomControl.addTo(map);
+    if (currentBasemap !== savedBasemap) setBasemap(savedBasemap);
+    visibleLayerIds.forEach(id => layers[id] && layers[id].leafletLayer.addTo(map));
+    if (hofplanLayerGroup) hofplanLayerGroup.addTo(map);
+    setGesamtMapOverlays({ trees: treesWereVisible, hives: hivesWereVisible });
+    map.setView(savedCenter, savedZoom);
+    btnPdf.disabled = false;
+    btnGeo.disabled = false;
+  }
+}
+document.getElementById('btn-export-gesamt-pdf').addEventListener('click', exportKombiniertesPDF);
+
+// ---------- FeldFolio Plus: Cloud-Konto ----------
+// Login-gated Cloud-Speicherung des gesamten Arbeitsstands (geteilte Ebenen +
+// Obstbäume + Bienenstöcke) — alles andere in der App funktioniert weiterhin
+// vollständig ohne Anmeldung, das hier ist ein reiner Zusatz obendrauf.
+const accountModal = document.getElementById('account-modal-overlay');
+const accountBtn = document.getElementById('btn-account');
+const accountNotConfigured = document.getElementById('account-not-configured');
+const accountAuthWrap = document.getElementById('account-auth-wrap');
+const accountAuthForm = document.getElementById('account-auth-form');
+const accountAuthHint = document.getElementById('account-auth-hint');
+const accountBtnSubmit = document.getElementById('account-btn-submit');
+const accountPasswordInput = document.getElementById('account-password');
+const accountModeButtons = document.querySelectorAll('.auth-mode-btn');
+const accountLoggedIn = document.getElementById('account-logged-in');
+const accountAuthError = document.getElementById('account-auth-error');
+const accountSyncStatus = document.getElementById('account-sync-status');
+const accountModeSwitch = document.querySelector('.auth-mode-switch');
+const accountEmailInput = document.getElementById('account-email');
+const accountDomainHint = document.getElementById('account-domain-hint');
+const accountRequestBlock = document.getElementById('account-request-block');
+const accountRequestEmail = document.getElementById('account-request-email');
+const accountRequestName = document.getElementById('account-request-name');
+const accountRequestMessage = document.getElementById('account-request-message');
+const accountRequestError = document.getElementById('account-request-error');
+const accountRequestStatus = document.getElementById('account-request-status');
+const accountRequestSubmitBtn = document.getElementById('account-request-submit');
+const accountAdminSection = document.getElementById('account-admin-requests');
+const accountAdminList = document.getElementById('account-admin-requests-list');
+const accountAdminError = document.getElementById('account-admin-error');
+let accountSession = null;
+let authMode = 'signin';
+// ---- Zustand des Offline-Abgleichs (siehe "Offline-Betrieb" weiter unten) ----
+const LOCAL_SAVE_INTERVAL_MS = 10000;
+let offlineRec = null; // Spiegel des lokalen Datensatzes des angemeldeten Nutzers
+let persistCache = { key: null, ws: null, shared: null };
+let syncPromise = null;
+let syncQueued = false;
+let syncState = 'idle'; // 'idle' | 'syncing' | 'offline' | 'error'
+let syncErrorMessage = '';
+let lastSyncedAt = null;
+
+// Registrierung ist grundsätzlich nur für @oekop.de-Adressen offen, alle
+// anderen müssen erst eine Zugangsanfrage stellen (siehe access_requests/
+// access_allowlist + Server-Trigger, Migrations-SQL im Plan). Diese Prüfung
+// hier ist nur für die Nutzerführung — die eigentliche Durchsetzung passiert
+// serverseitig per Datenbank-Trigger, ein Client-Check allein wäre keine
+// Sicherheit.
+function isOekopEmail(email) {
+  return /@oekop\.de$/i.test((email || '').trim());
+}
+// Admin ist nicht jede @oekop.de-Adresse, sondern wer in der Liste admin_konten
+// steht (supabase/admins.sql). Admin-RECHTE gibt es erst mit dem Code aus der
+// Authenticator-App (zweiter Faktor, gilt 12 Stunden) — für die normale Nutzung
+// reicht das Passwort. Beides sagt der Server; ohne Antwort (offline) bleibt die
+// Verwaltung ausgeblendet.
+let kontoAdminListe = false; // steht auf der Liste: Verwaltung anzeigen, Code abfragen
+let kontoIstAdmin = false;   // Admin-Rechte jetzt (zweiter Faktor frisch)
+async function adminStatusLaden() {
+  const vorher = kontoAdminListe + '|' + kontoIstAdmin;
+  if (!accountSession || accountSession.offline) {
+    kontoAdminListe = false;
+    kontoIstAdmin = false;
+  } else {
+    try { kontoAdminListe = await adminKontoAbfragen(); } catch { kontoAdminListe = false; }
+    try { kontoIstAdmin = kontoAdminListe && await istAdminAbfragen(); } catch { kontoIstAdmin = false; }
+  }
+  if (kontoAdminListe + '|' + kontoIstAdmin !== vorher && accountSession && !accountModal.hidden) renderAccountModal();
+  return kontoIstAdmin;
+}
+
+// Ein Formular für Anmelden/Registrieren statt zwei Buttons nebeneinander —
+// der Tab-Umschalter oben macht unmissverständlich klar, in welchem Modus
+// man gerade ist (Hinweistext, Button-Beschriftung und Passwort-Autocomplete
+// wechseln mit).
+const AUTH_MODE_TEXT = {
+  signin: {
+    hint: 'Mit bestehendem Cloud-Konto anmelden, um den aktuellen Stand zu speichern und auf einem anderen Gerät weiterzuarbeiten.',
+    submit: 'Anmelden',
+    autocomplete: 'current-password'
+  },
+  signup: {
+    hint: 'Neues Cloud-Konto erstellen, um den aktuellen Stand künftig zu speichern und auf einem anderen Gerät weiterzuarbeiten.',
+    submit: 'Registrieren',
+    autocomplete: 'new-password'
+  }
+};
+
+function setAuthMode(mode) {
+  authMode = mode;
+  accountModeSwitch.hidden = false;
+  accountAuthForm.hidden = false;
+  accountRequestBlock.hidden = true;
+  document.getElementById('account-forgot-block').hidden = true;
+  accountModeButtons.forEach(btn => {
+    const active = btn.getAttribute('data-mode') === mode;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', String(active));
+  });
+  const t = AUTH_MODE_TEXT[mode];
+  accountAuthHint.textContent = t.hint;
+  accountBtnSubmit.textContent = t.submit;
+  accountPasswordInput.autocomplete = t.autocomplete;
+  // Registrieren: Passwort wiederholen + Stärke; "Passwort vergessen" nur beim Anmelden.
+  document.getElementById('account-signup-extra').hidden = mode !== 'signup';
+  document.getElementById('account-forgot').hidden = mode !== 'signin';
+  showAccountError('');
+  updateDomainHint();
+  updatePasswordStrength();
+}
+
+accountModeButtons.forEach(btn => {
+  btn.addEventListener('click', () => setAuthMode(btn.getAttribute('data-mode')));
+});
+
+// Reiner Komfort-Hinweis beim Tippen der E-Mail im Registrieren-Modus, keine
+// Sicherheitsprüfung (siehe isOekopEmail oben).
+function updateDomainHint() {
+  if (authMode !== 'signup') { accountDomainHint.hidden = true; return; }
+  const email = accountEmailInput.value.trim();
+  if (!email.includes('@')) { accountDomainHint.hidden = true; return; }
+  accountDomainHint.hidden = false;
+  if (isOekopEmail(email)) {
+    accountDomainHint.innerHTML = '<span class="material-symbols-rounded icon">check</span> oekop.de-Adresse — Registrierung sofort möglich.';
+  } else {
+    accountDomainHint.innerHTML = 'Diese Adresse benötigt eine Freischaltung. <button type="button" id="account-domain-hint-request" class="inline-link">Direkt Zugang anfragen</button>';
+    document.getElementById('account-domain-hint-request').addEventListener('click', () => openRequestBlock(email));
+  }
+}
+accountEmailInput.addEventListener('input', updateDomainHint);
+
+function showAccountError(msg) {
+  accountAuthError.textContent = msg;
+  accountAuthError.hidden = !msg;
+}
+
+// Ein Dialog, drei Zustände: nicht eingerichtet / abgemeldet (Anmelden,
+// Registrieren, Passwort vergessen, Zugang anfragen) / angemeldet (Konto-
+// Seite mit Reitern). Dazu der Sonderfall "neues Passwort festlegen" nach
+// dem Link aus der Passwort-vergessen-Mail.
+function renderAccountModal() {
+  const recovery = accountRecoveryMode;
+  accountNotConfigured.hidden = isSupabaseConfigured;
+  accountAuthWrap.hidden = !isSupabaseConfigured || !!accountSession || recovery;
+  accountLoggedIn.hidden = !isSupabaseConfigured || !accountSession || recovery;
+  document.getElementById('account-recovery-block').hidden = !recovery;
+  const badge = document.getElementById('account-head-badge');
+  const sub = document.getElementById('account-head-sub');
+  const title = document.getElementById('account-title');
+  if (recovery) {
+    title.innerHTML = 'Neues Passwort';
+    sub.textContent = 'Fast geschafft';
+    badge.innerHTML = '<span class="material-symbols-rounded icon">key</span>';
+    badge.classList.remove('is-avatar');
+  } else if (accountSession) {
+    title.textContent = kontoProfil.name || accountSession.user.email;
+    sub.textContent = kontoProfil.name ? accountSession.user.email : 'FeldFolio+ Konto';
+    badge.textContent = kontoInitialen();
+    badge.classList.add('is-avatar');
+    // Verwaltung: Reiter für Konten auf der Admin-Liste; die Listen erst nach dem Code
+    const isAdmin = kontoAdminListe;
+    document.getElementById('account-tab-admin').hidden = !isAdmin;
+    accountAdminSection.hidden = !kontoIstAdmin;
+    document.getElementById('admin-2fa').hidden = !isAdmin || kontoIstAdmin;
+    if (!isAdmin && accountTab === 'admin') accountTab = 'profil';
+    setAccountTab(accountTab);
+    if (kontoIstAdmin) refreshAdminRequests();
+    else if (isAdmin) admin2faZeigen();
+  } else {
+    title.innerHTML = 'FeldFolio<span class="account-plus">+</span>';
+    sub.textContent = 'Dein Konto für Cloud & Kontrolle';
+    badge.innerHTML = '<span class="material-symbols-rounded icon">account_circle</span>';
+    badge.classList.remove('is-avatar');
+  }
+}
+
+function showAdminError(msg) {
+  accountAdminError.textContent = msg;
+  accountAdminError.hidden = !msg;
+}
+
+function renderAdminRequests(list) {
+  if (!list.length) {
+    accountAdminList.innerHTML = '<p class="modal-hint">Keine offenen Anfragen.</p>';
+    return;
+  }
+  accountAdminList.innerHTML = list.map(r => `
+    <div class="admin-request-row" data-id="${r.id}">
+      <div class="admin-request-info">
+        <strong>${escapeHtml(r.email)}</strong>${r.name ? ' · ' + escapeHtml(r.name) : ''}
+        <span class="admin-request-date">${new Date(r.created_at).toLocaleDateString('de-DE')}</span>
+        ${r.message ? `<p class="admin-request-msg">${escapeHtml(r.message)}</p>` : ''}
+      </div>
+      <div class="admin-request-actions">
+        <button type="button" data-action="approve" data-id="${r.id}" data-email="${escapeHtml(r.email)}">Freischalten</button>
+        <button type="button" data-action="decline" data-id="${r.id}">Ablehnen</button>
+      </div>
+    </div>`).join('');
+  accountAdminList.querySelectorAll('[data-action="approve"]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      showAdminError('');
+      try {
+        await approveAccessRequest(btn.getAttribute('data-id'), btn.getAttribute('data-email'));
+        await refreshAdminRequests();
+      } catch (err) {
+        btn.disabled = false;
+        showAdminError(err.message || 'Freischalten fehlgeschlagen.');
+      }
+    });
+  });
+  accountAdminList.querySelectorAll('[data-action="decline"]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      showAdminError('');
+      try {
+        await declineAccessRequest(btn.getAttribute('data-id'));
+        await refreshAdminRequests();
+      } catch (err) {
+        btn.disabled = false;
+        showAdminError(err.message || 'Ablehnen fehlgeschlagen.');
+      }
+    });
+  });
+}
+
+// ---- Verwaltung freischalten: Code aus der Authenticator-App (zweiter Faktor) ----
+let admin2faFaktor = null;
+function admin2faFehler(text) {
+  const el = document.getElementById('admin-2fa-fehler');
+  el.textContent = text;
+  el.hidden = !text;
+}
+async function admin2faZeigen() {
+  admin2faFehler('');
+  document.getElementById('admin-2fa-code').value = '';
+  let faktor = null;
+  try { faktor = await zweiFaktorAbfragen(); } catch (err) { admin2faFehler(authErrorMessage(err, 'Zwei-Faktor-Stand konnte nicht geladen werden.')); }
+  admin2faFaktor = faktor ? faktor.factorId : null;
+  document.getElementById('admin-2fa-titel').textContent = faktor ? 'Verwaltung freischalten' : 'Zwei-Faktor für die Verwaltung einrichten';
+  document.getElementById('admin-2fa-text').textContent = faktor
+    ? 'Für die Verwaltung brauchst du zusätzlich den 6-stelligen Code aus deiner Authenticator-App. Die Freischaltung gilt 12 Stunden; für alles andere reicht weiterhin dein Passwort.'
+    : 'Die Verwaltung ist mit einem zweiten Faktor geschützt: einem Code aus einer Authenticator-App auf deinem Handy. Einmal einrichten — danach fragt die App den Code nur ab, wenn du die Verwaltung öffnest (gilt dann 12 Stunden).';
+  document.getElementById('admin-2fa-einrichten').hidden = true;
+  document.getElementById('admin-2fa-eingabe').hidden = !faktor;
+  document.getElementById('admin-2fa-start').hidden = !!faktor;
+  const ok = document.getElementById('admin-2fa-ok');
+  ok.hidden = !faktor;
+  ok.textContent = 'Freischalten';
+}
+document.getElementById('admin-2fa-start').addEventListener('click', async () => {
+  const btn = document.getElementById('admin-2fa-start');
+  admin2faFehler('');
+  setButtonBusy(btn, true, 'Richte ein …');
+  try {
+    const neu = await zweiFaktorEinrichten();
+    admin2faFaktor = neu.factorId;
+    document.getElementById('admin-2fa-qr').src = neu.qr;
+    document.getElementById('admin-2fa-secret').textContent = neu.secret.replace(/(.{4})/g, '$1 ').trim();
+    document.getElementById('admin-2fa-einrichten').hidden = false;
+    document.getElementById('admin-2fa-eingabe').hidden = false;
+    btn.hidden = true;
+    const ok = document.getElementById('admin-2fa-ok');
+    ok.hidden = false;
+    ok.textContent = 'Bestätigen und freischalten';
+    document.getElementById('admin-2fa-code').focus();
+  } catch (err) {
+    admin2faFehler(authErrorMessage(err, 'Einrichten hat nicht geklappt.'));
+  } finally {
+    setButtonBusy(btn, false, 'Zwei-Faktor einrichten');
+  }
+});
+async function admin2faFreischalten() {
+  const ok = document.getElementById('admin-2fa-ok');
+  const code = document.getElementById('admin-2fa-code').value.replace(/\D/g, '');
+  if (code.length !== 6) { admin2faFehler('Bitte den 6-stelligen Code aus der Authenticator-App eingeben.'); return; }
+  if (!admin2faFaktor) return;
+  admin2faFehler('');
+  const text = ok.textContent;
+  setButtonBusy(ok, true, 'Prüfe …');
+  try {
+    await zweiFaktorBestaetigen(admin2faFaktor, code);
+    if (!(await adminStatusLaden())) { admin2faFehler('Der Code wurde angenommen, aber der Server bestätigt keine Admin-Rechte (ist supabase/admins.sql ausgeführt?).'); return; }
+    renderAccountModal();
+    showToast('Verwaltung freigeschaltet.');
+  } catch (err) {
+    admin2faFehler(authErrorMessage(err, 'Der Code wurde nicht angenommen.'));
+    document.getElementById('admin-2fa-code').select();
+  } finally {
+    setButtonBusy(ok, false, text);
+  }
+}
+document.getElementById('admin-2fa-ok').addEventListener('click', admin2faFreischalten);
+document.getElementById('admin-2fa-code').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); admin2faFreischalten(); } });
+document.getElementById('admin-2fa-wechseln').addEventListener('click', async () => {
+  if (!confirm('Authenticator wechseln (z. B. neues Handy)?\n\nDer bisherige Eintrag wird entfernt; danach richtest du den neuen ein. Bis dahin ist die Verwaltung gesperrt.')) return;
+  try {
+    const faktor = await zweiFaktorAbfragen();
+    if (faktor) await zweiFaktorEntfernen(faktor.factorId);
+  } catch (err) {
+    showToast(authErrorMessage(err, 'Entfernen hat nicht geklappt.'));
+    return;
+  }
+  kontoIstAdmin = false;
+  await adminStatusLaden();
+  renderAccountModal();
+});
+
+async function refreshAdminRequests() {
+  showAdminError('');
+  try {
+    renderAdminRequests(await listPendingAccessRequests());
+  } catch (err) {
+    showAdminError(err.message || 'Anfragen konnten nicht geladen werden.');
+  }
+  refreshAdminCodes();
+  fehlerbericht.adminZeigen();
+}
+
+// Verwaltung: Vorschläge für Nutzungscodes (je Bundesland + Code alle genannten Kulturen)
+function adminCodeGruppen(rows) {
+  const gruppen = new Map();
+  rows.forEach(r => {
+    const k = r.land + '|' + r.code;
+    const g = gruppen.get(k) || { land: r.land, code: r.code, freigegeben: null, varianten: new Map() };
+    if (r.status === 'freigegeben') g.freigegeben = r.kultur;
+    if (r.status === 'vorschlag') {
+      const v = g.varianten.get(r.kultur) || { kultur: r.kultur, nutzer: new Set(), quellen: new Set() };
+      v.nutzer.add(r.vorgeschlagen_von || '?'); v.quellen.add(r.quelle);
+      g.varianten.set(r.kultur, v);
+    }
+    gruppen.set(k, g);
+  });
+  return [...gruppen.values()].filter(g => g.varianten.size);
+}
+async function refreshAdminCodes() {
+  const list = document.getElementById('account-admin-codes-list');
+  const err = document.getElementById('account-admin-codes-error');
+  err.hidden = true;
+  try {
+    codesZeilen = await ladeNutzungscodes();
+    const gruppen = adminCodeGruppen(codesZeilen);
+    const freigegeben = new Set(codesZeilen.filter(r => r.status === 'freigegeben').map(r => r.land + '|' + r.code)).size;
+    list.innerHTML = (gruppen.length ? gruppen.map(g => `<div class="admin-code-row">
+        <div class="admin-request-info"><strong>${escapeHtml(UE_LAND_NAME[g.land] || g.land)} · Code ${escapeHtml(g.code)}</strong>
+          ${g.freigegeben ? `<span class="admin-request-date">bisher freigegeben: ${escapeHtml(g.freigegeben)}</span>` : ''}</div>
+        ${[...g.varianten.values()].map(v => `<div class="admin-code-variante">
+          <span>${escapeHtml(v.kultur)} <small>${v.nutzer.size} ${v.nutzer.size === 1 ? 'Nutzer' : 'Nutzer'} · ${[...v.quellen].map(q => (q === 'manuell' ? 'eingetragen' : 'Nutzungsnachweis')).join(', ')}</small></span>
+          <div class="admin-request-actions">
+            <button type="button" data-code-entscheid="1" data-land="${escapeHtml(g.land)}" data-code="${escapeHtml(g.code)}" data-kultur="${escapeHtml(v.kultur)}">Freigeben</button>
+            <button type="button" data-code-entscheid="0" data-land="${escapeHtml(g.land)}" data-code="${escapeHtml(g.code)}" data-kultur="${escapeHtml(v.kultur)}">Ablehnen</button>
+          </div></div>`).join('')}
+      </div>`).join('') : '<p class="modal-hint">Keine offenen Vorschläge.</p>')
+      + `<p class="modal-hint">${freigegeben} ${freigegeben === 1 ? 'Code ist' : 'Codes sind'} für alle freigegeben.</p>`;
+  } catch (e) {
+    err.textContent = e.message || 'Vorschläge konnten nicht geladen werden.';
+    err.hidden = false;
+  }
+}
+document.getElementById('account-admin-codes-list').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-code-entscheid]');
+  if (!btn) return;
+  btn.disabled = true;
+  try {
+    await entscheideNutzungscode({ land: btn.dataset.land, code: btn.dataset.code, kultur: btn.dataset.kultur, freigeben: btn.dataset.codeEntscheid === '1' });
+    await refreshAdminCodes();
+    refreshAdminCount();
+    nutzungscodesAbgleichen({ erzwingen: true });
+  } catch (err) {
+    btn.disabled = false;
+    const el = document.getElementById('account-admin-codes-error');
+    el.textContent = err.message || 'Entscheidung konnte nicht gespeichert werden.';
+    el.hidden = false;
+  }
+});
+document.getElementById('account-admin-codes-refresh').addEventListener('click', refreshAdminCodes);
+
+document.getElementById('account-admin-refresh').addEventListener('click', refreshAdminRequests);
+
+function updateAccountButton() {
+  // Am Handy nur das Symbol (Beschriftung per CSS ausgeblendet), die
+  // E-Mail steht dann im Tooltip bzw. im Konto-Dialog.
+  const label = document.getElementById('btn-account-label');
+  if (accountSession) {
+    label.textContent = accountSession.user.email;
+    accountBtn.title = 'FeldFolio+ Konto: ' + accountSession.user.email;
+    accountBtn.setAttribute('aria-label', 'Konto: angemeldet als ' + accountSession.user.email);
+    accountBtn.classList.add('logged-in');
+  } else {
+    label.textContent = 'Anmelden';
+    accountBtn.title = 'Anmelden (FeldFolio+ Konto)';
+    accountBtn.setAttribute('aria-label', 'Konto: anmelden');
+    accountBtn.classList.remove('logged-in');
+  }
+  // Das "+" in der Wortmarke (FeldFolio+) markiert die Cloud-Funktionen, die
+  // erst nach der Anmeldung nutzbar sind — deshalb nur dann sichtbar.
+  document.getElementById('brand-logo').classList.toggle('is-logged-in', !!accountSession);
+  // "Besichtigt" in der Flächentabelle gibt es nur angemeldet.
+  const auth = accountSession ? 'in' : 'out';
+  if (document.body.dataset.auth !== auth) { document.body.dataset.auth = auth; renderFeatureTable(); refreshCompareStatusColumn(); }
+  // Der Terminkalender ist ohne Anmeldung ohnehin nur ein "bitte anmelden"-
+  // Hinweis (siehe #terminkalender-not-logged-in) — der eigene, groß
+  // abgesetzte Umschalter-Button lenkt in der normalen (nicht angemeldeten)
+  // Ansicht nur unnötig ab und erscheint daher erst nach der Anmeldung.
+  document.getElementById('kontrolle-switcher').hidden = !accountSession;
+  document.getElementById('betrieb-switcher').hidden = !accountSession;
+  // Cloud-Sync gibt es nur mit Konto — ohne Anmeldung ist der Schalter
+  // (im Konto-Dialog) wirkungslos. Offline mit dem
+  // zuletzt angemeldeten Nutzer gestartet (accountSession.offline) bleibt er
+  // sichtbar: dann zeigt er "offline"/"noch nicht hochgeladen" an.
+  document.getElementById('btn-sync').hidden = !accountSession;
+  accountBtn.setAttribute('aria-haspopup', accountSession ? 'menu' : 'dialog');
+  if (!accountSession) closeAccountMenu();
+  renderAccountMenu();
+  updateSaveStatus();
+}
+
+function openAccountModal(tab) {
+  closeAccountMenu();
+  if (tab) accountTab = tab;
+  if (!accountSession) setAuthMode('signin');
+  renderAccountModal();
+  accountModal.hidden = false;
+  if (!accountSession && !accountRecoveryMode && !MOBILE_LAYOUT_QUERY.matches) setTimeout(() => accountEmailInput.focus(), 0);
+}
+function closeAccountModal() { accountModal.hidden = true; }
+
+// Abgemeldet: Anmelde-Dialog. Angemeldet: kleines Konto-Menü.
+accountBtn.addEventListener('click', (e) => {
+  if (!accountSession) { openAccountModal(); return; }
+  e.stopPropagation();
+  if (document.getElementById('account-menu').hidden) openAccountMenu(); else closeAccountMenu();
+});
+['account-modal-close-1', 'account-modal-close-2', 'account-modal-close-3', 'account-modal-close-x'].forEach(id => {
+  document.getElementById(id).addEventListener('click', closeAccountModal);
+});
+accountModal.addEventListener('click', (e) => { if (e.target === accountModal) closeAccountModal(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !accountModal.hidden) closeAccountModal(); });
+
+initAccountAndState();
+
+// ---------- Als Web-App installieren ----------
+// Android/Chrome/Edge melden über 'beforeinstallprompt', dass die Seite
+// installierbar ist (Manifest + Service Worker, nur im Produktions-Build) —
+// das Ereignis wird aufgehoben und über den eigenen Button ausgelöst, statt
+// die unauffällige Browser-Leiste abzuwarten. Safari (iPhone/iPad) kennt so
+// etwas nicht: dort zeigt der Button eine kurze Anleitung übers Teilen-Menü.
+let deferredInstallPrompt = null;
+function isRunningAsInstalledApp() {
+  return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+}
+function isIosSafari() {
+  const ua = navigator.userAgent;
+  const iOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  return iOS && /Safari/.test(ua) && !/CriOS|FxiOS|EdgiOS/.test(ua);
+}
+function updateInstallButton() {
+  const btn = document.getElementById('btn-install-app');
+  btn.hidden = isRunningAsInstalledApp() || !(deferredInstallPrompt || isIosSafari());
+}
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  updateInstallButton();
+});
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null;
+  updateInstallButton();
+});
+document.getElementById('btn-install-app').addEventListener('click', async () => {
+  if (deferredInstallPrompt) {
+    const promptEvent = deferredInstallPrompt;
+    deferredInstallPrompt = null;
+    promptEvent.prompt();
+    try { await promptEvent.userChoice; } catch {}
+    updateInstallButton();
+  } else if (isIosSafari()) {
+    closeMobileSidebar();
+    document.getElementById('install-ios-overlay').hidden = false;
+  }
+});
+document.getElementById('install-ios-close').addEventListener('click', () => {
+  document.getElementById('install-ios-overlay').hidden = true;
+});
+document.getElementById('install-ios-overlay').addEventListener('click', (e) => {
+  if (e.target.id === 'install-ios-overlay') e.target.hidden = true;
+});
+updateInstallButton();
+
+// App-Verknüpfungen (Manifest "shortcuts", langes Drücken aufs App-Symbol)
+// öffnen direkt eine Funktion: ?view=stallplaner / ?view=kontrolle (das
+// frühere ?view=terminkalender öffnet die Kontrolle im Kalender).
+// Erst nach dem vollständigen Laden des Moduls — setActiveSegment() greift
+// auf Zustand zu, der weiter unten in dieser Datei erst angelegt wird.
+setTimeout(() => {
+  let startView = new URLSearchParams(location.search).get('view');
+  if (startView === 'terminkalender') { kontrolleDashTab = 'kalender'; startView = 'kontrolle'; }
+  if (NUR_FRONTEND && startView === 'kontrolle') startView = null; // Dashboard/Betrieb gibt es nur mit Konto
+  if (startView && SEGMENT_TITLES[startView] && startView !== 'viewer') setActiveSegment(startView);
+}, 0);
+
+// ---------- Offline-App (Service Worker, siehe vite.config.js) ----------
+// Nur im Produktions-Build. Eine neue Version wird erst nach Bestätigung
+// aktiviert — sonst würde die Seite mitten in der Arbeit neu geladen.
+if (!import.meta.env.DEV && 'serviceWorker' in navigator) {
+  const updateApp = registerSW({
+    onNeedRefresh() {
+      if (document.getElementById('app-update-toast')) return;
+      const toast = document.createElement('div');
+      toast.id = 'app-update-toast';
+      toast.setAttribute('role', 'status');
+      toast.innerHTML = '<span>Neue Version von FeldFolio verfügbar.</span><button type="button" class="primary">Neu laden</button><button type="button" aria-label="Später">Später</button>';
+      const [reloadBtn, laterBtn] = toast.querySelectorAll('button');
+      reloadBtn.addEventListener('click', async () => { await persistLocalState(); updateApp(true); });
+      laterBtn.addEventListener('click', () => toast.remove());
+      document.body.appendChild(toast);
+    }
+  });
+}
+
+accountAuthForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  showAccountError('');
+  const email = accountEmailInput.value.trim();
+  const password = accountPasswordInput.value;
+  if (!email || !email.includes('@')) { showAccountError('Bitte eine gültige E-Mail-Adresse eingeben.'); accountEmailInput.focus(); return; }
+  if (!password) { showAccountError('Bitte das Passwort eingeben.'); accountPasswordInput.focus(); return; }
+  if (authMode === 'signup') {
+    if (password.length < 8) { showAccountError('Das Passwort braucht mindestens 8 Zeichen.'); return; }
+    if (password !== document.getElementById('account-password2').value) { showAccountError('Die beiden Passwörter stimmen nicht überein.'); return; }
+  }
+  setButtonBusy(accountBtnSubmit, true, authMode === 'signup' ? 'Registriere …' : 'Melde an …');
+  try {
+    const data = authMode === 'signup' ? await signUp(email, password) : await signIn(email, password);
+    if (data.session) {
+      accountSession = data.session;
+      accountTab = 'profil';
+      updateAccountButton();
+      accountPasswordInput.value = '';
+      document.getElementById('account-password2').value = '';
+      closeAccountModal();
+      // Geräteschutz mit dem eben eingegebenen Passwort entsperren bzw. einrichten
+      const user = accountSession.user;
+      if ((await geraeteschutz.nachAnmeldung(user, password).catch(() => 'weiter')) === 'abgemeldet') return;
+      startUserState(user);
+      refreshAutoSyncTimer();
+      zeigeDashboardAlsStart();
+    } else {
+      showAccountError('Registrierung erfolgreich — bitte E-Mail bestätigen und dann anmelden.');
+    }
+  } catch (err) {
+    // Registrierung für eine noch nicht freigeschaltete Nicht-oekop.de-Adresse
+    // schlägt serverseitig immer fehl (siehe Trigger check_signup_allowed) —
+    // statt der rohen (oft kryptischen) Datenbank-Fehlermeldung direkt die
+    // Zugangsanfrage anbieten, das ist der eigentlich erwartbare nächste Schritt.
+    if (authMode === 'signup' && !isOekopEmail(email)) {
+      openRequestBlock(email);
+    } else {
+      showAccountError(authErrorMessage(err, authMode === 'signup' ? 'Registrierung fehlgeschlagen.' : 'Anmeldung fehlgeschlagen.'));
+    }
+  } finally {
+    setButtonBusy(accountBtnSubmit, false, AUTH_MODE_TEXT[authMode].submit);
+  }
+});
+
+function showRequestError(msg) {
+  accountRequestError.textContent = msg;
+  accountRequestError.hidden = !msg;
+}
+
+function openRequestBlock(email) {
+  accountModeSwitch.hidden = true;
+  accountAuthForm.hidden = true;
+  accountRequestBlock.hidden = false;
+  accountRequestEmail.value = email;
+  accountRequestName.value = '';
+  accountRequestMessage.value = '';
+  accountRequestStatus.textContent = '';
+  accountRequestSubmitBtn.disabled = false;
+  showRequestError('');
+}
+
+document.getElementById('account-request-cancel').addEventListener('click', () => setAuthMode('signup'));
+
+accountRequestSubmitBtn.addEventListener('click', async () => {
+  showRequestError('');
+  const email = accountRequestEmail.value.trim();
+  try {
+    await requestAccess({
+      email,
+      name: accountRequestName.value.trim(),
+      message: accountRequestMessage.value.trim()
+    });
+    accountRequestStatus.textContent = 'Anfrage gesendet — du bekommst Bescheid, sobald sie freigeschaltet ist.';
+    accountRequestSubmitBtn.disabled = true;
+  } catch (err) {
+    showRequestError(err.message || 'Anfrage konnte nicht gesendet werden.');
+  }
+});
+
+document.getElementById('account-btn-signout').addEventListener('click', () => openSignoutDialog());
+
+// ---------- FeldFolio+ Konto: Seite, Menü, Sicherheit ----------
+let accountRecoveryMode = false;
+let accountTab = 'profil';
+const accountMenu = document.getElementById('account-menu');
+
+function kontoInitialen() {
+  const name = (kontoProfil.name || '').trim();
+  if (name) {
+    const parts = name.split(/\s+/).filter(Boolean);
+    return ((parts[0] || '')[0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+  }
+  const email = accountSession ? accountSession.user.email : '';
+  return (email[0] || '?').toUpperCase();
+}
+// Button während einer Server-Anfrage sperren (kein Doppel-Tippen) + Text.
+function setButtonBusy(btn, busy, label) {
+  btn.disabled = busy;
+  btn.classList.toggle('is-busy', busy);
+  if (label) btn.textContent = label;
+}
+function setAccountStatus(id, text, tone = '') {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text;
+  el.classList.toggle('modal-error', tone === 'error');
+  el.classList.toggle('is-ok', tone === 'ok');
+}
+
+// ---- Passwort anzeigen, Feststelltaste, Stärke ----
+document.querySelectorAll('[data-pw-toggle]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const input = document.getElementById(btn.dataset.pwToggle);
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    btn.querySelector('.icon').textContent = show ? 'visibility_off' : 'visibility';
+    btn.setAttribute('aria-label', show ? 'Passwort verbergen' : 'Passwort anzeigen');
+    btn.title = btn.getAttribute('aria-label');
+  });
+});
+function capsWatch(e) {
+  if (typeof e.getModifierState !== 'function') return;
+  document.getElementById('account-caps').hidden = !e.getModifierState('CapsLock');
+}
+accountPasswordInput.addEventListener('keydown', capsWatch);
+accountPasswordInput.addEventListener('keyup', capsWatch);
+accountPasswordInput.addEventListener('blur', () => { document.getElementById('account-caps').hidden = true; });
+function passwordScore(pw) {
+  let s = 0;
+  if (pw.length >= 8) s++;
+  if (pw.length >= 12) s++;
+  if (/[a-z]/.test(pw) && /[A-Z]/.test(pw)) s++;
+  if (/\d/.test(pw)) s++;
+  if (/[^A-Za-z0-9]/.test(pw)) s++;
+  return Math.min(4, s);
+}
+function updatePasswordStrength() {
+  const box = document.getElementById('account-strength');
+  if (!box) return;
+  const pw = accountPasswordInput.value;
+  const score = pw ? passwordScore(pw) : 0;
+  const labels = ['', 'Schwach', 'Geht so', 'Gut', 'Stark'];
+  box.dataset.score = String(score);
+  box.querySelector('.account-strength-text').textContent = pw
+    ? (pw.length < 8 ? 'Mindestens 8 Zeichen' : labels[score])
+    : 'Mindestens 8 Zeichen, gerne mit Zahlen und Sonderzeichen';
+}
+accountPasswordInput.addEventListener('input', updatePasswordStrength);
+
+// ---- Passwort vergessen ----
+document.getElementById('account-forgot').addEventListener('click', () => {
+  accountModeSwitch.hidden = true;
+  accountAuthForm.hidden = true;
+  document.getElementById('account-forgot-block').hidden = false;
+  const input = document.getElementById('account-forgot-email');
+  input.value = accountEmailInput.value.trim();
+  setAccountStatus('account-forgot-status', '');
+  input.focus();
+});
+document.getElementById('account-forgot-back').addEventListener('click', () => setAuthMode('signin'));
+document.getElementById('account-forgot-send').addEventListener('click', async () => {
+  const btn = document.getElementById('account-forgot-send');
+  const email = document.getElementById('account-forgot-email').value.trim();
+  if (!email.includes('@')) { setAccountStatus('account-forgot-status', 'Bitte eine gültige E-Mail-Adresse eingeben.', 'error'); return; }
+  setButtonBusy(btn, true, 'Sende …');
+  try {
+    await requestPasswordReset(email);
+    // Bewusst neutral — verrät nicht, ob es zu der Adresse ein Konto gibt.
+    setAccountStatus('account-forgot-status', 'Falls es zu dieser Adresse ein Konto gibt, ist der Link unterwegs. Bitte auch im Spam-Ordner nachsehen.', 'ok');
+  } catch (err) {
+    setAccountStatus('account-forgot-status', authErrorMessage(err, 'Link konnte nicht gesendet werden.'), 'error');
+  } finally {
+    setButtonBusy(btn, false, 'Link senden');
+  }
+});
+// Link aus der Mail geöffnet: Supabase meldet PASSWORD_RECOVERY.
+function startPasswordRecovery() {
+  accountRecoveryMode = true;
+  ['account-recovery-password', 'account-recovery-password2'].forEach(id => { document.getElementById(id).value = ''; });
+  setAccountStatus('account-recovery-status', '');
+  openAccountModal();
+}
+onPasswordRecovery(startPasswordRecovery);
+if (import.meta.env.DEV) {
+  window.__ffTestKonto = {
+    startRecovery: () => startPasswordRecovery(),
+    profil: () => ({ ...kontoProfil }),
+    addBackup: (reason) => addBackup(currentUserId(), reason, structuredClone(offlineRec.full))
+  };
+}
+document.getElementById('account-recovery-save').addEventListener('click', async () => {
+  const btn = document.getElementById('account-recovery-save');
+  const pw = document.getElementById('account-recovery-password').value;
+  const pw2 = document.getElementById('account-recovery-password2').value;
+  if (pw.length < 8) { setAccountStatus('account-recovery-status', 'Das Passwort braucht mindestens 8 Zeichen.', 'error'); return; }
+  if (pw !== pw2) { setAccountStatus('account-recovery-status', 'Die beiden Passwörter stimmen nicht überein.', 'error'); return; }
+  setButtonBusy(btn, true, 'Speichere …');
+  try {
+    await updatePassword(pw);
+    accountRecoveryMode = false;
+    const session = await getSession().catch(() => null);
+    const wer = session ? session.user : accountSession && accountSession.user;
+    if (wer) await geraeteschutz.passwortGeaendert(wer, pw).catch(() => {});
+    if (session && (!accountSession || accountSession.user.id !== session.user.id)) {
+      accountSession = session;
+      updateAccountButton();
+      startUserState(session.user);
+      refreshAutoSyncTimer();
+    }
+    // Token aus der Adresszeile entfernen.
+    if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+    closeAccountModal();
+    showToast('Neues Passwort gespeichert.');
+  } catch (err) {
+    setAccountStatus('account-recovery-status', authErrorMessage(err, 'Passwort konnte nicht gespeichert werden.'), 'error');
+  } finally {
+    setButtonBusy(btn, false, 'Passwort speichern');
+  }
+});
+
+// ---- Reiter der Konto-Seite ----
+function setAccountTab(tab) {
+  accountTab = tab;
+  document.querySelectorAll('#account-tabs [data-account-tab]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.accountTab === tab)));
+  document.querySelectorAll('[data-account-panel]').forEach(p => { p.hidden = p.dataset.accountPanel !== tab; });
+  if (tab === 'profil') fillProfilForm();
+  if (tab === 'sync') { renderAccountSyncPanel(); renderAccountBackups(); }
+  if (tab === 'sicherheit') { resetSecurityForms(); geraeteschutz.einstellungenZeigen(); }
+  if (tab === 'admin') adminStatusLaden(); // Freischaltung kann abgelaufen sein (12 Stunden)
+}
+document.querySelectorAll('#account-tabs [data-account-tab]').forEach(b => b.addEventListener('click', () => setAccountTab(b.dataset.accountTab)));
+
+// ---- Profil ----
+const profilPad = document.getElementById('profil-signatur-pad');
+let profilSignaturDraft = null;
+function fillProfilForm() {
+  document.getElementById('profil-name').value = kontoProfil.name || '';
+  document.getElementById('profil-telefon').value = kontoProfil.telefon || '';
+  document.getElementById('profil-kontrollstelle').value = kontoProfil.kontrollstelle || '';
+  document.getElementById('profil-kuerzel').value = kontoProfil.kuerzel || '';
+  profilSignaturDraft = kontoProfil.signatur || null;
+  drawSignatureOnCanvas(profilPad, profilSignaturDraft);
+  setAccountStatus('profil-status', '');
+}
+function drawSignatureOnCanvas(canvas, dataUrl) {
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!dataUrl) return;
+  const img = new Image();
+  img.onload = () => ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  img.src = dataUrl;
+}
+(function setupProfilPad() {
+  const ctx = profilPad.getContext('2d');
+  let drawing = false, lastX = 0, lastY = 0;
+  const pos = (e) => {
+    const r = profilPad.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * (profilPad.width / r.width), y: (e.clientY - r.top) * (profilPad.height / r.height) };
+  };
+  profilPad.addEventListener('pointerdown', (e) => {
+    drawing = true;
+    const p = pos(e); lastX = p.x; lastY = p.y;
+    try { profilPad.setPointerCapture(e.pointerId); } catch {}
+  });
+  profilPad.addEventListener('pointermove', (e) => {
+    if (!drawing) return;
+    const p = pos(e);
+    ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(lastX, lastY); ctx.lineTo(p.x, p.y); ctx.stroke();
+    lastX = p.x; lastY = p.y;
+  });
+  const end = () => { if (!drawing) return; drawing = false; profilSignaturDraft = profilPad.toDataURL('image/png'); };
+  profilPad.addEventListener('pointerup', end);
+  profilPad.addEventListener('pointercancel', end);
+})();
+document.getElementById('profil-signatur-clear').addEventListener('click', () => {
+  profilSignaturDraft = null;
+  drawSignatureOnCanvas(profilPad, null);
+});
+document.getElementById('profil-save').addEventListener('click', async () => {
+  kontoProfil = normalizeKontoProfil({
+    ...kontoProfil, // Übersicht-Layout und Notiz bleiben erhalten
+    name: document.getElementById('profil-name').value,
+    telefon: document.getElementById('profil-telefon').value,
+    kontrollstelle: document.getElementById('profil-kontrollstelle').value,
+    kuerzel: document.getElementById('profil-kuerzel').value,
+    signatur: profilSignaturDraft
+  });
+  renderKontoProfilViews();
+  renderAccountModal();
+  try { await persistLocalState(); } catch {}
+  setAccountStatus('profil-status', 'Gespeichert' + (navigator.onLine ? ' — wird mit der Cloud abgeglichen.' : ' — auf dem Gerät, Abgleich folgt mit Internet.'), 'ok');
+  if (navigator.onLine) syncWithCloud();
+});
+// Alles, was Profil-Daten anzeigt (Kopfzeile, Menü).
+function renderKontoProfilViews() {
+  renderAccountMenu();
+}
+
+// ---- Sicherheit: Passwort ändern, überall abmelden, Konto löschen ----
+function resetSecurityForms() {
+  ['pw-current', 'pw-new', 'pw-new2', 'delete-password', 'delete-confirm'].forEach(id => { document.getElementById(id).value = ''; });
+  setAccountStatus('pw-status', '');
+  setAccountStatus('signout-everywhere-status', '');
+  setAccountStatus('delete-status', '');
+  document.getElementById('account-delete-block').hidden = true;
+  document.getElementById('account-delete-open').hidden = false;
+  document.getElementById('account-delete-confirm').disabled = true;
+}
+document.getElementById('pw-change').addEventListener('click', async () => {
+  const btn = document.getElementById('pw-change');
+  const current = document.getElementById('pw-current').value;
+  const pw = document.getElementById('pw-new').value;
+  const pw2 = document.getElementById('pw-new2').value;
+  if (!current) { setAccountStatus('pw-status', 'Bitte das aktuelle Passwort eingeben.', 'error'); return; }
+  if (pw.length < 8) { setAccountStatus('pw-status', 'Das neue Passwort braucht mindestens 8 Zeichen.', 'error'); return; }
+  if (pw !== pw2) { setAccountStatus('pw-status', 'Die beiden neuen Passwörter stimmen nicht überein.', 'error'); return; }
+  setButtonBusy(btn, true, 'Ändere …');
+  try {
+    await verifyPassword(accountSession.user.email, current);
+  } catch (err) {
+    setAccountStatus('pw-status', /invalid login/i.test(String(err && err.message)) ? 'Das aktuelle Passwort stimmt nicht.' : authErrorMessage(err), 'error');
+    setButtonBusy(btn, false, 'Passwort ändern');
+    return;
+  }
+  try {
+    await updatePassword(pw);
+    await geraeteschutz.passwortGeaendert(accountSession.user, pw).catch(() => {});
+    resetSecurityForms();
+    setAccountStatus('pw-status', 'Passwort geändert.', 'ok');
+  } catch (err) {
+    setAccountStatus('pw-status', authErrorMessage(err, 'Passwort konnte nicht geändert werden.'), 'error');
+  } finally {
+    setButtonBusy(btn, false, 'Passwort ändern');
+  }
+});
+document.getElementById('account-signout-everywhere').addEventListener('click', async () => {
+  if (!confirm('Auf allen Geräten abmelden — auch auf diesem? Deine Daten auf diesem Gerät bleiben gespeichert.')) return;
+  const btn = document.getElementById('account-signout-everywhere');
+  btn.disabled = true;
+  try {
+    await signOutEverywhere();
+    await performSignOut({ wipe: false, serverDone: true });
+    showToast('Auf allen Geräten abgemeldet.');
+  } catch (err) {
+    setAccountStatus('signout-everywhere-status', authErrorMessage(err, 'Abmelden fehlgeschlagen.'), 'error');
+  } finally {
+    btn.disabled = false;
+  }
+});
+document.getElementById('account-delete-open').addEventListener('click', () => {
+  document.getElementById('account-delete-block').hidden = false;
+  document.getElementById('account-delete-open').hidden = true;
+  document.getElementById('delete-password').focus();
+});
+document.getElementById('account-delete-cancel').addEventListener('click', resetSecurityForms);
+document.getElementById('delete-confirm').addEventListener('input', (e) => {
+  document.getElementById('account-delete-confirm').disabled = e.target.value.trim().toUpperCase() !== 'LÖSCHEN';
+});
+document.getElementById('account-delete-confirm').addEventListener('click', async () => {
+  const btn = document.getElementById('account-delete-confirm');
+  const pw = document.getElementById('delete-password').value;
+  if (!pw) { setAccountStatus('delete-status', 'Bitte zur Bestätigung dein Passwort eingeben.', 'error'); return; }
+  setButtonBusy(btn, true, 'Lösche …');
+  try {
+    await verifyPassword(accountSession.user.email, pw);
+  } catch (err) {
+    setAccountStatus('delete-status', /invalid login/i.test(String(err && err.message)) ? 'Das Passwort stimmt nicht.' : authErrorMessage(err), 'error');
+    setButtonBusy(btn, false, 'Endgültig löschen');
+    return;
+  }
+  try {
+    await deleteMyAccount();
+    await performSignOut({ wipe: true, serverDone: true });
+    showToast('Dein Konto wurde gelöscht.');
+  } catch (err) {
+    setAccountStatus('delete-status', authErrorMessage(err, 'Konto konnte nicht gelöscht werden.'), 'error');
+    setButtonBusy(btn, false, 'Endgültig löschen');
+  }
+});
+
+// ---- Sync & Gerät ----
+// Zustand des Abgleichs in Worten (Konto-Seite und Konto-Menü).
+function accountSyncInfo() {
+  if (!accountSession) return { tone: 'off', title: 'Nicht angemeldet', text: '' };
+  let uploads = [];
+  try { uploads = myUploads(); } catch {}
+  const offline = !navigator.onLine || syncState === 'offline' || !!accountSession.offline;
+  const time = lastSyncedAt ? lastSyncedAt.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '';
+  if (syncState === 'syncing') return { tone: 'busy', title: 'Synchronisiere …', text: '' };
+  if (offline) return { tone: 'warn', title: 'Offline', text: 'Alles ist auf diesem Gerät gespeichert, der Abgleich folgt mit Internet.' };
+  if (syncState === 'error') return { tone: 'warn', title: 'Abgleich fehlgeschlagen', text: syncErrorMessage || '' };
+  if (hasPendingLocalChanges() || uploads.length) {
+    return { tone: 'warn', title: 'Nicht synchron', text: uploads.length ? `${uploads.length} ${uploads.length === 1 ? 'Datei wartet' : 'Dateien warten'} auf den Upload.` : 'Änderungen werden gleich hochgeladen.' };
+  }
+  if (!autoSyncEnabled) return { tone: 'warn', title: 'Auto-Sync aus', text: 'Änderungen nur per „Jetzt synchronisieren".' };
+  return { tone: 'ok', title: 'Gespeichert', text: time ? `Zuletzt abgeglichen um ${time} Uhr.` : 'Mit der Cloud abgeglichen.' };
+}
+function renderAccountSyncPanel() {
+  const info = accountSyncInfo();
+  const dot = document.getElementById('account-sync-dot');
+  if (!dot) return;
+  dot.dataset.tone = info.tone;
+  document.getElementById('account-sync-title').textContent = info.title;
+  accountSyncStatus.textContent = info.text;
+  let uploads = [];
+  try { uploads = myUploads(); } catch {}
+  document.getElementById('account-uploads-line').textContent = uploads.length
+    ? `Upload-Warteschlange: ${uploads.length} ${uploads.length === 1 ? 'Datei' : 'Dateien'} (Fotos/Dokumente) noch nicht hochgeladen.`
+    : '';
+  document.getElementById('account-sync-now').disabled = syncState === 'syncing' || !accountSession || !!accountSession.offline;
+}
+async function syncNowFromUi() {
+  if (!accountSession) return;
+  try { retryFailedUploads(); } catch {}
+  const result = await syncWithCloud();
+  renderAccountSyncPanel();
+  renderAccountMenu();
+  if (result === 'synced') showToast('Synchronisiert.');
+  else if (result === 'offline') showToast('Offline — Abgleich folgt, sobald Internet da ist.');
+  else if (result === 'error') showToast('Abgleich fehlgeschlagen: ' + (syncErrorMessage || 'unbekannter Fehler'));
+}
+document.getElementById('account-sync-now').addEventListener('click', syncNowFromUi);
+
+async function renderAccountBackups() {
+  const list = document.getElementById('account-backups-list');
+  const userId = currentUserId();
+  let backups = [];
+  try { backups = userId ? await listBackups(userId) : []; } catch {}
+  if (!backups.length) { list.innerHTML = '<p class="empty-hint">Keine Sicherungen vorhanden.</p>'; return; }
+  list.innerHTML = backups.slice().reverse().map(b => {
+    const d = new Date(b.createdAt);
+    return `<div class="account-backup-row">
+      <span class="material-symbols-rounded icon" aria-hidden="true">history</span>
+      <span class="account-backup-text"><strong>${escapeHtml(b.reason || 'Sicherung')}</strong><small>${d.toLocaleDateString('de-DE')} ${d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}</small></span>
+      <button type="button" class="betrieb-btn" data-restore-backup="${b.id}">Wiederherstellen</button>
+    </div>`;
+  }).join('');
+  list.querySelectorAll('[data-restore-backup]').forEach(btn => btn.addEventListener('click', () => {
+    const backup = backups.find(x => String(x.id) === btn.dataset.restoreBackup);
+    if (backup) restoreBackup(backup);
+  }));
+}
+// Sicherung zurückholen: aktueller Stand wird vorher selbst gesichert, die
+// Sicherung wird dann als lokale Änderung behandelt und hochgeladen.
+async function restoreBackup(backup) {
+  if (!offlineRec) return;
+  const when = new Date(backup.createdAt).toLocaleString('de-DE');
+  if (!confirm(`Sicherung vom ${when} wiederherstellen? Der aktuelle Stand wird vorher ebenfalls gesichert.`)) return;
+  const userId = currentUserId();
+  try { await persistLocalState(); } catch {}
+  try { await addBackup(userId, 'Stand vor dem Wiederherstellen', structuredClone(offlineRec.full)); } catch {}
+  const full = migrateFullStateShape(structuredClone(backup.full));
+  full.terminkalenderEvents = full.terminkalenderEvents || [];
+  full.manualBetriebe = full.manualBetriebe || [];
+  full.profil = full.profil || {};
+  offlineRec.full = full;
+  restoreFromOfflineRecord();
+  offlineRec.gen++;
+  Object.keys(full.workspaces).forEach(k => { offlineRec.dirtyGen[k] = offlineRec.gen; });
+  offlineRec.sharedDirtyGen = offlineRec.gen;
+  try { await writeLocalState(userId, offlineRec); } catch {}
+  updateSyncIndicator();
+  renderAccountBackups();
+  showToast('Sicherung wiederhergestellt.');
+  if (navigator.onLine) syncWithCloud();
+}
+
+// ---- Konto-Menü (Kopfzeile) ----
+function renderAccountMenu() {
+  if (!accountMenu) return;
+  if (!accountSession) return;
+  const email = accountSession.user.email;
+  document.getElementById('account-menu-avatar').textContent = kontoInitialen();
+  document.getElementById('account-menu-name').textContent = kontoProfil.name || email;
+  document.getElementById('account-menu-email').textContent = kontoProfil.name ? email : 'FeldFolio+ Konto';
+  const info = accountSyncInfo();
+  const sync = document.getElementById('account-menu-sync');
+  sync.dataset.tone = info.tone;
+  document.getElementById('account-menu-sync-text').textContent = info.title + (info.tone === 'ok' && lastSyncedAt ? ' · ' + lastSyncedAt.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '');
+  document.getElementById('account-menu-admin').hidden = !kontoAdminListe;
+  document.getElementById('account-menu-sync-now').disabled = syncState === 'syncing' || !!accountSession.offline;
+}
+function openAccountMenu() {
+  renderAccountMenu();
+  document.getElementById('account-menu-sperren').hidden = !geraeteschutz.istAktiv();
+  accountMenu.hidden = false;
+  accountBtn.setAttribute('aria-expanded', 'true');
+  if (kontoIstAdmin) refreshAdminCount();
+  (accountMenu.querySelector('.account-menu-item:not([disabled])') || accountMenu).focus?.();
+}
+function closeAccountMenu() {
+  if (!accountMenu || accountMenu.hidden) return;
+  accountMenu.hidden = true;
+  accountBtn.setAttribute('aria-expanded', 'false');
+}
+document.addEventListener('click', (e) => {
+  if (!accountMenu.hidden && !e.target.closest('#account-menu') && !e.target.closest('#btn-account')) closeAccountMenu();
+});
+document.addEventListener('keydown', (e) => {
+  if (accountMenu.hidden) return;
+  if (e.key === 'Escape') { closeAccountMenu(); accountBtn.focus(); return; }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    const items = [...accountMenu.querySelectorAll('.account-menu-item:not([hidden]):not([disabled])')];
+    const i = items.indexOf(document.activeElement);
+    e.preventDefault();
+    items[(i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
+  }
+});
+document.getElementById('account-menu-sync-now').addEventListener('click', () => { closeAccountMenu(); syncNowFromUi(); });
+document.getElementById('account-menu-settings').addEventListener('click', () => openAccountModal('profil'));
+document.getElementById('account-menu-admin').addEventListener('click', () => openAccountModal('admin'));
+document.getElementById('account-menu-signout').addEventListener('click', () => { closeAccountMenu(); openSignoutDialog(); });
+document.getElementById('account-menu-sperren').addEventListener('click', () => { closeAccountMenu(); geraeteschutz.sperren(); });
+document.getElementById('account-menu-fehler').addEventListener('click', () => { closeAccountMenu(); fehlerbericht.oeffnen(); });
+async function refreshAdminCount() {
+  let n = 0;
+  try { n = (await listPendingAccessRequests()).length; } catch {}
+  try { n += adminCodeGruppen(await ladeNutzungscodes()).length; } catch {}
+  try { n += await fehlerbericht.offeneAnzahl(); } catch {}
+  ['account-menu-admin-count', 'account-admin-count'].forEach(id => {
+    const el = document.getElementById(id);
+    el.textContent = n;
+    el.hidden = !n;
+  });
+}
+
+// ---- Abmelden (mit Wahl: Daten auf dem Gerät behalten oder löschen) ----
+const signoutOverlay = document.getElementById('signout-overlay');
+function openSignoutDialog() {
+  if (!accountSession) return;
+  closeAccountModal();
+  document.getElementById('signout-sub').textContent = accountSession.user.email;
+  document.getElementById('signout-wipe').checked = true;
+  updateSignoutWarning();
+  signoutOverlay.hidden = false;
+}
+function updateSignoutWarning() {
+  const wipe = document.getElementById('signout-wipe').checked;
+  let uploads = [];
+  try { uploads = myUploads(); } catch {}
+  const pending = hasPendingLocalChanges();
+  const warn = document.getElementById('signout-warning');
+  const parts = [];
+  if (pending) parts.push('Änderungen, die noch nicht in der Cloud sind');
+  if (uploads.length) parts.push(`${uploads.length} noch nicht hochgeladene ${uploads.length === 1 ? 'Datei' : 'Dateien'}`);
+  warn.hidden = !(wipe && parts.length);
+  warn.textContent = parts.length ? `Achtung: ${parts.join(' und ')} — beim Löschen der Gerätedaten gehen sie verloren${navigator.onLine ? ' (es wird vorher noch versucht, abzugleichen)' : ''}.` : '';
+}
+document.getElementById('signout-wipe').addEventListener('change', updateSignoutWarning);
+document.getElementById('signout-cancel').addEventListener('click', () => { signoutOverlay.hidden = true; });
+signoutOverlay.addEventListener('click', (e) => { if (e.target === signoutOverlay) signoutOverlay.hidden = true; });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !signoutOverlay.hidden) signoutOverlay.hidden = true; });
+document.getElementById('signout-confirm').addEventListener('click', async () => {
+  const btn = document.getElementById('signout-confirm');
+  btn.disabled = true;
+  try {
+    await performSignOut({ wipe: document.getElementById('signout-wipe').checked });
+  } finally {
+    btn.disabled = false;
+    signoutOverlay.hidden = true;
+  }
+});
+async function performSignOut({ wipe = true, serverDone = false } = {}) {
+  const userId = currentUserId();
+  // Noch nicht hochgeladene Änderungen vorher möglichst retten.
+  if (!serverDone && hasPendingLocalChanges() && navigator.onLine) { try { await syncWithCloud(); } catch {} }
+  if (!serverDone) { try { await signOut(); } catch {} }
+  if (userId) {
+    // Nie automatisch wieder als dieser Nutzer starten (auch nicht offline).
+    try { await writeLastUser(null); } catch {}
+    if (wipe) {
+      // Stand, Sicherungen, Uploads, Fotomappe und Geräteschutz dieses Kontos
+      try { await alleDatenLoeschen(userId); } catch {}
+      try { await caches.delete(DOC_CACHE); } catch {}
+    }
+    try { for (let i = uploadQueue.length - 1; i >= 0; i--) if (uploadQueue[i].userId === userId) uploadQueue.splice(i, 1); } catch {}
+  }
+  geraeteschutz.vergessen(); // Schlüssel aus dem Arbeitsspeicher
+  kontoIstAdmin = false;
+  kontoAdminListe = false;
+  offlineRec = null;
+  persistCache = { key: null, ws: null, shared: null };
+  syncState = 'idle';
+  accountSession = null;
+  accountRecoveryMode = false;
+  // Cloud-Daten des Kontos nicht weiter anzeigen.
+  kontoProfil = {};
+  terminkalenderEvents = [];
+  manualBetriebe = [];
+  closeKontrollmappe();
+  // Gewählten Betrieb und seinen Arbeitsstand (Flächen, Pläne, …) ebenfalls
+  // nicht weiter zeigen — beim nächsten Anmelden kommt er aus dem Konto zurück.
+  try { clearWorkspace(); } catch {}
+  currentWorkspaceKey = NO_BETRIEB_KEY;
+  setActiveZuordnung(null);
+  try { updateBetriebPin(); } catch {}
+  updateAccountButton();
+  closeAccountModal();
+  refreshAutoSyncTimer();
+  renderTerminkalenderSummary();
+  if (document.body.dataset.view === 'kontrolle') openKontrolle();
+}
+
+// Kleine Rückmeldung unten (z. B. "Synchronisiert.").
+function showToast(text) {
+  let el = document.getElementById('ff-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'ff-toast';
+    el.className = 'ff-toast';
+    el.setAttribute('role', 'status');
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+  el.classList.add('is-visible');
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove('is-visible'), 2600);
+}
+
+// ---------- FeldFolio Plus: Automatische Cloud-Synchronisation ----------
+// Speichert den aktuellen Arbeitsstand periodisch im Hintergrund über
+// saveFullState() (siehe weiter unten), statt dass man nach jeder Änderung
+// selbst an "Cloud speichern" denken muss — über den Sync-Schalter in der
+// Kopfzeile ein-/ausschaltbar, die Einstellung bleibt per localStorage über
+// ein Neuladen hinweg erhalten. Läuft nur, wenn sowohl der Schalter an ist
+// als auch eine Anmeldung besteht (refreshAutoSyncTimer() wird darum bei
+// jeder An-/Abmeldung erneut aufgerufen, siehe oben).
+const AUTO_SYNC_STORAGE_KEY = 'feldfolio-autosync';
+const AUTO_SYNC_INTERVAL_MS = 30000;
+let autoSyncEnabled = true;
+try {
+  const savedAutoSync = localStorage.getItem(AUTO_SYNC_STORAGE_KEY);
+  if (savedAutoSync !== null) autoSyncEnabled = savedAutoSync === 'true';
+} catch {}
+let autoSyncTimer = null;
+const btnSync = document.getElementById('btn-sync');
+
+function updateSyncButton() {
+  btnSync.classList.toggle('active', autoSyncEnabled);
+  btnSync.setAttribute('aria-checked', String(autoSyncEnabled));
+  updateSyncIndicator();
+}
+
+// Gespeichert wird immer lokal (siehe persistLocalState()), der Schalter
+// steuert nur den automatischen Abgleich mit der Cloud.
+async function runAutoSync() {
+  if (!autoSyncEnabled || !isSupabaseConfigured || !accountSession) return;
+  await syncWithCloud();
+}
+
+function refreshAutoSyncTimer() {
+  if (autoSyncTimer) { clearInterval(autoSyncTimer); autoSyncTimer = null; }
+  updateSyncButton();
+  if (autoSyncEnabled && isSupabaseConfigured && accountSession) {
+    autoSyncTimer = setInterval(runAutoSync, AUTO_SYNC_INTERVAL_MS);
+  }
+  syncKanalAktualisieren();
+}
+
+// ---- Sofort-Abgleich ----
+// Der 30-s-Takt bleibt als Rückfall. Zusätzlich: gleich nach einem Upload bzw.
+// einer lokalen Änderung abgleichen, beim Zurückkehren in die App abholen und
+// auf das "es gibt Neues" der anderen Geräte reagieren (Realtime-Kanal).
+let syncKanal = null;
+let syncKanalUser = null;
+let syncBaldTimer = null;
+const syncAutoAktiv = () => autoSyncEnabled && !!accountSession && !accountSession.offline &&
+  (isSupabaseConfigured || (import.meta.env.DEV && !!window.__ffTestCloud));
+function syncBald(ms = 800) {
+  if (!syncAutoAktiv()) return;
+  clearTimeout(syncBaldTimer);
+  syncBaldTimer = setTimeout(() => { syncBaldTimer = null; syncWithCloud(); }, ms);
+}
+function syncKanalAktualisieren() {
+  const uid = autoSyncEnabled && accountSession && !accountSession.offline ? currentUserId() : null;
+  if (uid === syncKanalUser) return;
+  if (syncKanal) { syncKanal.schliessen(); syncKanal = null; }
+  syncKanalUser = uid;
+  if (uid) syncKanal = oeffneSyncKanal(uid, () => syncBald(300));
+}
+let syncZuletztAbgeholt = 0;
+function syncBeimZurueckkehren() {
+  if (document.hidden || Date.now() - syncZuletztAbgeholt < 5000) return;
+  syncZuletztAbgeholt = Date.now();
+  syncBald(150);
+}
+window.addEventListener('focus', syncBeimZurueckkehren);
+// Dev-only Testhaken: "es gibt Neues" von einem anderen Gerät nachahmen, gesendete Anstöße zählen
+if (import.meta.env.DEV) window.__ffTestSync = { gesendet: 0, ping: () => syncBald(300) };
+
+btnSync.addEventListener('click', () => {
+  autoSyncEnabled = !autoSyncEnabled;
+  try { localStorage.setItem(AUTO_SYNC_STORAGE_KEY, String(autoSyncEnabled)); } catch {}
+  refreshAutoSyncTimer();
+});
+
+// Sofort synchronisieren, sobald der Tab in den Hintergrund wechselt (App-
+// Wechsel, Bildschirm sperren, …) statt bis zum nächsten Intervall-Tick zu
+// warten — das ist der Moment, in dem ungespeicherte Änderungen am ehesten
+// verloren gehen könnten, z.B. weil der Tab danach ganz geschlossen wird.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) { syncBeimZurueckkehren(); return; }
+  persistLocalState();
+  runAutoSync();
+});
+
+updateSyncButton();
+
+// ---------- FeldFolio Plus: Pro-Betrieb getrennte Arbeitsstände ----------
+// Ebenen/Flächenzeichner/Obstbaumkataster/Bienenflugkarte gehören zu genau
+// einem "Arbeitsstand" (Workspace) — identifiziert über den Betriebsnamen aus
+// der Betrieb-Zuordnung (siehe weiter unten), oder NO_BETRIEB_KEY, solange
+// kein Betrieb ausgewählt ist. Terminkalender-Termine und die Betriebsliste
+// selbst (manualBetriebe) sind bewusst NICHT Teil eines Workspace, sondern
+// gelten immer betriebsübergreifend ("shared"). In der Cloud liegt weiterhin
+// nur EIN JSON-Blob pro Nutzer (keine neue Tabelle/Migration nötig) — die
+// Blob-Form ist jetzt { workspaces: { [betrieb]: {...} }, terminkalenderEvents,
+// manualBetriebe } statt der früheren flachen Form.
+const NO_BETRIEB_KEY = '__kein_betrieb__';
+let currentWorkspaceKey = NO_BETRIEB_KEY;
+
+// Ältere gespeicherte Stände kennen noch die flache Form (layers/obstbaumTrees/
+// bienenflugPoints direkt auf oberster Ebene, kein workspaces-Feld) — hier
+// einmalig in den "kein Betrieb"-Workspace übernehmen, statt sie beim ersten
+// Laden nach diesem Umbau kommentarlos verschwinden zu lassen.
+function migrateFullStateShape(full) {
+  if (!full.workspaces || typeof full.workspaces !== 'object') {
+    full.workspaces = {};
+    if (full.layers || full.obstbaumTrees || full.bienenflugPoints) {
+      full.workspaces[NO_BETRIEB_KEY] = {
+        layers: full.layers || [],
+        obstbaumTrees: full.obstbaumTrees || [],
+        bienenflugPoints: full.bienenflugPoints || []
+      };
+    }
+  }
+  return full;
+}
+
+// Nur der Teil des Arbeitsstands, der zu einem einzelnen Betrieb gehört —
+// geteilte Ebenen als GeoJSON (identisch zur Upload-Form), Bäume/Bienenstöcke
+// als einfache Punktlisten. Notiz/Fotos an Flächen stecken bereits in
+// l.geojson (siehe setParcelNotes/addParcelPhoto — schreiben direkt in die
+// geteilte properties-Objektreferenz), reisen hier also automatisch mit.
+function serializeWorkspace() {
+  return {
+    layers: Object.values(layers).map(l => ({ name: l.name, geojson: l.geojson })),
+    obstbaumTrees: obstbaumTrees.map(t => ({ art: t.art, lat: t.latlng.lat, lng: t.latlng.lng, notes: t.notes, photos: t.photos })),
+    bienenflugPoints: bienenflugPoints.map(p => ({ name: p.name, lat: p.latlng.lat, lng: p.latlng.lng })),
+    hofplanShapes: hofplanShapes.map(s => ({ kategorie: s.kategorie, name: s.name, color: s.color, stallplanId: s.stallplanId || null, geometry: s.leafletLayer.toGeoJSON().geometry })),
+    stallplaene: stallplaene.map(p => structuredClone(p)),
+    vergleichsjahre: compareYears.map(y => ({ jahr: y.jahr, fileName: y.fileName, layerName: y.layerName, fc: y.fc })),
+    // als Liste (leer = kein Tierbestand), damit ein leerer Workspace leer bleibt
+    tierbestand: tierbestandData ? [structuredClone(tierbestandData)] : [],
+    schlagliste: schlaglisteData ? [structuredClone(schlaglisteData)] : []
+  };
+}
+
+// Rekonstruiert einen Workspace über exakt dieselben Funktionen, die auch
+// beim normalen Datei-Upload/Kartenklick laufen (addLayer/addTree/addBeehive)
+// — kein separater Rekonstruktions-Code-Pfad nötig. Ebenen zuerst, damit
+// addTree() die Flächen-Zuordnung sofort korrekt berechnen kann.
+function restoreWorkspace(data) {
+  if (!data) return;
+  // inzwischen bekannte Nutzungscodes (eigene oder freigegebene) gleich übersetzen
+  fnnCodesAnwenden([...(data.layers || []), ...(data.vergleichsjahre || []).map(y => ({ geojson: y.fc }))].flatMap(l => (l.geojson && l.geojson.features) || []));
+  (data.layers || []).forEach(l => addLayer(l.name, l.geojson));
+  if ((data.tierbestand || []).length) {
+    tierbestandData = structuredClone(data.tierbestand[0]);
+    refreshTierbestandIfOpen();
+  }
+  if ((data.schlagliste || []).length) {
+    schlaglisteData = structuredClone(data.schlagliste[0]);
+    renderSchlaglisteBox();
+    refreshCompareStatusColumn();
+  }
+  if ((data.vergleichsjahre || []).length) {
+    compareYears = data.vergleichsjahre.map((y, i) => ({ id: 'cy-r' + i + '-' + Date.now().toString(36), jahr: y.jahr || '', fileName: y.fileName || 'Datei', layerName: y.layerName || '', fc: y.fc }));
+    renderCompareYears();
+  }
+  if ((data.obstbaumTrees || []).length) {
+    initObstbaumMap();
+    data.obstbaumTrees.forEach(t => {
+      const entry = addTree(t.art, L.latLng(t.lat, t.lng));
+      entry.notes = t.notes || '';
+      entry.photos = Array.isArray(t.photos) ? t.photos.map(normalizePhotoEntry) : [];
+    });
+    renderObstbaumTable();
+  }
+  if ((data.bienenflugPoints || []).length) {
+    initBienenflugMap();
+    data.bienenflugPoints.forEach(p => {
+      const entry = addBeehive(L.latLng(p.lat, p.lng));
+      if (p.name) {
+        entry.name = p.name;
+        entry.marker.setTooltipContent(beehiveLabel(entry));
+        renderBienenflugList();
+      }
+    });
+  }
+  if ((data.hofplanShapes || []).length) {
+    initHofplanMap();
+    data.hofplanShapes.forEach(s => {
+      const layer = L.geoJSON({ type: 'Feature', geometry: s.geometry, properties: {} }).getLayers()[0];
+      addHofplanShapeFromLayer(layer, s.kategorie || '', s.name || '', undefined, s.color || null, s.stallplanId || null);
+    });
+    renderHofplanList();
+  }
+  if ((data.stallplaene || []).length) {
+    stallplaene = data.stallplaene.map(p => {
+      const plan = structuredClone(p);
+      plan.compartments = (plan.compartments || []).map(c => normalizeCompartment(c, plan.tierart));
+      plan.equipment = (plan.equipment || []).map(normalizeEquipment);
+      return plan;
+    });
+    resetStallplanerInteraction();
+    activeStallplanId = stallplaene[0].id;
+    stallplanerStep = stallplaene[0].outline ? 'abteile' : 'umriss';
+    stallplanerUndoStack = [];
+    stallplanerRedoStack = [];
+    resetStallplanerViewBox();
+    renderStallplanerPlanPicker();
+    renderStallplanerSidebar();
+    renderStallplan();
+  }
+}
+
+// Entfernt den kompletten aktuell geladenen Workspace-Inhalt von der Karte —
+// über dieselben Einzel-Entfern-Funktionen wie ein manuelles Löschen, damit
+// keine zweite Aufräum-Logik gepflegt werden muss. Flächenzeichner-Buchführung
+// (zeichnerLayerId/zeichnerParcels/…) kennt removeLayer() nicht, da gezeichnete
+// Flächen nur eine weitere ganz normale Ebene sind — daher hier separat
+// zurückgesetzt.
+function clearAllLayers() {
+  Object.keys(layers).forEach(id => removeLayer(id));
+  zeichnerLayerId = null;
+  zeichnerParcels.length = 0;
+  zeichnerColorIdx = 0;
+  shapeEditingEntryId = null;
+  renderParcelList();
+}
+function clearAllCompareYears() {
+  restoreCompareHiddenLayer();
+  clearCompareResult();
+  compareYears = [];
+  compareViewMode = 'diff';
+  renderCompareYears();
+}
+function clearAllTrees() {
+  while (obstbaumTrees.length) removeTree(obstbaumTrees[0].id);
+}
+function clearAllBeehives() {
+  while (bienenflugPoints.length) removeBeehive(bienenflugPoints[0].id);
+}
+function clearAllHofplanShapes() {
+  while (hofplanShapes.length) removeHofplanShapeEverywhere(hofplanShapes[0]);
+}
+function clearAllStallplaene() {
+  resetStallplanerInteraction();
+  stallplaene = [];
+  activeStallplanId = null;
+  stallplanerStep = 'umriss';
+  stallplanerUndoStack = [];
+  stallplanerRedoStack = [];
+  resetStallplanerViewBox();
+  renderStallplanerPlanPicker();
+  renderStallplanerSidebar();
+  renderStallplan();
+}
+function clearWorkspace() {
+  tierbestandData = null;
+  schlaglisteData = null;
+  closeSchlaglisteReview();
+  renderSchlaglisteBox();
+  refreshCompareStatusColumn();
+  refreshTierbestandIfOpen();
+  clearAllCompareYears();
+  clearAllLayers();
+  clearAllTrees();
+  clearAllBeehives();
+  clearAllHofplanShapes();
+  clearAllStallplaene();
+}
+
+// ---- Konto-Profil (FeldFolio+) ----
+// Name, Telefon, Kontrollstelle/Kürzel und eine gespeicherte Unterschrift —
+// Teil des geteilten Arbeitsstands (wie Termine/Betriebsliste): offline
+// verfügbar und über die Cloud auf allen Geräten. Name wird in Protokollen
+// vorbelegt, die Unterschrift lässt sich dort per Knopfdruck einsetzen.
+let kontoProfil = {};
+function normalizeKontoProfil(p) {
+  const src = p && typeof p === 'object' ? p : {};
+  const out = {};
+  ['name', 'telefon', 'kontrollstelle', 'kuerzel'].forEach(k => { if (typeof src[k] === 'string' && src[k].trim()) out[k] = src[k].trim(); });
+  if (typeof src.signatur === 'string' && src.signatur.startsWith('data:image/')) out.signatur = src.signatur;
+  // Kontrolle → Übersicht: gewählte Bausteine (dashboard.js) und der Merkzettel
+  // Plätze im Raster { id, x, y, w, h }; ältere Stände nur { id, breit } (rechnet dashboard.js um)
+  if (Array.isArray(src.dashboard)) out.dashboard = src.dashboard.filter(x => x && typeof x.id === 'string').slice(0, 30).map(x => {
+    const o = { id: x.id };
+    ['x', 'y', 'w', 'h'].forEach(k => { if (Number.isFinite(x[k])) o[k] = Math.round(x[k]); });
+    if (x.breit) o.breit = true;
+    return o;
+  });
+  if (typeof src.notiz === 'string' && src.notiz.trim()) out.notiz = src.notiz.slice(0, 5000);
+  return out;
+}
+
+// terminkalenderEvents/manualBetriebe gelten immer betriebsübergreifend,
+// werden also unabhängig vom aktuellen Workspace wiederhergestellt.
+function restoreSharedState(full) {
+  if ((full.terminkalenderEvents || []).length) {
+    terminkalenderEvents = full.terminkalenderEvents.map(e => ({
+      ...e, date: new Date(e.date), dateEnd: e.dateEnd ? new Date(e.dateEnd) : null,
+      attachments: Array.isArray(e.attachments) ? e.attachments : [],
+      probenprotokolle: Array.isArray(e.probenprotokolle) ? e.probenprotokolle : [],
+      crossChecks: Array.isArray(e.crossChecks) ? e.crossChecks : []
+    }));
+    renderTerminkalenderSummary();
+    renderTerminkalenderGrid();
+  }
+  manualBetriebe = Array.isArray(full.manualBetriebe) ? full.manualBetriebe : [];
+  kontoProfil = normalizeKontoProfil(full.profil);
+  if (typeof renderKontoProfilViews === 'function') renderKontoProfilViews();
+  if (typeof refreshKontrolleAnsichten === 'function') refreshKontrolleAnsichten();
+}
+
+// Explizites Speichern (Notizen, Termine, Betriebsliste, …): immer zuerst
+// lokal, dann Abgleich mit der Cloud. Ohne Netz ist das kein Fehler — die
+// Änderung ist lokal sicher und wird später hochgeladen; nur echte
+// Server-Fehler werden an den Aufrufer weitergereicht.
+async function saveFullState() {
+  await persistLocalState();
+  const result = await syncWithCloud();
+  if (result === 'error') throw new Error(syncErrorMessage || 'Synchronisation fehlgeschlagen.');
+}
+
+// Wechselt den aktiven Workspace — funktioniert auch offline: der bisherige
+// Stand wird lokal gesichert, der Ziel-Betrieb aus dem lokalen Stand geladen.
+// Mit Netz wird vorher abgeglichen, damit der Ziel-Betrieb aktuell ist.
+async function switchWorkspace(oldKey, newKey) {
+  if (!offlineRec) throw new Error('Nicht angemeldet.');
+  await persistLocalState();
+  if (navigator.onLine) await syncWithCloud();
+  clearWorkspace();
+  currentWorkspaceKey = newKey;
+  restoreWorkspace(offlineRec.full.workspaces[newKey]);
+  rebaselineLocalState();
+}
+
+// Prüft den aktuell GELADENEN (In-Memory-)Workspace auf Inhalt — anders als
+// ein leeres serialisiertes Workspace-Objekt zu prüfen, da hier der gerade
+// sichtbare Stand gemeint ist, bevor er überhaupt gespeichert wurde.
+function currentWorkspaceHasContent() {
+  return !!(Object.keys(layers).length || obstbaumTrees.length || bienenflugPoints.length || hofplanShapes.length || stallplaene.length || compareYears.length || tierbestandData || schlaglisteData);
+}
+
+// Hängt die vier Bestandslisten zweier serialisierter Workspaces aneinander
+// (Ziel-Betrieb zuerst) — für "Inhalte ohne Betrieb einem Betrieb
+// zuordnen": bestehender Inhalt des Ziel-Betriebs bleibt erhalten, die
+// verschobenen Inhalte kommen dazu, statt ihn zu überschreiben.
+function mergeWorkspaces(target, moved) {
+  return {
+    layers: [...(target.layers || []), ...(moved.layers || [])],
+    obstbaumTrees: [...(target.obstbaumTrees || []), ...(moved.obstbaumTrees || [])],
+    bienenflugPoints: [...(target.bienenflugPoints || []), ...(moved.bienenflugPoints || [])],
+    hofplanShapes: [...(target.hofplanShapes || []), ...(moved.hofplanShapes || [])],
+    stallplaene: [...(target.stallplaene || []), ...(moved.stallplaene || [])],
+    vergleichsjahre: [...(target.vergleichsjahre || []), ...(moved.vergleichsjahre || [])],
+    tierbestand: (target.tierbestand || []).length ? target.tierbestand : (moved.tierbestand || []),
+    schlagliste: (target.schlagliste || []).length ? target.schlagliste : (moved.schlagliste || [])
+  };
+}
+
+// Verschiebt den aktuell geladenen "Kein Betrieb"-Workspace in einen echten
+// Betrieb, statt ihn beim nächsten Wechsel nur unverändert in seinem eigenen
+// Slot zu belassen (das macht switchWorkspace() bereits automatisch, lässt
+// die Inhalte aber dauerhaft von den echten Betrieben getrennt). Ablauf wie
+// switchWorkspace(), nur dass der NO_BETRIEB-Stand in den Ziel-Workspace
+// EINGEMISCHT statt nur zurückgeschrieben wird, und der NO_BETRIEB-Slot
+// danach leer ist.
+async function assignNoBetriebContentTo(z) {
+  if (!offlineRec) throw new Error('Nicht angemeldet.');
+  await persistLocalState();
+  if (navigator.onLine) await syncWithCloud();
+  const rec = offlineRec;
+  const movedContent = serializeWorkspace();
+  rec.full.workspaces[z.betrieb] = mergeWorkspaces(rec.full.workspaces[z.betrieb] || {}, movedContent);
+  rec.full.workspaces[NO_BETRIEB_KEY] = {};
+  rec.gen++;
+  rec.dirtyGen[z.betrieb] = rec.gen;
+  rec.dirtyGen[NO_BETRIEB_KEY] = rec.gen;
+  clearWorkspace();
+  currentWorkspaceKey = z.betrieb;
+  restoreWorkspace(rec.full.workspaces[z.betrieb]);
+  setActiveZuordnung(z);
+  rebaselineLocalState();
+  await writeLocalState(currentUserId(), rec).catch(() => {});
+  syncWithCloud();
+}
+
+// ---------- FeldFolio Plus: Offline-Betrieb (lokal speichern + nachsynchronisieren) ----------
+// Im Stall gibt es oft keinen Empfang. Deshalb gilt: jede Änderung landet
+// zuerst lokal (IndexedDB, siehe offline-store.js), die Cloud wird danach
+// abgeglichen, sobald Netz da ist. Hochgeladen werden nur die seit dem
+// letzten Abgleich lokal geänderten Betriebe (dirtyGen) bzw. Termine/
+// Betriebsliste (sharedDirtyGen). Ein Konflikt liegt nur vor, wenn genau
+// dieser Betrieb seit dem letzten Abgleich AUCH in der Cloud geändert wurde
+// (Vergleich mit "base") — zwei gleichzeitig offene Geräte, die an
+// verschiedenen Betrieben arbeiten, stören sich damit nicht.
+// (Zustand des Offline-Abgleichs steht weiter oben bei accountSession —
+// updateSyncButton() läuft schon beim Laden des Moduls.)
+
+function currentUserId() {
+  return accountSession && accountSession.user ? accountSession.user.id : null;
+}
+function emptyFullState() {
+  return { workspaces: {}, terminkalenderEvents: [], manualBetriebe: [], profil: {} };
+}
+function newOfflineRecord(user) {
+  return { full: emptyFullState(), base: null, baseUpdatedAt: null, gen: 0, dirtyGen: {}, sharedDirtyGen: 0, zuordnung: null, user };
+}
+function serializeSharedState() {
+  return {
+    terminkalenderEvents: terminkalenderEvents.map(e => ({
+      ...e, date: e.date.toISOString(), dateEnd: e.dateEnd ? e.dateEnd.toISOString() : null
+    })),
+    manualBetriebe: manualBetriebe.slice(),
+    profil: { ...kontoProfil }
+  };
+}
+// Ein leerer Workspace (alle Listen leer) zählt wie ein fehlender — sonst
+// würde schon das bloße Öffnen eines Betriebs als Änderung gelten.
+function workspaceKeyJson(ws) {
+  if (!ws || Object.values(ws).every(v => Array.isArray(v) && v.length === 0)) return 'EMPTY';
+  return JSON.stringify(ws);
+}
+function sharedKeyJson(full) {
+  return JSON.stringify({ t: (full && full.terminkalenderEvents) || [], m: (full && full.manualBetriebe) || [], p: (full && full.profil) || {} });
+}
+// Vergleich Cloud <-> lokale Basis unabhängig von der Schlüssel-Reihenfolge:
+// Supabase speichert den Stand als Postgres-jsonb, und jsonb sortiert die
+// Objekt-Schlüssel beim Speichern um. Derselbe Inhalt kommt also in anderer
+// Reihenfolge zurück — ein reiner JSON.stringify-Vergleich hielt das für
+// eine Änderung auf einem anderen Gerät und fragte bei jedem Abgleich nach.
+function canonicalJson(value) {
+  return JSON.stringify(value, (key, v) => {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return v;
+    const sorted = {};
+    Object.keys(v).sort().forEach(k => { sorted[k] = v[k]; });
+    return sorted;
+  });
+}
+function sameWorkspace(a, b) {
+  const empty = (ws) => !ws || Object.values(ws).every(v => Array.isArray(v) && v.length === 0);
+  if (empty(a) || empty(b)) return empty(a) && empty(b);
+  return canonicalJson(a) === canonicalJson(b);
+}
+function sameShared(a, b) {
+  return canonicalJson({ t: (a && a.terminkalenderEvents) || [], m: (a && a.manualBetriebe) || [], p: (a && a.profil) || {} }) ===
+    canonicalJson({ t: (b && b.terminkalenderEvents) || [], m: (b && b.manualBetriebe) || [], p: (b && b.profil) || {} });
+}
+function hasPendingLocalChanges() {
+  return !!offlineRec && (Object.keys(offlineRec.dirtyGen).length > 0 || offlineRec.sharedDirtyGen > 0);
+}
+function isNetworkError(err) {
+  if (!navigator.onLine) return true;
+  const msg = String((err && (err.message || err)) || '');
+  return /Failed to fetch|NetworkError|Load failed|network|fetch/i.test(msg);
+}
+
+// Nach jedem Wiederherstellen in den Speicher (Start, Betrieb-Wechsel,
+// Konfliktlösung): den gerade sichtbaren Stand als Vergleichsbasis merken,
+// OHNE ihn als lokale Änderung zu markieren — die serialisierte Form weicht
+// nach einem Laden oft minimal vom gespeicherten Blob ab (Feldreihenfolge,
+// normalisierte Felder), das darf keinen Scheinkonflikt auslösen.
+function rebaselineLocalState() {
+  if (!offlineRec) return;
+  const ws = serializeWorkspace();
+  const shared = serializeSharedState();
+  persistCache = { key: currentWorkspaceKey, ws: workspaceKeyJson(ws), shared: sharedKeyJson(shared) };
+  if (persistCache.ws !== 'EMPTY' || offlineRec.full.workspaces[currentWorkspaceKey]) offlineRec.full.workspaces[currentWorkspaceKey] = ws;
+  offlineRec.full.terminkalenderEvents = shared.terminkalenderEvents;
+  offlineRec.full.manualBetriebe = shared.manualBetriebe;
+  offlineRec.full.profil = shared.profil;
+}
+
+// Schreibt den aktuellen Stand lokal weg, falls sich etwas geändert hat —
+// läuft alle 10 s, beim Verlassen/Verstecken der Seite und vor jedem
+// Cloud-Abgleich, unabhängig davon, ob gerade Netz da ist.
+async function persistLocalState() {
+  const userId = currentUserId();
+  if (!userId || !offlineRec) return false;
+  const rec = offlineRec;
+  let changed = false;
+  const ws = serializeWorkspace();
+  const wsJson = workspaceKeyJson(ws);
+  if (persistCache.key !== currentWorkspaceKey) {
+    persistCache = { key: currentWorkspaceKey, ws: workspaceKeyJson(rec.full.workspaces[currentWorkspaceKey]), shared: persistCache.shared };
+  }
+  if (wsJson !== persistCache.ws) {
+    rec.gen++;
+    rec.full.workspaces[currentWorkspaceKey] = ws;
+    rec.dirtyGen[currentWorkspaceKey] = rec.gen;
+    persistCache.ws = wsJson;
+    changed = true;
+  }
+  const shared = serializeSharedState();
+  const sharedJson = sharedKeyJson(shared);
+  if (persistCache.shared === null) persistCache.shared = sharedKeyJson(rec.full);
+  if (sharedJson !== persistCache.shared) {
+    rec.gen++;
+    rec.full.terminkalenderEvents = shared.terminkalenderEvents;
+    rec.full.manualBetriebe = shared.manualBetriebe;
+    rec.full.profil = shared.profil;
+    rec.sharedDirtyGen = rec.gen;
+    persistCache.shared = sharedJson;
+    changed = true;
+  }
+  const z = activeZuordnung ? { ...activeZuordnung } : null;
+  if (JSON.stringify(rec.zuordnung || null) !== JSON.stringify(z)) {
+    rec.zuordnung = z;
+    changed = true;
+  }
+  if (changed) {
+    try {
+      await writeLocalState(userId, rec);
+    } catch (err) {
+      syncErrorMessage = 'Lokales Speichern fehlgeschlagen: ' + (err.message || err);
+      syncState = 'error';
+    }
+    if (!syncPromise) syncBald(2500);
+  }
+  updateSyncIndicator();
+  return changed;
+}
+
+// Gleicht mit der Cloud ab (nur eine Runde gleichzeitig, weitere Aufrufe
+// während einer laufenden Runde werden zu genau einer Folgerunde gebündelt).
+function syncWithCloud() {
+  if (syncPromise) { syncQueued = true; return syncPromise; }
+  syncPromise = (async () => {
+    try {
+      return await runCloudSync();
+    } finally {
+      syncPromise = null;
+      if (syncQueued) { syncQueued = false; syncWithCloud(); }
+    }
+  })();
+  return syncPromise;
+}
+
+async function runCloudSync() {
+  const userId = currentUserId();
+  if (!userId || !offlineRec) return 'no-user';
+  await persistLocalState();
+  const cloudAvailable = isSupabaseConfigured || (import.meta.env.DEV && !!window.__ffTestCloud);
+  if (!cloudAvailable || !navigator.onLine || accountSession.offline) {
+    syncState = 'offline';
+    updateSyncIndicator();
+    return 'offline';
+  }
+  syncState = 'syncing';
+  updateSyncIndicator();
+  const rec = offlineRec;
+  const genAtStart = rec.gen;
+  let row;
+  try {
+    row = await loadState();
+  } catch (err) {
+    return failSync(err);
+  }
+  const cloud = migrateFullStateShape(row && row.data ? row.data : {});
+  cloud.terminkalenderEvents = cloud.terminkalenderEvents || [];
+  cloud.manualBetriebe = cloud.manualBetriebe || [];
+  cloud.profil = cloud.profil || {};
+  const base = rec.base;
+  const dirtyKeys = Object.keys(rec.dirtyGen);
+  const sharedDirty = rec.sharedDirtyGen > 0;
+  const conflictKeys = base ? dirtyKeys.filter(k => !sameWorkspace(cloud.workspaces[k], base.workspaces[k])) : [];
+  const sharedConflict = !!base && sharedDirty && !sameShared(cloud, base);
+
+  let keepMine = true;
+  if (conflictKeys.length || sharedConflict) {
+    keepMine = await askSyncConflict(conflictKeys, sharedConflict);
+    try {
+      await addBackup(userId, keepMine ? 'Cloud-Stand vor dem Überschreiben' : 'Lokaler Stand vor dem Verwerfen', keepMine ? cloud : rec.full);
+    } catch {}
+  }
+
+  const merged = structuredClone(cloud);
+  const pushedKeys = [];
+  dirtyKeys.forEach(k => {
+    if (!keepMine && conflictKeys.includes(k)) return;
+    merged.workspaces[k] = rec.full.workspaces[k] || {};
+    pushedKeys.push(k);
+  });
+  const pushShared = sharedDirty && (keepMine || !sharedConflict);
+  if (pushShared) {
+    merged.terminkalenderEvents = rec.full.terminkalenderEvents;
+    merged.manualBetriebe = rec.full.manualBetriebe;
+    merged.profil = rec.full.profil || {};
+  }
+
+  let updatedAt = row ? row.updated_at : null;
+  if (pushedKeys.length || pushShared) {
+    try {
+      updatedAt = await saveState(merged);
+    } catch (err) {
+      return failSync(err);
+    }
+    if (syncKanal) syncKanal.senden();
+    if (import.meta.env.DEV && window.__ffTestSync) window.__ffTestSync.gesendet++;
+  }
+
+  // Lokalen Datensatz nachziehen. Änderungen, die WÄHREND des Abgleichs
+  // passiert sind (gen > genAtStart), bleiben als "noch offen" markiert.
+  const theirsKeys = keepMine ? [] : conflictKeys;
+  const newBase = structuredClone(merged);
+  Object.keys(merged.workspaces).forEach(k => {
+    const stillDirty = rec.dirtyGen[k] > genAtStart;
+    if (k === currentWorkspaceKey && !(k in rec.dirtyGen) && !theirsKeys.includes(k) &&
+        !sameWorkspace(merged.workspaces[k], base ? base.workspaces[k] : rec.full.workspaces[k])) {
+      // Der gerade geöffnete Betrieb wurde anderswo geändert, hier aber nicht:
+      // nicht mitten in der Arbeit austauschen. Basis bleibt die alte — eine
+      // spätere lokale Änderung führt dadurch zur Konfliktfrage statt das
+      // andere Gerät still zu überschreiben.
+      if (base) newBase.workspaces[k] = base.workspaces[k];
+      else delete newBase.workspaces[k];
+      return;
+    }
+    if (!stillDirty) rec.full.workspaces[k] = merged.workspaces[k];
+  });
+  pushedKeys.concat(theirsKeys).forEach(k => { if (!(rec.dirtyGen[k] > genAtStart)) delete rec.dirtyGen[k]; });
+  // Termine/Anhänge/Betriebsliste, die ein ANDERES Gerät geändert hat, während
+  // hier nichts offen ist: übernehmen (bisher nur bei einem Konflikt — dadurch
+  // erschienen z.B. Fotos vom Handy auf dem Laptop erst nach einem Neuladen).
+  // Nicht, solange hier ein Protokoll offen ist (das hält Bezüge auf die
+  // bisherigen Termin-Objekte) — dann beim nächsten Abgleich.
+  const protokollOffen = !document.getElementById('probenprotokoll-modal-overlay')?.hidden;
+  const sharedVonAussen = !pushShared && !sharedConflict && !(rec.sharedDirtyGen > 0) && !protokollOffen && !sameShared(merged, rec.full);
+  if (sharedVonAussen) {
+    rec.full.terminkalenderEvents = merged.terminkalenderEvents;
+    rec.full.manualBetriebe = merged.manualBetriebe;
+    rec.full.profil = merged.profil;
+  }
+  if (!(rec.sharedDirtyGen > genAtStart)) {
+    if (pushShared || (sharedConflict && !keepMine)) rec.sharedDirtyGen = 0;
+    if (!rec.sharedDirtyGen && (sharedConflict && !keepMine)) {
+      rec.full.terminkalenderEvents = merged.terminkalenderEvents;
+      rec.full.manualBetriebe = merged.manualBetriebe;
+      rec.full.profil = merged.profil;
+    }
+  }
+  if (!sharedDirty && !sharedVonAussen && !sameShared(merged, base || rec.full)) {
+    // Termine/Betriebe anderswo geändert, hier nicht — und NICHT übernommen (z. B.
+    // weil ein Protokoll offen ist): Basis nicht vorziehen (siehe oben). Wurde der
+    // fremde Stand übernommen (sharedVonAussen), ist er die neue Basis — sonst
+    // gälte die nächste eigene Änderung fälschlich als Konflikt.
+    newBase.terminkalenderEvents = base ? base.terminkalenderEvents : rec.full.terminkalenderEvents;
+    newBase.manualBetriebe = base ? base.manualBetriebe : rec.full.manualBetriebe;
+    newBase.profil = base ? base.profil : rec.full.profil;
+  }
+  rec.base = newBase;
+  rec.baseUpdatedAt = updatedAt;
+  await writeLocalState(userId, rec).catch(() => {});
+
+  // "Andere Version übernehmen" für den offenen Betrieb bzw. die Termine:
+  // jetzt auch sichtbar machen.
+  if (theirsKeys.includes(currentWorkspaceKey)) {
+    clearWorkspace();
+    restoreWorkspace(merged.workspaces[currentWorkspaceKey]);
+  }
+  if ((sharedConflict && !keepMine) || sharedVonAussen) restoreSharedState(merged);
+  if (theirsKeys.includes(currentWorkspaceKey) || (sharedConflict && !keepMine) || sharedVonAussen) rebaselineLocalState();
+  if (sharedVonAussen) {
+    // offenen Termin (Kontrollmappe) neu zeichnen, damit neue Anhänge gleich erscheinen
+    const sel = terminkalenderSelectedId && (tkGroupFor(terminkalenderSelectedId)?.primary || terminkalenderEvents.find(e => e.id === terminkalenderSelectedId));
+    if (sel) renderTerminkalenderDetail(sel);
+    if (typeof refreshKontrolleBetrieb === 'function') refreshKontrolleBetrieb();
+  }
+
+  syncState = 'idle';
+  syncErrorMessage = '';
+  lastSyncedAt = new Date();
+  updateSyncIndicator();
+  nutzungscodesAbgleichen();
+  return 'synced';
+}
+
+function failSync(err) {
+  syncState = isNetworkError(err) ? 'offline' : 'error';
+  syncErrorMessage = err && err.message ? err.message : String(err || 'Synchronisation fehlgeschlagen.');
+  updateSyncIndicator();
+  return syncState;
+}
+
+// Dialog statt confirm(), weil die beiden Möglichkeiten klar benannte
+// Buttons brauchen ("OK/Abbrechen" wäre hier missverständlich).
+function askSyncConflict(keys, sharedConflict) {
+  const overlay = document.getElementById('sync-conflict-overlay');
+  const names = keys.map(k => (k === NO_BETRIEB_KEY ? 'Inhalte ohne Betrieb' : k));
+  if (sharedConflict) names.push('Termine / Betriebsliste');
+  document.getElementById('sync-conflict-list').innerHTML = names.map(n => `<li>${escapeHtml(n)}</li>`).join('');
+  overlay.hidden = false;
+  return new Promise(resolve => {
+    const done = (keepMine) => {
+      overlay.hidden = true;
+      mineBtn.removeEventListener('click', onMine);
+      theirsBtn.removeEventListener('click', onTheirs);
+      resolve(keepMine);
+    };
+    const mineBtn = document.getElementById('sync-conflict-keep-mine');
+    const theirsBtn = document.getElementById('sync-conflict-take-theirs');
+    const onMine = () => done(true);
+    const onTheirs = () => done(false);
+    mineBtn.addEventListener('click', onMine);
+    theirsBtn.addEventListener('click', onTheirs);
+  });
+}
+
+function updateSyncIndicator() {
+  const pending = hasPendingLocalChanges();
+  const offline = !navigator.onLine || syncState === 'offline' || !!(accountSession && accountSession.offline);
+  btnSync.classList.toggle('is-offline', !!accountSession && offline);
+  btnSync.classList.toggle('has-pending', !!accountSession && pending);
+  btnSync.classList.toggle('sync-error', !!accountSession && syncState === 'error');
+  btnSync.classList.toggle('syncing', syncState === 'syncing');
+  const label = btnSync.querySelector('.sync-toggle-label');
+  if (label) label.textContent = accountSession && offline ? 'Offline' : 'Sync';
+  let title;
+  if (!accountSession) {
+    title = autoSyncEnabled ? 'Automatische Cloud-Synchronisation: an (wird erst nach der Anmeldung aktiv)' : 'Automatische Cloud-Synchronisation: aus';
+  } else if (offline) {
+    title = pending
+      ? 'Offline — Änderungen sind auf diesem Gerät gespeichert und werden hochgeladen, sobald wieder Internet da ist.'
+      : 'Offline — alles ist auf diesem Gerät gespeichert.';
+  } else if (syncState === 'error') {
+    title = 'Synchronisation fehlgeschlagen: ' + syncErrorMessage + (pending ? ' — Änderungen sind lokal gesichert.' : '');
+  } else if (!autoSyncEnabled) {
+    title = 'Automatische Cloud-Synchronisation: aus' + (pending ? ' — Änderungen nur auf diesem Gerät gespeichert.' : '');
+  } else if (pending) {
+    title = 'Änderungen noch nicht in der Cloud — werden gleich hochgeladen.';
+  } else {
+    title = 'Automatische Cloud-Synchronisation: an' + (lastSyncedAt ? ` — zuletzt synchronisiert um ${lastSyncedAt.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}` : '');
+  }
+  btnSync.title = title;
+  btnSync.setAttribute('aria-label', title);
+  document.body.classList.toggle('is-offline', !navigator.onLine);
+  updateSaveStatus();
+  try { renderAccountSyncPanel(); renderAccountMenu(); } catch { /* Modulstart */ }
+}
+
+// Speicherstatus in der Kopfzeile — nur eindeutige Zustände aus dem
+// Cloud-Abgleich: "Gespeichert" (angemeldet, Auto-Sync an, nichts offen, kein
+// Fehler) oder "Nicht synchron" (offene Änderungen, Fehler oder offline).
+// Abgemeldet, Auto-Sync aus oder während eines laufenden Syncs: ausgeblendet.
+function updateSaveStatus() {
+  const el = document.getElementById('save-status');
+  if (!el) return;
+  // Laufende Datei-Uploads (Warteschlange) haben Vorrang — sie sollen immer
+  // sichtbar sein, auch ohne Auto-Sync. (try: wird schon beim Modulstart
+  // aufgerufen, bevor die Warteschlange existiert.)
+  let uploads = [];
+  try { uploads = myUploads(); } catch {}
+  el.classList.toggle('is-uploading', !!(accountSession && uploads.length));
+  if (accountSession && uploads.length) {
+    const n = uploads.length;
+    const offlineNow = !navigator.onLine;
+    el.hidden = false;
+    el.classList.toggle('is-unsynced', offlineNow || uploads.some(r => r.status === 'error'));
+    document.getElementById('save-status-text').textContent = offlineNow
+      ? `${n} ${n === 1 ? 'Upload wartet' : 'Uploads warten'}`
+      : `Lädt hoch · ${n}`;
+    el.title = uploadSummaryText(uploads);
+    el.setAttribute('aria-label', el.title);
+    return;
+  }
+  if (!accountSession || !autoSyncEnabled || syncState === 'syncing') { el.hidden = true; return; }
+  const offline = !navigator.onLine || syncState === 'offline' || !!accountSession.offline;
+  const unsynced = hasPendingLocalChanges() || offline || syncState === 'error';
+  el.hidden = false;
+  el.classList.toggle('is-unsynced', unsynced);
+  const text = unsynced ? 'Nicht synchron' : 'Gespeichert';
+  document.getElementById('save-status-text').textContent = text;
+  el.title = unsynced
+    ? (offline ? 'Nicht synchron — offline, Änderungen sind auf diesem Gerät gespeichert.'
+      : syncState === 'error' ? 'Nicht synchron — Synchronisation fehlgeschlagen.'
+        : 'Nicht synchron — Änderungen werden gleich hochgeladen.')
+    : 'Gespeichert' + (lastSyncedAt ? ' — zuletzt synchronisiert um ' + lastSyncedAt.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : '');
+  el.setAttribute('aria-label', el.title);
+}
+
+// Lädt den lokalen Stand in die Oberfläche — funktioniert ohne Netz.
+function restoreFromOfflineRecord() {
+  const rec = offlineRec;
+  restoreSharedState(rec.full);
+  currentWorkspaceKey = rec.zuordnung ? rec.zuordnung.betrieb : NO_BETRIEB_KEY;
+  clearWorkspace();
+  restoreWorkspace(rec.full.workspaces[currentWorkspaceKey]);
+  setActiveZuordnung(rec.zuordnung ? { ...rec.zuordnung } : null);
+  rebaselineLocalState();
+}
+
+// Geräteschutz (src/geraeteschutz.js): Offline-Daten verschlüsselt, App-Sperre.
+// In automatisierten Tests (Playwright) aus, außer ein Test schaltet ihn mit
+// window.__ffTestGeraeteschutz = true ein — sonst stünde vor jedem Test der
+// Sperrbildschirm. Im Produktions-Build immer an (Dead-Code-Elimination).
+const geraeteschutz = geraeteschutzEinrichten({
+  verifyPassword: (email, pw) => verifyPassword(email, pw),
+  abmelden: () => performSignOut({ wipe: false }),
+  dokCacheLoeschen: async () => { try { await caches.delete(DOC_CACHE); } catch {} },
+  istWiederherstellung: () => accountRecoveryMode,
+  kontoSchliessen: () => closeAccountModal(),
+  aktiv: () => !(import.meta.env.DEV && navigator.webdriver && !window.__ffTestGeraeteschutz)
+});
+
+// "Fehler melden" (src/fehlerbericht.js): Dialog, Warteschlange ohne Netz, Verwaltung.
+// Der Hinweis "Da ist etwas schiefgelaufen" ist in Playwright-Läufen aus
+// (window.__ffTestFehlerHinweis schaltet ihn für den Test ein).
+const fehlerbericht = fehlerberichtEinrichten({
+  user: () => (accountSession && accountSession.user) || null,
+  istAdmin: () => kontoIstAdmin,
+  appZustand: () => {
+    try {
+      return {
+        ansicht: document.body.dataset.view || 'viewer',
+        reiter: document.body.dataset.view === 'kontrolle' ? kontrolleTab : undefined,
+        design: document.documentElement.getAttribute('data-design') || 'standard',
+        farbschema: document.documentElement.getAttribute('data-theme') || 'auto',
+        angemeldet: !!accountSession,
+        offlineGestartet: !!(accountSession && accountSession.offline),
+        betriebGewaehlt: !!activeZuordnung,
+        abgleich: syncState,
+        autoAbgleich: autoSyncEnabled,
+        nichtAbgeglichen: hasPendingLocalChanges(),
+        wartendeUploads: myUploads().length,
+        geraeteschutz: geraeteschutz.istAktiv()
+      };
+    } catch { return {}; }
+  },
+  bildAnsehen: (blob, name) => openDocViewer([{ name, blob, type: blob.type || 'image/jpeg' }]),
+  toast: (text) => showToast(text),
+  hinweisAktiv: () => !(import.meta.env.DEV && navigator.webdriver && !window.__ffTestFehlerHinweis),
+  adminZahlAktualisieren: () => refreshAdminCount()
+});
+
+// Start mit einem (ggf. nur lokal bekannten) Nutzer: erst den lokalen Stand
+// zeigen (sofort, auch ohne Netz), dann — falls online — mit der Cloud
+// abgleichen. Vorher ggf. entsperren (Geräteschutz).
+async function startUserState(user) {
+  if ((await geraeteschutz.vorStart(user, { offline: !!(accountSession && accountSession.offline) })) === 'abgemeldet') return;
+  try { await writeLastUser({ id: user.id, email: user.email }); } catch {}
+  let rec = null;
+  try { rec = await readLocalState(user.id); } catch {}
+  if (rec) {
+    offlineRec = { ...newOfflineRecord(user), ...rec, user: { id: user.id, email: user.email } };
+    restoreFromOfflineRecord();
+  } else {
+    offlineRec = newOfflineRecord({ id: user.id, email: user.email });
+    rebaselineLocalState();
+  }
+  updateSyncIndicator();
+  resumeUploadQueue();
+  if (accountSession && !accountSession.offline && navigator.onLine) await initialCloudLoad(!rec);
+  nutzungscodesAbgleichen({ erzwingen: true });
+  fehlerbericht.warteschlangeSenden(); // ohne Netz geschriebene Meldungen
+  await adminStatusLaden();
+  startsFertig += 1;
+}
+let startsFertig = 0; // für Tests: abgeschlossene Starts (nach dem Entsperren)
+
+async function initialCloudLoad(firstOnThisDevice) {
+  if (!firstOnThisDevice && hasPendingLocalChanges()) {
+    // Offline-Änderungen vom letzten Mal: hochladen bzw. Konflikt klären.
+    await syncWithCloud();
+    return;
+  }
+  let row;
+  try {
+    row = await loadState();
+  } catch (err) {
+    failSync(err);
+    accountSyncStatus.textContent = 'Fehler: ' + (err.message || 'Laden fehlgeschlagen.');
+    return;
+  }
+  const userId = currentUserId();
+  if (!row) {
+    // Noch nie in der Cloud gespeichert: der lokale Stand ist der Anfang.
+    offlineRec.base = null;
+    return;
+  }
+  const cloud = migrateFullStateShape(row.data);
+  cloud.terminkalenderEvents = cloud.terminkalenderEvents || [];
+  cloud.manualBetriebe = cloud.manualBetriebe || [];
+  offlineRec.full = structuredClone(cloud);
+  offlineRec.base = cloud;
+  offlineRec.baseUpdatedAt = row.updated_at;
+  offlineRec.dirtyGen = {};
+  offlineRec.sharedDirtyGen = 0;
+  restoreSharedState(offlineRec.full);
+  clearWorkspace();
+  restoreWorkspace(offlineRec.full.workspaces[currentWorkspaceKey]);
+  rebaselineLocalState();
+  await writeLocalState(userId, offlineRec).catch(() => {});
+  syncState = 'idle';
+  lastSyncedAt = new Date();
+  accountSyncStatus.textContent = 'Geladen.';
+  updateSyncIndicator();
+}
+
+async function initAccountAndState() {
+  if (!isSupabaseConfigured) return;
+  let session = null;
+  try { session = await getSession(); } catch {}
+  if (!session) {
+    // Ohne Netz lässt sich eine abgelaufene Session nicht erneuern — dann mit
+    // dem zuletzt angemeldeten Nutzer und seinem lokalen Stand weiterarbeiten,
+    // der Abgleich folgt, sobald wieder Internet da ist.
+    const last = await readLastUser();
+    if (last && !navigator.onLine && await hatLocalState(last.id)) session = { user: last, offline: true };
+  }
+  accountSession = session;
+  updateAccountButton();
+  if (session) await startUserState(session.user);
+  refreshAutoSyncTimer();
+  if (session) zeigeDashboardAlsStart();
+}
+// Angemeldet ist das Dashboard (Übersicht) die erste Seite — beim Start der App
+// und direkt nach dem Anmelden. Nicht, wenn schon eine andere Funktion offen ist
+// oder die App über eine Verknüpfung (?view=…) geöffnet wurde.
+function zeigeDashboardAlsStart() {
+  if (new URLSearchParams(location.search).get('view')) return;
+  if ((document.body.dataset.view || 'viewer') !== 'viewer') return;
+  kontrolleStart = 'dashboard';
+  kontrolleDashTab = 'uebersicht';
+  setActiveSegment('kontrolle');
+}
+
+window.addEventListener('online', async () => {
+  updateSyncIndicator();
+  if (accountSession && accountSession.offline) {
+    // Offline gestartet: jetzt die echte Session holen.
+    let session = null;
+    try { session = await getSession(); } catch {}
+    if (!session || session.user.id !== accountSession.user.id) { updateSyncIndicator(); return; }
+    accountSession = session;
+    updateAccountButton();
+    refreshAutoSyncTimer();
+    adminStatusLaden();
+  }
+  if (accountSession) syncWithCloud();
+});
+window.addEventListener('offline', updateSyncIndicator);
+window.addEventListener('pagehide', () => { persistLocalState(); });
+setInterval(() => { if (!document.hidden) persistLocalState(); }, LOCAL_SAVE_INTERVAL_MS);
+
+if (import.meta.env.DEV) {
+  // Testhaken für die Offline-Logik (Cloud per window.__ffTestCloud in
+  // supabase.js gestubbt, analog window.__ffTestUploadPhotoOverride).
+  window.__ffTestOffline = {
+    start: (user) => startUserState(user),
+    persist: () => persistLocalState(),
+    sync: () => syncWithCloud(),
+    record: () => (offlineRec ? structuredClone(offlineRec) : null),
+    readStored: (userId) => readLocalState(userId),
+    pending: () => hasPendingLocalChanges(),
+    currentWorkspaceKey: () => currentWorkspaceKey,
+    starts: () => startsFertig,
+    // Neustart der App nachstellen (gleicher Ablauf wie beim Seitenaufruf).
+    boot: () => initAccountAndState(),
+    // In-Memory-Stand verwerfen (wie beim Schließen der App).
+    clear: () => { clearWorkspace(); setActiveZuordnung(null); currentWorkspaceKey = NO_BETRIEB_KEY; geraeteschutz.vergessen(); },
+    // Betrieb wechseln wie über den Betrieb-Dialog.
+    switchTo: (betrieb) => applyZuordnungSelection(betrieb ? { betrieb, year: new Date().getFullYear(), terminId: null, terminLabel: null } : null),
+    backups: (userId) => listBackups(userId)
+  };
+}
+
+// ---------- FeldFolio Plus: Notiz & Fotos an Fläche/Baum ----------
+// Wie der Cloud-Konto-Bereich rein additiv und komplett hinter dem Login —
+// ohne Session zeigt das Modal denselben "bitte anmelden"-Hinweis wie der
+// Account-Bereich, statt zu crashen oder still nichts zu tun.
+const notesModal = document.getElementById('notes-modal-overlay');
+const notesNotConfigured = document.getElementById('notes-not-configured');
+const notesEditor = document.getElementById('notes-editor');
+const notesTextarea = document.getElementById('notes-textarea');
+const notesPhotoGrid = document.getElementById('notes-photo-grid');
+const notesPhotoInput = document.getElementById('notes-photo-input');
+const notesError = document.getElementById('notes-error');
+const notesSyncStatus = document.getElementById('notes-sync-status');
+let notesTarget = null; // { kind: 'parcel'|'tree', entry }
+
+function showNotesError(msg) {
+  notesError.textContent = msg;
+  notesError.hidden = !msg;
+}
+
+// entry.photos ist {path, name}[] — Anzeige braucht pro Bild eine frisch
+// geholte Signed URL (Bucket ist privat, siehe supabase.js); name (falls
+// vorhanden) setzt darüber den Jahr_Betrieb_Art-Downloadnamen.
+async function renderNotesPhotoGrid() {
+  const photos = notesTarget.entry.photos;
+  if (!photos.length) { notesPhotoGrid.innerHTML = ''; return; }
+  notesPhotoGrid.innerHTML = photos.map(() => '<div class="notes-photo-thumb notes-photo-loading"></div>').join('');
+  const urls = await Promise.all(photos.map(p => getPhotoUrl(p.path, p.name).catch(() => null)));
+  notesPhotoGrid.innerHTML = photos.map((p, i) => urls[i]
+    ? `<div class="notes-photo-thumb"><img src="${urls[i]}" alt=""><button type="button" class="notes-photo-remove" data-path="${escapeHtml(p.path)}" title="Foto löschen"><span class="material-symbols-rounded icon">close</span></button></div>`
+    : '<div class="notes-photo-thumb notes-photo-error" title="Foto konnte nicht geladen werden"><span class="material-symbols-rounded icon">warning</span></div>'
+  ).join('');
+  notesPhotoGrid.querySelectorAll('.notes-photo-remove').forEach(btn => {
+    btn.addEventListener('click', () => removeNotesPhoto(btn.getAttribute('data-path')));
+  });
+}
+
+function openNotesModal(kind, entry) {
+  notesTarget = { kind, entry };
+  showNotesError('');
+  notesSyncStatus.textContent = '';
+  const loggedIn = isSupabaseConfigured && !!accountSession;
+  notesNotConfigured.hidden = loggedIn;
+  notesEditor.hidden = !loggedIn;
+  if (loggedIn) {
+    notesTextarea.value = entry.notes || '';
+    renderNotesPhotoGrid();
+  }
+  notesModal.hidden = false;
+}
+
+function closeNotesModal() { notesModal.hidden = true; notesTarget = null; }
+
+['notes-modal-close-1', 'notes-modal-close-2'].forEach(id => {
+  document.getElementById(id).addEventListener('click', closeNotesModal);
+});
+notesModal.addEventListener('click', (e) => { if (e.target === notesModal) closeNotesModal(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !notesModal.hidden) closeNotesModal(); });
+
+// Aktualisiert Tabellenzeile + Notiz-Icon nach jeder Änderung, ohne die
+// ganze Tabelle (und damit die Scroll-Position/Auswahl) neu aufzubauen.
+function refreshNotesIndicator() {
+  if (notesTarget.kind === 'parcel') renderFeatureTable();
+  else renderObstbaumTable();
+}
+
+document.getElementById('notes-btn-save').addEventListener('click', async () => {
+  const { kind, entry } = notesTarget;
+  const text = notesTextarea.value;
+  if (kind === 'parcel') setParcelNotes(entry, text); else entry.notes = text;
+  refreshNotesIndicator();
+  notesSyncStatus.textContent = 'Speichere …';
+  try {
+    await saveFullState();
+    notesSyncStatus.textContent = 'Gespeichert.';
+  } catch (err) {
+    notesSyncStatus.textContent = 'Fehler: ' + (err.message || 'Speichern fehlgeschlagen.');
+  }
+});
+
+notesPhotoInput.addEventListener('change', async () => {
+  const file = notesPhotoInput.files[0];
+  notesPhotoInput.value = '';
+  if (!file) return;
+  const { kind, entry } = notesTarget;
+  showNotesError('');
+  notesSyncStatus.textContent = 'Foto wird hochgeladen …';
+  try {
+    const path = await uploadPhoto(file);
+    const ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
+    const name = zuordnungFileName(kind === 'parcel' ? 'Foto Fläche' : 'Foto Baum', ext);
+    if (kind === 'parcel') addParcelPhoto(entry, path, name); else entry.photos.push({ path, name });
+    refreshNotesIndicator();
+    await renderNotesPhotoGrid();
+    await saveFullState();
+    notesSyncStatus.textContent = 'Foto gespeichert.';
+  } catch (err) {
+    showNotesError(err.message || 'Foto-Upload fehlgeschlagen.');
+    notesSyncStatus.textContent = '';
+  }
+});
+
+async function removeNotesPhoto(path) {
+  const { kind, entry } = notesTarget;
+  notesSyncStatus.textContent = 'Lösche …';
+  try {
+    await deletePhoto(path);
+    if (kind === 'parcel') removeParcelPhoto(entry, path); else entry.photos = entry.photos.filter(p => p.path !== path);
+    refreshNotesIndicator();
+    await renderNotesPhotoGrid();
+    await saveFullState();
+    notesSyncStatus.textContent = 'Gelöscht.';
+  } catch (err) {
+    notesSyncStatus.textContent = 'Fehler: ' + (err.message || 'Löschen fehlgeschlagen.');
+  }
+}
+
+// ---------- FeldFolio Plus: Anbauplanung (Gartenbau-Kulturplan) ----------
+// Konkretisiert pro Fläche, welche Kultur wann angebaut wird — feiner als die
+// offizielle Nutzungsart/NC im Nutzungsverzeichnis (oft nur grob, z.B.
+// "Freilandgemüse", und unterjährig nicht änderbar), obwohl auf derselben
+// Fläche mehrere Kulturen nacheinander stehen können (siehe Ergänzungsblatt
+// Gartenbau). Gleiches Cloud-Konto-Gating wie Notiz/Fotos, Speicherung direkt
+// in entry.props (siehe setParcelKulturplan oben) — reist also automatisch
+// mit dem geteilten layers[id].geojson mit, keine eigene Tabelle nötig.
+const KP_MONTHS = ['JAN', 'FEB', 'MÄR', 'APR', 'MAI', 'JUNI', 'JULI', 'AUG', 'SEPT', 'OKT', 'NOV', 'DEZ'];
+
+// Bekannte Gartenbau-Kulturen gruppiert nach Kulturart, je mit einer eigenen
+// Balkenfarbe — dient sowohl als Autovervollständigung (Datalist) als auch
+// zur automatischen Einfärbung neuer Balken (siehe kulturColor unten). Freie
+// Eingaben, die keinem Namen hier entsprechen, behalten die neutrale
+// Standardfarbe (--accent-dim).
+const KULTUR_CATALOG = [
+  { kategorie: 'Blattgemüse', farbe: '#5B8C3A', namen: ['Spinat', 'Kopfsalat', 'Eisbergsalat', 'Feldsalat', 'Rucola', 'Mangold', 'Endivie', 'Radicchio', 'Pflücksalat', 'Bataviasalat', 'Portulak'] },
+  { kategorie: 'Kohlgemüse', farbe: '#3E6B5C', namen: ['Weißkohl', 'Rotkohl', 'Wirsing', 'Blumenkohl', 'Brokkoli', 'Kohlrabi', 'Rosenkohl', 'Grünkohl', 'Chinakohl', 'Pak Choi'] },
+  { kategorie: 'Wurzel-/Knollengemüse', farbe: '#C1793A', namen: ['Möhren', 'Rote Bete', 'Pastinaken', 'Petersilienwurzel', 'Rettich', 'Radieschen', 'Schwarzwurzel', 'Steckrübe', 'Knollensellerie'] },
+  { kategorie: 'Zwiebelgemüse', farbe: '#7A5C8C', namen: ['Zwiebeln', 'Lauch', 'Knoblauch', 'Schalotten', 'Frühlingszwiebeln'] },
+  { kategorie: 'Fruchtgemüse', farbe: '#C1543A', namen: ['Tomaten', 'Gurken', 'Zucchini', 'Kürbis', 'Paprika', 'Auberginen', 'Melonen', 'Zuckermais'] },
+  { kategorie: 'Hülsenfrüchte', farbe: '#8CAA4E', namen: ['Buschbohnen', 'Stangenbohnen', 'Erbsen', 'Zuckerschoten', 'Dicke Bohnen'] },
+  { kategorie: 'Kartoffeln/Knollen', farbe: '#8A6A45', namen: ['Kartoffeln', 'Topinambur'] },
+  { kategorie: 'Kräuter', farbe: '#4B8C82', namen: ['Petersilie', 'Basilikum', 'Dill', 'Schnittlauch', 'Koriander', 'Kerbel', 'Majoran', 'Thymian'] },
+  { kategorie: 'Dauerkulturen', farbe: '#9B6B8C', namen: ['Erdbeeren', 'Spargel', 'Rhabarber'] },
+  { kategorie: 'Brache/Gründüngung', farbe: '#9C8F73', namen: ['Brache', 'Gründüngung: Wicken/Erbsen', 'Gründüngung: Phacelia', 'Gründüngung: Senf'] }
+];
+
+// Exakter Treffer zuerst, sonst Teilstring-Abgleich (deckt z.B. "Möhren
+// (Bund)" oder die zusammengesetzten Gründüngung-Einträge ab) — liefert null
+// für unbekannte Kulturen, Aufrufer fällt dann auf die neutrale Standardfarbe
+// zurück.
+function kulturColor(name) {
+  const lower = (name || '').trim().toLowerCase();
+  if (!lower) return null;
+  for (const gruppe of KULTUR_CATALOG) {
+    if (gruppe.namen.some(n => n.toLowerCase() === lower)) return gruppe.farbe;
+  }
+  for (const gruppe of KULTUR_CATALOG) {
+    if (gruppe.namen.some(n => lower.includes(n.toLowerCase()))) return gruppe.farbe;
+  }
+  return null;
+}
+
+let kulturplanTarget = null; // entry (immer eine Fläche, anders als bei Notiz/Fotos)
+let kulturplanYear = new Date().getFullYear();
+let kulturplanEditingId = null; // id des gerade im Formular bearbeiteten Eintrags, null = "neu anlegen"
+let kulturplanDragMoved = false; // unterscheidet Klick (öffnet Bearbeiten) von Drag-Ende (nicht öffnen)
+
+const kulturplanModal = document.getElementById('kulturplan-modal-overlay');
+const kulturplanNotConfigured = document.getElementById('kulturplan-not-configured');
+const kulturplanEditor = document.getElementById('kulturplan-editor');
+const kulturplanYearLabel = document.getElementById('kulturplan-year-label');
+const kulturplanTimelineEl = document.getElementById('kulturplan-timeline');
+const kulturplanKulturInput = document.getElementById('kulturplan-kultur-input');
+const kulturplanStartSelect = document.getElementById('kulturplan-start-select');
+const kulturplanEndSelect = document.getElementById('kulturplan-end-select');
+const kulturplanFlaecheInput = document.getElementById('kulturplan-flaeche-input');
+const kulturplanDuengungInput = document.getElementById('kulturplan-duengung-input');
+const kulturplanError = document.getElementById('kulturplan-error');
+const kulturplanSyncStatus = document.getElementById('kulturplan-sync-status');
+const kulturplanBtnAdd = document.getElementById('kulturplan-btn-add');
+const kulturplanBtnDelete = document.getElementById('kulturplan-btn-delete');
+const kulturplanBtnCancelEdit = document.getElementById('kulturplan-btn-cancel-edit');
+
+KP_MONTHS.forEach((label, i) => {
+  const month = String(i + 1);
+  kulturplanStartSelect.add(new Option(label, month));
+  kulturplanEndSelect.add(new Option(label, month));
+});
+
+const kulturplanSuggestionsList = document.getElementById('kulturplan-kultur-suggestions');
+KULTUR_CATALOG.forEach(gruppe => {
+  gruppe.namen.forEach(n => kulturplanSuggestionsList.appendChild(new Option(n)));
+});
+
+function showKulturplanError(msg) {
+  kulturplanError.textContent = msg;
+  kulturplanError.hidden = !msg;
+}
+
+// Aktualisiert nur das Anbauplanungs-Icon in der Flächentabelle, ohne die ganze
+// Anbauplanung neu aufzubauen — gleiches Muster wie refreshNotesIndicator().
+function refreshKulturplanIndicator() { renderFeatureTable(); }
+
+function resetKulturplanForm() {
+  kulturplanEditingId = null;
+  kulturplanKulturInput.value = '';
+  kulturplanStartSelect.value = '1';
+  kulturplanEndSelect.value = '1';
+  kulturplanFlaecheInput.value = '';
+  kulturplanDuengungInput.value = '';
+  kulturplanBtnAdd.textContent = 'Hinzufügen';
+  kulturplanBtnDelete.hidden = true;
+  kulturplanBtnCancelEdit.hidden = true;
+  showKulturplanError('');
+}
+
+function fillKulturplanFormFrom(entryData) {
+  kulturplanEditingId = entryData.id;
+  kulturplanKulturInput.value = entryData.kultur;
+  kulturplanStartSelect.value = String(entryData.startMonth);
+  kulturplanEndSelect.value = String(entryData.endMonth);
+  kulturplanFlaecheInput.value = entryData.flaeche != null ? String(entryData.flaeche) : '';
+  kulturplanDuengungInput.value = entryData.duengung || '';
+  kulturplanBtnAdd.textContent = 'Speichern';
+  kulturplanBtnDelete.hidden = false;
+  kulturplanBtnCancelEdit.hidden = false;
+  showKulturplanError('');
+}
+
+function openKulturplanModal(entry) {
+  kulturplanTarget = entry;
+  kulturplanYear = new Date().getFullYear();
+  showKulturplanError('');
+  kulturplanSyncStatus.textContent = '';
+  const loggedIn = isSupabaseConfigured && !!accountSession;
+  kulturplanNotConfigured.hidden = loggedIn;
+  kulturplanEditor.hidden = !loggedIn;
+  if (loggedIn) {
+    resetKulturplanForm();
+    renderKulturplanEditor();
+  }
+  kulturplanModal.hidden = false;
+}
+function closeKulturplanModal() { kulturplanModal.hidden = true; kulturplanTarget = null; }
+
+['kulturplan-modal-close-1', 'kulturplan-modal-close-2'].forEach(id => {
+  document.getElementById(id).addEventListener('click', closeKulturplanModal);
+});
+kulturplanModal.addEventListener('click', (e) => { if (e.target === kulturplanModal) closeKulturplanModal(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !kulturplanModal.hidden) closeKulturplanModal(); });
+
+document.getElementById('kulturplan-year-prev').addEventListener('click', () => { kulturplanYear--; renderKulturplanEditor(); });
+document.getElementById('kulturplan-year-next').addEventListener('click', () => { kulturplanYear++; renderKulturplanEditor(); });
+kulturplanBtnCancelEdit.addEventListener('click', () => { resetKulturplanForm(); renderKulturplanEditor(); });
+
+async function persistKulturplanChange(successMsg) {
+  setParcelKulturplan(kulturplanTarget, kulturplanTarget.kulturplan);
+  refreshKulturplanIndicator();
+  kulturplanSyncStatus.textContent = 'Speichere …';
+  try {
+    await saveFullState();
+    kulturplanSyncStatus.textContent = successMsg || 'Gespeichert.';
+  } catch (err) {
+    kulturplanSyncStatus.textContent = 'Fehler: ' + (err.message || 'Speichern fehlgeschlagen.');
+  }
+}
+
+kulturplanBtnAdd.addEventListener('click', async () => {
+  const kultur = kulturplanKulturInput.value.trim();
+  const startMonth = parseInt(kulturplanStartSelect.value, 10);
+  const endMonth = parseInt(kulturplanEndSelect.value, 10);
+  const flaecheRaw = kulturplanFlaecheInput.value.trim();
+  const flaeche = flaecheRaw ? parseFloat(flaecheRaw.replace(',', '.')) : null;
+  const duengung = kulturplanDuengungInput.value.trim();
+  showKulturplanError('');
+  if (!kultur) { showKulturplanError('Bitte eine Kultur eintragen.'); return; }
+  if (endMonth < startMonth) { showKulturplanError('Der Endmonat darf nicht vor dem Startmonat liegen.'); return; }
+  if (flaecheRaw && (!isFinite(flaeche) || flaeche < 0)) { showKulturplanError('Bitte eine gültige Fläche in m² eintragen.'); return; }
+
+  if (kulturplanEditingId) {
+    const existing = kulturplanTarget.kulturplan.find(e => e.id === kulturplanEditingId);
+    if (existing) { existing.kultur = kultur; existing.startMonth = startMonth; existing.endMonth = endMonth; existing.flaeche = flaeche; existing.duengung = duengung; }
+  } else {
+    kulturplanTarget.kulturplan.push({
+      id: 'kp-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7),
+      jahr: kulturplanYear, kultur, startMonth, endMonth, flaeche, duengung
+    });
+  }
+  resetKulturplanForm();
+  renderKulturplanEditor();
+  await persistKulturplanChange();
+});
+
+kulturplanBtnDelete.addEventListener('click', async () => {
+  if (!kulturplanEditingId) return;
+  kulturplanTarget.kulturplan = kulturplanTarget.kulturplan.filter(e => e.id !== kulturplanEditingId);
+  resetKulturplanForm();
+  renderKulturplanEditor();
+  await persistKulturplanChange('Gelöscht.');
+});
+
+// Weist überlappenden Einträgen unterschiedliche "Spuren" (Zeilen) zu, damit
+// z.B. eine parallele Gründüngung nicht dieselbe Zeile wie die Hauptkultur
+// belegt — einfacher Greedy-Algorithmus (erste freie Spur ab Startmonat),
+// kein Anspruch auf eine optimale Zeilenzahl.
+function assignKulturplanLanes(entries) {
+  const sorted = [...entries].sort((a, b) => a.startMonth - b.startMonth);
+  const laneEnds = []; // letzter belegter Monat je Spur
+  const laneOf = new Map();
+  sorted.forEach(e => {
+    let lane = laneEnds.findIndex(end => end < e.startMonth);
+    if (lane === -1) { lane = laneEnds.length; laneEnds.push(e.endMonth); }
+    else { laneEnds[lane] = e.endMonth; }
+    laneOf.set(e.id, lane);
+  });
+  return { laneOf, laneCount: laneEnds.length };
+}
+
+// Pointer-basiertes Verschieben/Skalieren eines Balkens — bewusst nur auf
+// volle Monate einrastend (kein pixelgenaues Ziehen), das hält die Bedienung
+// einfach und lesbar. Live-Feedback per direktem grid-column-Update während
+// des Ziehens, gespeichert wird erst bei pointerup.
+function wireKulturplanBarDrag(barEl, entryData) {
+  const handleLeft = barEl.querySelector('.kp-bar-handle-left');
+  const handleRight = barEl.querySelector('.kp-bar-handle-right');
+
+  function startDrag(e, mode) {
+    e.preventDefault();
+    e.stopPropagation();
+    const laneRect = barEl.parentElement.getBoundingClientRect();
+    const monthWidth = laneRect.width / 12;
+    const startX = e.clientX;
+    const origStart = entryData.startMonth;
+    const origEnd = entryData.endMonth;
+    kulturplanDragMoved = false;
+
+    function onMove(ev) {
+      const deltaPx = ev.clientX - startX;
+      if (Math.abs(deltaPx) > 3) kulturplanDragMoved = true;
+      const deltaMonths = Math.round(deltaPx / monthWidth);
+      if (mode === 'move') {
+        const span = origEnd - origStart;
+        const newStart = Math.min(Math.max(origStart + deltaMonths, 1), 12 - span);
+        entryData.startMonth = newStart;
+        entryData.endMonth = newStart + span;
+      } else if (mode === 'resize-left') {
+        entryData.startMonth = Math.min(Math.max(origStart + deltaMonths, 1), origEnd);
+      } else if (mode === 'resize-right') {
+        entryData.endMonth = Math.max(Math.min(origEnd + deltaMonths, 12), origStart);
+      }
+      barEl.style.gridColumn = `${entryData.startMonth} / ${entryData.endMonth + 1}`;
+    }
+    function onUp() {
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+      if (kulturplanDragMoved) {
+        if (kulturplanEditingId === entryData.id) fillKulturplanFormFrom(entryData);
+        persistKulturplanChange('Verschoben — gespeichert.');
+        renderKulturplanEditor();
+      }
+    }
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+  }
+
+  barEl.addEventListener('pointerdown', (e) => startDrag(e, 'move'));
+  handleLeft.addEventListener('pointerdown', (e) => startDrag(e, 'resize-left'));
+  handleRight.addEventListener('pointerdown', (e) => startDrag(e, 'resize-right'));
+  barEl.addEventListener('click', (e) => {
+    if (e.target.closest('.kp-bar-handle')) return;
+    if (kulturplanDragMoved) { kulturplanDragMoved = false; return; }
+    fillKulturplanFormFrom(entryData);
+    renderKulturplanEditor();
+  });
+}
+
+function renderKulturplanEditor() {
+  kulturplanYearLabel.textContent = String(kulturplanYear);
+  const entries = kulturplanTarget.kulturplan.filter(e => e.jahr === kulturplanYear);
+  const monthsHeader = '<div class="kp-months-header">' + KP_MONTHS.map(m => `<div class="kp-month-label">${m}</div>`).join('') + '</div>';
+
+  if (!entries.length) {
+    kulturplanTimelineEl.innerHTML = monthsHeader + '<p class="kp-timeline-empty">Noch keine Kultur für dieses Jahr eingetragen.</p>';
+    return;
+  }
+
+  const { laneOf, laneCount } = assignKulturplanLanes(entries);
+  const lanes = Array.from({ length: laneCount }, () => []);
+  entries.forEach(e => lanes[laneOf.get(e.id)].push(e));
+
+  const lanesHtml = lanes.map(laneEntries => {
+    const barsHtml = laneEntries.map(e => {
+      const flaecheText = e.flaeche != null ? `${e.flaeche.toLocaleString('de-DE')} m²` : '';
+      const color = kulturColor(e.kultur);
+      const label = flaecheText ? `${e.kultur} · ${flaecheText}` : e.kultur;
+      const title = `${e.kultur}${flaecheText ? ' · ' + flaecheText : ''} (${KP_MONTHS[e.startMonth - 1]}–${KP_MONTHS[e.endMonth - 1]})`;
+      return `
+      <div class="kp-bar${e.id === kulturplanEditingId ? ' selected' : ''}" data-id="${escapeHtml(e.id)}"
+           style="grid-column: ${e.startMonth} / ${e.endMonth + 1};${color ? ` background:${color};` : ''}"
+           title="${escapeHtml(title)}">
+        <span class="kp-bar-handle kp-bar-handle-left"></span>
+        <span class="kp-bar-label">${escapeHtml(label)}</span>
+        <span class="kp-bar-handle kp-bar-handle-right"></span>
+      </div>`;
+    }).join('');
+    return `<div class="kp-lane">${barsHtml}</div>`;
+  }).join('');
+
+  kulturplanTimelineEl.innerHTML = monthsHeader + lanesHtml;
+  kulturplanTimelineEl.querySelectorAll('.kp-bar').forEach(barEl => {
+    const entryData = kulturplanTarget.kulturplan.find(e => e.id === barEl.getAttribute('data-id'));
+    wireKulturplanBarDrag(barEl, entryData);
+  });
+}
+
+// ---------- FeldFolio Plus: Terminkalender ----------
+// Eigener Tab mit eigener, zweiter Leaflet-Karteninstanz (getrennt von der
+// geteilten Parzellen-Karte) — Cloud-Konto-Funktion wie Notiz/Fotos, siehe
+// dortiges Gating-Muster (accountSession). Termine kommen aus einem
+// Excel-Export ("Intact Platform", Spalten wie Kunde/Auditart/Straße/PLZ/Ort/
+// Auditdatum) statt aus .ics — der Export enthält bereits strukturierte
+// Adressfelder (keine Text-Heuristik nötig wie zuvor bei .ics) und keine
+// Uhrzeiten, nur Tagesdaten — deshalb Tageskarten statt Stundenraster.
+// XLSX-Parsing läuft über die bereits per CDN geladene SheetJS-Bibliothek
+// (globales XLSX, siehe index.html — dieselbe, die auch für den Excel-Export
+// genutzt wird), keine neue Abhängigkeit nötig. Zusammenführen neuer Uploads
+// per Nr. Auditauftrag (AO-Code), Adressen werden über die öffentliche
+// Nominatim-API (OpenStreetMap) geokodiert — nur einmalig pro Termin,
+// Ergebnis wird mit gespeichert.
+let terminkalenderEvents = []; // { id, kunde, auditart, ..., date: Date, lat, lng, geocodeStatus }
+let terminkalenderInitDone = false;
+let terminkalenderMap = null;
+let terminkalenderMarkersLayer = null;
+let terminkalenderWeekStart = getMondayOfWeek(new Date());
+let terminkalenderSelectedId = null;
+
+// Termine entstehen sonst ausschließlich über den Excel-Import — für
+// Regressionstests (z.B. des Dokumentenscanners) braucht es einen
+// direkten, dev-only Weg, einen Testtermin anzulegen und auszuwählen,
+// analog zu window.__ffTestMap oben.
+if (import.meta.env.DEV) {
+  window.__ffTestTk = {
+    addEvent(overrides = {}) {
+      const ev = {
+        id: 'test-' + Date.now() + Math.random().toString(36).slice(2),
+        kunde: 'Testbetrieb', auditart: 'Test', dienstleistungen: '', format: '',
+        date: new Date(), bestaetigt: false, prioritaet: '', unangemeldet: false,
+        telefon: '', mobil: '', email: '', strasse: '', plz: '', ort: '', address: null,
+        hinweis: '', kundennummer: '', lat: null, lng: null, geocodeStatus: 'none',
+        hasTime: false, dateEnd: null, attachments: [], probenprotokolle: [], crossChecks: [],
+        ...overrides
+      };
+      terminkalenderEvents.push(ev);
+      renderTerminkalenderGrid();
+      return ev.id;
+    },
+    getEvent(id) { return terminkalenderEvents.find(e => e.id === id); },
+    // Der Terminkalender-Umschalter ist ohne Anmeldung ausgeblendet (siehe
+    // updateAccountButton()) — für Tests eine echte Anmeldung ohne echtes
+    // Supabase-Konto vortäuschen, statt den kompletten Login-Flow zu
+    // durchlaufen.
+    loginFake(email = 'test@example.com') {
+      accountSession = { user: { id: 'test-user', email } };
+      updateAccountButton();
+    },
+    logoutFake() {
+      accountSession = null;
+      updateAccountButton();
+    }
+  };
+}
+
+const tkSleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+// Lokales Datum im Format des <input type="date"> (toISOString wäre UTC und
+// läge nachts um Mitternacht einen Tag daneben).
+function tkDateInputValue(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function getMondayOfWeek(date) {
+  const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const day = (d.getDay() + 6) % 7; // Montag=0 … Sonntag=6
+  d.setDate(d.getDate() - day);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+// Standard-ISO-8601-Wochennummer: über den Donnerstag der Woche bestimmt,
+// da die ISO-Woche zu dem Jahr gehört, das den Donnerstag dieser Woche enthält.
+function getISOWeek(date) {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = (d.getUTCDay() + 6) % 7;
+  d.setUTCDate(d.getUTCDate() - dayNum + 3);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const week = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+  return { week, year: d.getUTCFullYear() };
+}
+
+function parseGermanDate(s) {
+  const m = /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/.exec(String(s || '').trim());
+  if (!m) return null;
+  return new Date(+m[3], +m[2] - 1, +m[1]);
+}
+
+// ---- Excel-Parser (Intact-Platform-Export: Titelzeile, dann Kopfzeile,
+// dann eine Zeile je Termin) — Kopfzeile ist Zeile 2 (Index 1), daher range:1.
+function parseXlsxFile(arrayBuffer) {
+  const wb = XLSX.read(arrayBuffer, { type: 'array' });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { range: 1, defval: '' });
+  return rows.map(row => {
+    const kunde = String(row['Kunde'] || '').trim();
+    const date = parseGermanDate(row['Auditdatum (von)']);
+    if (!kunde || !date) return null; // leere/kaputte Zeilen überspringen
+    const strasse = String(row['Straße'] || '').trim();
+    const plz = String(row['PLZ'] || '').trim();
+    const ort = String(row['Ort'] || '').trim();
+    const address = [strasse, [plz, ort].filter(Boolean).join(' ')].filter(Boolean).join(', ') || null;
+    const id = String(row['Nr. Auditauftrag'] || '').trim() ||
+      [row['Kundennummer'], row['Auditdatum (von)'], row['Auditart']].filter(Boolean).join('|');
+    return {
+      id,
+      kunde,
+      auditart: String(row['Auditart'] || '').trim(),
+      dienstleistungen: String(row['Dienstleistungen'] || '').trim(),
+      format: String(row['Format'] || '').trim(),
+      date,
+      bestaetigt: String(row['Bestätigungsstatus'] || '').trim() === 'Termine bestätigt',
+      prioritaet: String(row['Priorität'] || '').trim(),
+      // Intact exportiert hier einen Wahrheitswert (WAHR/FALSCH); ältere Exporte "1"/"Ja"
+      unangemeldet: row['Audit unangemeldet'] === true || /^(1|true|wahr|ja|x)$/i.test(String(row['Audit unangemeldet'] ?? '').trim()),
+      telefon: String(row['Telefon'] || '').trim(),
+      mobil: String(row['Mobil'] || '').trim(),
+      email: String(row['E-Mail'] || '').trim(),
+      strasse, plz, ort, address,
+      hinweis: String(row['Hinweis Auditor 1'] || '').trim(),
+      kundennummer: String(row['Kundennummer'] || '').trim(),
+      lat: null, lng: null, geocodeStatus: 'none',
+      // Excel liefert nur ein Datum — Uhrzeit kommt optional über eine
+      // zusätzlich hochgeladene .ics-Datei dazu (siehe applyIcsTimes unten).
+      hasTime: false, dateEnd: null,
+      // Fotos/Dateien bzw. Probenahmeprotokolle, die man einem Termin manuell
+      // hinzufügt (siehe renderTerminkalenderAttachments/
+      // formularSectionHtml unten) — bleiben bei einem erneuten
+      // Excel-Upload immer erhalten (siehe mergeTerminkalenderEvents).
+      attachments: [], probenprotokolle: [], crossChecks: []
+    };
+  }).filter(Boolean);
+}
+
+// ---- Zusammenführen per Nr. Auditauftrag (AO-Code) ----
+function mergeTerminkalenderEvents(parsed) {
+  const byId = new Map(terminkalenderEvents.map(e => [e.id, e]));
+  let added = 0, updated = 0;
+  parsed.forEach(p => {
+    const existing = byId.get(p.id);
+    if (existing) {
+      const addressChanged = existing.address !== p.address;
+      const prevLat = existing.lat, prevLng = existing.lng, prevStatus = existing.geocodeStatus;
+      // Eine per .ics ergänzte Uhrzeit bleibt erhalten, solange sich das
+      // Excel-Datum für diesen Termin nicht geändert hat (sonst wäre die
+      // alte Uhrzeit für einen anderen Tag nicht mehr gültig).
+      const sameDay = existing.date && existing.date.toDateString() === p.date.toDateString();
+      const prevDate = existing.date, prevHasTime = existing.hasTime, prevDateEnd = existing.dateEnd;
+      const prevAttachments = existing.attachments;
+      const prevProbenprotokolle = existing.probenprotokolle;
+      const prevCrossChecks = existing.crossChecks;
+      Object.assign(existing, p);
+      if (!addressChanged) { existing.lat = prevLat; existing.lng = prevLng; existing.geocodeStatus = prevStatus; }
+      if (sameDay && prevHasTime) { existing.date = prevDate; existing.hasTime = true; existing.dateEnd = prevDateEnd; }
+      existing.attachments = prevAttachments || [];
+      existing.probenprotokolle = prevProbenprotokolle || [];
+      existing.crossChecks = prevCrossChecks || [];
+      updated++;
+    } else {
+      terminkalenderEvents.push(p);
+      added++;
+    }
+  });
+  return { added, updated };
+}
+
+// ---- Terminuhrzeiten aus .ics ergänzen ----
+// Der Excel-Export liefert nur ein Datum, keine Uhrzeit. Eine zusätzliche
+// .ics-Datei (z.B. Kalender-Export desselben Auftragssystems) enthält echte
+// Uhrzeiten — Zuordnung läuft über den Auditauftrags-Code ("AO-XXXXXX"), der
+// im .ics-Termintitel steckt und exakt der Excel-Spalte "Nr. Auditauftrag"
+// entspricht (= id), nicht über die .ics-UID.
+const TK_AO_CODE_RE = /AO-\d+/;
+
+function unfoldIcsLines(text) {
+  const rawLines = text.split(/\r\n|\n|\r/);
+  const lines = [];
+  rawLines.forEach(line => {
+    if ((line.startsWith(' ') || line.startsWith('\t')) && lines.length) lines[lines.length - 1] += line.slice(1);
+    else lines.push(line);
+  });
+  return lines;
+}
+
+function parseIcsDate(value) {
+  const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})(Z)?$/.exec(value);
+  if (!m) return null;
+  const [, y, mo, d, h, mi, s, z] = m;
+  return z ? new Date(Date.UTC(+y, +mo - 1, +d, +h, +mi, +s)) : new Date(+y, +mo - 1, +d, +h, +mi, +s);
+}
+
+// Schlanker Parser wie zuvor beim direkten .ics-Import — deckt nur ab, was
+// hier gebraucht wird (SUMMARY/DTSTART/DTEND), keine Wiederholungsregeln/
+// Zeitzonen-Blöcke. Unbekannte BEGIN/END-Blöcke innerhalb eines VEVENT
+// werden übersprungen statt zum Absturz zu führen.
+function parseIcsFile(text) {
+  const lines = unfoldIcsLines(text);
+  const events = [];
+  let cur = null;
+  let skipDepth = 0;
+  lines.forEach(rawLine => {
+    const line = rawLine.trim();
+    if (!line) return;
+    if (line.startsWith('BEGIN:')) {
+      const blockName = line.slice(6).trim();
+      if (blockName === 'VEVENT') cur = { summary: '', start: null, end: null };
+      else if (cur) skipDepth++;
+      return;
+    }
+    if (line.startsWith('END:')) {
+      const blockName = line.slice(4).trim();
+      if (blockName === 'VEVENT') { if (cur && cur.start) events.push(cur); cur = null; }
+      else if (skipDepth > 0) skipDepth--;
+      return;
+    }
+    if (!cur || skipDepth > 0) return;
+    const idx = line.indexOf(':');
+    if (idx === -1) return;
+    let key = line.slice(0, idx);
+    const semi = key.indexOf(';');
+    if (semi !== -1) key = key.slice(0, semi);
+    const value = line.slice(idx + 1);
+    if (key === 'SUMMARY') cur.summary = value.replace(/\\,/g, ',').replace(/\\;/g, ';').replace(/\\\\/g, '\\');
+    else if (key === 'DTSTART') cur.start = parseIcsDate(value.trim());
+    else if (key === 'DTEND') cur.end = parseIcsDate(value.trim());
+  });
+  return events.filter(e => e.start);
+}
+
+function applyIcsTimes(icsEvents) {
+  let matched = 0, unmatched = 0;
+  icsEvents.forEach(ic => {
+    const m = TK_AO_CODE_RE.exec(ic.summary);
+    const ev = m ? terminkalenderEvents.find(e => e.id === m[0]) : null;
+    if (ev) {
+      ev.date = ic.start;
+      ev.dateEnd = ic.end || null;
+      ev.hasTime = true;
+      matched++;
+    } else {
+      unmatched++;
+    }
+  });
+  return { matched, unmatched };
+}
+
+// ---- Geokodierung (OpenStreetMap Nominatim, öffentlich, kein API-Key) ----
+async function geocodeMissingAddresses() {
+  const pending = terminkalenderEvents.filter(e => e.address && e.lat == null && e.geocodeStatus !== 'failed');
+  for (let i = 0; i < pending.length; i++) {
+    const ev = pending[i];
+    setTerminkalenderStatus(`Geokodiere Adressen … ${i + 1}/${pending.length}`);
+    try {
+      const res = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(ev.address));
+      const data = await res.json();
+      if (data && data[0]) {
+        ev.lat = parseFloat(data[0].lat);
+        ev.lng = parseFloat(data[0].lon);
+        ev.geocodeStatus = 'ok';
+      } else {
+        ev.geocodeStatus = 'failed';
+      }
+    } catch {
+      ev.geocodeStatus = 'failed';
+    }
+    renderTerminkalenderSummary();
+    // Nominatim-Nutzungsbedingungen: max. 1 Anfrage/Sekunde.
+    if (i < pending.length - 1) await tkSleep(1100);
+  }
+  renderTerminkalenderGrid();
+}
+
+function eventRouteUrl(ev) {
+  if (ev.lat != null && ev.lng != null) return googleMapsDirectionsUrl(ev.lat, ev.lng);
+  if (ev.address) return 'https://www.google.com/maps/dir/?api=1&destination=' + encodeURIComponent(ev.address) + '&travelmode=driving';
+  return null;
+}
+
+// Reduziert eine roh aus der Excel übernommene Telefonnummer (z.B. "0341
+// 3150555") auf die für tel:-Links zulässigen Zeichen (Ziffern + führendes
+// "+"), damit ein Tap auf die Zeile auf dem Handy zuverlässig den Wähler öffnet.
+function telHref(raw) {
+  return raw.replace(/[^\d+]/g, '');
+}
+
+const TK_ICON_PIN = '<span class="material-symbols-rounded icon tk-contact-icon-pin" aria-hidden="true">location_on</span>';
+const TK_ICON_PHONE = '<span class="material-symbols-rounded icon" aria-hidden="true">call</span>';
+const TK_ICON_MAIL = '<span class="material-symbols-rounded icon" aria-hidden="true">mail</span>';
+
+// Baut die klickbaren Kontakt-Zeilen (Adresse mit Google-Maps-Link, Telefon/
+// Mobil mit tel:-Link + Telefonhörer-Symbol in Accent-Farbe, E-Mail mit
+// mailto:-Link) — als ganze Zeile tappbar statt nur ein kleines Icon, damit
+// das auf dem Handy zuverlässig trifft.
+function renderTerminkalenderContactRows(ev) {
+  const routeUrl = eventRouteUrl(ev);
+  const rows = [];
+  if (ev.address) {
+    rows.push(`<a class="tk-contact-row" href="${routeUrl}" target="_blank" rel="noopener">
+      <span class="tk-contact-icon">${TK_ICON_PIN}</span>
+      <span class="tk-contact-text">${escapeHtml(ev.address)}</span>
+    </a>`);
+  }
+  if (ev.telefon) {
+    rows.push(`<a class="tk-contact-row tk-contact-row-call" href="tel:${escapeHtml(telHref(ev.telefon))}">
+      <span class="tk-contact-icon">${TK_ICON_PHONE}</span>
+      <span class="tk-contact-text">Telefon: ${escapeHtml(ev.telefon)}</span>
+    </a>`);
+  }
+  if (ev.mobil) {
+    rows.push(`<a class="tk-contact-row tk-contact-row-call" href="tel:${escapeHtml(telHref(ev.mobil))}">
+      <span class="tk-contact-icon">${TK_ICON_PHONE}</span>
+      <span class="tk-contact-text">Mobil: ${escapeHtml(ev.mobil)}</span>
+    </a>`);
+  }
+  if (ev.email) {
+    rows.push(`<a class="tk-contact-row" href="mailto:${escapeHtml(ev.email)}">
+      <span class="tk-contact-icon">${TK_ICON_MAIL}</span>
+      <span class="tk-contact-text">${escapeHtml(ev.email)}</span>
+    </a>`);
+  }
+  if (!rows.length) return '<p class="empty-hint">Keine Adresse/Kontaktdaten bekannt.</p>';
+  return `<div class="tk-contact-list">${rows.join('')}</div>`;
+}
+
+// ---- UI-Elemente ----
+const terminkalenderNotLoggedIn = document.getElementById('terminkalender-not-logged-in');
+const terminkalenderControls = document.getElementById('terminkalender-controls');
+const terminkalenderLoginGate = document.getElementById('terminkalender-login-gate');
+const terminkalenderStatusEl = document.getElementById('terminkalender-status');
+const terminkalenderSummaryEl = document.getElementById('terminkalender-summary');
+
+function setTerminkalenderStatus(msg) { terminkalenderStatusEl.textContent = msg; }
+
+function renderTerminkalenderSummary() {
+  if (terminkalenderEvents.length) markToolHintDone('terminkalender');
+  if (!terminkalenderEvents.length) {
+    terminkalenderSummaryEl.textContent = 'Noch keine Termine geladen.';
+    return;
+  }
+  const withAddress = terminkalenderEvents.filter(e => e.address).length;
+  const geocoded = terminkalenderEvents.filter(e => e.lat != null).length;
+  const unbestaetigt = terminkalenderEvents.filter(e => !e.bestaetigt).length;
+  const termine = tkAllGroups().length;
+  const auftraege = terminkalenderEvents.length;
+  terminkalenderSummaryEl.textContent =
+    `${termine} Termine (${auftraege} ${auftraege === 1 ? 'Auftrag' : 'Aufträge'}) geladen, davon ${withAddress} mit Adresse, ${geocoded} geokodiert, ${unbestaetigt} unbestätigt.`;
+}
+
+// ---------- Kontrolle ----------
+// Funktion "Kontrolle" mit Unterfunktionen als Reiter (Übersicht, Kalender —
+// weitere folgen: Eintrag in KONTROLLE_TABS + Panel in index.html). Die
+// Termin-Daten heißen intern weiter terminkalenderEvents (Cloud-Format
+// unverändert). Ein Termin öffnet die Kontrollmappe (siehe
+// renderTerminkalenderDetail).
+const KONTROLLE_TABS = { betrieb: 'kontrolle-betrieb', uebersicht: 'kontrolle-uebersicht', kalender: 'terminkalender-main', dokumente: 'kontrolle-dokumente' };
+// Zwei Bereiche in EINER Ansicht (intern "kontrolle"), je mit eigenem Knopf in
+// der Seitenleiste: "Dashboard" (Reiter Übersicht, Kalender, Dokumente) und
+// "Betrieb" (die Seite des gewählten Betriebs, ohne Reiter).
+let kontrolleTab = 'uebersicht';
+let kontrolleDashTab = 'uebersicht';   // zuletzt gewählter Reiter im Dashboard
+let kontrolleStart = null;             // von der Seitenleiste gewünschter Bereich
+const TK_MODE_KEY = 'feldfolio-tk-mode';
+const TK_MAP_KEY = 'feldfolio-tk-map';
+let tkMode = 'woche';
+let tkMapVisible = false;
+try {
+  if (localStorage.getItem(TK_MODE_KEY) === 'liste') tkMode = 'liste';
+  tkMapVisible = localStorage.getItem(TK_MAP_KEY) === '1';
+} catch {}
+
+// Öffnet die Kontrolle: prüft Login und zeigt den zuletzt gewählten Reiter.
+function openKontrolle() {
+  const loggedIn = isSupabaseConfigured && !!accountSession;
+  terminkalenderNotLoggedIn.hidden = loggedIn;
+  terminkalenderControls.hidden = !loggedIn;
+  terminkalenderLoginGate.hidden = loggedIn;
+  document.getElementById('kontrolle-main').hidden = !loggedIn;
+  if (!loggedIn) return;
+  document.getElementById('ko-header-date').textContent =
+    new Date().toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  renderTerminkalenderSummary();
+  // Seitenleiste: "Betrieb" -> Betriebsseite, "Dashboard" -> zuletzt gewählter Reiter (anfangs Übersicht)
+  const bereich = kontrolleStart || (kontrolleTab === 'betrieb' ? 'betrieb' : 'dashboard');
+  kontrolleStart = null;
+  setKontrolleTab(bereich === 'betrieb' ? 'betrieb' : kontrolleDashTab);
+}
+
+function setKontrolleTab(tab) {
+  if (!KONTROLLE_TABS[tab]) tab = 'uebersicht';
+  kontrolleTab = tab;
+  const istBetrieb = tab === 'betrieb';
+  if (!istBetrieb) kontrolleDashTab = tab;
+  // Kopf, Reiter und Seitenleiste je Bereich
+  document.getElementById('ko-header-title').textContent = istBetrieb ? 'Betrieb' : 'Dashboard';
+  document.getElementById('kontrolle-tabs').hidden = istBetrieb;
+  document.getElementById('kontrolle-subnav').hidden = istBetrieb;
+  document.getElementById('kontrolle-import').hidden = istBetrieb;
+  document.getElementById('kontrolle-betrieb-hinweis').hidden = !istBetrieb;
+  document.body.dataset.koBereich = istBetrieb ? 'betrieb' : 'dashboard'; // fürs Symbol in der Kopfzeile (design-feldbuch.css)
+  if (document.body.dataset.view === 'kontrolle') {
+    document.getElementById('kontrolle-switcher').classList.toggle('active', !istBetrieb);
+    document.getElementById('betrieb-switcher').classList.toggle('active', istBetrieb);
+    document.getElementById('current-view-title').textContent = istBetrieb ? 'Betrieb' : 'Dashboard';
+    document.getElementById('current-view-icon').textContent = istBetrieb ? 'business' : 'space_dashboard';
+    document.getElementById('brand-caption').textContent = istBetrieb ? 'Termine, Unterlagen und Funktionen des gewählten Betriebs' : SEGMENT_CAPTIONS.kontrolle;
+  }
+  Object.entries(KONTROLLE_TABS).forEach(([key, panelId]) => {
+    document.getElementById(panelId).hidden = key !== tab;
+  });
+  document.querySelectorAll('#kontrolle-tabs [data-ko-tab]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.koTab === tab)));
+  document.querySelectorAll('#kontrolle-subnav [data-ko-tab]').forEach(b => {
+    b.classList.toggle('active', b.dataset.koTab === tab);
+    if (b.dataset.koTab === tab) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+  });
+  if (tab === 'kalender') {
+    applyTkMapVisibility();
+    renderTerminkalenderGrid();
+  } else if (tab === 'betrieb') {
+    updateKontrolleCounts();
+    renderKontrolleBetrieb();
+  } else if (tab === 'dokumente') {
+    updateKontrolleCounts();
+    renderKontrolleDokumente();
+  } else {
+    renderKontrolleUebersicht();
+  }
+}
+// Reiter-Knöpfe (Kopf, Seitenleiste) und Verweise in den Bausteinen der Übersicht
+document.querySelectorAll('#kontrolle-tabs, #kontrolle-subnav, #kontrolle-uebersicht').forEach(bereich => {
+  bereich.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-ko-tab]');
+    if (!btn) return;
+    setKontrolleTab(btn.dataset.koTab);
+    closeMobileSidebar();
+  });
+});
+document.getElementById('kontrolle-btn-login').addEventListener('click', () => openAccountModal());
+
+// Kalender: Woche (Spalten) oder Liste (Tage untereinander, am Handy immer).
+function applyTkMode() {
+  document.getElementById('terminkalender-grid').classList.toggle('tk-list', tkMode === 'liste');
+  document.querySelectorAll('#tk-mode [data-mode]').forEach(b => b.setAttribute('aria-checked', String(b.dataset.mode === tkMode)));
+}
+document.querySelectorAll('#tk-mode [data-mode]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    tkMode = btn.dataset.mode;
+    try { localStorage.setItem(TK_MODE_KEY, tkMode); } catch {}
+    applyTkMode();
+  });
+});
+applyTkMode();
+
+// Kalender: Karte mit den Terminorten nur auf Wunsch (Platz für die Woche).
+function applyTkMapVisibility() {
+  document.getElementById('terminkalender-side').hidden = !tkMapVisible;
+  const btn = document.getElementById('tk-map-toggle');
+  btn.setAttribute('aria-pressed', String(tkMapVisible));
+  btn.classList.toggle('active', tkMapVisible);
+  if (tkMapVisible) {
+    initTerminkalenderMap();
+    requestAnimationFrame(() => {
+      if (!terminkalenderMap) return;
+      terminkalenderMap.invalidateSize();
+      renderTerminkalenderMapPins(tkGroupEvents(eventsForVisibleWeek()).filter(g => g.lat != null));
+    });
+  }
+}
+document.getElementById('tk-map-toggle').addEventListener('click', () => {
+  tkMapVisible = !tkMapVisible;
+  try { localStorage.setItem(TK_MAP_KEY, tkMapVisible ? '1' : '0'); } catch {}
+  applyTkMapVisibility();
+});
+
+// ---- Übersicht ----
+function tkDayStart(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
+function tkAddDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+function tkTimeLabel(ev) {
+  return ev.hasTime ? ev.date.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' }) : 'ganztägig';
+}
+function tkDayLabel(d) {
+  const today = tkDayStart(new Date());
+  const diff = Math.round((tkDayStart(d) - today) / 86400000);
+  const base = d.toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
+  if (diff === 0) return 'Heute · ' + base;
+  if (diff === 1) return 'Morgen · ' + base;
+  return base;
+}
+function tkSortByDate(a, b) {
+  if (a.date.toDateString() === b.date.toDateString() && a.hasTime !== b.hasTime) return a.hasTime ? -1 : 1;
+  return a.date - b.date;
+}
+// ---- Termine = gebündelte Aufträge ----
+// Das Portal liefert je Auftrag (AO-Nummer) eine eigene Zeile — beim selben
+// Betrieb, selben Tag und selber Uhrzeit sind das aber EIN Termin mit
+// mehreren Aufträgen (Verbandskontrollen wie Demeter/Bioland, Probenahmen,
+// CC-Anfragen …). Gespeichert bleibt weiter ein Eintrag je Auftrag (Import,
+// .ics-Uhrzeiten und Cloud-Abgleich laufen unverändert über die AO-Nummer);
+// gebündelt wird nur für die Anzeige. Fotos/Protokolle/Notizen des Termins
+// liegen am Haupt-Auftrag (primary), siehe tkAbsorbGroupData().
+
+// Bio-Verbände: Name als farbiges Schild (keine Logos — geschützte Marken).
+// Farben angelehnt an die Verbandsfarben, hier zentral anpassbar.
+const TK_VERBAENDE = [
+  { key: 'demeter', label: 'Demeter', re: /demeter/i, bg: '#E07B00', fg: '#FFFFFF' },
+  { key: 'bioland', label: 'Bioland', re: /bioland/i, bg: '#00843D', fg: '#FFFFFF' },
+  { key: 'naturland', label: 'Naturland', re: /naturland/i, bg: '#1B7A6E', fg: '#FFFFFF' },
+  { key: 'biokreis', label: 'Biokreis', re: /biokreis/i, bg: '#1F5FA8', fg: '#FFFFFF' },
+  { key: 'gaea', label: 'Gäa', re: /g(ä|ae)a\b/i, bg: '#C8102E', fg: '#FFFFFF' },
+  { key: 'biopark', label: 'Biopark', re: /biopark/i, bg: '#6E9F1E', fg: '#FFFFFF' },
+  { key: 'ecovin', label: 'Ecovin', re: /ecovin/i, bg: '#7B2C3B', fg: '#FFFFFF' },
+  { key: 'ecoland', label: 'Ecoland', re: /ecoland/i, bg: '#4F6B2F', fg: '#FFFFFF' },
+  { key: 'oekohoefe', label: 'Verbund Ökohöfe', re: /(ö|oe)koh(ö|oe)fe/i, bg: '#8A6D3B', fg: '#FFFFFF' }
+];
+// Weitere Auftragsarten (neutrales Schild mit Symbol).
+const TK_AUFTRAG_ARTEN = [
+  { key: 'probe', label: 'Probenahme', icon: 'science', test: t => /probe?n?(ent)?nahme|probenentnahme|probeentnahme|\bproben?\b/i.test(t.replace(/stichprobe/gi, '')) },
+  { key: 'cc', label: 'CC-Anfrage', icon: 'compare_arrows', test: t => /\bcc\b|cross[\s-]?check/i.test(t) }
+];
+
+function tkAuftragText(ev) {
+  return [ev.auditart, ev.dienstleistungen, ev.format].filter(Boolean).join(' ');
+}
+function tkClassifyAuftrag(ev) {
+  const text = tkAuftragText(ev);
+  return {
+    verbaende: TK_VERBAENDE.filter(v => v.re.test(text)),
+    arten: TK_AUFTRAG_ARTEN.filter(a => a.test(text))
+  };
+}
+function tkChipHtml(item) {
+  if (item.bg) {
+    return `<span class="tk-chip tk-chip-verband" data-verband="${item.key}" style="--chip-bg:${item.bg};--chip-fg:${item.fg}">${escapeHtml(item.label)}</span>`;
+  }
+  return `<span class="tk-chip tk-chip-art" data-art="${item.key}"><span class="material-symbols-rounded icon" aria-hidden="true">${item.icon}</span>${escapeHtml(item.label)}</span>`;
+}
+// Alle Schilder eines Termins (Verbände zuerst, doppelte nur einmal).
+function tkGroupChipItems(group) {
+  const seen = new Set();
+  const items = [];
+  group.members.forEach(ev => {
+    const c = tkClassifyAuftrag(ev);
+    [...c.verbaende, ...c.arten].forEach(it => { if (!seen.has(it.key)) { seen.add(it.key); items.push(it); } });
+  });
+  return items.sort((a, b) => (b.bg ? 1 : 0) - (a.bg ? 1 : 0));
+}
+function tkGroupChipsHtml(group, max = 99) {
+  const items = tkGroupChipItems(group);
+  if (!items.length) return '';
+  const shown = items.slice(0, max).map(tkChipHtml).join('');
+  const more = items.length > max ? `<span class="tk-chip tk-chip-more">+${items.length - max}</span>` : '';
+  return `<span class="tk-chips">${shown}${more}</span>`;
+}
+
+function tkHasTerminData(ev) {
+  return (ev.attachments || []).length || (ev.notiz || '').trim() || (ev.warenfluss || []).length ||
+    Object.keys(TK_FORMULARE).some(k => (ev[tkFormularDef(k).listKey] || []).length);
+}
+function tkMinuteOfDay(ev) { return ev.date.getHours() * 60 + ev.date.getMinutes(); }
+
+function tkMakeGroup(members) {
+  // Haupt-Auftrag: der mit schon vorhandenen Unterlagen (bleibt so stabil),
+  // sonst der Grund-Auftrag ohne Verband/Sonderart, sonst der erste.
+  const score = ev => {
+    if (tkHasTerminData(ev)) return 0;
+    const c = tkClassifyAuftrag(ev);
+    return (c.verbaende.length || c.arten.length) ? 2 : 1;
+  };
+  const sorted = members.slice().sort((a, b) => score(a) - score(b) || String(a.id).localeCompare(String(b.id)));
+  const primary = sorted[0];
+  const timed = members.find(e => e.hasTime);
+  const dateSource = timed || primary;
+  const withCoords = members.find(e => e.lat != null);
+  return {
+    id: primary.id,
+    primary,
+    members: sorted,
+    kunde: primary.kunde,
+    date: dateSource.date,
+    dateEnd: dateSource.dateEnd || null,
+    hasTime: !!timed,
+    bestaetigt: members.every(e => e.bestaetigt),
+    urgent: members.some(e => (e.prioritaet && e.prioritaet !== 'Normal') || e.unangemeldet),
+    lat: withCoords ? withCoords.lat : null,
+    lng: withCoords ? withCoords.lng : null
+  };
+}
+// Gleicher Betrieb + gleicher Tag; unterschiedliche Uhrzeiten bleiben
+// getrennte Termine (Aufträge ohne Uhrzeit schließen sich dann zusammen).
+function tkGroupEvents(events) {
+  const buckets = new Map();
+  events.forEach(e => {
+    const key = e.kunde.trim().toLocaleLowerCase('de-DE') + '|' + e.date.toDateString();
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(e);
+  });
+  const groups = [];
+  buckets.forEach(list => {
+    const times = [...new Set(list.filter(e => e.hasTime).map(tkMinuteOfDay))];
+    if (times.length <= 1) { groups.push(tkMakeGroup(list)); return; }
+    times.forEach(t => groups.push(tkMakeGroup(list.filter(e => e.hasTime && tkMinuteOfDay(e) === t))));
+    const untimed = list.filter(e => !e.hasTime);
+    if (untimed.length) groups.push(tkMakeGroup(untimed));
+  });
+  return groups.sort(tkSortByDate);
+}
+function tkAllGroups() { return tkGroupEvents(terminkalenderEvents); }
+function tkGroupFor(id) {
+  return tkAllGroups().find(g => g.members.some(m => m.id === id)) || null;
+}
+// Unterlagen einzelner Aufträge (z. B. aus der Zeit vor dem Bündeln) am
+// Haupt-Auftrag zusammenführen — nichts geht verloren, alles an einer Stelle.
+function tkAbsorbGroupData(group) {
+  const p = group.primary;
+  group.members.forEach(m => {
+    if (m === p) return;
+    if ((m.attachments || []).length) { p.attachments = [...(p.attachments || []), ...m.attachments]; m.attachments = []; }
+    Object.keys(TK_FORMULARE).forEach(k => {
+      const key = tkFormularDef(k).listKey;
+      if ((m[key] || []).length) { p[key] = [...(p[key] || []), ...m[key]]; m[key] = []; }
+    });
+    if ((m.notiz || '').trim()) {
+      p.notiz = [p.notiz, m.notiz].filter(s => (s || '').trim()).join('\n\n');
+      m.notiz = '';
+    }
+    if ((m.warenfluss || []).length) { p.warenfluss = [...(p.warenfluss || []), ...m.warenfluss]; m.warenfluss = []; }
+  });
+}
+function tkGroupIsZugeordnet(group) {
+  return !!(activeZuordnung && group.members.some(m => m.id === activeZuordnung.terminId));
+}
+
+function kontrolleWeekGroups() {
+  const start = getMondayOfWeek(new Date());
+  const end = tkAddDays(start, 7);
+  return tkGroupEvents(terminkalenderEvents.filter(e => e.date >= start && e.date < end));
+}
+function updateKontrolleCounts() {
+  const el = document.getElementById('ko-subnav-count-woche');
+  const n = kontrolleWeekGroups().length;
+  el.textContent = n;
+  el.hidden = !n;
+  const dok = document.getElementById('ko-subnav-count-dok');
+  const nDok = terminkalenderEvents.reduce((sum, e) => sum + (e.attachments || []).length, 0) + myUploads().length;
+  dok.textContent = nDok;
+  dok.hidden = !nDok;
+}
+function tkEventActionsHtml(ev) {
+  const actions = [];
+  if (ev.address || ev.lat != null) {
+    actions.push(`<a class="ko-icon-btn" href="${eventRouteUrl(ev)}" target="_blank" rel="noopener" title="Route" aria-label="Route zu ${escapeHtml(ev.kunde)}"><span class="material-symbols-rounded icon" aria-hidden="true">directions</span></a>`);
+  }
+  const tel = ev.mobil || ev.telefon;
+  if (tel) {
+    actions.push(`<a class="ko-icon-btn" href="tel:${escapeHtml(telHref(tel))}" title="Anrufen: ${escapeHtml(tel)}" aria-label="${escapeHtml(ev.kunde)} anrufen"><span class="material-symbols-rounded icon" aria-hidden="true">call</span></a>`);
+  }
+  return actions.join('');
+}
+
+// ---- Übersicht als Baukasten (Raster + Bearbeiten-Modus: src/dashboard.js) ----
+// Jeder Nutzer stellt sich die Übersicht selbst zusammen ("Anpassen"); die Wahl
+// liegt in kontoProfil.dashboard und wird mit dem Konto abgeglichen.
+// Plätze im Raster mit 12 Spalten (x, w) und Zeilen zu 48 px (y, h).
+const KO_LAYOUT_STANDARD = [
+  { id: 'kennzahlen', x: 0, y: 0, w: 12, h: 2 },
+  { id: 'agenda', x: 0, y: 2, w: 6, h: 8 }, { id: 'karte', x: 6, y: 2, w: 6, h: 8 },
+  { id: 'dokumente', x: 0, y: 10, w: 6, h: 7 }, { id: 'protokolle', x: 6, y: 10, w: 6, h: 7 },
+  { id: 'schnell', x: 0, y: 17, w: 12, h: 3 }
+];
+let koBearbeiten = false;
+let koKarte = null;        // Leaflet-Karte des Bausteins "Karte"
+let koKarteWoche = 0;      // gezeigte Kalenderwoche des Bausteins, relativ zur aktuellen
+function koWoche() { const start = tkAddDays(getMondayOfWeek(new Date()), koKarteWoche * 7); return { start, ende: tkAddDays(start, 7) }; }
+function koWochenGruppen() { const { start, ende } = koWoche(); return tkGroupEvents(terminkalenderEvents.filter(e => e.date >= start && e.date < ende)); }
+let koNotizTimer = null;
+const koLeer = (icon, text) => `<div class="ko-empty ko-empty-small"><span class="material-symbols-rounded icon" aria-hidden="true">${icon}</span><p>${text}</p></div>`;
+const koListe = (zeilen, mehr = '') => `<div class="ko-w-liste">${zeilen.join('')}</div>${mehr}`;
+// Zeile einer Liste: Symbol, Titel, Unterzeile; attrs = data-…-Attribute für den Klick
+const koZeile = (attrs, icon, titel, sub, cls = '') => `<button type="button" class="ko-w-zeile${cls ? ' ' + cls : ''}" ${attrs}>
+    <span class="material-symbols-rounded icon" aria-hidden="true">${icon}</span>
+    <span class="ko-w-zeile-text"><span class="ko-w-zeile-titel">${escapeHtml(titel)}</span><span class="ko-w-zeile-sub">${sub}</span></span></button>`;
+function koKommend(tage) {
+  const today = tkDayStart(new Date());
+  return tkGroupEvents(terminkalenderEvents.filter(e => e.date >= today && e.date < tkAddDays(today, tage)));
+}
+// Protokolle (Formulare + Warenfluss) aller Termine, zuletzt bearbeitete zuerst
+function koProtokolle() {
+  const out = [];
+  terminkalenderEvents.forEach(e => {
+    Object.keys(TK_FORMULARE).forEach(kind => {
+      const def = tkFormularDef(kind);
+      (e[def.listKey] || []).forEach(p => out.push({ ev: e, zeit: p.updatedAt || p.createdAt || '', icon: 'science', titel: def.rowTitle(p) || def.title, art: def.title,
+        offen: probenprotokollMissing(p, kind).length > 0 }));
+    });
+    (e.warenfluss || []).forEach(c => { const info = warenflussRowInfo(c); out.push({ ev: e, zeit: c.updatedAt || c.createdAt || '', icon: info.icon, titel: info.titel, art: 'Warenfluss', offen: false }); });
+  });
+  return out.sort((a, b) => String(b.zeit).localeCompare(String(a.zeit)));
+}
+
+const KO_BAUSTEINE = {
+  kennzahlen: {
+    titel: 'Kennzahlen', icon: 'donut_small', text: 'Termine heute und diese Woche, Aufträge', rahmenlos: true, w: 12, h: 2,
+    inhalt() {
+      const tomorrow = tkAddDays(tkDayStart(new Date()), 1);
+      const todayCount = koKommend(7).filter(g => g.date < tomorrow).length;
+      const weekGroups = kontrolleWeekGroups();
+      const kpi = (icon, value, label) => `<div class="ko-kpi">
+          <span class="material-symbols-rounded icon" aria-hidden="true">${icon}</span>
+          <span class="ko-kpi-value">${value}</span>
+          <span class="ko-kpi-label">${label}</span>
+        </div>`;
+      return `<div class="ko-kpis" id="ko-kpis">${kpi('today', todayCount, 'Termine heute')
+        + kpi('calendar_month', weekGroups.length, 'Termine diese Woche')
+        + kpi('assignment', weekGroups.reduce((n, g) => n + g.members.length, 0), 'Aufträge diese Woche')}</div>`;
+    }
+  },
+  agenda: {
+    titel: 'Heute & nächste Tage', icon: 'today', text: 'Termine der nächsten 7 Tage mit Route und Anruf', h: 8,
+    aktion: '<button type="button" class="ko-link-btn" data-ko-tab="kalender">Zum Kalender</button>',
+    inhalt() {
+      const upcoming = koKommend(7);
+      let html;
+      if (!terminkalenderEvents.length) {
+        html = `<div class="ko-empty">
+            <span class="material-symbols-rounded icon" aria-hidden="true">upload_file</span>
+            <p><strong>Noch keine Termine</strong><br>Lade die Termine als Excel aus dem Portal.</p>
+            <button type="button" class="betrieb-btn primary" id="ko-btn-import" data-ko-akt="import">Termine importieren</button>
+          </div>`;
+      } else if (!upcoming.length) {
+        html = koLeer('event_available', 'Keine Termine in den nächsten 7 Tagen.');
+      } else {
+        html = '';
+        let lastDay = '';
+        upcoming.forEach(g => {
+          const dayKey = g.date.toDateString();
+          if (dayKey !== lastDay) { html += `<div class="ko-day-label">${escapeHtml(tkDayLabel(g.date))}</div>`; lastDay = dayKey; }
+          const ev = g.primary;
+          const count = g.members.length > 1 ? `<span class="tk-auftrag-count">${g.members.length} Aufträge</span>` : '';
+          html += `<div class="ko-agenda-row${g.urgent ? ' is-warn' : ''}">
+            <button type="button" class="ko-agenda-main" data-open-termin="${escapeHtml(g.id)}">
+              <span class="ko-agenda-time">${tkTimeLabel(g)}</span>
+              <span class="ko-agenda-text">
+                <span class="ko-agenda-title">${escapeHtml(g.kunde)}${count}</span>
+                <span class="ko-agenda-sub">${escapeHtml([ev.auditart, ev.ort].filter(Boolean).join(' · '))}</span>
+                ${tkGroupChipsHtml(g)}
+              </span>
+            </button>
+            <span class="ko-agenda-actions">${tkEventActionsHtml(ev)}</span>
+          </div>`;
+        });
+      }
+      return `<div id="ko-agenda">${html}</div>`;
+    }
+  },
+  karte: {
+    titel: 'Karte der Termine', icon: 'map', text: 'Die Termine einer Kalenderwoche auf der Karte', h: 8,
+    inhalt() {
+      const { start } = koWoche();
+      const { week, year } = getISOWeek(start);
+      const kurz = (d) => d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
+      const alle = koWochenGruppen();
+      const punkte = alle.filter(g => g.primary.lat != null && g.primary.lng != null);
+      const ohne = alle.length - punkte.length;
+      return `<div class="ko-w-kw">
+          <button type="button" class="ko-icon-btn" data-ko-akt="kw-zurueck" title="Vorherige Woche" aria-label="Vorherige Woche"><span class="material-symbols-rounded icon" aria-hidden="true">chevron_left</span></button>
+          <span class="ko-w-kw-text" id="ko-w-kw"><b>KW ${week}</b> · ${kurz(start)}–${kurz(tkAddDays(start, 6))}${year !== new Date().getFullYear() ? ' ' + year : ''}</span>
+          <button type="button" class="ko-icon-btn" data-ko-akt="kw-vor" title="Nächste Woche" aria-label="Nächste Woche"><span class="material-symbols-rounded icon" aria-hidden="true">chevron_right</span></button>
+          ${koKarteWoche ? '<button type="button" class="ko-link-btn" data-ko-akt="kw-heute">Diese Woche</button>' : ''}
+          <span class="ko-w-kw-zahl">${alle.length} ${alle.length === 1 ? 'Termin' : 'Termine'}${ohne ? `, ${ohne} ohne Adresse` : ''}</span>
+        </div>`
+        + (punkte.length ? '<div class="ko-w-karte" id="ko-w-karte"></div>'
+          : koLeer('map', alle.length ? 'Die Termine dieser Woche haben keine Adresse.' : 'Keine Termine in dieser Woche.'));
+    },
+    danach(el) {
+      if (koKarte) { koKarte.remove(); koKarte = null; }
+      const ziel = el.querySelector('#ko-w-karte');
+      if (!ziel || typeof L === 'undefined') return;
+      const punkte = koWochenGruppen().filter(g => g.primary.lat != null && g.primary.lng != null);
+      koKarte = L.map(ziel, { zoomControl: false, scrollWheelZoom: false, attributionControl: true });
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '&copy; OpenStreetMap' }).addTo(koKarte);
+      const marker = punkte.map(g => {
+        const mk = L.circleMarker([g.primary.lat, g.primary.lng], { radius: 8, color: '#fff', weight: 2, fillColor: g.urgent ? '#E8A33D' : '#7FA36B', fillOpacity: 1 }).addTo(koKarte);
+        mk.bindTooltip(`${escapeHtml(g.kunde)} · ${escapeHtml(tkFmtDate(g.date))}`);
+        mk.on('click', () => openKontrollmappe(g.id, 'ueberblick'));
+        return mk;
+      });
+      koKarte.fitBounds(L.featureGroup(marker).getBounds(), { padding: [28, 28], maxZoom: 12 });
+    }
+  },
+  dokumente: {
+    titel: 'Neueste Dokumente', icon: 'folder_open', text: 'Die zuletzt hinzugefügten Fotos und Dateien', h: 7,
+    aktion: '<button type="button" class="ko-link-btn" data-ko-tab="dokumente">Alle Dokumente</button>',
+    inhalt() {
+      const neu = dokumenteNeueste(6);
+      if (!neu.length) return koLeer('folder_open', 'Noch keine Dokumente.');
+      return koListe(neu.map((d, i) => koZeile(`data-ko-dok="${i}"`, /pdf$/i.test(d.type || d.name) ? 'picture_as_pdf' : (d.type || '').startsWith('image/') ? 'photo_camera' : 'description',
+        d.name, `${escapeHtml(d.betrieb)} · ${escapeHtml(tkFmtDate(new Date(d.terminDatum)))}`)));
+    }
+  },
+  protokolle: {
+    titel: 'Zuletzt bearbeitete Protokolle', icon: 'fact_check', text: 'Probenahme, Cross Check und Warenfluss über alle Termine', h: 7,
+    inhalt() {
+      const liste = koProtokolle().slice(0, 6);
+      if (!liste.length) return koLeer('fact_check', 'Noch keine Protokolle.');
+      return koListe(liste.map(p => koZeile(`data-open-termin="${escapeHtml((tkGroupFor(p.ev.id) || p.ev).id)}" data-open-tab="protokolle"`, p.icon, p.titel,
+        `${escapeHtml(p.art)} · ${escapeHtml(p.ev.kunde)} · ${escapeHtml(tkFmtDate(p.ev.date))}${p.offen ? ' · <span class="kb-warn">unvollständig</span>' : ''}`)));
+    }
+  },
+  schnell: {
+    titel: 'Schnellzugriff', icon: 'bolt', text: 'Häufige Schritte mit einem Tipp', w: 12, h: 3,
+    inhalt() {
+      const heute = koKommend(1)[0];
+      const knopf = (attrs, icon, text) => `<button type="button" class="ko-w-schnell" ${attrs}><span class="material-symbols-rounded icon" aria-hidden="true">${icon}</span>${text}</button>`;
+      return `<div class="ko-w-schnellraster">
+        ${heute ? knopf(`data-open-termin="${escapeHtml(heute.id)}"`, 'today', 'Heutigen Termin öffnen') : ''}
+        ${knopf('data-ko-tab="kalender"', 'calendar_month', 'Kalender')}
+        ${knopf('data-ko-tab="dokumente"', 'folder_open', 'Dokumente')}
+        ${knopf('data-ko-akt="betrieb"', 'business', activeZuordnung ? 'Betrieb wechseln' : 'Betrieb wählen')}
+        ${knopf('data-ko-akt="import"', 'upload_file', 'Termine importieren')}
+      </div>`;
+    }
+  },
+  offen: {
+    titel: 'Zu erledigen', icon: 'checklist', text: 'Unbestätigte und unangemeldete Termine, offene Uploads, unvollständige Protokolle', h: 7,
+    inhalt() {
+      const zeilen = [];
+      koKommend(30).forEach(g => {
+        const was = [!g.bestaetigt ? 'unbestätigt' : '', g.members.some(m => m.unangemeldet) ? 'unangemeldet' : '', !(g.primary.address || g.primary.lat != null) ? 'ohne Adresse' : ''].filter(Boolean);
+        if (was.length) zeilen.push(koZeile(`data-open-termin="${escapeHtml(g.id)}"`, 'event_upcoming', g.kunde, `${escapeHtml(tkFmtDate(g.date))} · <span class="kb-warn">${was.join(', ')}</span>`));
+      });
+      koProtokolle().filter(p => p.offen).forEach(p => zeilen.push(koZeile(`data-open-termin="${escapeHtml((tkGroupFor(p.ev.id) || p.ev).id)}" data-open-tab="protokolle"`, 'fact_check', p.titel,
+        `${escapeHtml(p.ev.kunde)} · <span class="kb-warn">${escapeHtml(p.art)} unvollständig</span>`)));
+      const warten = myUploads();
+      if (warten.length) zeilen.unshift(koZeile('data-ko-tab="dokumente"', 'cloud_upload', `${warten.length} ${warten.length === 1 ? 'Datei wartet' : 'Dateien warten'} auf den Upload`,
+        warten.some(r => r.status === 'error') ? '<span class="kb-warn">mindestens ein Upload ist fehlgeschlagen</span>' : 'wird bei Verbindung automatisch nachgeholt'));
+      if (!zeilen.length) return koLeer('task_alt', 'Nichts offen.');
+      return koListe(zeilen.slice(0, 8), zeilen.length > 8 ? `<p class="ko-w-mehr">und ${zeilen.length - 8} weitere</p>` : '');
+    }
+  },
+  betrieb: {
+    titel: 'Aktueller Betrieb', icon: 'business', text: 'Der gewählte Betrieb mit nächstem Termin', h: 4,
+    aktion: '<button type="button" class="ko-link-btn" data-ko-tab="betrieb">Zur Betriebsseite</button>',
+    inhalt() {
+      if (!activeZuordnung) return `<div class="ko-empty ko-empty-small"><span class="material-symbols-rounded icon" aria-hidden="true">business</span><p>Kein Betrieb gewählt.</p>
+        <button type="button" class="betrieb-btn primary" data-ko-akt="betrieb">Betrieb wählen</button></div>`;
+      const gruppen = tkGroupEvents(kbEvents(activeZuordnung.betrieb));
+      const naechster = kbCurrentGroup(gruppen);
+      const dok = kbEvents(activeZuordnung.betrieb).reduce((n, e) => n + (e.attachments || []).length, 0);
+      return `<div class="ko-w-betrieb"><b>${escapeHtml(activeZuordnung.betrieb)}</b>
+        <span>${naechster ? `Termin ${escapeHtml(tkFmtDate(naechster.date))} · ${escapeHtml(naechster.primary.auditart || '')}` : 'Kein Termin'}</span>
+        <span>${gruppen.length} ${gruppen.length === 1 ? 'Termin' : 'Termine'} · ${dok} ${dok === 1 ? 'Dokument' : 'Dokumente'}</span></div>
+        ${naechster ? `<button type="button" class="betrieb-btn" data-open-termin="${escapeHtml(naechster.id)}"><span class="material-symbols-rounded icon" aria-hidden="true">fact_check</span>Kontrollmappe öffnen</button>` : ''}`;
+    }
+  },
+  auftraege: {
+    titel: 'Aufträge nach Art', icon: 'bar_chart', text: 'Was in den nächsten 30 Tagen ansteht', h: 6,
+    inhalt() {
+      const zahl = new Map();
+      koKommend(30).forEach(g => g.members.forEach(m => { const k = (m.auditart || 'Ohne Angabe').trim(); zahl.set(k, (zahl.get(k) || 0) + 1); }));
+      const liste = [...zahl.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+      if (!liste.length) return koLeer('bar_chart', 'Keine Aufträge in den nächsten 30 Tagen.');
+      const max = liste[0][1];
+      return `<div class="ko-w-balken">${liste.map(([name, n]) => `<div class="ko-w-balkenzeile"><span class="ko-w-balkenname" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+        <span class="ko-w-balkenspur"><span style="width:${Math.round(n / max * 100)}%"></span></span><span class="ko-w-balkenzahl">${n}</span></div>`).join('')}</div>`;
+    }
+  },
+  notiz: {
+    titel: 'Meine Notiz', icon: 'sticky_note_2', text: 'Freier Merkzettel — nur für dich, auf allen deinen Geräten', h: 5,
+    inhalt() {
+      return `<textarea class="ko-w-notiz" id="ko-notiz" rows="5" maxlength="5000" placeholder="Merkzettel …" aria-label="Meine Notiz">${escapeHtml(kontoProfil.notiz || '')}</textarea>`;
+    }
+  }
+};
+
+function koLayout() { return layoutBereinigen(kontoProfil.dashboard, KO_BAUSTEINE, KO_LAYOUT_STANDARD); }
+function koLayoutSpeichern(layout) {
+  kontoProfil.dashboard = layout;
+  persistLocalState().catch(() => {});
+  syncBald(1500);
+}
+function renderKontrolleUebersicht() {
+  updateKontrolleCounts();
+  refreshKontrolleBetrieb();
+  if (document.getElementById('kontrolle-uebersicht').hidden) return;
+  // während im Notizfeld getippt wird, nicht unter dem Cursor neu zeichnen
+  if (document.activeElement && document.activeElement.id === 'ko-notiz') return;
+  const anpassen = document.getElementById('ko-dash-anpassen');
+  anpassen.setAttribute('aria-pressed', String(koBearbeiten));
+  anpassen.querySelector('.ko-dash-text').textContent = koBearbeiten ? 'Fertig' : 'Anpassen';
+  anpassen.classList.toggle('primary', koBearbeiten);
+  document.getElementById('ko-dash-standard').hidden = !koBearbeiten;
+  document.getElementById('ko-dash-luecken').hidden = !koBearbeiten;
+  document.getElementById('ko-dash-hinweis').hidden = !koBearbeiten;
+  renderDashboard(document.getElementById('ko-dash'), {
+    bausteine: KO_BAUSTEINE, layout: koLayout(), bearbeiten: koBearbeiten,
+    onLayout: (neu) => { koLayoutSpeichern(neu); renderKontrolleUebersicht(); }
+  });
+}
+document.getElementById('ko-dash-anpassen').addEventListener('click', () => { koBearbeiten = !koBearbeiten; renderKontrolleUebersicht(); });
+document.getElementById('ko-dash-luecken').addEventListener('click', () => dashboardLueckenSchliessen(document.getElementById('ko-dash')));
+document.getElementById('ko-dash-standard').addEventListener('click', () => {
+  if (!confirm('Die Übersicht auf die Standard-Bausteine zurücksetzen?')) return;
+  koLayoutSpeichern(KO_LAYOUT_STANDARD.map(x => ({ ...x })));
+  renderKontrolleUebersicht();
+});
+// Notiz: beim Tippen speichern (verzögert), ohne die Übersicht neu zu zeichnen
+document.getElementById('ko-dash').addEventListener('input', (e) => {
+  if (e.target.id !== 'ko-notiz') return;
+  const text = e.target.value;
+  clearTimeout(koNotizTimer);
+  koNotizTimer = setTimeout(() => {
+    if (text.trim()) kontoProfil.notiz = text.slice(0, 5000); else delete kontoProfil.notiz;
+    persistLocalState().catch(() => {});
+    syncBald(1500);
+  }, 600);
+});
+
+// ---- Dokumente (Dateiexplorer der Kontrolle, Darstellung: src/dokumente.js) ----
+// Alle Fotos und Dateien aller Termine: Anhänge am Termin, Anlagen der
+// Protokolle (nur ansehen) und Dateien, die noch auf den Upload warten.
+function dokumenteSammeln() {
+  const out = [];
+  const basisVon = (e) => {
+    const g = tkGroupFor(e.id);
+    const kopf = g ? g.primary : e;
+    const mehr = g && g.members.length > 1 ? ` (+${g.members.length - 1})` : '';
+    return { betrieb: e.kunde || 'Ohne Betrieb', terminId: g ? g.id : e.id, evId: e.id, terminDatum: e.date.getTime(),
+      terminText: `${tkFmtDate(e.date)} · ${kopf.auditart || 'Termin'}${mehr}` };
+  };
+  terminkalenderEvents.forEach(e => {
+    const basis = basisVon(e);
+    (e.attachments || []).forEach(a => out.push({ ...basis, id: 'a:' + a.path, name: a.name || 'Datei', type: a.type || '', size: a.size || 0, path: a.path,
+      herkunft: 'Termin', status: 'ok', aenderbar: true, hinzugefuegt: a.addedAt || '' }));
+    Object.keys(TK_FORMULARE).forEach(kind => (e[tkFormularDef(kind).listKey] || []).forEach(p => (p.anlagenDateien || []).forEach(a => out.push({
+      ...basis, id: 'p:' + a.path, name: a.name || 'Datei', type: a.type || '', size: a.size || 0, path: a.path,
+      herkunft: 'Protokoll', status: 'ok', aenderbar: false, hinzugefuegt: '' }))));
+  });
+  myUploads().forEach(r => {
+    const e = terminkalenderEvents.find(x => x.id === r.evId);
+    if (!e) return;
+    out.push({ ...basisVon(e), id: 'u:' + r.id, name: r.name || 'Datei', type: r.type || '', size: r.size || 0, blob: r.blob, uploadId: r.id,
+      herkunft: 'Termin', status: r.status === 'error' ? 'fehler' : 'wartet', aenderbar: true, hinzugefuegt: r.createdAt || '' });
+  });
+  return out;
+}
+// Neueste zuerst: nach Zeitpunkt des Hinzufügens, sonst nach Termin
+function dokumenteNeueste(n) {
+  return dokumenteSammeln().sort((a, b) => String(b.hinzugefuegt || '').localeCompare(String(a.hinzugefuegt || '')) || b.terminDatum - a.terminDatum).slice(0, n);
+}
+const dokViewerItem = (d) => ({ name: d.name, type: d.type, size: d.size, path: d.path, blob: d.blob, uploadId: d.uploadId, thumb: null,
+  note: d.status !== 'ok' ? 'noch nicht hochgeladen' : d.herkunft === 'Protokoll' ? 'Protokoll-Anlage' : undefined });
+// Löschen (mit Rückfrage). Ergebnis: wirklich gelöscht?
+async function dokumentLoeschen(d) {
+  if (!d.aenderbar) return false;
+  if (d.uploadId) {
+    const vorher = uploadQueue.length;
+    await cancelQueuedUpload(d.uploadId);
+    return uploadQueue.length < vorher;
+  }
+  if (!confirm(`„${d.name}" wirklich löschen?`)) return false;
+  await removeTerminkalenderAttachment(d.evId, d.path);
+  const ev = terminkalenderEvents.find(e => e.id === d.evId);
+  return !(ev && (ev.attachments || []).some(a => a.path === d.path));
+}
+function dokumenteAnsehen(liste, index) {
+  openDocViewer(liste.map(dokViewerItem), index, {
+    onDelete: async (item) => {
+      const d = liste.find(x => (item.uploadId ? x.uploadId === item.uploadId : x.path === item.path));
+      if (!d || !d.aenderbar) { alert('Protokoll-Anlagen lassen sich nur im Protokoll entfernen.'); return false; }
+      const ok = await dokumentLoeschen(d);
+      if (ok) refreshKontrolleAnsichten();
+      return ok;
+    }
+  });
+}
+function dateiSpeichern(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+const dokumentExplorer = createDokumentExplorer(document.getElementById('ko-dokumente'), {
+  ansehen: dokumenteAnsehen,
+  vorschau: (d) => (d.blob ? Promise.resolve(URL.createObjectURL(d.blob)) : getPhotoUrl(d.path, d.name)),
+  zumTermin: (d) => openKontrollmappe(d.terminId, 'dokumente'),
+  async umbenennen(d) {
+    const ev = terminkalenderEvents.find(e => e.id === d.evId);
+    if (!ev) return;
+    const art = await askDocName({ title: 'Dokument umbenennen', value: docArtFromName(ev, d.name), ev, fileName: d.name, skipLabel: 'Abbrechen',
+      previewIcon: /pdf$/i.test(d.type || d.name || '') ? 'picture_as_pdf' : (d.type || '').startsWith('image/') ? 'photo_camera' : 'description' });
+    if (!art) return;
+    if (d.uploadId) renameTerminDoc(ev, d.uploadId, art);
+    else { const a = (ev.attachments || []).find(x => x.path === d.path); if (a) renameAttachment(ev, a, art); }
+    refreshKontrolleAnsichten();
+  },
+  async loeschen(d) { if (await dokumentLoeschen(d)) refreshKontrolleAnsichten(); },
+  async herunterladen(d, melde) {
+    try {
+      melde(`Lade „${d.name}“ …`);
+      dateiSpeichern(await loadDocBlob(dokViewerItem(d)), d.name);
+      melde('');
+    } catch (err) { melde(`„${d.name}“ konnte nicht geladen werden: ${err.message || 'unbekannter Fehler'}`); }
+  },
+  // Alle angezeigten Dateien als ZIP: Ordner Betrieb/Termin, Namen eindeutig
+  async zip(liste, name, melde) {
+    if (typeof JSZip === 'undefined') { melde('ZIP-Export nicht verfügbar (Bibliothek konnte nicht geladen werden).'); return; }
+    const zip = new JSZip();
+    const vergeben = new Set();
+    let fehler = 0;
+    for (let i = 0; i < liste.length; i++) {
+      const d = liste[i];
+      melde(`Lade ${i + 1} von ${liste.length} …`);
+      try {
+        const blob = await loadDocBlob(dokViewerItem(d));
+        const ordner = `${sanitizeFileNamePart(d.betrieb)}/${sanitizeFileNamePart(d.terminText)}/`;
+        let pfad = ordner + d.name;
+        for (let n = 2; vergeben.has(pfad); n++) pfad = ordner + d.name.replace(/(\.[^.]+)?$/, ` (${n})$1`);
+        vergeben.add(pfad);
+        zip.file(pfad, blob);
+      } catch { fehler++; }
+    }
+    if (fehler === liste.length) { melde('Keine der Dateien konnte geladen werden (ohne Internet sind nur schon angesehene verfügbar).'); return; }
+    melde('Erstelle ZIP …');
+    dateiSpeichern(await zip.generateAsync({ type: 'blob' }), sanitizeFileNamePart(name) + '.zip');
+    melde(fehler ? `ZIP erstellt — ${fehler} ${fehler === 1 ? 'Datei fehlt' : 'Dateien fehlen'} (nicht ladbar).` : '');
+  },
+  hinzufuegen(terminId, files) {
+    const g = tkGroupFor(terminId);
+    const ev = g ? g.primary : terminkalenderEvents.find(e => e.id === terminId);
+    if (ev) files.forEach(f => uploadTerminkalenderAttachment(ev, f));
+  }
+});
+function renderKontrolleDokumente() {
+  if (document.getElementById('kontrolle-dokumente').hidden) return;
+  dokumentExplorer.zeige(dokumenteSammeln());
+}
+// Kontrollmappe → "Im Dateiexplorer": Reiter Dokumente, Ordner dieses Termins
+document.getElementById('terminkalender-detail').addEventListener('click', (e) => {
+  if (!e.target.closest('#tk-zum-explorer')) return;
+  const g = tkGroupFor(terminkalenderSelectedId);
+  closeKontrollmappe();
+  setKontrolleTab('dokumente');
+  if (g) dokumentExplorer.oeffne(g.kunde, g.id);
+});
+// Nach Änderungen an Anhängen/Uploads: offene Kontrolle-Ansichten auffrischen
+function refreshKontrolleAnsichten() {
+  if (document.getElementById('kontrolle-view').hidden) return;
+  renderKontrolleDokumente();
+  renderKontrolleUebersicht();
+}
+document.getElementById('kontrolle-uebersicht').addEventListener('click', (e) => {
+  if (koBearbeiten) return; // im Bearbeiten-Modus öffnen die Bausteine nichts
+  const btn = e.target.closest('[data-open-termin]');
+  if (btn) return openKontrollmappe(btn.dataset.openTermin, btn.dataset.openTab || 'ueberblick');
+  const dok = e.target.closest('[data-ko-dok]');
+  if (dok) return dokumenteAnsehen(dokumenteNeueste(6), Number(dok.dataset.koDok));
+  const akt = e.target.closest('[data-ko-akt]');
+  if (!akt) return;
+  if (akt.dataset.koAkt === 'import') document.getElementById('terminkalender-file-input').click();
+  else if (akt.dataset.koAkt === 'betrieb') openBetriebModal();
+  else if (/^kw-/.test(akt.dataset.koAkt)) {
+    // Baustein "Karte": Kalenderwoche wechseln
+    koKarteWoche = akt.dataset.koAkt === 'kw-heute' ? 0 : koKarteWoche + (akt.dataset.koAkt === 'kw-vor' ? 1 : -1);
+    renderKontrolleUebersicht();
+  }
+});
+
+// ---- Betrieb (Unterfunktion der Kontrolle) ----
+// Zentrale Seite für den zugeordneten Betrieb (Kopfzeilen-Chip bzw. „Als
+// Betrieb zuordnen" in der Kontrollmappe): Stammdaten/Kontakt, der aktuelle
+// Termin mit seinen Aufträgen, je Unterfunktion eine Kachel (Probenahme,
+// Cross Check, Warenfluss, Dokumente, Notizen) über ALLE Termine des
+// Betriebs, dazu Terminverlauf und Sprung in die Flächen-Werkzeuge. Neue
+// Protokolle entstehen am aktuellen Termin (dort liegen sie wie bisher).
+const kbKey = (s) => String(s || '').trim().toLocaleLowerCase('de-DE');
+function kbEvents(name) { return terminkalenderEvents.filter(e => kbKey(e.kunde) === kbKey(name)); }
+// Aktueller Termin: der zugeordnete, sonst der nächste ab heute, sonst der letzte.
+function kbCurrentGroup(groups) {
+  if (activeZuordnung && activeZuordnung.terminId) {
+    const g = groups.find(x => x.members.some(m => m.id === activeZuordnung.terminId));
+    if (g) return g;
+  }
+  const today = tkDayStart(new Date());
+  return groups.find(g => g.date >= today) || groups[groups.length - 1] || null;
+}
+function kbDate(iso) {
+  const d = iso ? new Date(iso) : null;
+  return d && !isNaN(d) ? tkFmtDate(d) : '';
+}
+function refreshKontrolleBetrieb() {
+  const panel = document.getElementById('kontrolle-betrieb');
+  if (panel && !panel.hidden && !document.getElementById('kontrolle-view').hidden) renderKontrolleBetrieb();
+}
+
+function renderKontrolleBetrieb() {
+  const root = document.getElementById('ko-betrieb');
+  if (!activeZuordnung) {
+    const today = tkDayStart(new Date());
+    const next = tkGroupEvents(terminkalenderEvents.filter(e => e.date >= today)).slice(0, 6);
+    root.innerHTML = `<div class="kb-empty">
+      <span class="kb-empty-icon material-symbols-rounded icon" aria-hidden="true">business</span>
+      <h3>Kein Betrieb zugeordnet</h3>
+      <p>Wähle den Betrieb, den du kontrollierst — hier siehst du dann Termin, Aufträge, Protokolle, Warenfluss und Dokumente auf einen Blick.</p>
+      <button type="button" class="betrieb-btn primary" data-kb-action="choose"><span class="material-symbols-rounded icon" aria-hidden="true">business</span>Betrieb wählen</button>
+      ${next.length ? `<div class="kb-picks"><div class="ko-day-label">Nächste Termine</div>${next.map(g => `<button type="button" class="kb-pick" data-kb-pick="${escapeHtml(g.id)}">
+          <span class="kb-pick-date">${escapeHtml(tkFmtDate(g.date))}</span>
+          <span class="kb-pick-name">${escapeHtml(g.kunde)}</span>
+          ${tkGroupChipsHtml(g, 3)}
+        </button>`).join('')}</div>` : ''}
+    </div>`;
+    return;
+  }
+
+  const name = activeZuordnung.betrieb;
+  const events = kbEvents(name);
+  const groups = tkGroupEvents(events);
+  const current = kbCurrentGroup(groups);
+  if (current) tkAbsorbGroupData(current);
+  const ev = current ? current.primary : null;
+  const kontakt = ev && (ev.address || ev.telefon || ev.mobil || ev.email) ? ev
+    : events.find(e => e.address || e.telefon || e.mobil || e.email) || ev;
+  const tel = kontakt && (kontakt.mobil || kontakt.telefon);
+  const allChips = (() => {
+    const seen = new Set(), items = [];
+    groups.forEach(g => tkGroupChipItems(g).forEach(it => { if (!seen.has(it.key)) { seen.add(it.key); items.push(it); } }));
+    return items.filter(it => it.bg);
+  })();
+  const kundennr = (events.find(e => e.kundennummer) || {}).kundennummer;
+  const ort = kontakt ? [kontakt.plz, kontakt.ort].filter(Boolean).join(' ') : '';
+
+  // Sammlungen über alle Termine des Betriebs (je Eintrag mit seinem Termin).
+  const collect = (key) => events.flatMap(e => (e[key] || []).map(item => ({ item, ev: e })))
+    .sort((a, b) => String(b.item.updatedAt || b.item.createdAt || '').localeCompare(String(a.item.updatedAt || a.item.createdAt || '')));
+  const formulare = Object.fromEntries(Object.keys(TK_FORMULARE).map(k => [k, collect(tkFormularDef(k).listKey)]));
+  const warenfluss = collect('warenfluss');
+  const dokumente = events.flatMap(e => (e.attachments || []).map(a => ({ a, ev: e })));
+  const pending = current ? uploadsForGroup(current.id).length : 0;
+
+  // Beauftragt laut Termin (Schilder der Aufträge) -> Kachel hervorheben.
+  const arten = new Set(current ? current.members.flatMap(m => tkClassifyAuftrag(m).arten.map(a => a.key)) : []);
+  const tileState = (beauftragt, count) => beauftragt ? (count ? { cls: 'is-done', text: 'beauftragt · erledigt' } : { cls: 'is-open', text: 'beauftragt · offen' }) : null;
+
+  const noTermin = !current;
+  const newBtn = (attrs, label) => noTermin ? '' : `<button type="button" class="kb-tile-new" ${attrs}><span class="material-symbols-rounded icon" aria-hidden="true">add</span>${label}</button>`;
+  const more = (n, tab) => n > 3 ? `<button type="button" class="ko-link-btn" data-kb-mappe="${tab}">Alle ${n} anzeigen</button>` : '';
+
+  const formularTile = (kind, icon, artKey) => {
+    const def = tkFormularDef(kind);
+    const list = formulare[kind];
+    const st = tileState(arten.has(artKey), list.filter(x => current && current.members.some(m => m.id === x.ev.id)).length);
+    const rows = list.slice(0, 3).map(({ item, ev: e }) => {
+      const complete = probenprotokollMissing(item, kind).length === 0;
+      return `<button type="button" class="kb-item" data-kb-formular="${kind}" data-ev="${escapeHtml(e.id)}" data-id="${escapeHtml(item.id)}">
+        <span class="kb-item-title">${escapeHtml(def.rowTitle(item))}</span>
+        <span class="kb-item-sub">${escapeHtml(def.rowDate(item) || tkFmtDate(e.date))} · <span class="${complete ? 'kb-ok' : 'kb-warn'}">${complete ? 'vollständig' : 'unvollständig'}</span></span>
+      </button>`;
+    }).join('');
+    return kbTileHtml({ key: kind, icon, title: def.listTitle, count: list.length, state: st,
+      body: rows || `<p class="kb-tile-empty">${escapeHtml(def.emptyText)}</p>`,
+      foot: newBtn(`data-kb-new="${kind}"`, def.newLabel) + more(list.length, 'protokolle') });
+  };
+
+  const wfRows = warenfluss.slice(0, 3).map(({ item, ev: e }) => {
+    const info = warenflussRowInfo(item);
+    const s = info.summary;
+    const badge = s.bad ? `<span class="kb-warn">${s.bad} auffällig</span>` : s.warn ? `<span class="kb-warn">${s.warn} prüfen</span>` : s.ok ? '<span class="kb-ok">plausibel</span>' : 'noch leer';
+    return `<button type="button" class="kb-item" data-kb-wf="${escapeHtml(item.id)}" data-ev="${escapeHtml(e.id)}">
+      <span class="kb-item-title"><span class="material-symbols-rounded icon" aria-hidden="true">${info.icon}</span>${escapeHtml(info.titel)}</span>
+      <span class="kb-item-sub">${escapeHtml(info.pfad ? info.pfad + ' · ' : '')}Zeitraum ${escapeHtml(info.zeitraum || '–')} · ${badge}</span>
+    </button>`;
+  }).join('');
+  const wfPicker = noTermin ? '' : `<div class="wf-module-picker kb-wf-picker" id="kb-wf-picker" hidden>
+      ${Object.entries(WF_MODULE).map(([key, mod]) => `<button type="button" class="wf-module-btn" data-kb-wf-new="${key}">
+        <span class="material-symbols-rounded icon" aria-hidden="true">${mod.icon}</span>
+        <span><strong>${escapeHtml(mod.label)}</strong><small>${escapeHtml(mod.sub)}</small></span>
+      </button>`).join('')}
+    </div>`;
+
+  const dokRows = dokumente.slice(-3).reverse().map(({ a, ev: e }) => {
+    const icon = (a.type || '').startsWith('image/') ? 'photo_camera' : /pdf$/i.test(a.type || a.name || '') ? 'picture_as_pdf' : 'description';
+    return `<button type="button" class="kb-item" data-kb-mappe="dokumente" data-ev="${escapeHtml(e.id)}">
+      <span class="kb-item-title" title="${escapeHtml(a.name || '')}"><span class="material-symbols-rounded icon" aria-hidden="true">${icon}</span><span class="kb-item-text">${escapeHtml(a.name || 'Datei')}</span></span>
+      <span class="kb-item-sub">Termin ${escapeHtml(tkFmtDate(e.date))}</span>
+    </button>`;
+  }).join('');
+
+  const notiz = ev && (ev.notiz || '').trim();
+  const tiles = [
+    formularTile('probenprotokoll', 'science', 'probe'),
+    formularTile('crosscheck', 'compare_arrows', 'cc'),
+    kbTileHtml({ key: 'warenfluss', icon: 'balance', title: 'Warenflussprüfungen', count: warenfluss.length,
+      body: (wfRows || '<p class="kb-tile-empty">Noch keine Warenflussprüfung.</p>') + wfPicker,
+      foot: newBtn('data-kb-action="wf-new" aria-expanded="false"', 'Neue Prüfung') + more(warenfluss.length, 'protokolle') }),
+    kbTileHtml({ key: 'dokumente', icon: 'folder_open', title: 'Fotos & Dokumente', count: dokumente.length,
+      state: pending ? { cls: 'is-open', text: `${pending} Upload${pending === 1 ? '' : 's'} läuft` } : null,
+      body: dokRows || '<p class="kb-tile-empty">Noch keine Fotos oder Dateien.</p>',
+      foot: noTermin ? '' : `<button type="button" class="kb-tile-new" data-kb-mappe="dokumente"><span class="material-symbols-rounded icon" aria-hidden="true">photo_camera</span>Foto / Datei hinzufügen</button>` }),
+    kbTileHtml({ key: 'notizen', icon: 'sticky_note_2', title: 'Notizen', count: notiz ? '•' : 0,
+      body: notiz ? `<p class="kb-notiz">${escapeHtml(notiz.length > 220 ? notiz.slice(0, 220) + ' …' : notiz)}</p>` : '<p class="kb-tile-empty">Noch keine Notiz zum aktuellen Termin.</p>',
+      foot: noTermin ? '' : `<button type="button" class="kb-tile-new" data-kb-mappe="notizen"><span class="material-symbols-rounded icon" aria-hidden="true">edit_note</span>${notiz ? 'Notiz bearbeiten' : 'Notiz schreiben'}</button>` })
+  ].join('');
+
+  // Termine dieses Betriebs: der aktuelle Termin kompakt oben (Datum,
+  // Aufträge als Schilder, Kontrollmappe), darunter die übrigen Termine.
+  const terminCounts = (g) => [
+    ...Object.keys(TK_FORMULARE).map(k => [tkFormularDef(k).icon, g.members.reduce((n, mm) => n + (mm[tkFormularDef(k).listKey] || []).length, 0), tkFormularDef(k).listTitle]),
+    ['balance', g.members.reduce((n, mm) => n + (mm.warenfluss || []).length, 0), 'Warenflussprüfungen'],
+    ['attach_file', g.members.reduce((n, mm) => n + (mm.attachments || []).length, 0), 'Dateien']
+  ].filter(c => c[1]).map(([icon, n, title]) => `<span class="kb-count" title="${escapeHtml(title)}"><span class="material-symbols-rounded icon" aria-hidden="true">${icon}</span>${n}</span>`).join('');
+  let currentHtml = '';
+  if (current) {
+    const today = tkDayStart(new Date());
+    const label = activeZuordnung.terminId && current.members.some(mm => mm.id === activeZuordnung.terminId) ? 'Zugeordneter Termin'
+      : current.date >= today ? (tkDayStart(current.date).getTime() === today.getTime() ? 'Termin heute' : 'Nächster Termin') : 'Letzter Termin';
+    const month = current.date.toLocaleDateString('de-DE', { month: 'short' }).replace('.', '');
+    const auftraege = current.members.map(mm => `<span class="kb-auftrag${mm.bestaetigt ? '' : ' is-open'}" title="${mm.bestaetigt ? 'Bestätigt' : 'Unbestätigt'}"><i aria-hidden="true"></i>${escapeHtml(mm.auditart || 'Auftrag')}</span>`).join('');
+    currentHtml = `<div class="kb-termin">
+      <span class="betrieb-date-badge km-date" aria-hidden="true"><b>${current.date.getDate()}</b>${escapeHtml(month)}</span>
+      <div class="kb-termin-text">
+        <span class="kb-termin-label">${label}</span>
+        <strong>${escapeHtml(tkDayLabel(current.date))} · ${escapeHtml(tkTimeLabel(current))}</strong>
+        <span class="kb-auftraege">${auftraege}${tkGroupChipItems(current).filter(it => it.bg).map(tkChipHtml).join('')}</span>
+      </div>
+      <span class="kb-hist-counts">${terminCounts(current)}</span>
+      <button type="button" class="betrieb-btn primary kb-open-mappe" data-kb-mappe="ueberblick"><span class="material-symbols-rounded icon" aria-hidden="true">folder_open</span>Kontrollmappe öffnen</button>
+    </div>`;
+  }
+  const weitere = groups.filter(g => !current || g.id !== current.id).sort((a, b) => b.date - a.date);
+  const verlauf = weitere.map(g => `<button type="button" class="kb-hist-row" data-kb-termin="${escapeHtml(g.id)}">
+      <span class="kb-hist-date">${escapeHtml(tkFmtDate(g.date))}</span>
+      <span class="kb-hist-text"><span class="kb-hist-title">${escapeHtml(g.members.map(mm => mm.auditart).filter(Boolean).join(' · ') || 'Termin')}</span>${tkGroupChipsHtml(g, 4)}</span>
+      <span class="kb-hist-counts">${terminCounts(g)}</span>
+    </button>`).join('');
+  const termineHtml = `<section class="ko-card kb-history">
+      <div class="ko-card-head"><h3><span class="material-symbols-rounded icon" aria-hidden="true">event_upcoming</span>Termine dieses Betriebs</h3></div>
+      ${current ? currentHtml : '<div class="ko-empty ko-empty-small"><span class="material-symbols-rounded icon" aria-hidden="true">event_busy</span><p>Kein Termin für diesen Betrieb. Protokolle und Dokumente hängen an einem Termin — importiere die Termine oder wähle einen Betrieb mit Termin.</p></div>'}
+      ${verlauf ? `<div class="kb-section-label kb-hist-label">Weitere Termine</div>${verlauf}` : ''}
+    </section>`;
+  const funktionen = [['uebersicht', 'donut_large', 'Flächenübersicht'], ['fruchtfolge', 'cycle', 'Fruchtfolge'], ['zeichner', 'draw', 'Flächenzeichner'], ['hofplan', 'home_work', 'Hofplan'], ['stallplaner', 'window', 'Stallplaner'], ['tiere', 'pets', 'Tierbestand'], ['obstbaum', 'park', 'Obstbäume'], ['bienenflug', 'hive', 'Bienenflug']]
+    .map(([seg, icon, label]) => `<button type="button" class="kb-fn" data-kb-segment="${seg}"><span class="material-symbols-rounded icon" aria-hidden="true">${icon}</span><span>${label}</span></button>`).join('');
+
+  root.innerHTML = `<div class="kb-wrap">
+    <section class="kb-hero">
+      <div class="kb-hero-top">
+        <span class="kb-avatar" aria-hidden="true">${escapeHtml(betriebInitial(name))}</span>
+        <div class="kb-hero-text">
+          <h3 id="kb-name">${escapeHtml(name)}</h3>
+          <p>${escapeHtml([kundennr ? 'Kd.-Nr. ' + kundennr : '', ort, `${groups.length} ${groups.length === 1 ? 'Termin' : 'Termine'}`].filter(Boolean).join(' · '))}</p>
+          ${allChips.length ? `<span class="tk-chips">${allChips.map(tkChipHtml).join('')}</span>` : ''}
+        </div>
+        <button type="button" class="betrieb-btn kb-switch" data-kb-action="choose"><span class="material-symbols-rounded icon" aria-hidden="true">swap_horiz</span><span>Wechseln</span></button>
+      </div>
+      <div class="kb-hero-actions">
+        ${kontakt && (kontakt.address || kontakt.lat != null) ? `<a class="betrieb-btn" href="${eventRouteUrl(kontakt)}" target="_blank" rel="noopener"><span class="material-symbols-rounded icon" aria-hidden="true">directions</span>Route</a>` : ''}
+        ${tel ? `<a class="betrieb-btn" href="tel:${escapeHtml(telHref(tel))}"><span class="material-symbols-rounded icon" aria-hidden="true">call</span>Anrufen</a>` : ''}
+        ${kontakt && kontakt.email ? `<a class="betrieb-btn" href="mailto:${escapeHtml(kontakt.email)}"><span class="material-symbols-rounded icon" aria-hidden="true">mail</span>E-Mail</a>` : ''}
+      </div>
+      ${kontakt ? `<details class="kb-contact"><summary>Kontaktdaten</summary>${renderTerminkalenderContactRows(kontakt)}</details>` : ''}
+    </section>
+    <div class="kb-section-label">Betriebsfunktionen</div>
+    <div class="kb-fns">${funktionen}</div>
+    <div class="kb-section-label">Unterlagen der Kontrolle${current ? '' : ' (alle Termine)'}</div>
+    <div class="kb-tiles">${tiles}</div>
+    ${kbFlaechenHtml()}
+    ${termineHtml}
+  </div>`;
+}
+// Flächenübersicht in Kurzform: Kennzahlen, Anteilsbalken der Kulturarten
+// und die größten Kulturen — dieselben Daten/Farben wie die Flächenübersicht
+// (collectGesamtFlaechen/summarizeGesamtKulturen, geladener Betriebs-Workspace).
+function kbFlaechenHtml() {
+  const { rows } = collectGesamtFlaechen();
+  const head = (extra = '') => `<div class="ko-card-head">
+      <h3><span class="material-symbols-rounded icon" aria-hidden="true">donut_large</span>Flächen</h3>
+      ${extra}
+    </div>`;
+  const toUebersicht = '<button type="button" class="ko-link-btn" data-kb-segment="uebersicht">Zur Flächenübersicht</button>';
+  if (!rows.length) {
+    return `<section class="ko-card kb-flaechen" id="kb-flaechen">${head()}
+      <div class="ko-empty ko-empty-small"><span class="material-symbols-rounded icon" aria-hidden="true">crop_square</span><p>Für diesen Betrieb sind noch keine Flächen geladen — Shapefile auf der Karte laden oder im Flächenzeichner zeichnen.</p></div>
+    </section>`;
+  }
+  const kulturen = summarizeGesamtKulturen(rows);
+  const total = rows.reduce((sum, r) => sum + r.ha, 0);
+  const haFmt = (n) => n.toLocaleString('de-DE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const pctFmt = (n) => total ? (n / total * 100).toLocaleString('de-DE', { maximumFractionDigits: n / total < 0.1 ? 1 : 0 }) + ' %' : '0 %';
+  const named = kulturen.all.filter(k => k.label !== 'Ohne Angabe');
+  const top = kulturen.all.slice(0, 5);
+  const rest = kulturen.all.slice(5);
+  const restHa = rest.reduce((sum, k) => sum + k.value, 0);
+  const kpi = (value, unit, label) => `<div class="kb-fl-kpi"><span class="kb-fl-value">${value}${unit ? `<small>${unit}</small>` : ''}</span><span class="kb-fl-label">${label}</span></div>`;
+  return `<section class="ko-card kb-flaechen" id="kb-flaechen">${head(toUebersicht)}
+    <div class="kb-fl-kpis">
+      ${kpi(haFmt(total), 'ha', 'Gesamtfläche')}
+      ${kpi(rows.length, '', rows.length === 1 ? 'Fläche' : 'Flächen')}
+      ${kpi(named.length, '', named.length === 1 ? 'Kulturart' : 'Kulturarten')}
+    </div>
+    <div class="kb-fl-bar" role="img" aria-label="Flächenanteile nach Kulturart">${kulturen.all.map(k => `<span style="flex:${k.value || 0.0001} 1 0;background:${k.color}" title="${escapeHtml(k.label)}: ${haFmt(k.value)} ha"></span>`).join('')}</div>
+    <ul class="kb-fl-list">
+      ${top.map(k => `<li><span class="kb-fl-dot" style="background:${k.color}"></span><span class="kb-fl-name">${escapeHtml(k.label)}</span><span class="kb-fl-ha">${haFmt(k.value)} ha</span><span class="kb-fl-pct">${pctFmt(k.value)}</span></li>`).join('')}
+      ${rest.length ? `<li class="kb-fl-more"><span class="kb-fl-dot"></span><span class="kb-fl-name">${rest.length} weitere ${rest.length === 1 ? 'Kultur' : 'Kulturen'}</span><span class="kb-fl-ha">${haFmt(restHa)} ha</span><span class="kb-fl-pct">${pctFmt(restHa)}</span></li>` : ''}
+    </ul>
+  </section>`;
+}
+function kbTileHtml({ key, icon, title, count, state, body, foot }) {
+  return `<section class="kb-tile${state ? ' ' + state.cls : ''}" data-kb-tile="${key}">
+    <div class="kb-tile-head">
+      <span class="kb-tile-icon material-symbols-rounded icon" aria-hidden="true">${icon}</span>
+      <h4>${escapeHtml(title)}</h4>
+      ${count !== 0 && count !== '' ? `<span class="kb-tile-count">${count}</span>` : ''}
+    </div>
+    ${state ? `<span class="kb-tile-state">${escapeHtml(state.text)}</span>` : ''}
+    <div class="kb-tile-body">${body}</div>
+    ${foot ? `<div class="kb-tile-foot">${foot}</div>` : ''}
+  </section>`;
+}
+function kbCurrent() {
+  if (!activeZuordnung) return null;
+  const g = kbCurrentGroup(tkGroupEvents(kbEvents(activeZuordnung.betrieb)));
+  if (g) tkAbsorbGroupData(g);
+  return g;
+}
+document.getElementById('kontrolle-betrieb').addEventListener('click', async (e) => {
+  const t = e.target.closest('button, a');
+  if (!t) return;
+  const d = t.dataset;
+  if (d.kbAction === 'choose') { openBetriebModal(); return; }
+  if (d.kbPick) {
+    const g = tkGroupFor(d.kbPick);
+    if (!g) return;
+    const ev = g.primary;
+    await applyZuordnungSelection({ betrieb: ev.kunde, year: ev.date.getFullYear(), terminId: ev.id, terminLabel: `${tkFmtDate(ev.date)} · ${ev.auditart}` });
+    renderKontrolleBetrieb();
+    return;
+  }
+  if (d.kbSegment === 'fruchtfolge') { ueTab = 'fruchtfolge'; setActiveSegment('uebersicht'); return; }
+  if (d.kbSegment) { setActiveSegment(d.kbSegment); return; }
+  if (d.kbTermin) { openKontrollmappe(d.kbTermin, 'ueberblick'); return; }
+  if (d.kbMappe) {
+    const id = d.ev || (kbCurrent() || {}).id;
+    if (id) openKontrollmappe(id, d.kbMappe);
+    return;
+  }
+  if (d.kbFormular) { openFormular(d.kbFormular, d.ev, d.id); return; }
+  if (d.kbNew) {
+    const g = kbCurrent();
+    if (!g) return;
+    const p = createFormular(g.primary, d.kbNew);
+    openFormular(d.kbNew, g.primary.id, p.id);
+    return;
+  }
+  if (d.kbWf) {
+    const ev = terminkalenderEvents.find(x => x.id === d.ev);
+    const chk = ev && (ev.warenfluss || []).find(c => c.id === d.kbWf);
+    if (chk) { initWarenflussUi(); openWarenflussFor(ev, chk); }
+    return;
+  }
+  if (d.kbAction === 'wf-new') {
+    const picker = document.getElementById('kb-wf-picker');
+    picker.hidden = !picker.hidden;
+    t.setAttribute('aria-expanded', String(!picker.hidden));
+    return;
+  }
+  if (d.kbWfNew) {
+    const g = kbCurrent();
+    if (!g) return;
+    const chk = createWarenfluss(d.kbWfNew);
+    g.primary.warenfluss = g.primary.warenfluss || [];
+    g.primary.warenfluss.push(chk);
+    initWarenflussUi();
+    openWarenflussFor(g.primary, chk);
+  }
+});
+
+function initTerminkalenderMap() {
+  if (terminkalenderInitDone) return;
+  terminkalenderInitDone = true;
+  terminkalenderMap = L.map('terminkalender-map', { zoomControl: true, attributionControl: true }).setView([51.16, 10.45], 6);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>-Mitwirkende',
+    maxZoom: 19
+  }).addTo(terminkalenderMap);
+  terminkalenderMarkersLayer = L.layerGroup().addTo(terminkalenderMap);
+}
+
+function renderTerminkalenderMapPins(eventsWithCoords) {
+  if (!terminkalenderMap) return;
+  terminkalenderMarkersLayer.clearLayers();
+  const latlngs = [];
+  eventsWithCoords.forEach(e => {
+    const marker = L.marker([e.lat, e.lng]).bindTooltip(e.kunde);
+    marker.on('click', () => selectTerminkalenderEvent(e.id));
+    marker.addTo(terminkalenderMarkersLayer);
+    latlngs.push([e.lat, e.lng]);
+  });
+  if (latlngs.length) terminkalenderMap.fitBounds(latlngs, { padding: [30, 30], maxZoom: 13 });
+}
+
+function renderTerminkalenderDetail(ev) {
+  const el = document.getElementById('terminkalender-detail');
+  const panel = document.getElementById('kontrollmappe');
+  if (!ev) { closeKontrollmappe(); return; }
+  // Die Mappe zeigt immer den ganzen Termin (alle Aufträge), ev ist danach
+  // dessen Haupt-Auftrag — dort liegen Fotos/Protokolle/Notizen.
+  const group = tkGroupFor(ev.id) || tkMakeGroup([ev]);
+  ev = group.primary;
+  panel.hidden = false;
+  document.getElementById('kontrollmappe-backdrop').hidden = false;
+
+  let dateStr = group.date.toLocaleDateString('de-DE', { weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric' });
+  if (group.hasTime) {
+    dateStr += ', ' + group.date.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+    if (group.dateEnd) dateStr += ' – ' + group.dateEnd.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+  }
+  const badges = [`<span class="tk-badge ${group.bestaetigt ? 'tk-badge-ok' : 'tk-badge-warn'}">${group.bestaetigt ? 'Bestätigt' : 'Unbestätigt'}</span>`];
+  [...new Set(group.members.map(m => m.prioritaet).filter(p => p && p !== 'Normal'))]
+    .forEach(p => badges.push(`<span class="tk-badge tk-badge-warn">${escapeHtml(p)}</span>`));
+  if (group.members.some(m => m.unangemeldet)) badges.push('<span class="tk-badge tk-badge-warn">Unangemeldet</span>');
+  const isActiveZuordnung = tkGroupIsZugeordnet(group);
+  const month = group.date.toLocaleDateString('de-DE', { month: 'short' }).replace('.', '');
+
+  // Aufträge dieses Termins: je Auftrag Art (Auditart), Verbände/Sonderarten
+  // als Schilder, AO-Nummer, Format/Dienstleistungen, Bestätigung.
+  const auftraegeHtml = group.members.map(m => {
+    const c = tkClassifyAuftrag(m);
+    const color = c.verbaende.length ? c.verbaende[0].bg : '';
+    const meta = [m.id && /^AO-/.test(m.id) ? m.id : '', m.format, m.dienstleistungen].filter(Boolean).join(' · ');
+    // Sonderart-Schild weglassen, wenn der Auftrag ohnehin so heißt ("Probenahme").
+    const chips = [...c.verbaende, ...c.arten.filter(a => !(m.auditart || '').toLowerCase().includes(a.label.toLowerCase()))];
+    return `<div class="km-auftrag"${color ? ` style="--auftrag-color:${color}"` : ''}>
+      <div class="km-auftrag-top">
+        <strong>${escapeHtml(m.auditart || 'Auftrag')}</strong>
+        <span class="tk-badge ${m.bestaetigt ? 'tk-badge-ok' : 'tk-badge-warn'}">${m.bestaetigt ? 'Bestätigt' : 'Unbestätigt'}</span>
+      </div>
+      ${chips.length ? `<span class="tk-chips">${chips.map(tkChipHtml).join('')}</span>` : ''}
+      ${meta ? `<div class="km-auftrag-meta">${escapeHtml(meta)}</div>` : ''}
+    </div>`;
+  }).join('');
+
+  const protokollCount = Object.keys(TK_FORMULARE).reduce((n, k) => n + (ev[tkFormularDef(k).listKey] || []).length, 0) + (ev.warenfluss || []).length;
+  const dokCount = (ev.attachments || []).length + uploadsForGroup(ev.id).length;
+  const tabs = [
+    ['ueberblick', 'Überblick', ''],
+    ['protokolle', 'Protokolle', protokollCount],
+    ['dokumente', 'Dokumente', dokCount],
+    ['notizen', 'Notizen', ev.notiz ? '•' : '']
+  ];
+  const tab = tabs.some(t => t[0] === kontrollmappeTab) ? kontrollmappeTab : 'ueberblick';
+  const tel = ev.mobil || ev.telefon;
+
+  el.innerHTML = `
+    <div class="km-head">
+      <div class="km-head-top">
+        <span class="betrieb-date-badge km-date" aria-hidden="true"><b>${group.date.getDate()}</b>${escapeHtml(month)}</span>
+        <div class="km-title">
+          <h3>${escapeHtml(ev.kunde)}</h3>
+          <p class="tk-detail-time">${dateStr}</p>
+          ${tkGroupChipsHtml(group)}
+        </div>
+        <button type="button" id="kontrollmappe-close" class="ko-icon-btn" aria-label="Kontrollmappe schließen" title="Schließen">
+          <span class="material-symbols-rounded icon" aria-hidden="true">close</span>
+        </button>
+      </div>
+      <div class="tk-badges">${badges.join('')}</div>
+      <div class="km-actions">
+        ${(ev.address || ev.lat != null) ? `<a class="betrieb-btn" href="${eventRouteUrl(ev)}" target="_blank" rel="noopener"><span class="material-symbols-rounded icon" aria-hidden="true">directions</span>Route</a>` : ''}
+        ${tel ? `<a class="betrieb-btn" href="tel:${escapeHtml(telHref(tel))}"><span class="material-symbols-rounded icon" aria-hidden="true">call</span>Anrufen</a>` : ''}
+        <button type="button" class="betrieb-btn tk-betrieb-assign-btn${isActiveZuordnung ? ' active' : ''}" id="tk-betrieb-assign-btn">
+          ${isActiveZuordnung
+            ? '<span class="material-symbols-rounded icon" aria-hidden="true">check</span>Betrieb zugeordnet'
+            : '<span class="material-symbols-rounded icon" aria-hidden="true">business</span>Als Betrieb zuordnen'}
+        </button>
+      </div>
+      <p class="modal-hint" id="tk-betrieb-assign-status"></p>
+      <div class="ff-seg km-tabs" role="tablist" aria-label="Kontrollmappe">
+        ${tabs.map(([key, label, count]) => `<button type="button" role="tab" data-km-tab="${key}" aria-selected="${key === tab}">${label}${count !== '' && count !== 0 ? `<span class="km-tab-count">${count}</span>` : ''}</button>`).join('')}
+      </div>
+    </div>
+    <div class="km-body">
+      <section class="km-panel" data-km-panel="ueberblick"${tab === 'ueberblick' ? '' : ' hidden'}>
+        <div class="km-section">
+          <h4>${group.members.length > 1 ? `Aufträge (${group.members.length})` : 'Auftrag'}</h4>
+          <div class="km-auftraege">${auftraegeHtml}</div>
+          <label class="tk-move-row">
+            <span>Termin verschieben auf</span>
+            <input type="date" id="tk-move-date" value="${tkDateInputValue(group.date)}">
+          </label>
+        </div>
+        <div class="km-section">
+          <h4>Kontakt</h4>
+          ${renderTerminkalenderContactRows(ev)}
+        </div>
+        ${ev.hinweis ? `<div class="km-section"><h4>Hinweis</h4><p class="tk-detail-desc">${escapeHtml(ev.hinweis).replace(/\n/g, '<br>')}</p></div>` : ''}
+      </section>
+      <section class="km-panel" data-km-panel="protokolle"${tab === 'protokolle' ? '' : ' hidden'}>
+        ${formularSectionsHtml(ev)}
+        ${warenflussSectionHtml(ev)}
+      </section>
+      <section class="km-panel" data-km-panel="dokumente"${tab === 'dokumente' ? '' : ' hidden'}>
+        <div class="tk-attachments">
+          <div class="tk-attachments-head">Fotos &amp; Dateien
+            <button type="button" class="ko-link-btn" id="tk-zum-explorer" title="Alle Dokumente dieses Termins im Dateiexplorer"><span class="material-symbols-rounded icon" aria-hidden="true">folder_open</span>Im Dateiexplorer</button></div>
+          <div class="tk-attachments-grid tk-upload-queue" id="tk-upload-queue" hidden></div>
+          <div class="tk-attachments-grid" id="tk-attachments-grid"></div>
+          <div class="tk-attachments-actions">
+            <label class="tk-attachment-btn tk-attachment-btn-primary">
+              <input type="file" id="tk-photo-capture-input" accept="image/*" capture="environment" hidden>
+              <span class="material-symbols-rounded icon">photo_camera</span> Foto aufnehmen
+            </label>
+            <label class="tk-attachment-btn">
+              <input type="file" id="tk-file-add-input" multiple hidden>
+              <span class="material-symbols-rounded icon">attach_file</span> Datei hinzufügen
+            </label>
+            <button type="button" class="tk-attachment-btn" id="tk-scan-btn">
+              <span class="material-symbols-rounded icon">document_scanner</span> Dokument scannen
+            </button>
+            <button type="button" class="tk-attachment-btn" id="tk-fotomappe-btn">
+              <span class="material-symbols-rounded icon">photo_library</span> Fotomappe (mehrere Fotos → 1 PDF)
+            </button>
+          </div>
+          <p class="modal-hint" id="tk-attachment-status"></p>
+        </div>
+      </section>
+      <section class="km-panel" data-km-panel="notizen"${tab === 'notizen' ? '' : ' hidden'}>
+        <label class="km-notiz-label" for="tk-notiz">Notizen zur Kontrolle</label>
+        <textarea id="tk-notiz" class="km-notiz" rows="8" placeholder="z. B. Beobachtungen vor Ort, offene Fragen, Absprachen …">${escapeHtml(ev.notiz || '')}</textarea>
+        <p class="modal-hint">Wird mit dem Termin gespeichert (lokal und beim nächsten Abgleich in der Cloud).</p>
+      </section>
+    </div>
+  `;
+  kontrollmappeTab = tab;
+  renderTerminkalenderAttachments(ev);
+  document.getElementById('kontrollmappe-close').addEventListener('click', closeKontrollmappe);
+  el.querySelectorAll('[data-km-tab]').forEach(btn => btn.addEventListener('click', () => {
+    kontrollmappeTab = btn.dataset.kmTab;
+    el.querySelectorAll('[data-km-tab]').forEach(b => b.setAttribute('aria-selected', String(b === btn)));
+    el.querySelectorAll('[data-km-panel]').forEach(p => { p.hidden = p.dataset.kmPanel !== kontrollmappeTab; });
+  }));
+  document.getElementById('tk-photo-capture-input').addEventListener('change', (e) => handleTerminkalenderPhotoCapture(ev, e));
+  document.getElementById('tk-file-add-input').addEventListener('change', (e) => handleTerminkalenderFileAdd(ev, e));
+  document.getElementById('tk-betrieb-assign-btn').addEventListener('click', () => toggleTerminkalenderZuordnung(ev));
+  document.getElementById('tk-scan-btn').addEventListener('click', () => openScanModal(ev));
+  document.getElementById('tk-fotomappe-btn').addEventListener('click', () => openFotomappe(ev));
+  renderUploadQueueTiles(group.id);
+  // Verschieben per Datumsfeld — Drag&Drop der Karten geht auf Touch nicht.
+  document.getElementById('tk-move-date').addEventListener('change', (e) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(e.target.value);
+    if (!m) return;
+    const target = new Date(+m[1], +m[2] - 1, +m[3]);
+    terminkalenderWeekStart = getMondayOfWeek(target);
+    moveTerminkalenderEvent(ev.id, target);
+  });
+  // Notizen: bei jeder Eingabe am Termin merken, beim Verlassen lokal sichern
+  // (Cloud-Abgleich wie bei allen Termin-Änderungen über den Offline-Abgleich).
+  const notiz = document.getElementById('tk-notiz');
+  notiz.addEventListener('input', () => { ev.notiz = notiz.value; });
+  notiz.addEventListener('change', () => { persistLocalState().catch(() => {}); renderKontrolleUebersicht(); });
+  wireFormularSections(ev);
+  wireWarenflussSection(ev);
+}
+
+// Ordnet den Termin direkt aus der Kalenderansicht heraus als aktiven Betrieb
+// zu (bzw. entfernt die Zuordnung wieder) — nutzt dieselbe
+// applyZuordnungSelection()-Logik wie die Auswahl im Kopfzeilen-Dropdown,
+// inkl. automatischem Wechsel des Ebenen/Baum/Bienenflug-Workspace, falls sich
+// dadurch der Betrieb ändert (siehe switchWorkspace weiter unten).
+async function toggleTerminkalenderZuordnung(ev) {
+  if (betriebSwitchInProgress) return;
+  const btn = document.getElementById('tk-betrieb-assign-btn');
+  const statusEl = document.getElementById('tk-betrieb-assign-status');
+  const currentlyActive = tkGroupIsZugeordnet(tkGroupFor(ev.id) || tkMakeGroup([ev]));
+  if (btn) btn.disabled = true;
+  if (statusEl) statusEl.textContent = currentlyActive ? 'Entferne Zuordnung …' : 'Ordne zu …';
+  try {
+    if (currentlyActive) {
+      await applyZuordnungSelection(null);
+    } else {
+      await applyZuordnungSelection({ betrieb: ev.kunde, year: ev.date.getFullYear(), terminId: ev.id, terminLabel: `${tkFmtDate(ev.date)} · ${ev.auditart}` });
+    }
+    // applyZuordnungSelection() -> setActiveZuordnung() rendert Grid + Detail
+    // bereits neu (siehe dort) — hier ist nichts weiter zu tun.
+  } catch (err) {
+    if (statusEl) statusEl.textContent = 'Fehler: ' + (err.message || 'Zuordnung fehlgeschlagen.');
+    if (btn) btn.disabled = false;
+  }
+}
+
+// entry.attachments enthält nur Storage-Pfade + Metadaten — Anzeige braucht
+// pro Datei eine frisch geholte Signed URL (privater Bucket, gleiches Muster
+// wie die Flächen-Notizen-Fotos). Bilder werden als Vorschau angezeigt,
+// andere Dateitypen als Icon + Dateiname.
+async function renderTerminkalenderAttachments(ev) {
+  const grid = document.getElementById('tk-attachments-grid');
+  if (!grid) return;
+  const attachments = ev.attachments || [];
+  if (!attachments.length) { grid.innerHTML = uploadsForGroup(ev.id).length ? '' : '<p class="empty-hint">Noch keine Anhänge.</p>'; return; }
+  grid.innerHTML = attachments.map(() => '<div class="tk-attachment tk-attachment-loading"></div>').join('');
+  const urls = await Promise.all(attachments.map(a => getPhotoUrl(a.path, a.name).catch(() => null)));
+  grid.innerHTML = attachmentTilesHtml(attachments, urls, { rename: true });
+  grid.querySelectorAll('.tk-attachment-rename').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const idx = attachments.findIndex(x => x.path === btn.getAttribute('data-path'));
+      const a = attachments[idx];
+      if (!a) return;
+      const isImage = (a.type || '').startsWith('image/');
+      const art = await askDocName({
+        title: 'Dokument umbenennen', value: docArtFromName(ev, a.name), ev, fileName: a.name, skipLabel: 'Abbrechen',
+        previewUrl: isImage ? urls[idx] : null, previewIcon: /pdf$/i.test(a.type || a.name || '') ? 'picture_as_pdf' : 'description'
+      });
+      if (art) renameAttachment(ev, a, art);
+    });
+  });
+  // Antippen öffnet den Dokumenten-/Fotoviewer (auch ohne Vorschaubild —
+  // der Viewer lädt die Datei selbst bzw. aus dem Gerätespeicher).
+  grid.querySelectorAll('[data-dv-index]').forEach(btn => {
+    btn.addEventListener('click', () => openTerminViewer(ev, Number(btn.dataset.dvIndex), urls));
+  });
+  grid.querySelectorAll('.tk-attachment-remove').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const a = attachments.find(x => x.path === btn.getAttribute('data-path'));
+      if (a && !confirm(`„${a.name}" wirklich löschen?`)) return;
+      removeTerminkalenderAttachment(ev.id, btn.getAttribute('data-path'));
+    });
+  });
+}
+
+// Kacheln für Anhänge (Termin, Protokoll-Anlagen): Bild als Vorschau, PDF/
+// sonstige als Symbol + Name; ganze Kachel öffnet den Viewer.
+function attachmentTilesHtml(list, urls, { rename = false } = {}) {
+  return list.map((a, i) => {
+    const url = urls[i];
+    const isImage = (a.type || '').startsWith('image/');
+    const isPdf = a.type === 'application/pdf' || /.pdf$/i.test(a.name || '');
+    const inner = isImage && url
+      ? `<img src="${url}" alt="${escapeHtml(a.name)}">`
+      : `<span class="tk-attachment-icon material-symbols-rounded icon">${isPdf ? 'picture_as_pdf' : isImage ? 'photo_camera' : 'description'}</span><span class="tk-attachment-name">${escapeHtml(a.name)}</span>`;
+    return `<div class="tk-attachment${url ? '' : ' tk-attachment-nopreview'}">
+      <button type="button" class="tk-attachment-link" data-dv-index="${i}" title="${escapeHtml(a.name)} — ansehen" aria-label="${escapeHtml(a.name)} ansehen">${inner}</button>
+      <button type="button" class="tk-attachment-remove" data-path="${escapeHtml(a.path)}" title="Entfernen" aria-label="${escapeHtml(a.name)} entfernen"><span class="material-symbols-rounded icon">close</span></button>
+      ${rename ? `<button type="button" class="tk-attachment-rename" data-path="${escapeHtml(a.path)}" title="Umbenennen" aria-label="${escapeHtml(a.name)} umbenennen"><span class="material-symbols-rounded icon">edit</span></button>` : ''}
+    </div>`;
+  }).join('');
+}
+
+// Gemeinsame Upload-/Benennungs-/ev.attachments-Logik — genutzt sowohl von
+// den beiden Datei-Input-Feldern (via handleTerminkalenderFileAdd) als auch
+// direkt vom Dokumentenscanner (siehe weiter unten), der sein fertiges PDF
+// als File-Objekt übergibt, ohne den Umweg über ein <input>-Change-Event.
+// ---- Upload-Warteschlange (Fotos/Dateien/Scans/Protokolle an Terminen) ----
+// Vorher lief jeder Upload nur im Arbeitsspeicher: Öffnete man für das
+// nächste Foto die Kamera, wurde der Browser angehalten bzw. (Android, wenig
+// Speicher) neu geladen — der laufende Upload brach still ab, und die
+// Fehlermeldung wurde vom nächsten Foto überschrieben. Jetzt wird jede Datei
+// sofort lokal gesichert (IndexedDB, offline-store.js), der Reihe nach
+// hochgeladen und bei Fehlern/ohne Netz automatisch erneut versucht — auch
+// nach einem Neustart der App. Status je Datei im Reiter "Dokumente", Summe
+// im Speicherstatus der Kopfzeile.
+const uploadQueue = []; // { id, userId, evId, name, fileName, type, size, blob, status, error, attempts, createdAt }
+let uploadWorkerRunning = false;
+let uploadRetryTimer = null;
+const uploadPreviewUrls = new Map();
+const UPLOAD_TIMEOUT_MS = (size) => 60000 + Math.round(size / 1024) * 40; // ~25 KB/s Minimum
+
+function uploadArtName(ev, file, artOverride) {
+  const isImage = (file.type || '').startsWith('image/');
+  const isPdf = file.type === 'application/pdf';
+  const ext = (file.name.split('.').pop() || (isImage ? 'jpg' : isPdf ? 'pdf' : 'dat')).toLowerCase();
+  // Termine kennen Betrieb und Datum selbst (Jahr_Betrieb_Art, siehe
+  // zuordnungFileName); artOverride für eigene Namen (Protokolle, Fotomappe).
+  const art = artOverride || (isImage ? 'Foto Termin' : isPdf ? 'Scan Termin' : 'Datei Termin');
+  return `${ev.date.getFullYear()}_${sanitizeFileNamePart(ev.kunde)}_${art}.${ext}`;
+}
+
+// Datei in die Warteschlange — kehrt zurück, sobald sie lokal gesichert ist.
+async function uploadTerminkalenderAttachment(ev, file, artOverride) {
+  if (!file) return null;
+  const rec = {
+    id: 'up-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+    userId: currentUserId(),
+    evId: ev.id,
+    name: uploadArtName(ev, file, artOverride),
+    fileName: file.name || 'datei',
+    type: file.type || '',
+    size: file.size,
+    blob: file,
+    status: 'pending',
+    error: '',
+    attempts: 0,
+    createdAt: Date.now()
+  };
+  uploadQueue.push(rec);
+  try { await saveQueuedUpload(rec); } catch { /* kein IndexedDB: dann nur im Speicher */ }
+  renderTerminkalenderGrid();
+  refreshUploadViews();
+  runUploadQueue();
+  return rec.id;
+}
+
+// Foto aus der Kamera: sofort sichern/hochladen (wie bisher), danach
+// benennen — so geht bei schlechtem Empfang oder Abbruch nichts verloren.
+async function handleTerminkalenderPhotoCapture(ev, e) {
+  const files = [...e.target.files];
+  e.target.value = '';
+  for (const file of files) {
+    const recId = await uploadTerminkalenderAttachment(ev, file);
+    if (!recId) continue;
+    const url = URL.createObjectURL(file);
+    const art = await askDocName({ title: 'Foto benennen', sub: 'Das Foto ist schon gesichert — der Name kommt dazu.', previewUrl: url, ev, fileName: uploadArtName(ev, file) });
+    URL.revokeObjectURL(url);
+    if (art) renameTerminDoc(ev, recId, art);
+  }
+}
+
+// ---- Dokumente benennen (Foto, Scan, vorhandene Anhänge) ----
+// Name = Jahr_Betrieb_<Bezeichnung>.<Endung> (gleiches Schema wie bisher,
+// die Bezeichnung ersetzt "Foto Termin"/"Scan Termin"). Ein Dialog nach dem
+// anderen: kommt während des Benennens schon das nächste Foto, wartet es.
+const DOCNAME_VORSCHLAEGE = ['Lieferschein', 'Rechnung', 'Etikett', 'Zertifikat', 'Lieferantenliste', 'Sortimentsliste', 'Wiederverkäuferliste', 'HIT-Auszug', 'FNN', 'Verstoß Beleg',
+  'Futtermittel', 'Saatgut', 'Lager', 'Stall', 'Auslauf', 'Bestandsregister', 'Reinigungsmittel', 'Schädlingsbekämpfung'];
+function docNamePrefix(ev) { return `${ev.date.getFullYear()}_${sanitizeFileNamePart(ev.kunde)}_`; }
+function docArtFromName(ev, name) {
+  const base = String(name || '').replace(/\.[^.]+$/, '');
+  return base.startsWith(docNamePrefix(ev)) ? base.slice(docNamePrefix(ev).length) : base;
+}
+function docNameWithArt(ev, oldName, art) {
+  const ext = (/\.([^.]+)$/.exec(oldName || '') || [])[1];
+  return docNamePrefix(ev) + sanitizeFileNamePart(art) + (ext ? '.' + ext : '');
+}
+let docNameChain = Promise.resolve();
+let docNameCurrent = null; // { resolve, updateFile }
+function askDocName(opts) {
+  const p = docNameChain.then(() => showDocNameDialog(opts));
+  docNameChain = p.catch(() => {});
+  return p;
+}
+function showDocNameDialog({ title, sub = '', previewUrl = null, previewIcon = 'description', value = '', ev, fileName = '', skipLabel = 'Ohne Namen' }) {
+  return new Promise(resolve => {
+    const overlay = document.getElementById('docname-overlay');
+    const input = document.getElementById('docname-input');
+    document.getElementById('docname-title').textContent = title;
+    document.getElementById('docname-sub').textContent = sub;
+    document.getElementById('docname-skip').textContent = skipLabel;
+    document.getElementById('docname-preview').innerHTML = previewUrl
+      ? `<img src="${previewUrl}" alt="Vorschau">`
+      : `<span class="material-symbols-rounded icon" aria-hidden="true">${previewIcon}</span>`;
+    document.getElementById('docname-chips').innerHTML = DOCNAME_VORSCHLAEGE
+      .map(v => `<button type="button" class="docname-chip" data-docname="${escapeHtml(v)}">${escapeHtml(v)}</button>`).join('');
+    input.value = value;
+    const updateFile = () => {
+      const art = input.value.trim();
+      document.getElementById('docname-file').textContent = 'Dateiname: ' + (art ? docNameWithArt(ev, fileName, art) : (fileName || '–'));
+    };
+    input.oninput = updateFile;
+    updateFile();
+    docNameCurrent = { resolve, updateFile };
+    overlay.hidden = false;
+    setTimeout(() => { input.focus(); input.select(); }, 30);
+  });
+}
+function closeDocNameDialog(result) {
+  if (!docNameCurrent) return;
+  const { resolve } = docNameCurrent;
+  docNameCurrent = null;
+  document.getElementById('docname-overlay').hidden = true;
+  resolve(result);
+}
+document.getElementById('docname-save').addEventListener('click', () => closeDocNameDialog(document.getElementById('docname-input').value.trim() || null));
+document.getElementById('docname-skip').addEventListener('click', () => closeDocNameDialog(null));
+document.getElementById('docname-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); document.getElementById('docname-save').click(); }
+});
+document.getElementById('docname-chips').addEventListener('click', (e) => {
+  const chip = e.target.closest('[data-docname]');
+  if (!chip || !docNameCurrent) return;
+  const input = document.getElementById('docname-input');
+  // Vorschlag als Anfang übernehmen — Details können direkt dahinter folgen.
+  input.value = chip.dataset.docname + ' ';
+  docNameCurrent.updateFile();
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && docNameCurrent) { e.stopImmediatePropagation(); closeDocNameDialog(null); }
+}, true);
+
+// Benennt eine Datei um — noch in der Warteschlange (Name wird beim
+// Hochladen übernommen) oder schon als Anhang am Termin (nur der angezeigte
+// Name/Downloadname ändert sich, der Speicherpfad bleibt).
+function renameTerminDoc(ev, uploadId, art) {
+  const rec = uploadQueue.find(r => r.id === uploadId);
+  if (rec) {
+    rec.name = docNameWithArt(ev, rec.name, art);
+    saveQueuedUpload(rec).catch(() => {});
+    refreshUploadViews(rec.evId);
+    return;
+  }
+  for (const e of terminkalenderEvents) {
+    const a = (e.attachments || []).find(x => x.uploadId === uploadId);
+    if (a) { renameAttachment(e, a, art); return; }
+  }
+}
+function renameAttachment(ev, a, art) {
+  a.name = docNameWithArt(ev, a.name, art);
+  persistLocalState().catch(() => {});
+  const group = tkGroupFor(ev.id);
+  if (group && group.id === terminkalenderSelectedId) renderTerminkalenderAttachments(group.primary);
+  refreshKontrolleBetrieb();
+  renderKontrolleDokumente();
+}
+
+function handleTerminkalenderFileAdd(ev, e) {
+  const input = e.target;
+  const files = [...input.files];
+  input.value = '';
+  files.forEach(file => uploadTerminkalenderAttachment(ev, file));
+}
+
+function uploadsForGroup(evId) {
+  const group = tkGroupFor(evId);
+  const ids = new Set(group ? group.members.map(m => m.id) : [evId]);
+  return uploadQueue.filter(r => ids.has(r.evId) && r.userId === currentUserId());
+}
+function myUploads() { return uploadQueue.filter(r => r.userId === currentUserId()); }
+
+function withTimeout(promise, ms) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('Zeitüberschreitung — die Verbindung ist zu langsam.')), ms);
+    promise.then(v => { clearTimeout(t); resolve(v); }, e => { clearTimeout(t); reject(e); });
+  });
+}
+
+async function runUploadQueue() {
+  if (uploadWorkerRunning) return;
+  uploadWorkerRunning = true;
+  try {
+    for (;;) {
+      const rec = myUploads().find(r => r.status === 'pending');
+      if (!rec) break;
+      if (!navigator.onLine) { scheduleUploadRetry(); break; }
+      rec.status = 'uploading';
+      rec.error = '';
+      refreshUploadViews(rec.evId);
+      try {
+        const file = new File([rec.blob], rec.fileName, { type: rec.type });
+        const path = await withTimeout(uploadPhoto(file), UPLOAD_TIMEOUT_MS(rec.size));
+        // Termin kann inzwischen gebündelt sein — Anhänge liegen am Haupt-Auftrag.
+        const group = tkGroupFor(rec.evId);
+        const target = group ? group.primary : terminkalenderEvents.find(e => e.id === rec.evId);
+        if (target) {
+          target.attachments = target.attachments || [];
+          target.attachments.push({ path, name: rec.name, size: rec.size, type: rec.type, uploadId: rec.id, addedAt: new Date().toISOString() });
+        }
+        removeQueuedUpload(rec);
+        try { await persistLocalState(); } catch {}
+        // Anhang sofort in die Cloud, damit er auf den anderen Geräten gleich erscheint
+        syncBald(200);
+        renderTerminkalenderGrid();
+        if (target && tkGroupFor(target.id)?.id === terminkalenderSelectedId) renderTerminkalenderAttachments(target);
+        refreshUploadViews(rec.evId);
+      } catch (err) {
+        rec.attempts += 1;
+        rec.status = 'error';
+        rec.error = err.message || 'Hochladen fehlgeschlagen.';
+        try { await saveQueuedUpload({ ...rec, status: 'error' }); } catch {}
+        refreshUploadViews(rec.evId);
+        scheduleUploadRetry(rec.attempts);
+        if (!navigator.onLine) break;
+      }
+    }
+  } finally {
+    uploadWorkerRunning = false;
+  }
+}
+// Fehlgeschlagene Uploads nach kurzer Pause erneut versuchen (5 s, 10 s, …
+// höchstens 60 s), sofort wenn das Netz zurückkommt oder die App wieder
+// sichtbar wird.
+function scheduleUploadRetry(attempts = 1) {
+  clearTimeout(uploadRetryTimer);
+  uploadRetryTimer = setTimeout(retryFailedUploads, Math.min(60000, 5000 * 2 ** Math.max(0, attempts - 1)));
+}
+function retryFailedUploads() {
+  myUploads().forEach(r => { if (r.status === 'error') r.status = 'pending'; });
+  runUploadQueue();
+}
+function removeQueuedUpload(rec) {
+  const i = uploadQueue.indexOf(rec);
+  if (i >= 0) uploadQueue.splice(i, 1);
+  const url = uploadPreviewUrls.get(rec.id);
+  if (url) { URL.revokeObjectURL(url); uploadPreviewUrls.delete(rec.id); }
+  deleteQueuedUpload(rec.id).catch(() => {});
+}
+async function cancelQueuedUpload(id) {
+  const rec = uploadQueue.find(r => r.id === id);
+  if (!rec || rec.status === 'uploading') return;
+  if (!confirm(`„${rec.name}" wurde noch nicht hochgeladen. Wirklich verwerfen?`)) return;
+  removeQueuedUpload(rec);
+  renderTerminkalenderGrid();
+  refreshUploadViews();
+}
+// Gesicherte, noch nicht hochgeladene Dateien nach dem Start/der Anmeldung
+// wieder aufnehmen.
+async function resumeUploadQueue() {
+  const userId = currentUserId();
+  if (!userId) return;
+  let stored = [];
+  try { stored = await listQueuedUploads(userId); } catch {}
+  stored.forEach(rec => {
+    if (uploadQueue.some(r => r.id === rec.id)) return;
+    uploadQueue.push({ ...rec, status: 'pending', error: '' });
+  });
+  refreshUploadViews();
+  runUploadQueue();
+}
+window.addEventListener('online', retryFailedUploads);
+window.addEventListener('offline', () => refreshUploadViews());
+document.addEventListener('visibilitychange', () => { if (!document.hidden) retryFailedUploads(); });
+
+function uploadStatusLabel(rec) {
+  if (rec.status === 'uploading') return 'Wird hochgeladen …';
+  if (!navigator.onLine) return 'Wartet auf Internet';
+  if (rec.status === 'error') return 'Fehlgeschlagen — neuer Versuch folgt';
+  return 'In der Warteschlange';
+}
+// Kurzform für das Schild auf der kleinen Kachel.
+function uploadStatusShort(rec) {
+  if (rec.status === 'uploading') return 'Lädt …';
+  if (!navigator.onLine) return 'Offline';
+  if (rec.status === 'error') return 'Fehler';
+  return 'Wartet';
+}
+function uploadSummaryText(list) {
+  if (!list.length) return '';
+  const offline = !navigator.onLine;
+  const n = list.length;
+  const what = n === 1 ? '1 Datei' : `${n} Dateien`;
+  if (offline) return `Keine Internetverbindung — ${what} sicher auf dem Gerät gespeichert, wird hochgeladen, sobald wieder Netz da ist.`;
+  const failed = list.filter(r => r.status === 'error');
+  if (failed.length && failed.length === n) return `${what} noch nicht hochgeladen (${failed[0].error}) — wird automatisch erneut versucht.`;
+  return `${what} ${n === 1 ? 'wird' : 'werden'} hochgeladen — du kannst weiter fotografieren.`;
+}
+
+// Alle Stellen, die den Upload-Zustand zeigen: Kacheln + Hinweis im Reiter
+// "Dokumente", Zähler am Reiter, Speicherstatus in der Kopfzeile.
+function refreshUploadViews() {
+  updateSaveStatus();
+  refreshKontrolleAnsichten();
+  const mappe = document.getElementById('kontrollmappe');
+  if (!mappe || mappe.hidden || !terminkalenderSelectedId) return;
+  renderUploadQueueTiles(terminkalenderSelectedId);
+}
+function renderUploadQueueTiles(groupId) {
+  const wrap = document.getElementById('tk-upload-queue');
+  if (!wrap) return;
+  const list = uploadsForGroup(groupId);
+  const statusEl = document.getElementById('tk-attachment-status');
+  if (statusEl && (list.length || statusEl.dataset.fromQueue)) {
+    statusEl.textContent = uploadSummaryText(list);
+    statusEl.dataset.fromQueue = list.length ? '1' : '';
+    statusEl.classList.toggle('is-offline', list.length > 0 && !navigator.onLine);
+  }
+  const tabBtn = document.querySelector('#kontrollmappe [data-km-tab="dokumente"]');
+  const group = tkGroupFor(groupId);
+  const total = (group ? group.primary.attachments || [] : []).length + list.length;
+  if (tabBtn) {
+    let countEl = tabBtn.querySelector('.km-tab-count');
+    if (!countEl && total) { countEl = document.createElement('span'); countEl.className = 'km-tab-count'; tabBtn.appendChild(countEl); }
+    if (countEl) { if (total) countEl.textContent = total; else countEl.remove(); }
+  }
+  wrap.hidden = !list.length;
+  const emptyHint = document.querySelector('#tk-attachments-grid > .empty-hint');
+  if (emptyHint) emptyHint.hidden = list.length > 0;
+  wrap.innerHTML = list.map(rec => {
+    let url = uploadPreviewUrls.get(rec.id);
+    if (!url && (rec.type || '').startsWith('image/')) { url = URL.createObjectURL(rec.blob); uploadPreviewUrls.set(rec.id, url); }
+    const inner = url
+      ? `<img src="${url}" alt="">`
+      : `<span class="material-symbols-rounded icon tk-attachment-icon" aria-hidden="true">description</span><span class="tk-attachment-name">${escapeHtml(rec.name)}</span>`;
+    const state = rec.status === 'uploading' ? 'is-uploading' : (!navigator.onLine ? 'is-waiting' : rec.status === 'error' ? 'is-error' : 'is-queued');
+    const icon = rec.status === 'uploading' ? 'cloud_upload' : (!navigator.onLine ? 'cloud_off' : rec.status === 'error' ? 'refresh' : 'schedule');
+    return `<div class="tk-attachment tk-upload ${state}" data-upload-id="${escapeHtml(rec.id)}" title="${escapeHtml(rec.name + ' — ' + uploadStatusLabel(rec) + (rec.error ? ': ' + rec.error : ''))}">
+      <div class="tk-attachment-link">${inner}</div>
+      <span class="tk-upload-badge"><span class="material-symbols-rounded icon" aria-hidden="true">${icon}</span><span>${escapeHtml(uploadStatusShort(rec))}</span></span>
+      ${rec.status === 'uploading' ? '<span class="tk-upload-bar" aria-hidden="true"></span>' : ''}
+      ${rec.status !== 'uploading' ? `<button type="button" class="tk-attachment-remove" data-cancel-upload="${escapeHtml(rec.id)}" title="Verwerfen" aria-label="Upload verwerfen"><span class="material-symbols-rounded icon">close</span></button>` : ''}
+    </div>`;
+  }).join('');
+  wrap.querySelectorAll('[data-cancel-upload]').forEach(b => b.addEventListener('click', () => cancelQueuedUpload(b.dataset.cancelUpload)));
+  wrap.querySelectorAll('.tk-upload').forEach((t, i) => t.addEventListener('click', (e) => {
+    if (e.target.closest('[data-cancel-upload]')) return;
+    if (t.classList.contains('is-error')) { retryFailedUploads(); return; }
+    const g = tkGroupFor(groupId);
+    if (g) openTerminViewer(g.primary, (g.primary.attachments || []).length + i);
+  }));
+}
+
+// ---- Fotomappe: mehrere Fotos -> eine PDF am Termin ----
+// Fotos werden beim Hinzufügen verkleinert (lange Seite max. 1800 px, JPEG)
+// und sofort lokal gesichert — ein Neuladen des Tabs beim Kamerawechsel
+// verliert nichts, der Entwurf ist beim nächsten Öffnen wieder da. "PDF
+// erstellen" baut die Mappe (1, 2 oder 4 Fotos je A4-Seite, mit Kopfzeile und
+// Bildunterschrift) und gibt sie an die Upload-Warteschlange.
+const FOTOMAPPE_MAX_SIDE = 1800;
+const FOTOMAPPE_PER_KEY = 'feldfolio-fotomappe-per-page';
+const fotomappeOverlay = document.getElementById('fotomappe-modal-overlay');
+let fotomappeEv = null;
+let fotomappeFotos = []; // { id, userId, evId, blob, width, height, takenAt, order }
+const fotomappeUrls = new Map();
+let fotomappePerPage = 1;
+try { fotomappePerPage = Number(localStorage.getItem(FOTOMAPPE_PER_KEY)) || 1; } catch {}
+let fotomappeBusy = false;
+
+async function fotomappeCompress(file) {
+  let source;
+  try { source = await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch {
+    source = await new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('Bild konnte nicht gelesen werden.'));
+      img.src = URL.createObjectURL(file);
+    });
+  }
+  const w0 = source.width, h0 = source.height;
+  const scale = Math.min(1, FOTOMAPPE_MAX_SIDE / Math.max(w0, h0));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(w0 * scale));
+  canvas.height = Math.max(1, Math.round(h0 * scale));
+  const g = canvas.getContext('2d');
+  g.fillStyle = '#fff';
+  g.fillRect(0, 0, canvas.width, canvas.height);
+  g.drawImage(source, 0, 0, canvas.width, canvas.height);
+  if (source.close) source.close();
+  const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', 0.82));
+  return { blob, width: canvas.width, height: canvas.height };
+}
+
+async function openFotomappe(ev) {
+  const group = tkGroupFor(ev.id);
+  fotomappeEv = group ? group.primary : ev;
+  const ids = new Set(group ? group.members.map(m => m.id) : [ev.id]);
+  let stored = [];
+  try { stored = await listFotomappeFotos(currentUserId()); } catch {}
+  fotomappeFotos = stored.filter(f => ids.has(f.evId)).sort((a, b) => a.order - b.order);
+  document.getElementById('fotomappe-sub').textContent = `${fotomappeEv.kunde} · ${tkFmtDate(fotomappeEv.date)} — mehrere Fotos als eine PDF-Datei`;
+  document.getElementById('fotomappe-titel').value = '';
+  setFotomappeStatus('Die Fotos bleiben auf dem Gerät gespeichert, bis die Mappe erstellt ist — auch bei schlechtem Empfang.');
+  applyFotomappeLayout();
+  renderFotomappe();
+  fotomappeOverlay.hidden = false;
+}
+function closeFotomappe() {
+  fotomappeOverlay.hidden = true;
+  fotomappeUrls.forEach(url => URL.revokeObjectURL(url));
+  fotomappeUrls.clear();
+}
+function setFotomappeStatus(text, isError = false) {
+  const el = document.getElementById('fotomappe-status');
+  el.textContent = text;
+  el.classList.toggle('modal-error', isError);
+}
+function applyFotomappeLayout() {
+  document.querySelectorAll('#fotomappe-layout [data-per]').forEach(b => b.setAttribute('aria-checked', String(Number(b.dataset.per) === fotomappePerPage)));
+}
+function renderFotomappe() {
+  const grid = document.getElementById('fotomappe-grid');
+  if (!fotomappeFotos.length) {
+    grid.innerHTML = '<div class="fotomappe-empty"><span class="material-symbols-rounded icon" aria-hidden="true">photo_library</span><p>Noch keine Fotos — nimm sie nacheinander auf oder wähle mehrere aus der Galerie.</p></div>';
+  } else {
+    grid.innerHTML = fotomappeFotos.map((f, i) => {
+      let url = fotomappeUrls.get(f.id);
+      if (!url) { url = URL.createObjectURL(f.blob); fotomappeUrls.set(f.id, url); }
+      return `<div class="fotomappe-item" data-id="${escapeHtml(f.id)}">
+        <img src="${url}" alt="Foto ${i + 1}">
+        <span class="fotomappe-nr">${i + 1}</span>
+        ${i > 0 ? `<button type="button" class="fotomappe-move" data-move="${escapeHtml(f.id)}" title="Nach vorne" aria-label="Foto ${i + 1} nach vorne"><span class="material-symbols-rounded icon" aria-hidden="true">arrow_back</span></button>` : ''}
+        <button type="button" class="tk-attachment-remove" data-remove="${escapeHtml(f.id)}" title="Entfernen" aria-label="Foto ${i + 1} entfernen"><span class="material-symbols-rounded icon">close</span></button>
+      </div>`;
+    }).join('');
+  }
+  const n = fotomappeFotos.length;
+  const btn = document.getElementById('fotomappe-create');
+  btn.disabled = !n || fotomappeBusy;
+  const pages = Math.ceil(n / fotomappePerPage);
+  document.getElementById('fotomappe-create-label').textContent = n
+    ? `PDF erstellen (${n} ${n === 1 ? 'Foto' : 'Fotos'}, ${pages} ${pages === 1 ? 'Seite' : 'Seiten'})`
+    : 'PDF erstellen';
+}
+async function addFotomappeFiles(files) {
+  if (!fotomappeEv || !files.length) return;
+  setFotomappeStatus(`Bereite ${files.length === 1 ? 'Foto' : files.length + ' Fotos'} vor …`);
+  let base = Date.now();
+  for (const file of files) {
+    try {
+      const { blob, width, height } = await fotomappeCompress(file);
+      const rec = {
+        id: 'fm-' + base.toString(36) + Math.random().toString(36).slice(2, 7),
+        userId: currentUserId(), evId: fotomappeEv.id, blob, width, height,
+        takenAt: file.lastModified || Date.now(), order: base++
+      };
+      fotomappeFotos.push(rec);
+      try { await saveFotomappeFoto(rec); } catch {}
+      renderFotomappe();
+    } catch (err) {
+      setFotomappeStatus('Fehler: ' + (err.message || 'Foto konnte nicht übernommen werden.'), true);
+      return;
+    }
+  }
+  setFotomappeStatus(`${fotomappeFotos.length} ${fotomappeFotos.length === 1 ? 'Foto' : 'Fotos'} auf dem Gerät gespeichert.`);
+}
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(blob);
+  });
+}
+async function buildFotomappePdf(ev, fotos, perPage, titel) {
+  const doc = new window.jspdf.jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4', compress: true });
+  const W = 210, H = 297, M = 12, top = 24, bottom = H - 14;
+  const cols = perPage === 4 ? 2 : 1;
+  const rows = perPage === 1 ? 1 : 2;
+  const gap = 6, caption = 6;
+  const cellW = (W - 2 * M - (cols - 1) * gap) / cols;
+  const cellH = (bottom - top - (rows - 1) * gap) / rows;
+  const pages = Math.ceil(fotos.length / perPage);
+  const heading = ['Fotomappe', titel].filter(Boolean).join(' · ');
+  for (let p = 0; p < pages; p++) {
+    if (p > 0) doc.addPage();
+    doc.setFillColor(96, 126, 96); doc.rect(0, 0, W, 2.2, 'F');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(12.5); doc.setTextColor(43, 51, 40);
+    doc.text(heading, M, 12);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(8.5); doc.setTextColor(107, 117, 102);
+    doc.text(`${ev.kunde} · Termin ${tkFmtDate(ev.date)}`, M, 17.5);
+    doc.setDrawColor(213, 221, 203); doc.setLineWidth(0.3); doc.line(M, 20.5, W - M, 20.5);
+    for (let k = 0; k < perPage; k++) {
+      const idx = p * perPage + k;
+      const f = fotos[idx];
+      if (!f) break;
+      const cx = M + (k % cols) * (cellW + gap);
+      const cy = top + Math.floor(k / cols) * (cellH + gap);
+      const boxH = cellH - caption;
+      const s = Math.min(cellW / f.width, boxH / f.height);
+      const w = f.width * s, h = f.height * s;
+      doc.addImage(await blobToDataUrl(f.blob), 'JPEG', cx + (cellW - w) / 2, cy + (boxH - h) / 2, w, h, undefined, 'FAST');
+      const when = new Date(f.takenAt);
+      doc.setFontSize(7.5); doc.setTextColor(107, 117, 102);
+      doc.text(`Foto ${idx + 1} · ${when.toLocaleDateString('de-DE')} ${when.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' })}`, cx + cellW / 2, cy + cellH - 1.5, { align: 'center' });
+    }
+    doc.setFontSize(7); doc.setTextColor(107, 117, 102);
+    doc.text(`Seite ${p + 1} von ${pages}`, W - M, H - 7, { align: 'right' });
+  }
+  return doc.output('blob');
+}
+async function createFotomappe() {
+  if (!fotomappeEv || !fotomappeFotos.length || fotomappeBusy) return;
+  fotomappeBusy = true;
+  renderFotomappe();
+  setFotomappeStatus('Erstelle PDF …');
+  try {
+    const titel = document.getElementById('fotomappe-titel').value.trim();
+    const blob = await buildFotomappePdf(fotomappeEv, fotomappeFotos, fotomappePerPage, titel);
+    const art = 'Fotomappe' + (titel ? ' ' + titel : '');
+    await uploadTerminkalenderAttachment(fotomappeEv, new File([blob], 'fotomappe.pdf', { type: 'application/pdf' }), art);
+    // Erst nach dem lokalen Sichern der PDF (Warteschlange) die Einzelfotos löschen.
+    for (const f of fotomappeFotos) { try { await deleteFotomappeFoto(f.id); } catch {} }
+    fotomappeFotos = [];
+    closeFotomappe();
+  } catch (err) {
+    setFotomappeStatus('Fehler: ' + (err.message || 'PDF konnte nicht erstellt werden.'), true);
+  } finally {
+    fotomappeBusy = false;
+    if (!fotomappeOverlay.hidden) renderFotomappe();
+  }
+}
+document.getElementById('fotomappe-capture').addEventListener('change', (e) => { const files = [...e.target.files]; e.target.value = ''; addFotomappeFiles(files); });
+document.getElementById('fotomappe-pick').addEventListener('change', (e) => { const files = [...e.target.files]; e.target.value = ''; addFotomappeFiles(files); });
+document.getElementById('fotomappe-grid').addEventListener('click', async (e) => {
+  const rm = e.target.closest('[data-remove]');
+  if (rm) {
+    const id = rm.dataset.remove;
+    fotomappeFotos = fotomappeFotos.filter(f => f.id !== id);
+    const url = fotomappeUrls.get(id);
+    if (url) { URL.revokeObjectURL(url); fotomappeUrls.delete(id); }
+    try { await deleteFotomappeFoto(id); } catch {}
+    renderFotomappe();
+    return;
+  }
+  const mv = e.target.closest('[data-move]');
+  if (mv) {
+    const i = fotomappeFotos.findIndex(f => f.id === mv.dataset.move);
+    if (i > 0) {
+      [fotomappeFotos[i - 1], fotomappeFotos[i]] = [fotomappeFotos[i], fotomappeFotos[i - 1]];
+      const [a, b] = [fotomappeFotos[i - 1], fotomappeFotos[i]];
+      [a.order, b.order] = [b.order, a.order];
+      try { await saveFotomappeFoto(a); await saveFotomappeFoto(b); } catch {}
+      renderFotomappe();
+    }
+  }
+});
+document.querySelectorAll('#fotomappe-layout [data-per]').forEach(btn => btn.addEventListener('click', () => {
+  fotomappePerPage = Number(btn.dataset.per);
+  try { localStorage.setItem(FOTOMAPPE_PER_KEY, String(fotomappePerPage)); } catch {}
+  applyFotomappeLayout();
+  renderFotomappe();
+}));
+document.getElementById('fotomappe-create').addEventListener('click', createFotomappe);
+document.getElementById('fotomappe-close').addEventListener('click', closeFotomappe);
+document.getElementById('fotomappe-discard').addEventListener('click', async () => {
+  if (fotomappeFotos.length && !confirm(`${fotomappeFotos.length} ${fotomappeFotos.length === 1 ? 'Foto' : 'Fotos'} verwerfen?`)) return;
+  for (const f of fotomappeFotos) { try { await deleteFotomappeFoto(f.id); } catch {} }
+  fotomappeFotos = [];
+  closeFotomappe();
+});
+fotomappeOverlay.addEventListener('click', (e) => { if (e.target === fotomappeOverlay) closeFotomappe(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !fotomappeOverlay.hidden) closeFotomappe(); });
+
+// Dev-only Testhaken: Upload-Warteschlange einsehen.
+if (import.meta.env.DEV) {
+  window.__ffTestUploads = {
+    list: () => uploadQueue.map(r => ({ id: r.id, evId: r.evId, name: r.name, status: r.status, error: r.error })),
+    stored: () => listQueuedUploads(currentUserId()).then(l => l.map(r => ({ id: r.id, name: r.name }))),
+    resume: () => resumeUploadQueue(),
+    clearMemory: () => { uploadQueue.splice(0); },
+    retry: () => retryFailedUploads()
+  };
+}
+
+// ---------- Dokumenten- und Fotoviewer ----------
+// Öffnet Anhänge in der App statt in einem neuen Browser-Tab:
+//   Fotos  -> Zoom (Zwei-Finger, Doppeltipp, Mausrad, +/−), Verschieben,
+//             Drehen; Wischen links/rechts blättert
+//   PDFs   -> alle Seiten untereinander (pdf.js vom CDN, erst beim ersten
+//             PDF geladen), Zoom per +/−, Seitenanzeige
+//   Sonst  -> Hinweis + Herunterladen
+// Einmal geladene Dateien landen im Cache Storage — im Stall ohne Empfang
+// lassen sie sich danach wieder ansehen. Noch nicht hochgeladene Dateien
+// (Upload-Warteschlange) werden direkt aus dem lokalen Blob angezeigt.
+//
+// openDocViewer(items, index, { onDelete }) mit items:
+//   { name, type, size?, path? (Storage), blob? (lokal), thumb?, note? }
+const PDFJS_BASE = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
+// Sicherheit: pdf.js 3.x kann beim Rendern präparierter Schriften JavaScript ausführen
+// (CVE-2024-4367) — mit isEvalSupported:false nicht. Gilt für ALLE getDocument-Aufrufe.
+const PDFJS_SICHER = { isEvalSupported: false, enableXfa: false };
+// Prüfsummen von https://api.cdnjs.com/libraries/pdf.js/3.11.174?fields=sri
+const PDFJS_SRI = {
+  lib: 'sha512-q+4liFwdPC/bNdhUpZx6aXDx/h77yEQtn4I1slHydcbZK34nLaR3cAeYSJshoxIOq3mjEf7xJE8YWIUHMn+oCQ==',
+  worker: 'sha512-BbrZ76UNZq5BhH7LL7pn9A4TKQpQeNCHOo65/akfelcIBbcVvYWOFQKPXIrykE3qZxYjmDX573oa4Ywsc7rpTw=='
+};
+const DOC_CACHE = 'feldfolio-dokumente-v1';
+const dvEl = document.getElementById('docviewer');
+const dvContent = document.getElementById('dv-content');
+const dv = {
+  items: [], index: 0, onDelete: null, objUrl: null, blob: null, kind: null, token: 0,
+  scale: 1, tx: 0, ty: 0, rot: 0, pdfZoom: 1, pdfDoc: null, returnFocus: null
+};
+
+function docCacheKey(path) { return 'https://feldfolio.local/dokument/' + encodeURIComponent(path); }
+async function loadDocBlob(item) {
+  if (item.blob) return item.blob;
+  if (!item.path) throw new Error('Datei nicht verfügbar.');
+  let cache = null;
+  try { cache = await caches.open(DOC_CACHE); } catch {}
+  if (cache) {
+    const hit = await cache.match(docCacheKey(item.path)).catch(() => null);
+    // bei Geräteschutz verschlüsselt abgelegt; nicht lesbar -> neu laden
+    const ausCache = hit ? await cacheAuspacken(currentUserId(), hit).catch(() => null) : null;
+    if (ausCache) return ausCache;
+  }
+  if (!navigator.onLine) throw new Error('Keine Internetverbindung — diese Datei wurde auf diesem Gerät noch nicht geöffnet.');
+  const url = await getPhotoUrl(item.path);
+  if (!url) throw new Error('Datei konnte nicht geladen werden.');
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Datei konnte nicht geladen werden (${res.status}).`);
+  const blob = await res.blob();
+  if (cache) cacheVerpacken(currentUserId(), blob, item.type).then(r => r && cache.put(docCacheKey(item.path), r)).catch(() => {});
+  return blob;
+}
+function docKind(item, blob) {
+  const type = (item.type || (blob && blob.type) || '').toLowerCase();
+  const name = (item.name || '').toLowerCase();
+  if (type.startsWith('image/') || /\.(jpe?g|png|gif|webp|heic|bmp)$/.test(name)) return 'image';
+  if (type === 'application/pdf' || name.endsWith('.pdf')) return 'pdf';
+  return 'other';
+}
+function formatBytes(n) {
+  if (!Number.isFinite(n) || n <= 0) return '';
+  if (n < 1024 * 1024) return Math.max(1, Math.round(n / 1024)) + ' KB';
+  return (n / 1024 / 1024).toLocaleString('de-DE', { maximumFractionDigits: 1 }) + ' MB';
+}
+
+function openDocViewer(items, index = 0, opts = {}) {
+  if (!items.length) return;
+  dv.items = items.slice();
+  dv.index = Math.max(0, Math.min(index, items.length - 1));
+  dv.onDelete = opts.onDelete || null;
+  dv.returnFocus = document.activeElement;
+  dvEl.hidden = false;
+  document.body.classList.add('docviewer-open');
+  renderDocThumbs();
+  showDocAt(dv.index);
+  document.getElementById('dv-close').focus();
+}
+function closeDocViewer() {
+  if (dvEl.hidden) return;
+  dv.token++;
+  dvEl.hidden = true;
+  document.body.classList.remove('docviewer-open');
+  releaseDocResources();
+  dvContent.innerHTML = '';
+  dv.returnFocus?.focus?.();
+}
+function releaseDocResources() {
+  if (dv.objUrl) { URL.revokeObjectURL(dv.objUrl); dv.objUrl = null; }
+  if (dv.pdfDoc) { dv.pdfDoc.destroy().catch?.(() => {}); dv.pdfDoc = null; }
+  dv.blob = null;
+}
+function renderDocThumbs() {
+  const wrap = document.getElementById('dv-thumbs');
+  document.getElementById('dv-bottom').hidden = dv.items.length < 2;
+  wrap.innerHTML = dv.items.map((it, i) => {
+    const kind = docKind(it);
+    const inner = it.thumb && kind === 'image'
+      ? `<img src="${it.thumb}" alt="">`
+      : `<span class="material-symbols-rounded icon" aria-hidden="true">${kind === 'pdf' ? 'picture_as_pdf' : kind === 'image' ? 'photo_camera' : 'description'}</span>`;
+    return `<button type="button" class="dv-thumb${i === dv.index ? ' active' : ''}" role="tab" aria-selected="${i === dv.index}" data-dv-thumb="${i}" title="${escapeHtml(it.name)}">${inner}</button>`;
+  }).join('');
+}
+function updateDocChrome() {
+  const it = dv.items[dv.index];
+  const n = dv.items.length;
+  document.getElementById('dv-name').textContent = it.name;
+  const meta = [n > 1 ? `${dv.index + 1} / ${n}` : '', formatBytes(it.size || (dv.blob && dv.blob.size)), it.note || ''].filter(Boolean).join(' · ');
+  document.getElementById('dv-meta').textContent = meta;
+  document.getElementById('dv-prev').hidden = n < 2;
+  document.getElementById('dv-next').hidden = n < 2;
+  const zoomable = dv.kind === 'image' || dv.kind === 'pdf';
+  document.getElementById('dv-zoom-in').hidden = !zoomable;
+  document.getElementById('dv-zoom-out').hidden = !zoomable;
+  document.getElementById('dv-rotate').hidden = !zoomable;
+  document.getElementById('dv-delete').hidden = !dv.onDelete;
+  const dl = document.getElementById('dv-download');
+  dl.hidden = !dv.objUrl;
+  if (dv.objUrl) { dl.href = dv.objUrl; dl.download = it.name; } else { dl.removeAttribute('href'); }
+  document.getElementById('dv-open').hidden = !(dv.objUrl && dvOeffnenTyp());
+  document.querySelectorAll('#dv-thumbs .dv-thumb').forEach((b, i) => {
+    b.classList.toggle('active', i === dv.index);
+    b.setAttribute('aria-selected', String(i === dv.index));
+    if (i === dv.index) b.scrollIntoView({ block: 'nearest', inline: 'center' });
+  });
+}
+
+async function showDocAt(index) {
+  const token = ++dv.token;
+  dv.index = (index + dv.items.length) % dv.items.length;
+  releaseDocResources();
+  dv.kind = null; dv.scale = 1; dv.tx = 0; dv.ty = 0; dv.rot = 0; dv.pdfZoom = 1;
+  document.getElementById('dv-page').hidden = true;
+  const it = dv.items[dv.index];
+  dvContent.innerHTML = '<div class="dv-loading"><span class="dv-spinner" aria-hidden="true"></span><span>Lädt …</span></div>';
+  updateDocChrome();
+  let blob;
+  try {
+    blob = await loadDocBlob(it);
+  } catch (err) {
+    if (token !== dv.token) return;
+    dvContent.innerHTML = `<div class="dv-message"><span class="material-symbols-rounded icon" aria-hidden="true">${navigator.onLine ? 'warning' : 'cloud_off'}</span><p>${escapeHtml(err.message || 'Datei konnte nicht geladen werden.')}</p></div>`;
+    return;
+  }
+  if (token !== dv.token) return;
+  dv.blob = blob;
+  dv.objUrl = URL.createObjectURL(blob);
+  dv.kind = docKind(it, blob);
+  updateDocChrome();
+  if (dv.kind === 'image') {
+    dvContent.innerHTML = `<div class="dv-image-wrap"><img id="dv-img" src="${dv.objUrl}" alt="${escapeHtml(it.name)}" draggable="false"></div>`;
+    applyDocImageTransform();
+  } else if (dv.kind === 'pdf') {
+    dvContent.innerHTML = '<div class="dv-pdf" id="dv-pdf"><div class="dv-loading"><span class="dv-spinner" aria-hidden="true"></span><span>PDF wird geöffnet …</span></div></div>';
+    try {
+      await ensurePdfJs();
+      if (token !== dv.token) return;
+      dv.pdfDoc = await window.pdfjsLib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()), ...PDFJS_SICHER }).promise;
+      if (token !== dv.token) return;
+      await renderDocPdf(token);
+    } catch (err) {
+      if (token !== dv.token) return;
+      dvContent.innerHTML = `<div class="dv-message"><span class="material-symbols-rounded icon" aria-hidden="true">picture_as_pdf</span><p>Vorschau nicht möglich${navigator.onLine ? '' : ' (ohne Internet beim ersten Mal)'} — über „Herunterladen" bzw. „In neuem Tab öffnen" ansehen.</p></div>`;
+    }
+  } else {
+    dvContent.innerHTML = `<div class="dv-message"><span class="material-symbols-rounded icon" aria-hidden="true">description</span><p>Für diesen Dateityp gibt es keine Vorschau.</p><a class="betrieb-btn primary" href="${dv.objUrl}" download="${escapeHtml(it.name)}"><span class="material-symbols-rounded icon" aria-hidden="true">download</span>Herunterladen</a></div>`;
+  }
+}
+
+let pdfJsPromise = null;
+function ensurePdfJs() {
+  if (window.pdfjsLib) return Promise.resolve();
+  if (!pdfJsPromise) {
+    // Beide Dateien mit Prüfsumme (wie die <script>-Tags in index.html). Der Worker
+    // lässt sich nicht per Attribut prüfen -> geprüft laden und aus dem Inhalt starten.
+    pdfJsPromise = loadScript(PDFJS_BASE + 'pdf.min.js', PDFJS_SRI.lib).then(async () => {
+      const res = await fetch(PDFJS_BASE + 'pdf.worker.min.js', { integrity: PDFJS_SRI.worker });
+      if (!res.ok) throw new Error('pdf.js-Worker konnte nicht geladen werden.');
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(new Blob([await res.blob()], { type: 'text/javascript' }));
+    });
+    pdfJsPromise.catch(() => { pdfJsPromise = null; });
+  }
+  return pdfJsPromise;
+}
+async function renderDocPdf(token) {
+  const host = document.getElementById('dv-pdf');
+  if (!host || !dv.pdfDoc) return;
+  const keepRatio = host.scrollHeight ? host.scrollTop / host.scrollHeight : 0;
+  host.innerHTML = '';
+  // Seitenbreite: Bildschirm, aber höchstens wie ein gut lesbares Blatt (Zoom geht weiter).
+  const avail = Math.max(200, Math.min(host.clientWidth - 24, 920));
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  for (let i = 1; i <= dv.pdfDoc.numPages; i++) {
+    if (token !== dv.token) return;
+    const page = await dv.pdfDoc.getPage(i);
+    const base = page.getViewport({ scale: 1, rotation: dv.rot });
+    const scale = Math.min(avail / base.width, 2.2) * dv.pdfZoom;
+    const vp = page.getViewport({ scale: scale * dpr, rotation: dv.rot });
+    const canvas = document.createElement('canvas');
+    canvas.className = 'dv-pdf-page';
+    canvas.dataset.page = i;
+    canvas.width = Math.floor(vp.width);
+    canvas.height = Math.floor(vp.height);
+    canvas.style.width = Math.floor(vp.width / dpr) + 'px';
+    canvas.style.height = Math.floor(vp.height / dpr) + 'px';
+    host.appendChild(canvas);
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+    if (i === 1 && keepRatio) host.scrollTop = keepRatio * host.scrollHeight;
+  }
+  updateDocPageLabel();
+  host.onscroll = updateDocPageLabel;
+}
+function updateDocPageLabel() {
+  const host = document.getElementById('dv-pdf');
+  const label = document.getElementById('dv-page');
+  if (!host || !dv.pdfDoc) { label.hidden = true; return; }
+  const pages = [...host.querySelectorAll('.dv-pdf-page')];
+  const mid = host.scrollTop + host.clientHeight / 2;
+  let current = 1;
+  pages.forEach(c => { if (c.offsetTop <= mid) current = Number(c.dataset.page); });
+  label.textContent = `Seite ${current} von ${dv.pdfDoc.numPages}`;
+  label.hidden = false;
+}
+
+// ---- Foto: Zoom / Verschieben / Drehen / Wischen ----
+function applyDocImageTransform() {
+  const img = document.getElementById('dv-img');
+  if (!img) return;
+  img.style.transform = `translate(${dv.tx}px, ${dv.ty}px) scale(${dv.scale}) rotate(${dv.rot}deg)`;
+  img.classList.toggle('is-zoomed', dv.scale > 1.01);
+}
+function zoomDoc(factor) {
+  if (dv.kind === 'image') {
+    dv.scale = Math.min(6, Math.max(1, dv.scale * factor));
+    if (dv.scale === 1) { dv.tx = 0; dv.ty = 0; }
+    applyDocImageTransform();
+  } else if (dv.kind === 'pdf') {
+    dv.pdfZoom = Math.min(4, Math.max(0.5, dv.pdfZoom * factor));
+    renderDocPdf(dv.token);
+  }
+}
+function rotateDoc() {
+  dv.rot = (dv.rot + 90) % 360;
+  if (dv.kind === 'image') applyDocImageTransform();
+  else if (dv.kind === 'pdf') renderDocPdf(dv.token);
+}
+const dvPointers = new Map();
+let dvGesture = null;
+dvContent.addEventListener('pointerdown', (e) => {
+  if (dv.kind !== 'image') return;
+  try { dvContent.setPointerCapture(e.pointerId); } catch { /* nicht aktiver Pointer */ }
+  dvPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  const pts = [...dvPointers.values()];
+  if (pts.length === 2) {
+    dvGesture = { type: 'pinch', dist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y), scale: dv.scale };
+  } else if (pts.length === 1) {
+    dvGesture = { type: dv.scale > 1.01 ? 'pan' : 'swipe', x: e.clientX, y: e.clientY, tx: dv.tx, ty: dv.ty, t: Date.now() };
+  }
+});
+dvContent.addEventListener('pointermove', (e) => {
+  if (!dvPointers.has(e.pointerId) || !dvGesture) return;
+  dvPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  const pts = [...dvPointers.values()];
+  if (dvGesture.type === 'pinch' && pts.length === 2) {
+    const d = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+    dv.scale = Math.min(6, Math.max(1, dvGesture.scale * d / dvGesture.dist));
+    if (dv.scale === 1) { dv.tx = 0; dv.ty = 0; }
+    applyDocImageTransform();
+  } else if (dvGesture.type === 'pan') {
+    dv.tx = dvGesture.tx + (e.clientX - dvGesture.x);
+    dv.ty = dvGesture.ty + (e.clientY - dvGesture.y);
+    applyDocImageTransform();
+  }
+});
+function endDocPointer(e) {
+  if (!dvPointers.has(e.pointerId)) return;
+  dvPointers.delete(e.pointerId);
+  if (dvGesture && dvGesture.type === 'swipe' && dvPointers.size === 0) {
+    const dx = e.clientX - dvGesture.x, dy = e.clientY - dvGesture.y;
+    if (Math.abs(dx) > 60 && Math.abs(dy) < 80 && Date.now() - dvGesture.t < 800 && dv.items.length > 1) showDocAt(dv.index + (dx < 0 ? 1 : -1));
+  }
+  if (dvPointers.size === 0) dvGesture = null;
+  else if (dvPointers.size === 1 && dvGesture?.type === 'pinch') {
+    const p = [...dvPointers.values()][0];
+    dvGesture = { type: 'pan', x: p.x, y: p.y, tx: dv.tx, ty: dv.ty, t: Date.now() };
+  }
+}
+dvContent.addEventListener('pointerup', endDocPointer);
+dvContent.addEventListener('pointercancel', endDocPointer);
+dvContent.addEventListener('dblclick', () => {
+  if (dv.kind !== 'image') return;
+  if (dv.scale > 1.01) { dv.scale = 1; dv.tx = 0; dv.ty = 0; } else dv.scale = 2.5;
+  applyDocImageTransform();
+});
+dvContent.addEventListener('wheel', (e) => {
+  if (dv.kind === 'image') { e.preventDefault(); zoomDoc(e.deltaY < 0 ? 1.15 : 1 / 1.15); }
+  else if (dv.kind === 'pdf' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); zoomDoc(e.deltaY < 0 ? 1.15 : 1 / 1.15); }
+}, { passive: false });
+
+document.getElementById('dv-close').addEventListener('click', closeDocViewer);
+document.getElementById('dv-prev').addEventListener('click', () => showDocAt(dv.index - 1));
+document.getElementById('dv-next').addEventListener('click', () => showDocAt(dv.index + 1));
+document.getElementById('dv-zoom-in').addEventListener('click', () => zoomDoc(1.25));
+document.getElementById('dv-zoom-out').addEventListener('click', () => zoomDoc(1 / 1.25));
+document.getElementById('dv-rotate').addEventListener('click', rotateDoc);
+// "In neuem Tab öffnen": blob:-URLs laufen im Ursprung der App — eine HTML- oder
+// SVG-Datei könnte dort Skripte ausführen (Zugriff auf die Anmeldung). Daher nur
+// PDFs und Rasterbilder öffnen, und zwar mit fest gesetztem Typ (eine als .pdf
+// getarnte HTML-Datei zeigt der Browser dann als PDF, nicht als Webseite).
+// Alles andere nur herunterladen.
+const DV_RASTER_TYPEN = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/bmp', 'image/avif'];
+function dvOeffnenTyp() {
+  if (!dv.blob) return null;
+  if (dv.kind === 'pdf') return 'application/pdf';
+  let t = String(dv.blob.type || '').toLowerCase();
+  if (!t) { const ext = (String((dv.items[dv.index] || {}).name || '').toLowerCase().match(/\.(jpe?g|png|gif|webp|bmp)$/) || [])[1]; if (ext) t = 'image/' + (ext === 'jpg' ? 'jpeg' : ext); }
+  if (dv.kind === 'image' && DV_RASTER_TYPEN.includes(t)) return t;
+  return null;
+}
+document.getElementById('dv-open').addEventListener('click', () => {
+  const typ = dvOeffnenTyp();
+  if (!typ) return;
+  const url = URL.createObjectURL(new Blob([dv.blob], { type: typ }));
+  window.open(url, '_blank', 'noopener');
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+});
+document.getElementById('dv-delete').addEventListener('click', async () => {
+  const it = dv.items[dv.index];
+  if (!dv.onDelete || !it) return;
+  const removed = await dv.onDelete(it);
+  if (removed === false) return;
+  dv.items.splice(dv.index, 1);
+  if (!dv.items.length) { closeDocViewer(); return; }
+  renderDocThumbs();
+  showDocAt(Math.min(dv.index, dv.items.length - 1));
+});
+document.getElementById('dv-thumbs').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-dv-thumb]');
+  if (b) showDocAt(Number(b.dataset.dvThumb));
+});
+document.addEventListener('keydown', (e) => {
+  if (dvEl.hidden) return;
+  if (e.key === 'Escape') { e.stopImmediatePropagation(); closeDocViewer(); }
+  else if (e.key === 'ArrowLeft' && dv.items.length > 1) showDocAt(dv.index - 1);
+  else if (e.key === 'ArrowRight' && dv.items.length > 1) showDocAt(dv.index + 1);
+  else if (e.key === '+' || e.key === '=') zoomDoc(1.25);
+  else if (e.key === '-') zoomDoc(1 / 1.25);
+  else if (e.key === 'r' || e.key === 'R') rotateDoc();
+}, true);
+window.addEventListener('resize', () => { if (!dvEl.hidden && dv.kind === 'pdf') renderDocPdf(dv.token); });
+
+// Anhänge eines Termins (inkl. noch nicht hochgeladener) für den Viewer.
+function terminViewerItems(ev, thumbs = []) {
+  const uploaded = (ev.attachments || []).map((a, i) => ({ name: a.name, type: a.type, size: a.size, path: a.path, thumb: thumbs[i] || null }));
+  const queued = uploadsForGroup(ev.id).map(r => ({
+    name: r.name, type: r.type, size: r.size, blob: r.blob, uploadId: r.id,
+    thumb: uploadPreviewUrls.get(r.id) || null, note: 'noch nicht hochgeladen'
+  }));
+  return [...uploaded, ...queued];
+}
+function openTerminViewer(ev, index, thumbs) {
+  openDocViewer(terminViewerItems(ev, thumbs), index, {
+    onDelete: async (item) => {
+      if (item.uploadId) {
+        const before = uploadQueue.length;
+        await cancelQueuedUpload(item.uploadId);
+        return uploadQueue.length < before;
+      }
+      if (!confirm(`„${item.name}" wirklich löschen?`)) return false;
+      await removeTerminkalenderAttachment(ev.id, item.path);
+      return !(ev.attachments || []).some(a => a.path === item.path);
+    }
+  });
+}
+
+async function removeTerminkalenderAttachment(id, path) {
+  const ev = terminkalenderEvents.find(e => e.id === id);
+  if (!ev) return;
+  const statusEl = document.getElementById('tk-attachment-status');
+  if (statusEl) statusEl.textContent = 'Lösche …';
+  try {
+    await deletePhoto(path);
+    ev.attachments = (ev.attachments || []).filter(a => a.path !== path);
+    renderTerminkalenderGrid();
+    renderTerminkalenderDetail(ev);
+    const freshStatus = document.getElementById('tk-attachment-status');
+    if (freshStatus) freshStatus.textContent = 'Entfernt — nicht vergessen zu speichern.';
+  } catch (err) {
+    const currentStatus = document.getElementById('tk-attachment-status');
+    if (currentStatus) currentStatus.textContent = 'Fehler: ' + (err.message || 'Löschen fehlgeschlagen.');
+  }
+}
+
+// ---------- Dokumentenscanner (Terminkalender-Anhänge) ----------
+// Mehrseiten-Scanner nach dem Vorbild von Adobe Scan:
+//   Kamera  → Hauptkamera statt Weitwinkel (rankBackCameras), Autofokus,
+//             flüssige Video-Vorschau mit ruhigem Live-Rahmen (QuadTracker),
+//             Auto-Auslöser, sobald das Blatt still liegt
+//   Foto    → volle Kameraauflösung (ImageCapture.takePhoto), nicht das
+//             640×480-Vorschaubild; alternativ Kamera-App/Galerie
+//   Ecken   → automatisch erkannt, per Ziehen mit Lupe korrigierbar
+//   Prüfen  → Entzerren auf Dokumentgröße, Filter (Dokument/Foto/Graustufen/
+//             S/W), Drehen
+//   PDF     → A4-Seiten randlos, ~210 dpi
+// Die Bildverarbeitung selbst steckt in src/scan-engine.js. OpenCV.js
+// (~9 MB WASM) wird erst beim ersten Öffnen nachgeladen und — damit der
+// Scanner auch ohne Empfang geht — einmal im Hintergrund vorgeladen, sobald
+// der Terminkalender geöffnet wird (prefetchScanLibsForOffline).
+const SCAN_OPENCV_URL = 'https://docs.opencv.org/4.7.0/opencv.js';
+const SCAN_DETECT_INTERVAL_MS = 110;
+const SCAN_DETECT_MAX_SIDE = 480;
+const SCAN_AUTO_STABLE_MS = 1100;
+const SCAN_MAX_SOURCE_SIDE = 4000;
+const SCAN_CAMERA_STORAGE_KEY = 'feldfolio-scan-camera';
+const SCAN_AUTO_STORAGE_KEY = 'feldfolio-scan-auto';
+const SCAN_FILTER_STORAGE_KEY = 'feldfolio-scan-filter';
+const SCAN_CORNER_KEYS = ['topLeftCorner', 'topRightCorner', 'bottomRightCorner', 'bottomLeftCorner'];
+
+let scanLibsPromise = null;
+function loadScript(src, integrity) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    if (integrity) { s.integrity = integrity; s.crossOrigin = 'anonymous'; s.referrerPolicy = 'no-referrer'; }
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => { s.remove(); reject(new Error(`Skript konnte nicht geladen werden: ${src}`)); };
+    document.head.appendChild(s);
+  });
+}
+// OpenCV.js erzeugt intern Code zur Laufzeit (new Function) — das verbietet die
+// Content-Security-Policy der Seite (kein 'unsafe-eval'). Es läuft deshalb in
+// einem unsichtbaren eigenen Rahmen (public/scan-sandbox.html) mit eigener,
+// enger Policy; die Seite greift von außen auf dessen `cv` zu.
+// SCAN_OPENCV_URL muss der Adresse in scan-sandbox.html entsprechen.
+function ladeOpenCvRahmen() {
+  return new Promise((resolve, reject) => {
+    const rahmen = document.createElement('iframe');
+    rahmen.src = 'scan-sandbox.html';
+    rahmen.hidden = true;
+    rahmen.title = 'Scanner-Bibliothek';
+    rahmen.setAttribute('aria-hidden', 'true');
+    rahmen.tabIndex = -1;
+    const fehler = () => { rahmen.remove(); reject(new Error('Die Scanner-Bibliothek konnte nicht geladen werden.')); };
+    rahmen.addEventListener('error', fehler);
+    rahmen.addEventListener('load', () => {
+      let cv = null;
+      try { cv = rahmen.contentWindow.cv; } catch { /* kein Zugriff */ }
+      if (!cv) return fehler();
+      // `cv` ist sofort da, die WASM-Runtime wird danach initialisiert —
+      // erst ab onRuntimeInitialized sind cv.Mat & Co. nutzbar.
+      const fertig = () => { window.cv = cv; resolve(); };
+      if (cv.Mat) fertig(); else cv.onRuntimeInitialized = fertig;
+    });
+    document.body.appendChild(rahmen);
+  });
+}
+function ensureScanLibs() {
+  if (!scanLibsPromise) {
+    scanLibsPromise = ladeOpenCvRahmen();
+    // Fehlgeschlagen (z. B. offline): beim nächsten Öffnen erneut versuchen.
+    scanLibsPromise.catch(() => { scanLibsPromise = null; });
+  }
+  return scanLibsPromise;
+}
+const scanCvReady = () => !!(window.cv && window.cv.Mat && window.cv.imread);
+
+let scanPrefetchStarted = false;
+function prefetchScanLibsForOffline() {
+  if (scanPrefetchStarted || import.meta.env.DEV || !navigator.onLine) return;
+  if (!navigator.serviceWorker || !navigator.serviceWorker.controller) return;
+  scanPrefetchStarted = true;
+  // Läuft durch den Service Worker (Laufzeit-Cache "scanner-bibliotheken",
+  // vite.config.js) — danach steht OpenCV auch offline bereit.
+  const run = () => fetch(SCAN_OPENCV_URL, { mode: 'no-cors' }).catch(() => { scanPrefetchStarted = false; });
+  if ('requestIdleCallback' in window) requestIdleCallback(run, { timeout: 8000 });
+  else setTimeout(run, 4000);
+}
+
+let scanStream = null;
+let scanCameras = [];      // Rückkameras, beste zuerst
+let scanCameraId = null;
+let scanPages = [];        // { dataUrl, width, height, a4 } je übernommener Seite
+let scanCurrentEvent = null;
+// Optionales Ziel für den fertigen Scan (z.B. Anlage eines Protokolls) statt
+// eines eigenen Dokuments am Termin: (file, pages) => Promise
+let scanZiel = null;
+let scanSession = 0;       // jedes Öffnen/Schließen zählt hoch (veraltete awaits abbrechen)
+let scanLoopActive = false;
+let scanLastDetect = 0;
+const scanTracker = new QuadTracker();
+const scanDetectCanvas = document.createElement('canvas');
+let scanAutoEnabled = true;
+try { scanAutoEnabled = localStorage.getItem(SCAN_AUTO_STORAGE_KEY) !== 'false'; } catch {}
+let scanAutoArmed = true;
+let scanSeenAfterReturn = false;
+let scanLastCapturedQuad = null;
+let scanCapturing = false;
+let scanPausedForNativeCamera = false;
+let scanSource = null;     // hochaufgelöstes Foto der aktuellen Seite
+let scanCropQuad = null;   // 4 Ecken normiert 0..1 (tl, tr, br, bl)
+let scanCropDisplayUrl = '';
+let scanReview = null;     // { warped, rotation, cache: { filter: canvas } }
+let scanFilter = 'document';
+try { scanFilter = localStorage.getItem(SCAN_FILTER_STORAGE_KEY) || 'document'; } catch {}
+if (!SCAN_FILTERS.some(f => f.key === scanFilter)) scanFilter = 'document';
+
+const scanModal = document.getElementById('scan-modal-overlay');
+const scanCameraView = document.getElementById('scan-camera-view');
+const scanCropView = document.getElementById('scan-crop-view');
+const scanReviewView = document.getElementById('scan-review-view');
+const scanVideo = document.getElementById('scan-video');
+const scanLiveOverlay = document.getElementById('scan-live-overlay');
+const scanLivePolygon = document.getElementById('scan-live-polygon');
+const scanStatusEl = document.getElementById('scan-status');
+const scanThumbnailsEl = document.getElementById('scan-thumbnails');
+const scanBtnCapture = document.getElementById('scan-btn-capture');
+const scanBtnFinish = document.getElementById('scan-btn-finish');
+const scanBtnAuto = document.getElementById('scan-btn-auto');
+const scanBtnTorch = document.getElementById('scan-btn-torch');
+const scanBtnSwitch = document.getElementById('scan-btn-switch');
+const scanCropStage = document.getElementById('scan-crop-stage');
+const scanCropFrame = document.getElementById('scan-crop-frame');
+const scanLoupe = document.getElementById('scan-loupe');
+const scanReviewCanvas = document.getElementById('scan-review-canvas');
+const scanReviewBusy = document.getElementById('scan-review-busy');
+const scanFilterChips = document.getElementById('scan-filter-chips');
+
+function setScanStatus(msg) {
+  if (scanStatusEl.textContent !== msg) scanStatusEl.textContent = msg;
+}
+
+function showScanView(name) {
+  scanCameraView.hidden = name !== 'camera';
+  scanCropView.hidden = name !== 'crop';
+  scanReviewView.hidden = name !== 'review';
+}
+
+// Nach einem Frame weiterrechnen — damit "Wird verarbeitet …" sichtbar ist,
+// bevor die (synchrone) OpenCV-Rechnung den Hauptthread kurz belegt.
+const scanNextFrame = () => new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+
+// #scan-crop-frame bekommt seine Pixel-Maße exakt im Seitenverhältnis des
+// Fotos — Bild, Rahmen-SVG und Eckgriffe liegen dadurch pixelgenau
+// übereinander, egal wie Foto und Bildschirm geformt sind.
+function layoutScanCropFrame(imgWidth, imgHeight) {
+  const maxW = scanCropStage.clientWidth - 24;
+  const maxH = scanCropStage.clientHeight - 24;
+  const scale = Math.min(maxW / imgWidth, maxH / imgHeight);
+  scanCropFrame.style.width = (imgWidth * scale) + 'px';
+  scanCropFrame.style.height = (imgHeight * scale) + 'px';
+}
+window.addEventListener('resize', () => {
+  if (!scanCropView.hidden && scanSource) layoutScanCropFrame(scanSource.width, scanSource.height);
+});
+
+// ---- Kamera ----
+function stopScanStream() {
+  if (scanStream) { scanStream.getTracks().forEach(t => t.stop()); scanStream = null; }
+  scanVideo.srcObject = null;
+}
+
+// 4:3 wie der Kamerasensor (mehr Bildhöhe fürs Hochformat-Blatt als 16:9);
+// die Vorschau braucht nicht mehr — das eigentliche Foto kommt in voller
+// Auflösung über takePhoto().
+function openScanStream(deviceId) {
+  stopScanStream();
+  const video = { width: { ideal: 1920 }, height: { ideal: 1440 } };
+  if (deviceId) video.deviceId = { exact: deviceId };
+  else video.facingMode = { ideal: 'environment' };
+  return navigator.mediaDevices.getUserMedia({ video, audio: false });
+}
+
+async function startScanCamera(session) {
+  let stored = null;
+  try { stored = localStorage.getItem(SCAN_CAMERA_STORAGE_KEY); } catch {}
+  let stream;
+  try { stream = await openScanStream(stored); }
+  catch (err) {
+    if (!stored) throw err;
+    stream = await openScanStream(null); // gespeicherte Kamera gibt es nicht mehr
+    stored = null;
+  }
+  if (session !== scanSession) { stream.getTracks().forEach(t => t.stop()); return false; }
+  scanStream = stream;
+  // Erst mit erteilter Berechtigung liefern die Geräte ihre Beschriftungen.
+  try { scanCameras = rankBackCameras(await navigator.mediaDevices.enumerateDevices()); } catch { scanCameras = []; }
+  const currentId = scanStream.getVideoTracks()[0]?.getSettings().deviceId || null;
+  const best = scanCameras[0];
+  if (!stored && best && best.deviceId && currentId && best.deviceId !== currentId) {
+    // Der Browser hat nicht die Hauptkamera genommen (typisch: Weitwinkel).
+    try { stream = await openScanStream(best.deviceId); }
+    catch { stream = await openScanStream(null); }
+    if (session !== scanSession) { stream.getTracks().forEach(t => t.stop()); return false; }
+    scanStream = stream;
+  }
+  scanCameraId = scanStream.getVideoTracks()[0]?.getSettings().deviceId || null;
+  await attachScanStream();
+  return true;
+}
+
+async function attachScanStream() {
+  scanVideo.srcObject = scanStream;
+  try { await scanVideo.play(); } catch {}
+  const track = scanStream.getVideoTracks()[0];
+  const caps = track && track.getCapabilities ? track.getCapabilities() : {};
+  // Dauer-Autofokus — manche Android-Kameras starten sonst mit festem Fokus.
+  if (caps.focusMode && caps.focusMode.includes('continuous')) {
+    track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
+  }
+  scanBtnTorch.hidden = !caps.torch;
+  scanBtnTorch.setAttribute('aria-pressed', 'false');
+  scanBtnSwitch.hidden = scanCameras.length < 2;
+  updateScanOverlayViewBox();
+}
+
+function updateScanOverlayViewBox() {
+  const vw = scanVideo.videoWidth, vh = scanVideo.videoHeight;
+  if (vw && vh) scanLiveOverlay.setAttribute('viewBox', `0 0 ${vw} ${vh}`);
+}
+scanVideo.addEventListener('loadedmetadata', updateScanOverlayViewBox);
+scanVideo.addEventListener('resize', updateScanOverlayViewBox);
+
+// Kamera wieder anwerfen (nach Kamera-App, nach Zuschnitt/Prüfen).
+async function resumeScanCamera() {
+  const session = scanSession;
+  if (!scanStream) {
+    setScanStatus('Kamera wird gestartet …');
+    try {
+      if (!await startScanCamera(session)) return;
+    } catch {
+      if (session === scanSession) setScanStatus('Kein Kamerazugriff – „Kamera-App“ oder „Galerie“ verwenden.');
+      return;
+    }
+  }
+  scanBtnCapture.disabled = false;
+  startScanLoop();
+}
+
+// ---- Live-Erkennung ----
+function startScanLoop() {
+  if (scanLoopActive) return;
+  scanLoopActive = true;
+  scanTracker.reset();
+  scanLivePolygon.setAttribute('points', '');
+  requestAnimationFrame(scanLoopTick);
+}
+function stopScanLoop() {
+  scanLoopActive = false;
+}
+
+function scanLoopTick(now) {
+  if (!scanLoopActive) return;
+  if (now - scanLastDetect >= SCAN_DETECT_INTERVAL_MS && scanVideo.readyState >= 2 && scanVideo.videoWidth) {
+    scanLastDetect = now;
+    let detected = null;
+    if (scanCvReady()) {
+      try { detected = detectDocumentQuad(drawScaled(scanVideo, SCAN_DETECT_MAX_SIDE, scanDetectCanvas)); } catch {}
+    }
+    const quad = scanTracker.update(detected, now);
+    renderScanLiveQuad(quad, now);
+    maybeAutoCapture(quad, now);
+  }
+  requestAnimationFrame(scanLoopTick);
+}
+
+function renderScanLiveQuad(quad, now) {
+  const vw = scanVideo.videoWidth, vh = scanVideo.videoHeight;
+  const stable = !!quad && scanTracker.stableFor(now) > 450;
+  scanLiveOverlay.classList.toggle('stable', stable);
+  if (!quad) {
+    scanLivePolygon.setAttribute('points', '');
+    setScanStatus(scanCvReady() ? 'Dokument ins Bild halten' : 'Kantenerkennung wird geladen … Auslösen geht schon');
+    return;
+  }
+  scanLivePolygon.setAttribute('points', quad.map(p => `${(p.x * vw).toFixed(1)},${(p.y * vh).toFixed(1)}`).join(' '));
+  if (scanAutoEnabled && scanAutoArmed) setScanStatus(stable ? 'Ruhig halten – wird aufgenommen …' : 'Blatt erkannt – ruhig halten');
+  else setScanStatus('Blatt erkannt – Auslöser tippen');
+}
+
+// Auto-Auslöser: nach einer Aufnahme erst wieder scharf, wenn das Blatt
+// kurz aus dem Bild war (Seite gewechselt) oder deutlich verschoben wurde —
+// sonst würde dieselbe Seite sofort noch einmal aufgenommen.
+function maybeAutoCapture(quad, now) {
+  if (!quad) {
+    if (scanSeenAfterReturn) scanAutoArmed = true;
+    return;
+  }
+  scanSeenAfterReturn = true;
+  if (!scanAutoArmed) {
+    if (scanLastCapturedQuad && quadDistance(quad, scanLastCapturedQuad) > 0.12) scanAutoArmed = true;
+    return;
+  }
+  if (scanAutoEnabled && !scanCapturing && scanTracker.stableFor(now) >= SCAN_AUTO_STABLE_MS) captureScanPage();
+}
+
+// ---- Aufnahme ----
+// Volle Kameraauflösung per ImageCapture.takePhoto() (Chrome/Android: das
+// echte Foto, z. B. 12 MP). Weicht dessen Ausrichtung von der Vorschau ab
+// oder gibt es die API nicht (iOS), wird das Videobild genommen — dank
+// 1920er-Stream immer noch ein Vielfaches des früheren 640×480.
+async function grabScanFrame() {
+  const vw = scanVideo.videoWidth, vh = scanVideo.videoHeight;
+  const track = scanStream && scanStream.getVideoTracks()[0];
+  if (typeof ImageCapture !== 'undefined' && track) {
+    try {
+      const blob = await new ImageCapture(track).takePhoto();
+      const bmp = await createImageBitmap(blob, { imageOrientation: 'from-image' });
+      const sameOrientation = (bmp.height > bmp.width) === (vh > vw);
+      if (sameOrientation && bmp.width * bmp.height > vw * vh) {
+        const sameView = Math.abs(bmp.width / bmp.height - vw / vh) < 0.02;
+        const canvas = drawScaled(bmp, SCAN_MAX_SOURCE_SIDE);
+        bmp.close();
+        return { canvas, sameView };
+      }
+      bmp.close();
+    } catch {}
+  }
+  return { canvas: drawScaled(scanVideo, SCAN_MAX_SOURCE_SIDE), sameView: true };
+}
+
+async function captureScanPage() {
+  if (scanCapturing || !scanStream) return;
+  scanCapturing = true;
+  const liveQuad = scanTracker.quad;
+  scanLastCapturedQuad = liveQuad;
+  stopScanLoop();
+  scanBtnCapture.disabled = true;
+  setScanStatus('Wird aufgenommen …');
+  scanCameraView.classList.remove('scan-flash');
+  void scanCameraView.offsetWidth; // Animation neu starten
+  scanCameraView.classList.add('scan-flash');
+  try {
+    const frame = await grabScanFrame();
+    await openScanSource(frame.canvas, frame.sameView ? liveQuad : null);
+  } catch (err) {
+    console.error('Aufnahme fehlgeschlagen', err);
+    setScanStatus('Aufnahme fehlgeschlagen – bitte erneut versuchen.');
+    scanBtnCapture.disabled = false;
+    startScanLoop();
+  } finally {
+    scanCapturing = false;
+  }
+}
+
+// Foto (Kamera, Kamera-App oder Galerie) → Ecken erkennen → Zuschnitt.
+async function openScanSource(canvas, hintQuad) {
+  scanSource = canvas;
+  let quad = null;
+  if (!scanCvReady()) {
+    setScanStatus('Kantenerkennung wird geladen …');
+    try { await ensureScanLibs(); } catch {}
+  }
+  if (scanCvReady()) {
+    try { quad = detectDocumentQuad(drawScaled(canvas, 900)); } catch {}
+  }
+  scanCropQuad = (quad || hintQuad || defaultQuad()).map(p => ({ ...p }));
+  scanCropDisplayUrl = drawScaled(canvas, 1600).toDataURL('image/jpeg', 0.85);
+  document.getElementById('scan-crop-image').src = scanCropDisplayUrl;
+  scanLoupe.style.backgroundImage = `url("${scanCropDisplayUrl}")`;
+  document.getElementById('scan-crop-hint').textContent = quad || hintQuad
+    ? 'Ecken prüfen – bei Bedarf ziehen'
+    : 'Kein Blatt erkannt – Ecken aufs Blatt ziehen';
+  showScanView('crop');
+  // Erst sichtbar vermessen (clientWidth sonst 0), dann Griffe setzen.
+  layoutScanCropFrame(canvas.width, canvas.height);
+  renderScanCropHandles();
+}
+
+// ---- Zuschnitt ----
+function renderScanCropHandles() {
+  SCAN_CORNER_KEYS.forEach((key, i) => {
+    const handle = scanCropFrame.querySelector(`.scan-crop-handle[data-corner="${key}"]`);
+    handle.style.left = (scanCropQuad[i].x * 100) + '%';
+    handle.style.top = (scanCropQuad[i].y * 100) + '%';
+  });
+  updateScanCropPolygon();
+}
+
+function updateScanCropPolygon() {
+  const points = scanCropQuad.map(p => `${p.x * 100},${p.y * 100}`).join(' ');
+  document.getElementById('scan-crop-polygon').setAttribute('points', points);
+}
+
+function showScanLoupe(x, y) {
+  const frame = scanCropFrame.getBoundingClientRect();
+  const stage = scanCropStage.getBoundingClientRect();
+  const size = 120, zoom = 2.5;
+  scanLoupe.hidden = false;
+  scanLoupe.style.backgroundSize = `${frame.width * zoom}px ${frame.height * zoom}px`;
+  scanLoupe.style.backgroundPosition = `${size / 2 - x * frame.width * zoom}px ${size / 2 - y * frame.height * zoom}px`;
+  const px = frame.left - stage.left + x * frame.width;
+  const py = frame.top - stage.top + y * frame.height;
+  let top = py - size - 44;
+  if (top < 8) top = py + 44;
+  scanLoupe.style.left = Math.min(Math.max(px - size / 2, 8), stage.width - size - 8) + 'px';
+  scanLoupe.style.top = top + 'px';
+}
+
+// Eckgriffe per Pointer Events ziehen; Positionen normiert (0..1) auf die
+// Bildfläche, unabhängig von der Anzeigegröße.
+scanCropFrame.querySelectorAll('.scan-crop-handle').forEach((handle) => {
+  handle.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    const idx = SCAN_CORNER_KEYS.indexOf(handle.getAttribute('data-corner'));
+    handle.setPointerCapture(e.pointerId);
+    handle.classList.add('dragging');
+    const move = (ev) => {
+      const rect = scanCropFrame.getBoundingClientRect();
+      const x = Math.min(Math.max((ev.clientX - rect.left) / rect.width, 0), 1);
+      const y = Math.min(Math.max((ev.clientY - rect.top) / rect.height, 0), 1);
+      scanCropQuad[idx] = { x, y };
+      handle.style.left = (x * 100) + '%';
+      handle.style.top = (y * 100) + '%';
+      updateScanCropPolygon();
+      showScanLoupe(x, y);
+    };
+    const up = () => {
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', up);
+      handle.removeEventListener('pointercancel', up);
+      handle.classList.remove('dragging');
+      scanLoupe.hidden = true;
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', up);
+    handle.addEventListener('pointercancel', up);
+    showScanLoupe(scanCropQuad[idx].x, scanCropQuad[idx].y);
+  });
+});
+
+document.getElementById('scan-crop-reset').addEventListener('click', () => {
+  scanCropQuad = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }];
+  renderScanCropHandles();
+});
+
+document.getElementById('scan-crop-retake').addEventListener('click', () => {
+  scanSource = null;
+  showScanView('camera');
+  scanAutoArmed = false;
+  scanSeenAfterReturn = false;
+  resumeScanCamera();
+});
+
+// Ohne OpenCV (offline, nie geladen): wenigstens das umschließende Rechteck
+// ausschneiden statt gar nichts.
+function cropScanBoundingBox(canvas, quadPx, maxLongSide = 2480) {
+  const xs = quadPx.map(p => p.x), ys = quadPx.map(p => p.y);
+  const x0 = Math.max(0, Math.min(...xs)), y0 = Math.max(0, Math.min(...ys));
+  const w = Math.min(canvas.width, Math.max(...xs)) - x0;
+  const h = Math.min(canvas.height, Math.max(...ys)) - y0;
+  const scale = Math.min(1, maxLongSide / Math.max(w, h));
+  const out = document.createElement('canvas');
+  out.width = Math.max(1, Math.round(w * scale));
+  out.height = Math.max(1, Math.round(h * scale));
+  out.getContext('2d').drawImage(canvas, x0, y0, w, h, 0, 0, out.width, out.height);
+  return out;
+}
+
+document.getElementById('scan-crop-confirm').addEventListener('click', async () => {
+  if (!scanSource) return;
+  const W = scanSource.width, H = scanSource.height;
+  const quadPx = scanCropQuad.map(p => ({ x: p.x * W, y: p.y * H }));
+  showScanView('review');
+  scanReviewBusy.hidden = false;
+  await scanNextFrame();
+  let warped;
+  try {
+    warped = scanCvReady() ? warpDocument(scanSource, quadPx) : cropScanBoundingBox(scanSource, quadPx);
+  } catch (err) {
+    console.error('Entzerren fehlgeschlagen', err);
+    warped = cropScanBoundingBox(scanSource, quadPx);
+  }
+  scanReview = { warped, rotation: 0, cache: {} };
+  renderScanFilterChips();
+  await renderScanReview();
+});
+
+// ---- Prüfen: Filter + Drehen ----
+function renderScanFilterChips() {
+  const cvOk = scanCvReady();
+  scanFilterChips.innerHTML = SCAN_FILTERS.map(f => {
+    const disabled = !cvOk && f.key !== 'color';
+    const active = (cvOk ? scanFilter : 'color') === f.key;
+    return `<button type="button" class="scan-filter-chip" role="radio" data-filter="${f.key}" aria-checked="${active}" ${disabled ? 'disabled' : ''}>${escapeHtml(f.label)}</button>`;
+  }).join('');
+}
+
+function currentScanFilter() {
+  return scanCvReady() ? scanFilter : 'color';
+}
+
+async function renderScanReview() {
+  if (!scanReview) return;
+  const filter = currentScanFilter();
+  if (!scanReview.cache[filter]) {
+    scanReviewBusy.hidden = false;
+    await scanNextFrame();
+    try { scanReview.cache[filter] = applyScanFilter(scanReview.warped, filter); }
+    catch (err) { console.error('Filter fehlgeschlagen', err); scanReview.cache[filter] = scanReview.warped; }
+  }
+  const result = rotateCanvas(scanReview.cache[filter], scanReview.rotation);
+  scanReviewCanvas.width = result.width;
+  scanReviewCanvas.height = result.height;
+  scanReviewCanvas.getContext('2d').drawImage(result, 0, 0);
+  scanReviewBusy.hidden = true;
+}
+
+scanFilterChips.addEventListener('click', (e) => {
+  const chip = e.target.closest('.scan-filter-chip');
+  if (!chip || chip.disabled) return;
+  scanFilter = chip.getAttribute('data-filter');
+  try { localStorage.setItem(SCAN_FILTER_STORAGE_KEY, scanFilter); } catch {}
+  renderScanFilterChips();
+  renderScanReview();
+});
+
+document.getElementById('scan-review-rotate').addEventListener('click', () => {
+  if (!scanReview) return;
+  scanReview.rotation = (scanReview.rotation + 1) % 4;
+  renderScanReview();
+});
+
+document.getElementById('scan-review-back').addEventListener('click', () => {
+  scanReview = null;
+  showScanView('crop');
+  layoutScanCropFrame(scanSource.width, scanSource.height);
+  renderScanCropHandles();
+});
+
+document.getElementById('scan-review-confirm').addEventListener('click', () => {
+  if (!scanReview || !scanReviewBusy.hidden) return;
+  const filter = currentScanFilter();
+  const canvas = scanReviewCanvas;
+  scanPages.push({
+    dataUrl: canvas.toDataURL('image/jpeg', filter === 'bw' ? 0.9 : 0.85),
+    width: canvas.width,
+    height: canvas.height,
+    a4: scanReview.warped.dataset.a4 === '1'
+  });
+  scanReview = null;
+  scanSource = null;
+  renderScanThumbnails();
+  scanBtnFinish.disabled = false;
+  showScanView('camera');
+  scanAutoArmed = false;
+  scanSeenAfterReturn = false;
+  setScanStatus(`Seite ${scanPages.length} übernommen – nächste Seite oder „Fertig“`);
+  resumeScanCamera();
+});
+
+// ---- Kamera-App / Galerie ----
+async function handleScanFileInput(e) {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = '';
+  scanPausedForNativeCamera = false;
+  if (!file) { if (!scanCameraView.hidden) resumeScanCamera(); return; }
+  stopScanLoop();
+  setScanStatus('Foto wird geladen …');
+  try {
+    const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    const canvas = drawScaled(bmp, SCAN_MAX_SOURCE_SIDE);
+    if (bmp.close) bmp.close();
+    scanLastCapturedQuad = null;
+    await openScanSource(canvas, null);
+  } catch (err) {
+    console.error('Foto konnte nicht gelesen werden', err);
+    setScanStatus('Foto konnte nicht gelesen werden.');
+    if (!scanCameraView.hidden) resumeScanCamera();
+  }
+}
+const scanNativeInput = document.getElementById('scan-native-input');
+const scanGalleryInput = document.getElementById('scan-gallery-input');
+scanNativeInput.addEventListener('change', handleScanFileInput);
+scanGalleryInput.addEventListener('change', handleScanFileInput);
+// Die Kamera-App braucht die Kamera selbst — solange sie offen ist, gibt
+// der Scanner sie frei (Android verweigert sonst das zweite Öffnen).
+scanNativeInput.addEventListener('click', () => {
+  scanPausedForNativeCamera = true;
+  stopScanLoop();
+  stopScanStream();
+});
+// Kamera-App abgebrochen: kein change-Event — Kamera wieder starten.
+scanNativeInput.addEventListener('cancel', () => {
+  scanPausedForNativeCamera = false;
+  if (!scanModal.hidden && !scanCameraView.hidden) resumeScanCamera();
+});
+window.addEventListener('focus', () => {
+  // Fallback für Browser ohne 'cancel'-Event am Datei-Input.
+  setTimeout(() => {
+    if (scanPausedForNativeCamera && !scanModal.hidden && !scanCameraView.hidden) {
+      scanPausedForNativeCamera = false;
+      resumeScanCamera();
+    }
+  }, 800);
+});
+
+// ---- Oberleiste ----
+function updateScanAutoButton() {
+  scanBtnAuto.setAttribute('aria-pressed', String(scanAutoEnabled));
+}
+scanBtnAuto.addEventListener('click', () => {
+  scanAutoEnabled = !scanAutoEnabled;
+  try { localStorage.setItem(SCAN_AUTO_STORAGE_KEY, String(scanAutoEnabled)); } catch {}
+  updateScanAutoButton();
+  scanAutoArmed = true;
+});
+
+scanBtnTorch.addEventListener('click', async () => {
+  const track = scanStream && scanStream.getVideoTracks()[0];
+  if (!track) return;
+  const on = scanBtnTorch.getAttribute('aria-pressed') !== 'true';
+  try {
+    await track.applyConstraints({ advanced: [{ torch: on }] });
+    scanBtnTorch.setAttribute('aria-pressed', String(on));
+  } catch {}
+});
+
+// Kamera wechseln (falls die automatische Wahl daneben liegt) — die Wahl
+// wird gemerkt und beim nächsten Öffnen direkt verwendet.
+scanBtnSwitch.addEventListener('click', async () => {
+  if (scanCameras.length < 2) return;
+  const session = scanSession;
+  const idx = scanCameras.findIndex(c => c.deviceId === scanCameraId);
+  const next = scanCameras[(idx + 1) % scanCameras.length];
+  stopScanLoop();
+  setScanStatus('Kamera wird gewechselt …');
+  try {
+    const stream = await openScanStream(next.deviceId);
+    if (session !== scanSession) { stream.getTracks().forEach(t => t.stop()); return; }
+    scanStream = stream;
+    scanCameraId = next.deviceId;
+    try { localStorage.setItem(SCAN_CAMERA_STORAGE_KEY, next.deviceId); } catch {}
+    await attachScanStream();
+    setScanStatus(`Kamera: ${next.label || 'Kamera ' + (scanCameras.indexOf(next) + 1)}`);
+  } catch {
+    setScanStatus('Kamera konnte nicht gewechselt werden.');
+    try {
+      scanStream = await openScanStream(scanCameraId);
+      await attachScanStream();
+    } catch {}
+  }
+  startScanLoop();
+});
+
+// ---- Öffnen / Schließen ----
+async function openScanModal(ev, { onFertig = null } = {}) {
+  const session = ++scanSession;
+  scanCurrentEvent = ev;
+  scanZiel = onFertig;
+  scanPages = [];
+  scanSource = null;
+  scanReview = null;
+  renderScanThumbnails();
+  scanModal.hidden = false;
+  showScanView('camera');
+  scanBtnCapture.disabled = true;
+  scanBtnFinish.disabled = true;
+  scanBtnTorch.hidden = true;
+  scanBtnSwitch.hidden = true;
+  updateScanAutoButton();
+  scanLivePolygon.setAttribute('points', '');
+  scanAutoArmed = true;
+  scanSeenAfterReturn = false;
+  setScanStatus('Kamera wird gestartet …');
+  // OpenCV parallel zur Kamera laden — Auslösen geht schon vorher.
+  const libs = ensureScanLibs().catch((err) => { console.error('Scan-Bibliotheken konnten nicht geladen werden', err); });
+  try {
+    if (!await startScanCamera(session)) return;
+  } catch (err) {
+    console.error('Kamerazugriff fehlgeschlagen', err);
+    if (session === scanSession) setScanStatus('Kein Kamerazugriff – „Kamera-App“ oder „Galerie“ verwenden.');
+    return;
+  }
+  scanBtnCapture.disabled = false;
+  startScanLoop();
+  libs.then(() => {
+    if (session === scanSession && !scanCvReady() && !scanCameraView.hidden) {
+      setScanStatus('Kantenerkennung nicht verfügbar (offline?) – auslösen und Ecken von Hand setzen');
+    }
+  });
+}
+
+function stopScanCamera() {
+  stopScanLoop();
+  stopScanStream();
+}
+
+function closeScanModal() {
+  if (scanPages.length && !confirm('Noch nicht als PDF gespeicherte Seiten verwerfen?')) return;
+  scanSession++;
+  stopScanCamera();
+  scanPausedForNativeCamera = false;
+  scanModal.hidden = true;
+  scanCurrentEvent = null;
+  scanZiel = null;
+  scanSource = null;
+  scanReview = null;
+  scanLoupe.hidden = true;
+}
+document.getElementById('scan-btn-close').addEventListener('click', closeScanModal);
+scanBtnCapture.addEventListener('click', captureScanPage);
+
+function renderScanThumbnails() {
+  scanThumbnailsEl.innerHTML = scanPages.map((p, i) => `
+    <div class="scan-thumb">
+      <img src="${p.dataUrl}" alt="Seite ${i + 1}">
+      <span class="scan-thumb-num">${i + 1}</span>
+      <button type="button" class="scan-thumb-remove" data-idx="${i}" title="Seite entfernen" aria-label="Seite ${i + 1} entfernen">
+        <span class="material-symbols-rounded icon">close</span>
+      </button>
+    </div>
+  `).join('');
+  scanThumbnailsEl.querySelectorAll('.scan-thumb-remove').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      scanPages.splice(parseInt(btn.getAttribute('data-idx'), 10), 1);
+      renderScanThumbnails();
+      scanBtnFinish.disabled = scanPages.length === 0;
+    });
+  });
+}
+
+document.getElementById('scan-btn-finish').addEventListener('click', async () => {
+  if (!scanPages.length || !scanCurrentEvent) return;
+  const ev = scanCurrentEvent;
+  const pages = scanPages;
+  const ziel = scanZiel;
+  scanSession++;
+  stopScanCamera();
+  scanModal.hidden = true;
+  scanCurrentEvent = null;
+  scanZiel = null;
+  scanPages = [];
+  const blob = buildPdfFromScanPages(pages);
+  const ts = new Date().toISOString().slice(0, 10);
+  const file = new File([blob], `Scan_${ts}.pdf`, { type: 'application/pdf' });
+  if (ziel) { await ziel(file, pages); return; }
+  const recId = await uploadTerminkalenderAttachment(ev, file);
+  if (!recId) return;
+  const art = await askDocName({
+    title: 'Dokument benennen', ev, fileName: uploadArtName(ev, file),
+    sub: `Der Scan (${pages.length} ${pages.length === 1 ? 'Seite' : 'Seiten'}) ist schon gesichert — der Name kommt dazu.`,
+    previewUrl: pages[0] && pages[0].dataUrl
+  });
+  if (art) renameTerminDoc(ev, recId, art);
+});
+
+// Jede gescannte Seite wird eine A4-Seite in passender Ausrichtung. A4-
+// Blätter füllen die Seite randlos (wie das Original), andere Formate
+// (Kassenbon, Lieferschein) werden mit schmalem Rand eingepasst. Die JPEGs
+// werden unverändert eingebettet — keine zweite Kompression.
+function buildPdfFromScanPages(pages) {
+  let doc = null;
+  pages.forEach((p) => {
+    const orientation = p.width > p.height ? 'landscape' : 'portrait';
+    if (!doc) doc = new window.jspdf.jsPDF({ orientation, unit: 'mm', format: 'a4', compress: true });
+    else doc.addPage('a4', orientation);
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
+    const margin = p.a4 ? 0 : 6;
+    const scale = Math.min((pageW - margin * 2) / p.width, (pageH - margin * 2) / p.height);
+    const imgW = p.width * scale;
+    const imgH = p.height * scale;
+    doc.addImage(p.dataUrl, 'JPEG', (pageW - imgW) / 2, (pageH - imgH) / 2, imgW, imgH, undefined, 'NONE');
+  });
+  return doc.output('blob');
+}
+
+// Dev-only Testhaken: Bildverarbeitung direkt ansprechen (echte Kamera/
+// Blatt lassen sich im Test nicht zuverlässig nachstellen).
+if (import.meta.env.DEV) {
+  window.__ffTestScan = {
+    ensureLibs: () => ensureScanLibs(),
+    rankBackCameras,
+    detect: (canvas) => detectDocumentQuad(canvas),
+    warp: (canvas, quadPx) => warpDocument(canvas, quadPx),
+    filter: (canvas, mode) => applyScanFilter(canvas, mode),
+    targetSize: (quadPx) => targetSizeForQuad(quadPx),
+    createTracker: (opts) => new QuadTracker(opts),
+    cropQuad: () => (scanCropQuad ? scanCropQuad.map(p => ({ ...p })) : null),
+    pages: () => scanPages.map(p => ({ width: p.width, height: p.height, a4: p.a4 })),
+    buildPdf: (pages) => buildPdfFromScanPages(pages)
+  };
+}
+
+function selectTerminkalenderEvent(id) {
+  openKontrollmappe(id);
+}
+
+// ---- Kontrollmappe (ein Termin) ----
+// Seitenpanel über der Kontroll-Ansicht (am Handy Vollbild) mit festem Kopf
+// (Betrieb, Datum, Status, Route/Anrufen/Betrieb zuordnen) und Reitern
+// Überblick · Protokolle · Dokumente · Notizen.
+let kontrollmappeTab = 'ueberblick';
+// id darf die eines beliebigen Auftrags des Termins sein.
+function openKontrollmappe(id, tab) {
+  const group = tkGroupFor(id);
+  if (!group) return;
+  tkAbsorbGroupData(group);
+  if (group.id !== terminkalenderSelectedId) kontrollmappeTab = 'ueberblick';
+  if (tab) kontrollmappeTab = tab;
+  terminkalenderSelectedId = group.id;
+  document.querySelectorAll('.tk-card').forEach(el => el.classList.toggle('selected', el.getAttribute('data-id') === group.id));
+  renderTerminkalenderDetail(group.primary);
+  if (group.lat != null && terminkalenderMap && tkMapVisible) terminkalenderMap.setView([group.lat, group.lng], 15);
+}
+function closeKontrollmappe() {
+  const panel = document.getElementById('kontrollmappe');
+  if (!panel || panel.hidden) return;
+  panel.hidden = true;
+  document.getElementById('kontrollmappe-backdrop').hidden = true;
+  terminkalenderSelectedId = null;
+  document.querySelectorAll('.tk-card.selected').forEach(el => el.classList.remove('selected'));
+  refreshKontrolleBetrieb();
+}
+document.getElementById('kontrollmappe-backdrop').addEventListener('click', closeKontrollmappe);
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || document.getElementById('kontrollmappe').hidden) return;
+  // Offene Dialoge (Protokoll, Scanner, …) zuerst schließen lassen.
+  if (document.querySelector('.modal-overlay:not([hidden]), .scan-overlay:not([hidden])')) return;
+  closeKontrollmappe();
+});
+
+const TK_WEEKDAY_LABELS = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
+
+function eventsForVisibleWeek() {
+  const weekEnd = new Date(terminkalenderWeekStart);
+  weekEnd.setDate(weekEnd.getDate() + 7);
+  return terminkalenderEvents.filter(e => e.date >= terminkalenderWeekStart && e.date < weekEnd);
+}
+
+// Verschiebt einen Termin per Drag&Drop auf einen anderen Wochentag — eine
+// evtl. per .ics ergänzte Uhrzeit bleibt dabei erhalten (nur der Kalendertag
+// ändert sich), reine Datumstermine bleiben weiterhin ohne Uhrzeit. Rein
+// lokale Änderung, wie bei allen anderen Terminkalender-Bearbeitungen erst mit
+// "In Cloud speichern" dauerhaft.
+// Verschiebt den ganzen Termin, also alle seine Aufträge gemeinsam.
+function moveTerminkalenderEvent(id, targetDate) {
+  const group = tkGroupFor(id);
+  if (!group) return;
+  if (group.date.toDateString() === targetDate.toDateString()) return;
+  group.members.forEach(ev => {
+    const durationMs = ev.dateEnd ? ev.dateEnd - ev.date : null;
+    const newDate = new Date(targetDate);
+    newDate.setHours(ev.date.getHours(), ev.date.getMinutes(), ev.date.getSeconds(), 0);
+    ev.date = newDate;
+    if (durationMs != null) ev.dateEnd = new Date(newDate.getTime() + durationMs);
+  });
+  if (group.id === terminkalenderSelectedId) renderTerminkalenderDetail(group.primary);
+  renderTerminkalenderGrid();
+  setTerminkalenderStatus('Termin verschoben — nicht vergessen zu speichern.');
+}
+
+// Termine haben ohne .ics-Ergänzung keine Uhrzeit — statt eines fixen
+// Stundenrasters daher eine Kartenliste je Wochentag, mit Uhrzeit-Präfix
+// sobald eine per .ics bekannt ist. Karten sind per Drag&Drop auf einen
+// anderen Tag verschiebbar.
+function renderTerminkalenderGrid() {
+  const weekEvents = eventsForVisibleWeek();
+
+  const { week, year } = getISOWeek(terminkalenderWeekStart);
+  const weekEndDisplay = new Date(terminkalenderWeekStart);
+  weekEndDisplay.setDate(weekEndDisplay.getDate() + 6);
+  const fmtShort = d => d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
+  document.getElementById('tk-week-label').textContent =
+    `KW ${week} · ${year} (${fmtShort(terminkalenderWeekStart)}–${fmtShort(weekEndDisplay)})`;
+
+  let html = '';
+  for (let d = 0; d < 7; d++) {
+    const dayDate = new Date(terminkalenderWeekStart);
+    dayDate.setDate(dayDate.getDate() + d);
+    // Ein Termin = alle Aufträge desselben Betriebs zur selben Zeit.
+    const dayGroups = tkGroupEvents(weekEvents.filter(e => e.date.toDateString() === dayDate.toDateString()))
+      .sort((a, b) => {
+        if (a.hasTime && b.hasTime) return a.date - b.date;
+        if (a.hasTime !== b.hasTime) return a.hasTime ? -1 : 1; // Termine mit Uhrzeit zuerst
+        return a.kunde.localeCompare(b.kunde, 'de');
+      });
+
+    // Karte: Uhrzeit oben, Betrieb (darf umbrechen), Auditart, darunter die
+    // Aufträge als Schilder (Verbände farbig); Symbole für Ort/Anhänge/
+    // Protokolle/zugeordneten Betrieb; farbiger Streifen links = Status.
+    const cardsHtml = dayGroups.map(g => {
+      const e = g.primary;
+      const selected = g.id === terminkalenderSelectedId ? ' selected' : '';
+      const marks = [];
+      if (g.lat != null) marks.push('<span class="material-symbols-rounded icon" title="Ort bekannt">location_on</span>');
+      if (g.members.some(m => (m.attachments || []).length)) marks.push('<span class="material-symbols-rounded icon" title="Dokumente">attach_file</span>');
+      if (uploadsForGroup(g.id).length) marks.push('<span class="material-symbols-rounded icon tk-card-uploading" title="Dateien werden hochgeladen">cloud_upload</span>');
+      if (g.members.some(m => Object.keys(TK_FORMULARE).some(k => (m[tkFormularDef(k).listKey] || []).length))) marks.push('<span class="material-symbols-rounded icon" title="Protokolle">description</span>');
+      if (tkGroupIsZugeordnet(g)) marks.push('<span class="material-symbols-rounded icon" title="Als Betrieb zugeordnet">business</span>');
+      const statusClass = g.urgent ? 'tk-card-urgent' : g.bestaetigt ? 'tk-card-ok' : 'tk-card-warn';
+      const multi = g.members.length > 1;
+      const count = multi ? `<span class="tk-auftrag-count">${g.members.length} Aufträge</span>` : '';
+      return `<div class="tk-card ${statusClass}${selected}${multi ? ' tk-card-multi' : ''}" data-id="${escapeHtml(g.id)}" title="${escapeHtml(g.kunde)}" draggable="true" tabindex="0" role="button">
+        <div class="tk-card-time">${tkTimeLabel(g)}${marks.length ? `<span class="tk-card-marks">${marks.join('')}</span>` : ''}</div>
+        <div class="tk-card-title">${escapeHtml(g.kunde)}</div>
+        <div class="tk-card-sub">${escapeHtml(e.auditart)}${count}</div>
+        ${tkGroupChipsHtml(g, 4)}
+      </div>`;
+    }).join('');
+
+    const isToday = dayDate.toDateString() === new Date().toDateString();
+    const countBadge = dayGroups.length ? ` <span class="tk-day-count">${dayGroups.length}</span>` : '';
+    html += `<div class="tk-day-col${isToday ? ' is-today' : ''}">
+      <div class="tk-day-head"><span class="tk-day-name">${TK_WEEKDAY_LABELS[d]}</span> <span class="tk-day-date">${dayDate.getDate()}.${dayDate.getMonth() + 1}.</span>${countBadge}</div>
+      <div class="tk-day-body" data-date="${dayDate.toISOString()}">${cardsHtml || '<p class="tk-day-empty">Keine Termine</p>'}</div>
+    </div>`;
+  }
+
+  const grid = document.getElementById('terminkalender-grid');
+  grid.innerHTML = html;
+  grid.querySelectorAll('.tk-card').forEach(el => {
+    el.addEventListener('click', () => selectTerminkalenderEvent(el.getAttribute('data-id')));
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectTerminkalenderEvent(el.getAttribute('data-id')); }
+    });
+    el.addEventListener('dragstart', (e) => {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', el.getAttribute('data-id'));
+    });
+  });
+  grid.querySelectorAll('.tk-day-body').forEach(el => {
+    el.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; el.classList.add('tk-drop-target'); });
+    el.addEventListener('dragleave', () => el.classList.remove('tk-drop-target'));
+    el.addEventListener('drop', (e) => {
+      e.preventDefault();
+      el.classList.remove('tk-drop-target');
+      const id = e.dataTransfer.getData('text/plain');
+      if (id) moveTerminkalenderEvent(id, new Date(el.getAttribute('data-date')));
+    });
+  });
+
+  if (tkMapVisible) renderTerminkalenderMapPins(tkGroupEvents(weekEvents).filter(g => g.lat != null));
+  // Übersicht/Zähler hängen an denselben Daten — mit aktualisieren.
+  renderKontrolleUebersicht();
+  // Betriebs-Pin auf der Karte (Lage kommt aus den Terminen).
+  try { updateBetriebPin(); } catch { /* Modulstart */ }
+}
+
+function gotoWeek(delta) {
+  terminkalenderWeekStart = new Date(terminkalenderWeekStart);
+  terminkalenderWeekStart.setDate(terminkalenderWeekStart.getDate() + delta * 7);
+  renderTerminkalenderGrid();
+}
+
+document.getElementById('tk-prev-week').addEventListener('click', () => gotoWeek(-1));
+document.getElementById('tk-next-week').addEventListener('click', () => gotoWeek(1));
+document.getElementById('tk-today').addEventListener('click', () => {
+  terminkalenderWeekStart = getMondayOfWeek(new Date());
+  renderTerminkalenderGrid();
+});
+
+document.getElementById('terminkalender-file-input').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  document.getElementById('terminkalender-file-name').textContent = file.name;
+  document.getElementById('terminkalender-drop').classList.add('filled');
+  setTerminkalenderStatus('Lese Datei …');
+  try {
+    const buf = await file.arrayBuffer();
+    const parsed = parseXlsxFile(buf);
+    if (!parsed.length) throw new Error('Keine gültigen Termine in der Datei gefunden.');
+    const { added, updated } = mergeTerminkalenderEvents(parsed);
+    renderTerminkalenderSummary();
+    renderTerminkalenderGrid();
+    setTerminkalenderStatus(`${added} neu, ${updated} aktualisiert.`);
+    await geocodeMissingAddresses();
+    setTerminkalenderStatus('Fertig.');
+  } catch (err) {
+    setTerminkalenderStatus('Fehler: ' + (err.message || 'Datei konnte nicht gelesen werden.'));
+  }
+});
+
+document.getElementById('terminkalender-ics-file-input').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  document.getElementById('terminkalender-ics-file-name').textContent = file.name;
+  document.getElementById('terminkalender-ics-drop').classList.add('filled');
+  if (!terminkalenderEvents.length) { setTerminkalenderStatus('Bitte zuerst die Excel-Termine hochladen.'); return; }
+  setTerminkalenderStatus('Lese Uhrzeiten …');
+  try {
+    const text = await file.text();
+    const icsEvents = parseIcsFile(text);
+    if (!icsEvents.length) throw new Error('Keine Termine in der .ics-Datei gefunden.');
+    const { matched, unmatched } = applyIcsTimes(icsEvents);
+    renderTerminkalenderGrid();
+    setTerminkalenderStatus(`${matched} Uhrzeiten übernommen, ${unmatched} ohne passenden Termin.`);
+  } catch (err) {
+    setTerminkalenderStatus('Fehler: ' + (err.message || '.ics-Datei konnte nicht gelesen werden.'));
+  }
+});
+
+document.getElementById('terminkalender-btn-save').addEventListener('click', async () => {
+  setTerminkalenderStatus('Speichere …');
+  try {
+    await saveFullState();
+    setTerminkalenderStatus('Gespeichert.');
+  } catch (err) {
+    setTerminkalenderStatus('Fehler: ' + (err.message || 'Speichern fehlgeschlagen.'));
+  }
+});
+
+// ---------- FeldFolio Plus: Betrieb/Termin-Zuordnung ----------
+// Verbindet den Terminkalender mit den Flächen-Werkzeugen: eine globale, in
+// der Kopfzeile sitzende Auswahl (Betrieb oder ein konkreter Termin), die
+// bestimmt, wie neue Exporte und hochgeladene Fotos/Dateien in Jahresvergleich/
+// Flächenzeichner/Obstbaumkataster/Bienenflugkarte benannt werden: statt des
+// bisherigen generischen Datumsnamens dann Jahr_Betrieb_Art (siehe
+// zuordnungFileName). Terminkalender-Anhänge kennen ihren Betrieb/Jahr schon
+// über das jeweilige Termin selbst (siehe handleTerminkalenderFileAdd) und
+// hängen absichtlich NICHT von dieser globalen Auswahl ab. Betriebe kommen
+// automatisch aus den eindeutigen Kundennamen der hochgeladenen Termine.xlsx,
+// plus manuell ergänzbaren Namen (manualBetriebe, Cloud-persistiert) für
+// Betriebe ohne aktuellen Termin.
+let manualBetriebe = [];
+let activeZuordnung = null; // { betrieb, year, terminId, terminLabel } | null
+
+function sanitizeFileNamePart(s) {
+  return String(s).replace(/[\\/:*?"<>|]/g, '-').trim();
+}
+
+// null, wenn keine Zuordnung aktiv ist — Aufrufer fallen dann auf den
+// bisherigen generischen Dateinamen zurück (siehe Export-Funktionen).
+function zuordnungFileName(art, ext) {
+  if (!activeZuordnung) return null;
+  return `${activeZuordnung.year}_${sanitizeFileNamePart(activeZuordnung.betrieb)}_${art}.${ext}`;
+}
+
+function getBetriebNamesFromTermine() {
+  return [...new Set(terminkalenderEvents.map(e => e.kunde).filter(Boolean))];
+}
+
+function getAllBetriebNamen() {
+  return [...new Set([...getBetriebNamesFromTermine(), ...manualBetriebe])].sort((a, b) => a.localeCompare(b, 'de'));
+}
+
+const btnBetrieb = document.getElementById('btn-betrieb');
+const btnBetriebLabel = document.getElementById('btn-betrieb-label');
+const betriebModal = document.getElementById('betrieb-modal-overlay');
+const betriebNotConfigured = document.getElementById('betrieb-not-configured');
+const betriebEditor = document.getElementById('betrieb-editor');
+const betriebSearch = document.getElementById('betrieb-search');
+const betriebCurrent = document.getElementById('betrieb-current');
+const betriebCurrentLabel = document.getElementById('betrieb-current-label');
+const betriebNoassignHint = document.getElementById('betrieb-noassign-hint');
+const betriebListEl = document.getElementById('betrieb-list');
+const betriebError = document.getElementById('betrieb-error');
+const betriebManualInput = document.getElementById('betrieb-manual-input');
+const betriebSwitchStatus = document.getElementById('betrieb-switch-status');
+let betriebSwitchInProgress = false;
+
+// Anfangsbuchstabe für die runden Betriebs-Avatare (Kopfzeile + Dialog).
+function betriebInitial(name) {
+  return (String(name || '').trim().match(/[\p{L}\p{N}]/u) || ['?'])[0].toLocaleUpperCase('de-DE');
+}
+function startOfToday() {
+  const d = new Date();
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+}
+// Kurzinfo je Betrieb für die Liste: Anzahl Termine + nächster (oder
+// letzter) Termin aus dem Terminkalender.
+function betriebMetaText(name, isManual) {
+  const evs = terminkalenderEvents.filter(e => e.kunde === name);
+  if (!evs.length) return isManual ? 'Manuell angelegt' : 'Keine Termine';
+  const today = startOfToday();
+  const upcoming = evs.filter(e => e.date >= today).sort((a, b) => a.date - b.date)[0];
+  const last = evs.filter(e => e.date < today).sort((a, b) => b.date - a.date)[0];
+  const count = evs.length === 1 ? '1 Termin' : evs.length + ' Termine';
+  return upcoming ? `${count} · nächster ${tkFmtDate(upcoming.date)}` : `${count} · zuletzt ${tkFmtDate(last.date)}`;
+}
+
+// Statuszeile im Dialog (Wechsel läuft / Fehler).
+function setBetriebStatus(text, isError = false) {
+  betriebSwitchStatus.textContent = text;
+  betriebSwitchStatus.classList.toggle('is-error', isError);
+}
+
+function showBetriebError(msg) {
+  betriebError.textContent = msg;
+  betriebError.hidden = !msg;
+}
+
+function tkFmtDate(d) {
+  return d.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+// Betriebs-Chip: runder Avatar mit Initiale + Name + Pfeil; ohne Betrieb
+// das Betrieb-Symbol + "Betrieb wählen" (unter 600 px nur Avatar/Symbol).
+function updateBetriebButton() {
+  btnBetrieb.classList.toggle('active', !!activeZuordnung);
+  const caret = '<span class="material-symbols-rounded icon tabbar-caret betrieb-caret" aria-hidden="true">expand_more</span>';
+  if (activeZuordnung) {
+    const initial = betriebInitial(activeZuordnung.betrieb);
+    btnBetriebLabel.innerHTML = `<span class="betrieb-avatar" aria-hidden="true">${escapeHtml(initial)}</span><span class="btn-betrieb-name">${escapeHtml(activeZuordnung.betrieb)}</span>${caret}`;
+  } else {
+    btnBetriebLabel.innerHTML = `<span class="material-symbols-rounded icon betrieb-empty-icon" aria-hidden="true">business</span><span class="btn-betrieb-name">Betrieb wählen</span>${caret}`;
+  }
+  btnBetrieb.title = activeZuordnung ? `Betrieb: ${activeZuordnung.betrieb} — antippen zum Wechseln` : 'Betrieb/Termin zuordnen';
+  document.getElementById('betrieb-switcher-sub').textContent = activeZuordnung ? activeZuordnung.betrieb : 'Unterlagen · Flächen · Funktionen';
+  btnBetrieb.setAttribute('aria-label', activeZuordnung ? `Betrieb: ${activeZuordnung.betrieb} (wechseln)` : 'Betrieb wählen');
+}
+
+// "Aktuell"-Karte oben im Dialog.
+function updateBetriebCurrentBox() {
+  const avatar = document.getElementById('betrieb-current-avatar');
+  document.getElementById('betrieb-current-card').classList.toggle('is-empty', !activeZuordnung);
+  if (activeZuordnung) {
+    betriebCurrent.hidden = false;
+    avatar.textContent = betriebInitial(activeZuordnung.betrieb);
+    document.getElementById('betrieb-current-name').textContent = activeZuordnung.betrieb;
+    document.getElementById('betrieb-current-sub').textContent = activeZuordnung.terminId
+      ? 'Termin: ' + activeZuordnung.terminLabel
+      : 'Ohne bestimmten Termin';
+    betriebCurrentLabel.textContent = activeZuordnung.terminId
+      ? `${activeZuordnung.betrieb} — ${activeZuordnung.terminLabel}`
+      : activeZuordnung.betrieb;
+  } else {
+    betriebCurrent.hidden = true;
+    avatar.innerHTML = '<span class="material-symbols-rounded icon">business</span>';
+    document.getElementById('betrieb-current-name').textContent = 'Kein Betrieb';
+    document.getElementById('betrieb-current-sub').textContent = 'Wähle unten einen Betrieb oder Termin.';
+    betriebCurrentLabel.textContent = '';
+  }
+}
+
+function setActiveZuordnung(z) {
+  activeZuordnung = z;
+  updateBetriebButton();
+  updateBetriebCurrentBox();
+  // Aktualisiert das Betrieb-Icon an den Kalenderkarten und das Zuordnen-Icon im
+  // Detail-Panel — läuft für JEDEN Auswahlweg (Kopfzeilen-Dropdown UND der
+  // "Als Betrieb zuordnen"-Button im Terminkalender selbst), da beide über
+  // diese Funktion gehen.
+  if (typeof renderTerminkalenderGrid === 'function') renderTerminkalenderGrid();
+  if (typeof terminkalenderSelectedId !== 'undefined' && terminkalenderSelectedId) {
+    const selectedEv = terminkalenderEvents.find(e => e.id === terminkalenderSelectedId);
+    if (selectedEv) renderTerminkalenderDetail(selectedEv);
+  }
+  if (typeof refreshKontrolleBetrieb === 'function') refreshKontrolleBetrieb();
+}
+
+// ---- Betrieb als Pin auf der Karte ----
+// Ist ein Betrieb gewählt, markiert ein Pin seine Hofstelle auf der Karte
+// (alle Kartenfunktionen teilen dieselbe Karte). Ort: der zugeordnete
+// Termin bzw. ein Termin dieses Betriebs mit bekannter Lage; fehlt sie, wird
+// die Adresse einmal nachgeschlagen (Nominatim, wie beim Termin-Import) und
+// am Termin gespeichert. Manuell angelegte Betriebe ohne Termin haben keine
+// Adresse — dann gibt es keinen Pin.
+let betriebPinMarker = null;
+let betriebPinKey = null;
+const betriebPinGeocodeTried = new Set();
+
+function betriebPinEvent(z) {
+  const same = terminkalenderEvents.filter(e => e.kunde === z.betrieb);
+  const termin = z.terminId ? terminkalenderEvents.find(e => e.id === z.terminId) : null;
+  const ordered = [termin, ...same].filter(Boolean);
+  return ordered.find(e => e.lat != null && e.lng != null) || ordered.find(e => e.address) || null;
+}
+async function geocodeBetriebPin(ev) {
+  if (!ev.address || betriebPinGeocodeTried.has(ev.id) || !navigator.onLine) return;
+  betriebPinGeocodeTried.add(ev.id);
+  try {
+    const res = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(ev.address));
+    const data = await res.json();
+    if (data && data[0]) {
+      ev.lat = parseFloat(data[0].lat);
+      ev.lng = parseFloat(data[0].lon);
+      ev.geocodeStatus = 'ok';
+      updateBetriebPin();
+    } else {
+      ev.geocodeStatus = 'failed';
+    }
+  } catch { /* ohne Netz: später erneut beim nächsten Wechsel */ betriebPinGeocodeTried.delete(ev.id); }
+}
+function betriebPinPopupHtml(z, ev) {
+  const route = eventRouteUrl(ev);
+  const termin = z.terminId ? z.terminLabel : '';
+  return `<div class="betrieb-pin-popup">
+    <strong>${escapeHtml(z.betrieb)}</strong>
+    ${ev.address ? `<span>${escapeHtml(ev.address)}</span>` : ''}
+    ${termin ? `<span class="betrieb-pin-termin">Termin: ${escapeHtml(termin)}</span>` : ''}
+    ${route ? `<a href="${route}" target="_blank" rel="noopener"><span class="material-symbols-rounded icon" aria-hidden="true">directions</span>Route</a>` : ''}
+  </div>`;
+}
+function updateBetriebPin() {
+  const z = activeZuordnung;
+  const ev = z ? betriebPinEvent(z) : null;
+  if (!z || !ev || ev.lat == null || ev.lng == null) {
+    if (betriebPinMarker) { map.removeLayer(betriebPinMarker); betriebPinMarker = null; }
+    if (z && ev && ev.lat == null) geocodeBetriebPin(ev);
+    if (!z) betriebPinKey = null;
+    return;
+  }
+  const icon = L.divIcon({
+    className: 'betrieb-pin',
+    html: `<span class="betrieb-pin-head"><span>${escapeHtml(betriebInitial(z.betrieb))}</span></span><span class="betrieb-pin-label">${escapeHtml(z.betrieb)}</span>`,
+    iconSize: [36, 46],
+    iconAnchor: [18, 46],
+    popupAnchor: [0, -44]
+  });
+  if (!betriebPinMarker) {
+    betriebPinMarker = L.marker([ev.lat, ev.lng], { icon, zIndexOffset: 1000, keyboard: true, title: z.betrieb, alt: `Betrieb ${z.betrieb}` }).addTo(map);
+  } else {
+    betriebPinMarker.setLatLng([ev.lat, ev.lng]);
+    betriebPinMarker.setIcon(icon);
+  }
+  betriebPinMarker.bindPopup(betriebPinPopupHtml(z, ev), { className: 'betrieb-pin-popup-wrap' });
+  // Neu gewählter Betrieb: ist die Karte (noch) leer, gleich dorthin.
+  const key = z.betrieb + '|' + (z.terminId || '');
+  if (key !== betriebPinKey) {
+    betriebPinKey = key;
+    if (!featureIndex.length) map.setView([ev.lat, ev.lng], Math.max(map.getZoom(), 14));
+  }
+}
+
+// Solange im "Kein Betrieb"-Workspace etwas geladen ist, bekommt jede Zeile
+// zusätzlich einen "Zuordnen"-Button (siehe renderBetriebList) — der klare
+// Weg für "das hier ohne Betrieb Gezeichnete jetzt einem Betrieb zuordnen",
+// statt nur wortlos zu wechseln (was den Inhalt in seinem eigenen Slot
+// beließe, siehe assignNoBetriebContentTo weiter oben).
+function canAssignNoBetriebContent() {
+  return currentWorkspaceKey === NO_BETRIEB_KEY && currentWorkspaceHasContent();
+}
+
+function renderBetriebList() {
+  const q = betriebSearch.value.trim().toLowerCase();
+  const betriebe = getAllBetriebNamen().filter(n => !q || n.toLowerCase().includes(q));
+  const manualSet = new Set(manualBetriebe);
+  const showAssign = canAssignNoBetriebContent();
+  const activeName = activeZuordnung ? activeZuordnung.betrieb : null;
+  const activeTermin = activeZuordnung ? activeZuordnung.terminId : null;
+  const check = '<span class="material-symbols-rounded icon betrieb-row-check" aria-hidden="true">check</span>';
+
+  // Zeile = Auswahl-Button (Avatar/Datum + Text) plus ggf. Zuordnen/Entfernen
+  // daneben — keine verschachtelten Buttons, alles per Tastatur erreichbar.
+  let html = '';
+  let termineHtml = '';
+  if (betriebe.length) {
+    html += '<div class="betrieb-list-group"><div class="betrieb-list-group-title">Betriebe</div>';
+    html += betriebe.map(name => {
+      const active = name === activeName;
+      return `
+      <div class="betrieb-row${active ? ' active' : ''}">
+        <button type="button" class="betrieb-row-select" data-action="select-betrieb" data-name="${escapeHtml(name)}"${active ? ' aria-current="true"' : ''}>
+          <span class="betrieb-row-avatar" aria-hidden="true">${escapeHtml(betriebInitial(name))}</span>
+          <span class="betrieb-row-text">
+            <span class="betrieb-row-main">${escapeHtml(name)}</span>
+            <span class="betrieb-row-sub">${escapeHtml(betriebMetaText(name, manualSet.has(name)))}</span>
+          </span>
+          ${active ? check : ''}
+        </button>
+        ${showAssign ? `<button type="button" class="betrieb-row-assign" data-action="assign-betrieb" data-name="${escapeHtml(name)}" title="Inhalte ohne Betrieb diesem Betrieb zuordnen">Zuordnen</button>` : ''}
+        ${manualSet.has(name) ? `<button type="button" class="betrieb-row-remove" data-action="remove-manual" data-name="${escapeHtml(name)}" title="Manuell hinzugefügten Betrieb entfernen" aria-label="${escapeHtml(name)} entfernen"><span class="material-symbols-rounded icon" aria-hidden="true">close</span></button>` : ''}
+      </div>`;
+    }).join('');
+    html += '</div>';
+  } else if (q) {
+    html += '<div class="betrieb-list-empty">Kein Betrieb gefunden.</div>';
+  } else {
+    html += `<div class="betrieb-list-empty">
+      <span class="material-symbols-rounded icon" aria-hidden="true">business</span>
+      Noch keine Betriebe. Lege unten einen an oder importiere Termine im Terminkalender.
+    </div>`;
+  }
+
+  // Termine: ohne Suche die nächsten anstehenden, mit Suche alle Treffer.
+  // Termine (gebündelte Aufträge, siehe tkGroupEvents): ohne Suche die
+  // nächsten anstehenden, mit Suche alle Treffer.
+  const termine = q
+    ? tkGroupEvents(terminkalenderEvents.filter(e => `${e.kunde} ${tkAuftragText(e)} ${tkFmtDate(e.date)}`.toLowerCase().includes(q))).slice(0, 30)
+    : tkGroupEvents(terminkalenderEvents.filter(e => e.date >= startOfToday())).slice(0, 5);
+  if (termine.length || q) {
+    termineHtml += `<div class="betrieb-list-group"><div class="betrieb-list-group-title">${q ? 'Termine' : 'Anstehende Termine'}</div>`;
+    if (termine.length) {
+      termineHtml += termine.map(g => {
+        const e = g.primary;
+        const active = g.members.some(m => m.id === activeTermin);
+        const month = g.date.toLocaleDateString('de-DE', { month: 'short' }).replace('.', '');
+        const art = g.members.length > 1 ? `${g.members.length} Aufträge` : e.auditart;
+        return `
+        <div class="betrieb-row${active ? ' active' : ''}">
+          <button type="button" class="betrieb-row-select" data-action="select-termin" data-id="${escapeHtml(e.id)}"${active ? ' aria-current="true"' : ''}>
+            <span class="betrieb-date-badge" aria-hidden="true"><b>${g.date.getDate()}</b>${escapeHtml(month)}</span>
+            <span class="betrieb-row-text">
+              <span class="betrieb-row-main">${escapeHtml(g.kunde)}</span>
+              <span class="betrieb-row-sub">${tkFmtDate(g.date)}${art ? ' · ' + escapeHtml(art) : ''}</span>
+            </span>
+            ${active ? check : ''}
+          </button>
+          ${showAssign ? `<button type="button" class="betrieb-row-assign" data-action="assign-termin" data-id="${escapeHtml(e.id)}" title="Inhalte ohne Betrieb diesem Betrieb zuordnen">Zuordnen</button>` : ''}
+        </div>`;
+      }).join('');
+    } else {
+      termineHtml += '<div class="betrieb-list-empty">Kein Termin gefunden.</div>';
+    }
+    termineHtml += '</div>';
+  }
+
+  // Ohne Suche stehen die anstehenden Termine oben, darunter alle Betriebe
+  // alphabetisch; bei einer Suche zuerst die passenden Betriebe.
+  betriebListEl.innerHTML = q ? html + termineHtml : termineHtml + html;
+}
+
+// Wechselt — falls nötig — den geladenen Ebenen/Baum/Bienenflug-Workspace auf
+// den zum gewählten Betrieb gehörenden (siehe switchWorkspace weiter oben):
+// wählt man nur einen ANDEREN Termin DESSELBEN bereits aktiven Betriebs, ist
+// der Workspace identisch — dann wird nur die Zuordnung (fürs Dateinamen-
+// Schema) aktualisiert, ohne Karten-Neuladen.
+async function applyZuordnungSelection(z) {
+  const newKey = z ? z.betrieb : NO_BETRIEB_KEY;
+  if (newKey === currentWorkspaceKey) {
+    setActiveZuordnung(z);
+    closeBetriebModal();
+    return;
+  }
+  betriebSwitchInProgress = true;
+  setBetriebStatus(`Wechsle zu „${newKey === NO_BETRIEB_KEY ? 'kein Betrieb' : newKey}" …`);
+  try {
+    await switchWorkspace(currentWorkspaceKey, newKey);
+    currentWorkspaceKey = newKey;
+    setActiveZuordnung(z);
+    setBetriebStatus('');
+    closeBetriebModal();
+  } catch (err) {
+    setBetriebStatus('Fehler: ' + (err.message || 'Betrieb-Wechsel fehlgeschlagen.'), true);
+  } finally {
+    betriebSwitchInProgress = false;
+  }
+}
+
+// Wie applyZuordnungSelection(), aber verschiebt statt nur zu wechseln —
+// siehe assignNoBetriebContentTo() weiter oben.
+async function applyAssignSelection(z) {
+  betriebSwitchInProgress = true;
+  setBetriebStatus(`Ordne Inhalte „${z.betrieb}" zu …`);
+  try {
+    await assignNoBetriebContentTo(z);
+    setBetriebStatus('');
+    closeBetriebModal();
+  } catch (err) {
+    setBetriebStatus('Fehler: ' + (err.message || 'Zuordnen fehlgeschlagen.'), true);
+  } finally {
+    betriebSwitchInProgress = false;
+  }
+}
+
+betriebListEl.addEventListener('click', async (e) => {
+  if (betriebSwitchInProgress) return;
+  const row = e.target.closest('[data-action]');
+  if (!row) return;
+  const action = row.getAttribute('data-action');
+  if (action === 'select-betrieb') {
+    await applyZuordnungSelection({ betrieb: row.getAttribute('data-name'), year: new Date().getFullYear(), terminId: null, terminLabel: null });
+  } else if (action === 'select-termin') {
+    const ev = terminkalenderEvents.find(x => x.id === row.getAttribute('data-id'));
+    if (!ev) return;
+    await applyZuordnungSelection({ betrieb: ev.kunde, year: ev.date.getFullYear(), terminId: ev.id, terminLabel: `${tkFmtDate(ev.date)} · ${ev.auditart}` });
+  } else if (action === 'assign-betrieb') {
+    await applyAssignSelection({ betrieb: row.getAttribute('data-name'), year: new Date().getFullYear(), terminId: null, terminLabel: null });
+  } else if (action === 'assign-termin') {
+    const ev = terminkalenderEvents.find(x => x.id === row.getAttribute('data-id'));
+    if (!ev) return;
+    await applyAssignSelection({ betrieb: ev.kunde, year: ev.date.getFullYear(), terminId: ev.id, terminLabel: `${tkFmtDate(ev.date)} · ${ev.auditart}` });
+  } else if (action === 'remove-manual') {
+    const name = row.getAttribute('data-name');
+    const wasActive = activeZuordnung && !activeZuordnung.terminId && activeZuordnung.betrieb === name;
+    manualBetriebe = manualBetriebe.filter(n => n !== name);
+    if (wasActive) {
+      // applyZuordnungSelection() wechselt den Workspace UND speichert dabei
+      // bereits den aktualisierten manualBetriebe-Stand mit — ein zusätzliches
+      // saveFullState() danach wäre nur ein überflüssiger zweiter Request.
+      await applyZuordnungSelection(null);
+      renderBetriebList();
+    } else {
+      renderBetriebList();
+      try { await saveFullState(); } catch (err) { showBetriebError(err.message || 'Speichern fehlgeschlagen.'); }
+    }
+  }
+});
+
+betriebSearch.addEventListener('input', renderBetriebList);
+// Enter im Suchfeld wählt den ersten Treffer.
+betriebSearch.addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  // Erster Treffer = erster Betrieb (Termine stehen ohne Suche darüber).
+  const first = betriebListEl.querySelector('.betrieb-row-select[data-action="select-betrieb"]') || betriebListEl.querySelector('.betrieb-row-select');
+  if (first) first.click();
+});
+
+document.getElementById('betrieb-manual-add').addEventListener('click', async () => {
+  const name = betriebManualInput.value.trim();
+  if (!name) return;
+  showBetriebError('');
+  if (!getAllBetriebNamen().includes(name)) manualBetriebe.push(name);
+  betriebManualInput.value = '';
+  renderBetriebList();
+  try {
+    await saveFullState();
+  } catch (err) {
+    showBetriebError(err.message || 'Speichern fehlgeschlagen.');
+  }
+});
+betriebManualInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); document.getElementById('betrieb-manual-add').click(); }
+});
+
+document.getElementById('betrieb-btn-clear').addEventListener('click', () => {
+  if (betriebSwitchInProgress) return;
+  applyZuordnungSelection(null);
+});
+
+function openBetriebModal() {
+  showBetriebError('');
+  document.querySelector('#betrieb-modal-overlay .betrieb-info').open = false;
+  setBetriebStatus('');
+  betriebSearch.value = '';
+  const loggedIn = isSupabaseConfigured && !!accountSession;
+  betriebNotConfigured.hidden = loggedIn;
+  betriebEditor.hidden = !loggedIn;
+  if (loggedIn) {
+    updateBetriebCurrentBox();
+    betriebNoassignHint.hidden = !canAssignNoBetriebContent();
+    renderBetriebList();
+  }
+  betriebModal.hidden = false;
+  // Am Desktop gleich lostippen können; am Handy würde die Tastatur die
+  // Liste verdecken.
+  if (loggedIn && !MOBILE_LAYOUT_QUERY.matches) betriebSearch.focus();
+}
+function closeBetriebModal() { betriebModal.hidden = true; }
+
+btnBetrieb.addEventListener('click', openBetriebModal);
+document.getElementById('betrieb-btn-login').addEventListener('click', () => { closeBetriebModal(); openAccountModal(); });
+['betrieb-modal-close-1', 'betrieb-modal-close-2', 'betrieb-modal-close-x'].forEach(id => {
+  document.getElementById(id).addEventListener('click', closeBetriebModal);
+});
+betriebModal.addEventListener('click', (e) => { if (e.target === betriebModal) closeBetriebModal(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !betriebModal.hidden) closeBetriebModal(); });
+
+// ======================================================================
+// ---------- Stallplaner ----------
+// Eigenständiges Grundriss-Zeichenwerkzeug, bewusst OHNE Kartenbezug
+// (anders als Hofplan) — rohes SVG statt Leaflet. Koordinaten liegen in
+// Rastereinheiten (nicht Pixel), sodass Zoom/Maßstabsänderung nie eine
+// Punktkoordinate anfassen muss: Fläche = shoelace(points) * gridScale².
+// ======================================================================
+
+// EU-Öko-VO-Flächenwerte: Anhang I VO (EU) 2018/848 i.d.F. DVO (EU)
+// 2020/464 (Mindestanforderungen Stallfläche je Tier/Kategorie). Geprüft
+// wird ausschließlich die Stallfläche (kein Auslauf — dieses Werkzeug
+// zeichnet nur Innenraum-Grundrisse). Zwei Einheiten:
+//  - 'qm_pro_tier': benötigteFläche = Tierzahl * indoorQm
+//  - 'kg_je_qm': für Geflügel — entweder mit Gewichtsvorgabe
+//    (indoorKgJeQm, braucht ein Ø-Gewicht je Tier) oder mit fester
+//    Stückzahlvorgabe (indoorTiereJeQm, kein Gewicht nötig).
+// Die >350kg-Zeile bei Rindern/Pferden hat laut VO zusätzlich eine
+// "mindestens 1 m²/100kg"-Nebenbedingung — hier bewusst vereinfacht
+// weggelassen (siehe Hinweistext in der UI), reine indoorQm-Prüfung
+// deckt die große Mehrheit der Fälle ab. Fest hinterlegt, nicht
+// nutzerseitig editierbar (siehe Rücksprache mit dem Auftraggeber) —
+// KEINE Rechtsberatung, im Zweifel gegen den Originaltext prüfen.
+const OEKO_VO_KATEGORIEN = [
+  // Rinder
+  { id: 'rind_kalb', tierart: 'rinder', label: 'Kälber (bis 100 kg)', unit: 'qm_pro_tier', indoorQm: 1.5 },
+  { id: 'rind_jungvieh', tierart: 'rinder', label: 'Jungvieh (bis 200 kg)', unit: 'qm_pro_tier', indoorQm: 2.5 },
+  { id: 'rind_wachsend', tierart: 'rinder', label: 'Wachsende Rinder (bis 350 kg)', unit: 'qm_pro_tier', indoorQm: 4.0 },
+  { id: 'rind_adult', tierart: 'rinder', label: 'Rinder (über 350 kg)', unit: 'qm_pro_tier', indoorQm: 5 },
+  { id: 'rind_milchkuh', tierart: 'rinder', label: 'Milchkühe', unit: 'qm_pro_tier', indoorQm: 6 },
+  { id: 'rind_zuchtbulle', tierart: 'rinder', label: 'Zuchtbullen', unit: 'qm_pro_tier', indoorQm: 10 },
+  // Schafe/Ziegen
+  { id: 'schaf_adult', tierart: 'schafe_ziegen', label: 'Schafe (adult)', unit: 'qm_pro_tier', indoorQm: 1.5 },
+  { id: 'schaf_lamm', tierart: 'schafe_ziegen', label: 'Lämmer', unit: 'qm_pro_tier', indoorQm: 0.35 },
+  { id: 'ziege_adult', tierart: 'schafe_ziegen', label: 'Ziegen (adult)', unit: 'qm_pro_tier', indoorQm: 1.5 },
+  { id: 'ziege_kitz', tierart: 'schafe_ziegen', label: 'Kitze', unit: 'qm_pro_tier', indoorQm: 0.35 },
+  // Pferde/Equiden (gleiche Gewichtsstaffelung wie Rinder)
+  { id: 'pferd_100', tierart: 'pferde', label: 'Pferde (bis 100 kg)', unit: 'qm_pro_tier', indoorQm: 1.5 },
+  { id: 'pferd_200', tierart: 'pferde', label: 'Pferde (bis 200 kg)', unit: 'qm_pro_tier', indoorQm: 2.5 },
+  { id: 'pferd_350', tierart: 'pferde', label: 'Pferde (bis 350 kg)', unit: 'qm_pro_tier', indoorQm: 4.0 },
+  { id: 'pferd_adult', tierart: 'pferde', label: 'Pferde (über 350 kg)', unit: 'qm_pro_tier', indoorQm: 5 },
+  // Schweine
+  { id: 'schwein_saeugend', tierart: 'schweine', label: 'Säugende Sauen mit Ferkeln (je Sau)', unit: 'qm_pro_tier', indoorQm: 7.5 },
+  { id: 'schwein_ferkel', tierart: 'schweine', label: 'Abgesetzte Ferkel (bis 35 kg)', unit: 'qm_pro_tier', indoorQm: 0.6 },
+  { id: 'schwein_35_50', tierart: 'schweine', label: 'Mastschweine (35–50 kg)', unit: 'qm_pro_tier', indoorQm: 0.8 },
+  { id: 'schwein_50_85', tierart: 'schweine', label: 'Mastschweine (50–85 kg)', unit: 'qm_pro_tier', indoorQm: 1.1 },
+  { id: 'schwein_85_110', tierart: 'schweine', label: 'Mastschweine (85–110 kg)', unit: 'qm_pro_tier', indoorQm: 1.3 },
+  { id: 'schwein_mast', tierart: 'schweine', label: 'Mastschweine (über 110 kg)', unit: 'qm_pro_tier', indoorQm: 1.5 },
+  { id: 'schwein_trocken', tierart: 'schweine', label: 'Trockenstehende/tragende Sauen', unit: 'qm_pro_tier', indoorQm: 2.5 },
+  { id: 'schwein_eber', tierart: 'schweine', label: 'Zuchteber', unit: 'qm_pro_tier', indoorQm: 6 },
+  // Geflügel (Gewichts-/Stückzahl-basiert)
+  { id: 'gefl_zucht', tierart: 'gefluegel', label: 'Zuchttiere', unit: 'kg_je_qm', indoorTiereJeQm: 6 },
+  { id: 'gefl_junghennen', tierart: 'gefluegel', label: 'Junghennen/Junghähne (Aufzucht)', unit: 'kg_je_qm', indoorKgJeQm: 21 },
+  { id: 'gefl_legehenne', tierart: 'gefluegel', label: 'Legehennen', unit: 'kg_je_qm', indoorTiereJeQm: 6 },
+  { id: 'gefl_broiler_fest', tierart: 'gefluegel', label: 'Masthähnchen (fester Stall)', unit: 'kg_je_qm', indoorKgJeQm: 21 },
+  { id: 'gefl_broiler_mobil', tierart: 'gefluegel', label: 'Masthähnchen (mobiler Stall)', unit: 'kg_je_qm', indoorKgJeQm: 21 },
+  { id: 'gefl_kapaun', tierart: 'gefluegel', label: 'Kapaune/Poularden', unit: 'kg_je_qm', indoorKgJeQm: 21 },
+  { id: 'gefl_pute', tierart: 'gefluegel', label: 'Puten', unit: 'kg_je_qm', indoorKgJeQm: 21 },
+  { id: 'gefl_gans', tierart: 'gefluegel', label: 'Gänse', unit: 'kg_je_qm', indoorKgJeQm: 21 },
+  { id: 'gefl_ente', tierart: 'gefluegel', label: 'Enten', unit: 'kg_je_qm', indoorKgJeQm: 21 },
+  { id: 'gefl_perlhuhn', tierart: 'gefluegel', label: 'Perlhühner', unit: 'kg_je_qm', indoorKgJeQm: 21 },
+  // Kaninchen
+  { id: 'kanin_saeugend_leicht', tierart: 'kaninchen', label: 'Säugende Häsinnen (bis 6 kg)', unit: 'qm_pro_tier', indoorQm: 0.6 },
+  { id: 'kanin_saeugend_schwer', tierart: 'kaninchen', label: 'Säugende Häsinnen (über 6 kg)', unit: 'qm_pro_tier', indoorQm: 0.72 },
+  { id: 'kanin_zucht', tierart: 'kaninchen', label: 'Tragende/Zuchthäsinnen', unit: 'qm_pro_tier', indoorQm: 0.5 },
+  { id: 'kanin_mast', tierart: 'kaninchen', label: 'Masttiere', unit: 'qm_pro_tier', indoorQm: 0.2 },
+  { id: 'kanin_aufzucht', tierart: 'kaninchen', label: 'Tiere nach dem Absetzen (bis 6 Monate)', unit: 'qm_pro_tier', indoorQm: 0.2 },
+  { id: 'kanin_rammler', tierart: 'kaninchen', label: 'Zuchtrammler', unit: 'qm_pro_tier', indoorQm: 0.6 }
+];
+
+const STALLPLANER_EQUIPMENT_ICON_NAMES = {
+  traenke: 'water_drop', raufe: 'grass', futterautomat: 'restaurant', nest: 'egg',
+  sitzstange: 'drag_handle', tuer: 'door_front', fenster: 'window', futtergang: 'route'
+};
+// Ausstattung ist nicht immer nur ein Punkt: eine Sitzstange ist eine
+// Linie, eine Tür/ein Fenster sitzt als Linie in der Wand, ein Futtergang
+// ist eine Fläche zwischen Abteilen, eine Futterraufe kann ebenfalls
+// Stallfläche wegnehmen. Die Form ist unabhängig vom Typ frei wählbar
+// (siehe #stallplaner-equip-geometry-toggle) — das hier ist nur der
+// sinnvolle Vorschlag, der beim Anklicken eines Typs automatisch
+// vorausgewählt wird.
+const STALLPLANER_EQUIP_DEFAULT_GEOMETRY = {
+  sitzstange: 'line', tuer: 'line', fenster: 'line', futtergang: 'area'
+};
+
+function benoetigteFlaecheOekoVo(kategorie, tieranzahl, avgGewichtKg) {
+  if (!kategorie || !tieranzahl) return 0;
+  if (kategorie.unit === 'qm_pro_tier') return tieranzahl * kategorie.indoorQm;
+  if (kategorie.indoorTiereJeQm) return tieranzahl / kategorie.indoorTiereJeQm;
+  return (tieranzahl * (avgGewichtKg || 0)) / kategorie.indoorKgJeQm;
+}
+// Ein Abteil kann mehrere Tier-Kategorien gleichzeitig beherbergen (z.B.
+// Kälber + Milchkühe im selben Abteil) — die benötigte Fläche je Kategorie
+// wird aufsummiert und als Ganzes gegen die gezeichnete Abteilfläche geprüft.
+// Öko-VO-Ampel erst, wenn wirklich Tiere gezählt sind (Kategorie + Anzahl) —
+// eine gerade angelegte, noch leere Tier-Zeile ist kein "✓ konform".
+function compartmentHasCountedAnimals(c) {
+  return c.tierbestand.some(tb => tb.kategorieId && tb.tieranzahl > 0);
+}
+function compartmentBenoetigteFlaeche(c) {
+  return (c.tierbestand || []).reduce((sum, tb) => {
+    const kategorie = OEKO_VO_KATEGORIEN.find(k => k.id === tb.kategorieId);
+    return sum + (kategorie ? benoetigteFlaecheOekoVo(kategorie, tb.tieranzahl, tb.avgGewichtKg) : 0);
+  }, 0);
+}
+// Die Tierart gehört zur einzelnen Tier-Zeile, nicht zum ganzen Stall — in
+// einem Stall (sogar in einer Bucht) können z. B. Schafe und Ziegen oder
+// Rinder und Pferde nebeneinander stehen.
+const STALLPLANER_TIERARTEN = [
+  { id: 'rinder', label: 'Rinder' },
+  { id: 'schweine', label: 'Schweine' },
+  { id: 'gefluegel', label: 'Geflügel' },
+  { id: 'schafe_ziegen', label: 'Schafe/Ziegen' },
+  { id: 'pferde', label: 'Pferde/Equiden' },
+  { id: 'kaninchen', label: 'Kaninchen' }
+];
+function newTierbestandEntry(tierart = null) {
+  return { id: 'tb-' + Date.now() + Math.random().toString(36).slice(2), tierart, kategorieId: null, tieranzahl: 0, avgGewichtKg: null };
+}
+// Rückwärtskompatibel für Stallpläne aus früheren Versionen — greift beim
+// Laden einer alten .json-Exportdatei oder eines alten Cloud-Stands:
+//   * erste Version: eine einzelne kategorieId/tieranzahl/avgGewichtKg-
+//     Kombination je Abteil statt einer tierbestand-Liste
+//   * zweite Version: eine Tierart für den ganzen Plan (plan.tierart) statt
+//     je Tier-Zeile — wird aus der Kategorie bzw. der Plan-Tierart übernommen.
+function normalizeCompartment(c, planTierart = null) {
+  if (!Array.isArray(c.tierbestand)) {
+    c.tierbestand = c.kategorieId
+      ? [{ id: newTierbestandEntry().id, kategorieId: c.kategorieId, tieranzahl: c.tieranzahl || 0, avgGewichtKg: c.avgGewichtKg || null }]
+      : [];
+  }
+  delete c.kategorieId; delete c.tieranzahl; delete c.avgGewichtKg;
+  c.tierbestand.forEach(tb => {
+    if (tb.tierart) return;
+    const kategorie = OEKO_VO_KATEGORIEN.find(k => k.id === tb.kategorieId);
+    tb.tierart = kategorie ? kategorie.tierart : (typeof planTierart === 'string' ? planTierart : null);
+  });
+  return c;
+}
+// Rückwärtskompatibel für Ausstattung aus der ersten Version (einzelnes
+// x/y-Punktpaar statt einer points-Liste, immer Punktform) — greift beim
+// Laden einer alten .json-Exportdatei oder eines alten Cloud-Stands.
+function normalizeEquipment(e) {
+  if (!Array.isArray(e.points)) {
+    e.points = [{ x: e.x, y: e.y }];
+    delete e.x; delete e.y;
+  }
+  if (!e.geometryKind) e.geometryKind = 'point';
+  return e;
+}
+
+// ---- Zustand ----
+let stallplaene = [];
+let activeStallplanId = null;
+let stallplanerInitDone = false;
+// null|'draw-outline'|'draw-compartment'|'place-equipment'|'edit-vertex'|'measure'|'delete'
+let stallplanerMode = null;
+let stallplanerEquipType = 'traenke';
+let stallplanerEquipGeometryKind = 'point'; // 'point' | 'line' | 'area'
+let stallplanerDrawPoints = null; // Punkte des gerade laufenden Zeichenvorgangs
+let stallplanerEditTargetKind = null; // 'outline' | 'compartment' | 'equipment'
+let stallplanerEditTargetId = null; // Abteil-/Ausstattungs-Id, oder null für Umriss
+let stallplanerUndoStack = [];
+let stallplanerRedoStack = [];
+const STALLPLANER_UNDO_MAX = 20;
+// ---- Geführter Vermessen-Modus (siehe startStallplanMeasureWalk()) ----
+let stallplanerMeasureTargetKind = null; // 'outline' | 'compartment'
+let stallplanerMeasureTargetId = null;
+let stallplanerMeasureOriginalPoints = null; // Skizzen-Punkte bei Start (Drehrichtung wird daraus abgeleitet)
+let stallplanerMeasureLengths = null; // bereits eingetragene echte Längen (Meter), Index = Kante
+let stallplanerMeasureIndex = 0;
+// ---- Vor-Ort-Oberfläche (siehe renderStallplanerChrome()) ----
+let stallplanerStep = 'umriss'; // 'umriss' | 'abteile' | 'ausstattung' | 'tiere'
+let stallplanerSheetPanel = null; // id des sichtbaren .stallplaner-panel im Bottom Sheet
+let stallplanerSelection = null; // { kind: 'outline'|'compartment'|'equipment', id }
+// Laufende Maß-Eingabe: { type: 'rect'|'walls'|'split', target, start, segments, ... }
+let stallplanerTask = null;
+let stallplanerFlashMsg = null;
+let stallplanerFlashTimer = null;
+let stallplanerWakeLock = null;
+// Wächst automatisch mit dem Inhalt mit (nie schrumpfend), solange die
+// Ansicht nicht manuell verändert wurde — sobald der Nutzer zoomt, per Drag
+// verschiebt, oder eine Form zur Bearbeitung anklickt (siehe
+// focusStallplanShape()), übernimmt stallplanerViewLocked und das
+// automatische Mitwachsen pausiert, bis "Ansicht anpassen" das wieder
+// zurücksetzt. Ohne diese Unterscheidung würde jede Mutation (z.B. ein
+// Vertex-Drag) die manuell gesetzte Ansicht sofort wieder überschreiben.
+let stallplanerViewBox = { x: 0, y: 0, w: 20, h: 15 };
+let stallplanerViewLocked = false;
+const STALLPLANER_VIEW_MIN_W = 1.5;
+const STALLPLANER_VIEW_MAX_W = 400;
+
+function activeStallplan() {
+  return stallplaene.find(p => p.id === activeStallplanId) || null;
+}
+function newStallplanId() { return 'stallplan-' + Date.now() + Math.random().toString(36).slice(2); }
+function createEmptyStallplan(name) {
+  return {
+    id: newStallplanId(), name: name || 'Neuer Stallplan',
+    gridScale: 1, gridSnap: true, outline: null, compartments: [], equipment: [],
+    updatedAt: new Date().toISOString()
+  };
+}
+
+// ---- Geometrie-Hilfsfunktionen ----
+function shoelaceArea(points) {
+  if (!points || points.length < 3) return 0;
+  let sum = 0;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i], b = points[(i + 1) % points.length];
+    sum += a.x * b.y - b.x * a.y;
+  }
+  return Math.abs(sum) / 2;
+}
+function polygonCentroid(points) {
+  return { x: points.reduce((s, p) => s + p.x, 0) / points.length, y: points.reduce((s, p) => s + p.y, 0) / points.length };
+}
+// Grobe Selbstüberschneidungs-Erkennung (nur zur visuellen Warnung, blockiert
+// das Zeichnen nicht) — prüft alle nicht direkt benachbarten Kantenpaare.
+function polygonSelfIntersects(points) {
+  if (!points || points.length < 4) return false;
+  const segs = points.map((p, i) => [p, points[(i + 1) % points.length]]);
+  const ccw = (a, b, c) => (c.y - a.y) * (b.x - a.x) > (b.y - a.y) * (c.x - a.x);
+  const segIntersect = ([a, b], [c, d]) => ccw(a, c, d) !== ccw(b, c, d) && ccw(a, b, c) !== ccw(a, b, d);
+  for (let i = 0; i < segs.length; i++) {
+    for (let j = i + 1; j < segs.length; j++) {
+      if (Math.abs(i - j) <= 1 || (i === 0 && j === segs.length - 1)) continue; // benachbart, teilt sich einen Eckpunkt
+      if (segIntersect(segs[i], segs[j])) return true;
+    }
+  }
+  return false;
+}
+
+// Akzeptiert "12,40" genauso wie "12.4" — Handy-Tastaturen liefern je nach
+// Sprache Komma oder Punkt, type="number" verschluckt das Komma teils.
+function parseDecimalInput(value) {
+  const str = String(value == null ? '' : value).trim().replace(/\s+/g, '').replace(',', '.');
+  if (!/^(\d+(\.\d*)?|\.\d+)$/.test(str)) return NaN;
+  return parseFloat(str);
+}
+function pointInPolygon(p, points) {
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const a = points[i], b = points[j];
+    if ((a.y > p.y) !== (b.y > p.y) && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+// Grenzen eines achsenparallelen Rechtecks, sonst null — nur solche Flächen
+// lassen sich per "In Buchten teilen" aufteilen.
+function axisAlignedRectBounds(points) {
+  if (!points || points.length !== 4) return null;
+  const eps = 1e-6;
+  for (let i = 0; i < 4; i++) {
+    const a = points[i], b = points[(i + 1) % 4];
+    if (Math.abs(a.x - b.x) > eps && Math.abs(a.y - b.y) > eps) return null;
+  }
+  const xs = points.map(p => p.x), ys = points.map(p => p.y);
+  const bounds = { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
+  return bounds.maxX - bounds.minX > eps && bounds.maxY - bounds.minY > eps ? bounds : null;
+}
+// Zwei gleich gerichtete Wände hintereinander (z.B. zweimal "rechts") sind
+// eine Wand — sonst würde das spätere Vermessen dort eine Ecke erwarten.
+function simplifyCollinearPoints(points) {
+  const out = points.slice();
+  let changed = true;
+  while (changed && out.length > 3) {
+    changed = false;
+    for (let i = 0; i < out.length; i++) {
+      const a = out[(i - 1 + out.length) % out.length], p = out[i], b = out[(i + 1) % out.length];
+      const cross = (p.x - a.x) * (b.y - p.y) - (p.y - a.y) * (b.x - p.x);
+      const dot = (p.x - a.x) * (b.x - p.x) + (p.y - a.y) * (b.y - p.y);
+      if (Math.abs(cross) < 1e-9 && dot >= 0) { out.splice(i, 1); changed = true; break; }
+    }
+  }
+  return out;
+}
+
+// Baut ein Polygon aus einer groben Skizze und echten, vor Ort gemessenen
+// Kantenlängen neu auf — für den geführten Vermessen-Modus (siehe
+// startStallplanMeasureWalk()). Kantenlängen allein legen die Form eines
+// Vielecks mit mehr als drei Seiten NICHT fest (es bleibt wie ein
+// Scharniergelenk verformbar) — die fehlenden Winkel kommen aus der Skizze:
+//   * Ecken, die in der Skizze ungefähr rechtwinklig (bzw. gerade) sind
+//     (± STALLPLAN_RIGHT_ANGLE_TOLERANCE), werden auf exakt 90° (bzw. 0°)
+//     gesetzt — gebaut wird meist rechtwinklig, die Skizze mit dem Finger
+//     ist nie genau.
+//   * Alle anderen Ecken (schräge Wände) behalten zunächst ihren Winkel aus
+//     der Skizze; NUR diese Winkel werden so nachgestellt, dass sich die
+//     Form mit den gemessenen Längen schließt.
+// Früher wurde jede Ecke auf 90° gezwungen — eine Skizze mit schräger Wand
+// ließ sich dann mit ihren eigenen Längen nicht schließen und wurde zu
+// einem verzogenen Viereck.
+const STALLPLAN_RIGHT_ANGLE_TOLERANCE = (15 * Math.PI) / 180;
+function normalizeStallplanAngle(a) {
+  while (a <= -Math.PI) a += 2 * Math.PI;
+  while (a > Math.PI) a -= 2 * Math.PI;
+  return a;
+}
+function reconstructPolygonFromSketch(originalPoints, lengths) {
+  const n = originalPoints.length;
+  const dirs = originalPoints.map((a, i) => {
+    const b = originalPoints[(i + 1) % n];
+    return Math.atan2(b.y - a.y, b.x - a.x);
+  });
+
+  // Kanten, die über eingerastete Ecken verbunden sind, bilden eine starre
+  // "Kette" mit festen Richtungsunterschieden (Union-Find mit Winkel-Offset:
+  // Richtung(i) = Richtung(Wurzel) + offset[i]).
+  const parent = dirs.map((_, i) => i);
+  const offset = dirs.map(() => 0);
+  const find = (i) => {
+    if (parent[i] === i) return i;
+    const p = parent[i];
+    const root = find(p);
+    offset[i] += offset[p];
+    parent[i] = root;
+    return root;
+  };
+  let freeCorners = 0;
+  for (let j = 0; j < n; j++) {
+    const prev = (j - 1 + n) % n;
+    const turn = normalizeStallplanAngle(dirs[j] - dirs[prev]);
+    const snapped = [-Math.PI / 2, 0, Math.PI / 2].find(t => Math.abs(turn - t) <= STALLPLAN_RIGHT_ANGLE_TOLERANCE);
+    if (snapped === undefined) { freeCorners++; continue; }
+    const ra = find(prev), rb = find(j);
+    if (ra === rb) continue; // schließt den Kreis — bei einer Rechteck-Skizze ohnehin stimmig
+    parent[rb] = ra;
+    offset[rb] = offset[prev] + snapped - offset[j];
+  }
+  dirs.forEach((_, i) => find(i));
+
+  // Eine Richtung je Kette. Die Kette der ersten Kante bleibt exakt wie
+  // skizziert (Lage des Plans ändert sich nicht), die übrigen starten beim
+  // Mittel ihrer Skizzen-Richtungen und werden unten nachgestellt.
+  const roots = [...new Set(parent)];
+  const theta = {};
+  roots.forEach(r => {
+    let sx = 0, sy = 0;
+    dirs.forEach((d, i) => { if (parent[i] === r) { sx += Math.cos(d - offset[i]); sy += Math.sin(d - offset[i]); } });
+    theta[r] = Math.atan2(sy, sx);
+  });
+  theta[parent[0]] = dirs[0] - offset[0];
+  const freeRoots = roots.filter(r => r !== parent[0]);
+
+  const residual = (th) => {
+    let x = 0, y = 0;
+    for (let i = 0; i < n; i++) {
+      const a = th[parent[i]] + offset[i];
+      x += lengths[i] * Math.cos(a);
+      y += lengths[i] * Math.sin(a);
+    }
+    return { x, y };
+  };
+  // Levenberg-Marquardt auf den freien Kettenrichtungen: kleinste
+  // Schlusslücke bei gegebenen Längen. Meist nur 1–2 Unbekannte.
+  if (freeRoots.length) {
+    let lambda = 1e-3;
+    let r = residual(theta);
+    for (let iter = 0; iter < 60 && Math.hypot(r.x, r.y) > 1e-10; iter++) {
+      const J = freeRoots.map(root => {
+        let jx = 0, jy = 0;
+        for (let i = 0; i < n; i++) {
+          if (parent[i] !== root) continue;
+          const a = theta[root] + offset[i];
+          jx -= lengths[i] * Math.sin(a);
+          jy += lengths[i] * Math.cos(a);
+        }
+        return { x: jx, y: jy };
+      });
+      const A = J.map((ja, k) => J.map((jb, l) => ja.x * jb.x + ja.y * jb.y + (k === l ? lambda : 0)));
+      const g = J.map(jk => -(jk.x * r.x + jk.y * r.y));
+      const delta = solveSmallLinearSystem(A, g);
+      if (!delta) break;
+      const trial = { ...theta };
+      freeRoots.forEach((root, k) => { trial[root] += delta[k]; });
+      const rTrial = residual(trial);
+      if (Math.hypot(rTrial.x, rTrial.y) < Math.hypot(r.x, r.y)) {
+        Object.assign(theta, trial);
+        r = rTrial;
+        lambda = Math.max(lambda * 0.3, 1e-9);
+      } else {
+        lambda *= 10;
+        if (lambda > 1e6) break;
+      }
+    }
+  }
+
+  const walked = [{ ...originalPoints[0] }];
+  for (let i = 0; i < n; i++) {
+    const a = theta[parent[i]] + offset[i];
+    const prev = walked[i];
+    walked.push({ x: prev.x + Math.cos(a) * lengths[i], y: prev.y + Math.sin(a) * lengths[i] });
+  }
+  // Was sich auch so nicht schließen lässt (Messungenauigkeit), wird nach
+  // der Kompassregel (Bowditch-Ausgleich, Standardverfahren beim Schließen
+  // einer Vermessung) proportional zur zurückgelegten Strecke verteilt,
+  // statt es an einer einzelnen Kante "zu verstecken".
+  const closeError = { x: walked[n].x - walked[0].x, y: walked[n].y - walked[0].y };
+  const totalLen = lengths.reduce((s, l) => s + l, 0) || 1;
+  let cumulative = 0;
+  const adjusted = walked.slice(0, n).map((p, i) => {
+    const frac = cumulative / totalLen;
+    cumulative += lengths[i];
+    return { x: p.x - closeError.x * frac, y: p.y - closeError.y * frac };
+  });
+  return { points: adjusted, misclosure: Math.hypot(closeError.x, closeError.y), freeCorners };
+}
+// Gauß-Elimination mit Pivotsuche für die (winzigen) Normalgleichungen oben.
+function solveSmallLinearSystem(A, b) {
+  const m = b.length;
+  const M = A.map((row, i) => [...row, b[i]]);
+  for (let c = 0; c < m; c++) {
+    let pivot = c;
+    for (let r = c + 1; r < m; r++) if (Math.abs(M[r][c]) > Math.abs(M[pivot][c])) pivot = r;
+    if (Math.abs(M[pivot][c]) < 1e-14) return null;
+    [M[c], M[pivot]] = [M[pivot], M[c]];
+    for (let r = 0; r < m; r++) {
+      if (r === c) continue;
+      const f = M[r][c] / M[c][c];
+      for (let k = c; k <= m; k++) M[r][k] -= f * M[c][k];
+    }
+  }
+  return M.map((row, i) => row[m] / row[i]);
+}
+
+// ---- SVG-Rendering ----
+const SVG_NS = 'http://www.w3.org/2000/svg';
+function svgEl(tag, attrs) {
+  const el = document.createElementNS(SVG_NS, tag);
+  Object.entries(attrs || {}).forEach(([k, v]) => el.setAttribute(k, v));
+  return el;
+}
+function pointsAttr(points) { return points.map(p => `${p.x},${p.y}`).join(' '); }
+
+function resetStallplanerViewBox() {
+  stallplanerViewBox = { x: 0, y: 0, w: 20, h: 15 };
+  stallplanerViewLocked = false;
+}
+function growStallplanerViewBoxTo(points) {
+  if (!points.length) return;
+  const pad = 2;
+  const xs = points.map(p => p.x), ys = points.map(p => p.y);
+  const minX = Math.min(stallplanerViewBox.x, Math.min(...xs) - pad);
+  const minY = Math.min(stallplanerViewBox.y, Math.min(...ys) - pad);
+  const maxX = Math.max(stallplanerViewBox.x + stallplanerViewBox.w, Math.max(...xs) + pad);
+  const maxY = Math.max(stallplanerViewBox.y + stallplanerViewBox.h, Math.max(...ys) + pad);
+  stallplanerViewBox = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+// stallplanerViewBox ist der gewünschte Ausschnitt; das SVG hat aber je nach
+// Gerät ein anderes Seitenverhältnis (Handy hochkant!). Angezeigt wird daher
+// immer der auf das Seitenverhältnis erweiterte Ausschnitt — und genau der
+// gilt auch für alle Bildschirm↔Plan-Umrechnungen. Vorher wurde der Inhalt
+// per preserveAspectRatio="meet" eingepasst, die Umrechnung ignorierte den
+// Rand aber — auf dem Handy landeten Tipps dadurch an der falschen Stelle.
+function stallplanDisplayBox() {
+  const vb = stallplanerViewBox;
+  const rect = document.getElementById('stallplan-svg').getBoundingClientRect();
+  if (!rect.width || !rect.height || !vb.w || !vb.h) return { ...vb };
+  const target = rect.width / rect.height;
+  if (vb.w / vb.h < target) {
+    const w = vb.h * target;
+    return { x: vb.x - (w - vb.w) / 2, y: vb.y, w, h: vb.h };
+  }
+  const h = vb.w / target;
+  return { x: vb.x, y: vb.y - (h - vb.h) / 2, w: vb.w, h };
+}
+function applyStallplanerViewBox() {
+  const svg = document.getElementById('stallplan-svg');
+  const d = stallplanDisplayBox();
+  svg.setAttribute('viewBox', `${d.x} ${d.y} ${d.w} ${d.h}`);
+}
+// Zentriert die Ansicht auf eine bestimmte Form (z.B. beim Anklicken eines
+// Abteils im Bearbeiten-Modus) — behebt "wieder zurück zum bearbeiteten
+// Abteil finden", wenn die Ansicht vorher weit weggezoomt/verschoben war.
+function focusStallplanShape(points) {
+  const xs = points.map(p => p.x), ys = points.map(p => p.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const pad = Math.max(maxX - minX, maxY - minY, 2) * 0.3;
+  const w = Math.max(maxX - minX + pad * 2, 3);
+  const h = Math.max(maxY - minY + pad * 2, 2.25);
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  stallplanerViewBox = { x: cx - w / 2, y: cy - h / 2, w, h };
+  stallplanerViewLocked = true;
+  applyStallplanerViewBox();
+  renderStallplanGrid();
+  rescaleStallplanDynamicElements();
+}
+// "Ansicht anpassen" — verlässt den manuell gesperrten Zustand wieder und
+// zoomt/zentriert einmalig neu auf den gesamten Planinhalt.
+function fitStallplanerView() {
+  const plan = activeStallplan();
+  resetStallplanerViewBox();
+  if (plan) {
+    const allPoints = [];
+    if (plan.outline) allPoints.push(...plan.outline.points);
+    plan.compartments.forEach(c => allPoints.push(...c.points));
+    plan.equipment.forEach(e => allPoints.push(...e.points));
+    growStallplanerViewBoxTo(allPoints);
+  }
+  applyStallplanerViewBox();
+  renderStallplanGrid();
+  rescaleStallplanDynamicElements();
+}
+function clampStallplanZoomWidth(w) {
+  return Math.min(Math.max(w, STALLPLANER_VIEW_MIN_W), STALLPLANER_VIEW_MAX_W);
+}
+
+function renderStallplanGrid() {
+  const g = document.getElementById('stallplan-grid');
+  g.innerHTML = '';
+  const d = stallplanDisplayBox();
+  const startX = Math.floor(d.x), endX = Math.ceil(d.x + d.w);
+  const startY = Math.floor(d.y), endY = Math.ceil(d.y + d.h);
+  for (let x = startX; x <= endX; x++) {
+    g.appendChild(svgEl('line', { x1: x, y1: startY, x2: x, y2: endY, class: 'stallplan-grid-line' + (x % 5 === 0 ? ' major' : '') }));
+  }
+  for (let y = startY; y <= endY; y++) {
+    g.appendChild(svgEl('line', { x1: startX, y1: y, x2: endX, y2: y, class: 'stallplan-grid-line' + (y % 5 === 0 ? ' major' : '') }));
+  }
+}
+
+// Bildschirm-Pixel je Rastereinheit bei der aktuellen viewBox — Text-/
+// Griffgrößen werden daraus rückgerechnet (Zielgröße_px / scale), damit sie
+// beim Hineinzoomen (siehe Mausrad-Handler) eine gleichbleibende
+// Bildschirmgröße behalten statt mit dem Inhalt mitzuwachsen und bei
+// starkem Zoom riesig/unleserlich zu werden — reine SVG-Attribute wie
+// font-size/r sind sonst in Rastereinheiten, nicht Bildschirm-Pixeln.
+function stallplanScreenScale() {
+  const rect = document.getElementById('stallplan-svg').getBoundingClientRect();
+  const d = stallplanDisplayBox();
+  if (!rect.width || !d.w) return 30;
+  return rect.width / d.w;
+}
+// Gerundet statt der rohen Division: ein sehr langer, sich bei jedem
+// Neu-Render minimal veränderter Dezimalwert (Rundungsrauschen durch
+// getBoundingClientRect()) lässt Text-Bounding-Boxen zwischen zwei Frames
+// hauchdünn "wackeln" — genug, damit z.B. Playwright seine
+// Stabilitätsprüfung vor einem Klick nie als erfüllt ansieht.
+function stallplanScreenSize(px) { return Math.round((px / stallplanScreenScale()) * 1000) / 1000; }
+// Nach reinen viewBox-Änderungen ohne vollen Re-Render (Mausrad-Zoom,
+// Fokussieren einer Form, "Ansicht anpassen") — Panning ändert den Maßstab
+// nicht und braucht daher keinen Aufruf.
+function rescaleStallplanDynamicElements() {
+  document.querySelectorAll('.stallplan-compartment-label').forEach(fitStallplanCompartmentLabel);
+  document.querySelectorAll('.stallplan-edge-label').forEach(el => el.setAttribute('font-size', stallplanScreenSize(11)));
+  document.querySelectorAll('.stallplan-equipment-icon').forEach(el => el.setAttribute('font-size', stallplanScreenSize(16)));
+  document.querySelectorAll('.stallplan-equipment-bg').forEach(el => el.setAttribute('r', stallplanScreenSize(11)));
+  document.querySelectorAll('.stallplan-vertex-handle').forEach(el => el.setAttribute('r', stallplanScreenSize(7)));
+  document.querySelectorAll('.stallplan-vertex-hit').forEach(el => el.setAttribute('r', stallplanScreenSize(22)));
+  document.querySelectorAll('.stallplan-draw-point').forEach(el => el.setAttribute('r', stallplanScreenSize(5)));
+  document.querySelectorAll('.stallplan-walls-start, .stallplan-walls-end').forEach(el => el.setAttribute('r', stallplanScreenSize(8)));
+  document.querySelectorAll('.stallplan-measure-end').forEach(el => el.setAttribute('r', stallplanScreenSize(6)));
+  document.querySelectorAll('#stallplan-draw-preview-layer .stallplan-edge-label').forEach(el => el.setAttribute('font-size', stallplanScreenSize(12)));
+  document.querySelectorAll('.stallplan-edge-label-hit').forEach(el => {
+    const cx = parseFloat(el.getAttribute('x')) + parseFloat(el.getAttribute('width')) / 2;
+    const cy = parseFloat(el.getAttribute('y')) + parseFloat(el.getAttribute('height')) / 2;
+    const w = stallplanScreenSize(56), h = stallplanScreenSize(32);
+    el.setAttribute('x', cx - w / 2); el.setAttribute('y', cy - h / 2);
+    el.setAttribute('width', w); el.setAttribute('height', h);
+  });
+}
+
+// Sichtbar bleibt der Griff klein, getroffen wird ein unsichtbarer Kreis
+// mit 22 px Radius — ein Finger trifft sonst die 12-px-Punkte kaum.
+function makeVertexHandle(p, kind, compartmentId, index) {
+  const g = svgEl('g', { class: 'stallplan-vertex' });
+  g.appendChild(svgEl('circle', { cx: p.x, cy: p.y, r: stallplanScreenSize(22), class: 'stallplan-vertex-hit' }));
+  g.appendChild(svgEl('circle', { cx: p.x, cy: p.y, r: stallplanScreenSize(7), class: 'stallplan-vertex-handle' }));
+  wireStallplanVertexDrag(g, kind, compartmentId, index);
+  return g;
+}
+// Drag-Bewegungen zeichnen höchstens einmal pro Bildschirm-Frame neu (vorher
+// ein voller renderStallplan() je pointermove — auf dem Handy spürbar zäh).
+let stallplanFrameCb = null;
+function scheduleStallplanFrame(cb) {
+  const pending = stallplanFrameCb;
+  stallplanFrameCb = cb;
+  if (!pending) requestAnimationFrame(flushStallplanFrame);
+}
+function flushStallplanFrame() {
+  const cb = stallplanFrameCb;
+  stallplanFrameCb = null;
+  if (cb) cb();
+}
+// Gemeinsamer Ablauf für alle Drags: nur der auslösende Finger zählt (ein
+// zweiter Finger zum Zoomen verschiebt nichts), pointercancel beendet
+// sauber, und der letzte Frame wird beim Loslassen noch angewendet.
+function trackStallplanDrag(downEvent, onMove, onEnd) {
+  const pointerId = downEvent.pointerId;
+  function move(ev) {
+    if (ev.pointerId !== pointerId) return;
+    scheduleStallplanFrame(() => onMove(ev));
+  }
+  function up(ev) {
+    if (ev.pointerId !== pointerId) return;
+    document.removeEventListener('pointermove', move);
+    document.removeEventListener('pointerup', up);
+    document.removeEventListener('pointercancel', up);
+    flushStallplanFrame();
+    if (onEnd) onEnd(ev);
+  }
+  document.addEventListener('pointermove', move);
+  document.addEventListener('pointerup', up);
+  document.addEventListener('pointercancel', up);
+}
+// ownerId ist eine Abteil- oder Ausstattungs-Id, je nach kind — bei
+// kind==='outline' ungenutzt (es gibt nur einen Umriss je Plan).
+function stallplanPointsFor(plan, kind, ownerId) {
+  if (kind === 'outline') return plan.outline.points;
+  if (kind === 'compartment') return plan.compartments.find(c => c.id === ownerId).points;
+  return plan.equipment.find(x => x.id === ownerId).points;
+}
+function wireStallplanVertexDrag(handleEl, kind, ownerId, index) {
+  handleEl.addEventListener('pointerdown', (e) => {
+    if (e.button > 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    pushStallplanerUndo();
+    trackStallplanDrag(e, (ev) => {
+      const plan = activeStallplan();
+      if (!plan) return;
+      const raw = stallplanSvgPoint(ev);
+      stallplanPointsFor(plan, kind, ownerId)[index] = kind === 'equipment'
+        ? snapStallplanPoint(raw, plan)
+        : snapStallplanDrawPoint(raw, plan, { exclude: { kind, id: ownerId } }).point;
+      renderStallplan();
+    }, () => renderStallplanerSidebar());
+  });
+}
+// Verschiebt eine ganze Ausstattung (alle Punkte um denselben Versatz) —
+// bei einem Punkt-Element ist das schlicht der eine Punkt, bei Linie/
+// Fläche das komplette Element. Einzelne Eckpunkte einer Linie/Fläche
+// lassen sich zusätzlich über wireStallplanVertexDrag() (im Bearbeiten-
+// Modus, nach Auswahl) einzeln verschieben.
+function wireStallplanEquipmentBodyDrag(gEl, equipId) {
+  gEl.addEventListener('pointerdown', (e) => {
+    if (stallplanerMode !== 'edit-vertex' || e.button > 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    pushStallplanerUndo();
+    const startGrid = stallplanSvgPoint(e);
+    let startPoints = null;
+    trackStallplanDrag(e, (ev) => {
+      const plan = activeStallplan();
+      const item = plan && plan.equipment.find(x => x.id === equipId);
+      if (!item) return;
+      if (!startPoints) startPoints = item.points.map(p => ({ ...p }));
+      const cur = stallplanSvgPoint(ev);
+      const dx = cur.x - startGrid.x, dy = cur.y - startGrid.y;
+      item.points = startPoints.map(p => snapStallplanPoint({ x: p.x + dx, y: p.y + dy }, plan));
+      renderStallplan();
+    });
+  });
+}
+
+// Kantenlängen-Beschriftungen (klickbar, öffnet ein Zahlenfeld zur
+// zentimetergenauen Eingabe) — nur an der aktuell zur Bearbeitung
+// ausgewählten Form sichtbar, sonst würde die Zeichenfläche bei vielen
+// Abteilen sofort unübersichtlich.
+// isOpen: true für eine Linie (letzter Punkt schließt NICHT zurück zum
+// ersten, anders als Umriss/Abteil/Flächen-Ausstattung).
+function appendEdgeLengthLabels(g, points, gridScale, kind, compartmentId, isOpen) {
+  const n = points.length;
+  const edgeCount = isOpen ? n - 1 : n;
+  for (let i = 0; i < edgeCount; i++) {
+    const a = points[i], b = points[(i + 1) % n];
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    const lenM = Math.hypot(b.x - a.x, b.y - a.y) * gridScale;
+    const wrap = svgEl('g', { class: 'stallplan-edge-label-wrap' });
+    // Eigenes, großzügig bemessenes Klickziel statt direkt auf den Text-
+    // Glyphen zu klicken — enge Text-Bounding-Boxen sind je nach Zoomstufe
+    // hauchdünn und schwer zuverlässig zu treffen (auch automatisiert).
+    const hit = svgEl('rect', {
+      x: mid.x - stallplanScreenSize(28), y: mid.y - stallplanScreenSize(16),
+      width: stallplanScreenSize(56), height: stallplanScreenSize(32),
+      class: 'stallplan-edge-label-hit'
+    });
+    const label = svgEl('text', { x: mid.x, y: mid.y, class: 'stallplan-edge-label', 'font-size': stallplanScreenSize(11) });
+    label.textContent = lenM.toFixed(2) + ' m';
+    wrap.appendChild(hit);
+    wrap.appendChild(label);
+    hit.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openEdgeLengthEditor(kind, compartmentId, i, mid, lenM);
+    });
+    g.appendChild(wrap);
+  }
+}
+
+function renderStallplanOutline(plan) {
+  const g = document.getElementById('stallplan-outline-layer');
+  g.innerHTML = '';
+  if (!plan.outline) return;
+  const selfX = polygonSelfIntersects(plan.outline.points);
+  const selected = stallplanerSelection && stallplanerSelection.kind === 'outline';
+  g.appendChild(svgEl('polygon', { points: pointsAttr(plan.outline.points), class: 'stallplan-outline' + (selfX ? ' self-intersect' : '') + (selected ? ' selected' : '') }));
+  if (stallplanerMode === 'edit-vertex' && stallplanerEditTargetKind === 'outline') {
+    plan.outline.points.forEach((p, i) => g.appendChild(makeVertexHandle(p, 'outline', null, i)));
+    appendEdgeLengthLabels(g, plan.outline.points, plan.gridScale, 'outline', null);
+  }
+}
+function fitStallplanCompartmentLabel(label) {
+  const scale = stallplanScreenScale();
+  const wPx = parseFloat(label.getAttribute('data-fit-w')) * scale;
+  const hPx = parseFloat(label.getAttribute('data-fit-h')) * scale;
+  const chars = parseFloat(label.getAttribute('data-fit-chars')) || 1;
+  const px = Math.min(13, (wPx - 8) / (chars * 0.6), (hPx - 4) / 2.4);
+  label.style.display = px < 7 ? 'none' : '';
+  label.setAttribute('font-size', stallplanScreenSize(Math.max(px, 7)));
+}
+function renderStallplanCompartments(plan) {
+  const g = document.getElementById('stallplan-compartments-layer');
+  g.innerHTML = '';
+  plan.compartments.forEach(c => {
+    const area = shoelaceArea(c.points) * plan.gridScale * plan.gridScale;
+    const benoetigt = compartmentHasCountedAnimals(c) ? compartmentBenoetigteFlaeche(c) : null;
+    const compliant = benoetigt == null ? null : area >= benoetigt;
+    const selfX = polygonSelfIntersects(c.points);
+    const wrap = svgEl('g', {
+      class: 'stallplan-compartment' + (compliant === false ? ' non-compliant' : '') + (selfX ? ' self-intersect' : '') +
+        (stallplanerSelection && stallplanerSelection.kind === 'compartment' && stallplanerSelection.id === c.id ? ' selected' : ''),
+      'data-id': c.id
+    });
+    wrap.appendChild(svgEl('polygon', { points: pointsAttr(c.points) }));
+    const center = polygonCentroid(c.points);
+    const areaText = `${area.toFixed(1)} m²`;
+    const xs = c.points.map(p => p.x), ys = c.points.map(p => p.y);
+    // Zweizeilig (Name / Fläche) und an die Abteilgröße angepasst — in einer
+    // Buchtenreihe sind die Abteile oft schmaler als eine einzeilige
+    // Beschriftung, die Texte liefen sonst ineinander.
+    const label = svgEl('text', {
+      x: center.x, y: center.y, class: 'stallplan-compartment-label',
+      'data-fit-w': Math.max(...xs) - Math.min(...xs), 'data-fit-h': Math.max(...ys) - Math.min(...ys),
+      'data-fit-chars': Math.max(c.name.length, areaText.length)
+    });
+    const nameLine = svgEl('tspan', { x: center.x, dy: '-0.55em' });
+    nameLine.textContent = c.name;
+    const areaLine = svgEl('tspan', { x: center.x, dy: '1.15em' });
+    areaLine.textContent = areaText;
+    label.appendChild(nameLine);
+    label.appendChild(areaLine);
+    fitStallplanCompartmentLabel(label);
+    wrap.appendChild(label);
+    g.appendChild(wrap);
+    if (stallplanerMode === 'edit-vertex' && stallplanerEditTargetKind === 'compartment' && stallplanerEditTargetId === c.id) {
+      appendEdgeLengthLabels(wrap, c.points, plan.gridScale, 'compartment', c.id);
+      c.points.forEach((p, i) => g.appendChild(makeVertexHandle(p, 'compartment', c.id, i)));
+    }
+  });
+}
+// Mittelpunkt fürs Icon: bei Linie/Fläche der Flächen-/Streckenschwerpunkt
+// statt nur des ersten Punkts, damit das Symbol mittig sitzt statt an
+// einer Ecke zu kleben.
+function stallplanEquipmentIconAnchor(e) {
+  if (e.points.length === 1) return e.points[0];
+  if (e.geometryKind === 'area') return polygonCentroid(e.points);
+  // Linie: Mittelpunkt der Gesamtlänge (nicht nur Durchschnitt der
+  // Eckpunkte, sonst läge er bei ungleich langen Segmenten daneben).
+  let total = 0;
+  const segLens = [];
+  for (let i = 0; i < e.points.length - 1; i++) {
+    const l = Math.hypot(e.points[i + 1].x - e.points[i].x, e.points[i + 1].y - e.points[i].y);
+    segLens.push(l); total += l;
+  }
+  let target = total / 2, i = 0;
+  while (i < segLens.length && target > segLens[i]) { target -= segLens[i]; i++; }
+  const a = e.points[i], b = e.points[Math.min(i + 1, e.points.length - 1)];
+  const segLen = segLens[i] || 1;
+  const t = target / segLen;
+  return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+}
+function renderStallplanEquipment(plan) {
+  const g = document.getElementById('stallplan-equipment-layer');
+  g.innerHTML = '';
+  plan.equipment.forEach(e => {
+    const selected = stallplanerMode === 'edit-vertex' && stallplanerEditTargetKind === 'equipment' && stallplanerEditTargetId === e.id;
+    const picked = stallplanerSelection && stallplanerSelection.kind === 'equipment' && stallplanerSelection.id === e.id;
+    const wrap = svgEl('g', { class: 'stallplan-equipment stallplan-equipment-' + e.geometryKind + (picked ? ' selected' : ''), 'data-id': e.id });
+    if (e.geometryKind === 'area') {
+      wrap.appendChild(svgEl('polygon', { points: pointsAttr(e.points), class: 'stallplan-equipment-shape' }));
+    } else if (e.geometryKind === 'line') {
+      wrap.appendChild(svgEl('polyline', { points: pointsAttr(e.points), class: 'stallplan-equipment-shape' }));
+    }
+    const anchor = stallplanEquipmentIconAnchor(e);
+    const iconGroup = svgEl('g', { transform: `translate(${anchor.x},${anchor.y}) rotate(${e.rotationDeg || 0})` });
+    iconGroup.appendChild(svgEl('circle', { r: stallplanScreenSize(11), class: 'stallplan-equipment-bg' }));
+    const icon = svgEl('text', { class: 'material-symbols-rounded stallplan-equipment-icon', 'text-anchor': 'middle', 'dominant-baseline': 'central', 'font-size': stallplanScreenSize(16) });
+    icon.textContent = STALLPLANER_EQUIPMENT_ICON_NAMES[e.type] || 'help';
+    iconGroup.appendChild(icon);
+    wrap.appendChild(iconGroup);
+    g.appendChild(wrap);
+    wireStallplanEquipmentBodyDrag(wrap, e.id);
+    if (selected) {
+      e.points.forEach((p, i) => g.appendChild(makeVertexHandle(p, 'equipment', e.id, i)));
+      if (e.points.length >= 2) appendEdgeLengthLabels(g, e.points, plan.gridScale, 'equipment', e.id, e.geometryKind === 'line');
+    }
+  });
+}
+// Mehrpunkt-Zeichnen läuft für Umriss/Abteil UND für Linien-/Flächen-
+// Ausstattung über denselben stallplanerDrawPoints-Mechanismus — nur
+// Punkt-Ausstattung wird weiterhin per einzelnem Klick sofort gesetzt.
+function stallplanDrawModeActive() {
+  return stallplanerMode === 'draw-outline' || stallplanerMode === 'draw-compartment' ||
+    (stallplanerMode === 'place-equipment' && stallplanerEquipGeometryKind !== 'point');
+}
+// Schließbar (Klick nah am Start beendet die Form) ist alles außer einer
+// Linie — eine Linie hat kein "Innen", ein Schließen zurück zum
+// Startpunkt ergäbe keinen Sinn.
+function stallplanDrawIsClosable() {
+  return stallplanerMode === 'draw-outline' || stallplanerMode === 'draw-compartment' ||
+    (stallplanerMode === 'place-equipment' && stallplanerEquipGeometryKind === 'area');
+}
+// Klickt/hovert man beim Zeichnen nah genug am ersten gesetzten Punkt,
+// schließt sich der Umriss/das Abteil/die Flächen-Ausstattung automatisch —
+// Toleranz in Bildschirm-Pixeln (zoomunabhängig, siehe
+// stallplanScreenSize()), nicht in Rastereinheiten, sonst wäre die
+// Trefferfläche beim Herauszoomen riesig und beim Hineinzoomen winzig.
+const STALLPLAN_CLOSE_TOLERANCE_PX = 24;
+function isNearStallplanDrawStart(p) {
+  if (!stallplanDrawIsClosable() || !stallplanerDrawPoints || stallplanerDrawPoints.length < 3) return false;
+  const start = stallplanerDrawPoints[0];
+  return Math.hypot(p.x - start.x, p.y - start.y) <= stallplanScreenSize(STALLPLAN_CLOSE_TOLERANCE_PX);
+}
+function renderStallplanDrawPreview(cursor, snapKind = null) {
+  const g = document.getElementById('stallplan-draw-preview-layer');
+  g.innerHTML = '';
+  if (!stallplanerDrawPoints || !stallplanerDrawPoints.length) return;
+  // Zeigt, woran der Punkt eingerastet ist (Ecke, Wand, Achse).
+  if (cursor && (snapKind === 'vertex' || snapKind === 'edge' || snapKind === 'axis')) {
+    g.appendChild(svgEl('circle', { cx: cursor.x, cy: cursor.y, r: stallplanScreenSize(12), class: 'stallplan-snap-mark snap-' + snapKind }));
+  }
+  const canClose = !!cursor && isNearStallplanDrawStart(cursor);
+  // Statt einer offenen Linie bis zum Cursor schon die schließende Kante
+  // zurück zum Startpunkt einzeichnen — dieselbe Rückmeldung, die auch
+  // Illustrator/Figma beim Pfadzeichnen geben ("hier klicken zum Schließen").
+  const pts = canClose ? [...stallplanerDrawPoints, stallplanerDrawPoints[0]] : (cursor ? [...stallplanerDrawPoints, cursor] : stallplanerDrawPoints);
+  g.appendChild(svgEl('polyline', { points: pointsAttr(pts), class: 'stallplan-draw-preview' }));
+  stallplanerDrawPoints.forEach((p, i) => {
+    const highlight = i === 0 && canClose;
+    g.appendChild(svgEl('circle', {
+      cx: p.x, cy: p.y,
+      r: stallplanScreenSize(highlight ? 9 : 5),
+      class: 'stallplan-draw-point' + (highlight ? ' closable' : '')
+    }));
+  });
+}
+
+function renderStallplan() {
+  const plan = activeStallplan();
+  if (plan) syncStallplanWholeStall(plan);
+  if (!plan) {
+    ['stallplan-outline-layer', 'stallplan-compartments-layer', 'stallplan-equipment-layer', 'stallplan-draw-preview-layer'].forEach(id => {
+      document.getElementById(id).innerHTML = '';
+    });
+    renderStallplanGrid();
+    return;
+  }
+  // Solange die Ansicht nicht manuell gezoomt/verschoben/auf eine Form
+  // fokussiert wurde, wächst sie automatisch mit dem Inhalt mit — danach
+  // übersteuert das automatische Mitwachsen nicht mehr jede Mutation.
+  if (!stallplanerViewLocked) {
+    const allPoints = [];
+    if (plan.outline) allPoints.push(...plan.outline.points);
+    plan.compartments.forEach(c => allPoints.push(...c.points));
+    plan.equipment.forEach(e => allPoints.push(...e.points));
+    if (stallplanerDrawPoints) allPoints.push(...stallplanerDrawPoints);
+    allPoints.push(...stallplanTaskPoints(plan));
+    growStallplanerViewBoxTo(allPoints);
+  }
+  applyStallplanerViewBox();
+  renderStallplanGrid();
+  renderStallplanOutline(plan);
+  renderStallplanCompartments(plan);
+  renderStallplanEquipment(plan);
+  if (stallplanerTask) renderStallplanTaskPreview();
+}
+
+// ---- Maus/Touch → SVG-Koordinaten ----
+function stallplanSvgPoint(evt) {
+  const svg = document.getElementById('stallplan-svg');
+  const rect = svg.getBoundingClientRect();
+  const vb = stallplanDisplayBox();
+  return {
+    x: vb.x + ((evt.clientX - rect.left) / rect.width) * vb.w,
+    y: vb.y + ((evt.clientY - rect.top) / rect.height) * vb.h
+  };
+}
+function snapStallplanPoint(p, plan) {
+  return plan.gridSnap ? { x: Math.round(p.x), y: Math.round(p.y) } : p;
+}
+function stallplanScreenPoint(gridPoint) {
+  const svg = document.getElementById('stallplan-svg');
+  const rect = svg.getBoundingClientRect();
+  const wrapRect = document.getElementById('stallplaner-canvas').getBoundingClientRect();
+  const vb = stallplanDisplayBox();
+  return {
+    left: rect.left - wrapRect.left + ((gridPoint.x - vb.x) / vb.w) * rect.width,
+    top: rect.top - wrapRect.top + ((gridPoint.y - vb.y) / vb.h) * rect.height
+  };
+}
+
+// ---- Kantenlängen zentimetergenau eingeben (statt nur grobem Raster-Snap
+// beim Ziehen) — ändert die Position des ZWEITEN Eckpunkts der Kante entlang
+// derselben Richtung, der erste bleibt fest. Da sich benachbarte Kanten
+// eines Polygons immer einen Eckpunkt teilen, verändert das zwangsläufig
+// auch die Länge der Nachbarkante — exakt das aus jedem Vektor-Werkzeug
+// bekannte Verhalten, keine isolierte "nur diese eine Kante"-Bearbeitung
+// möglich. ----
+function setEdgeLength(points, edgeIndex, newLengthMeters, gridScale) {
+  const n = points.length;
+  const a = points[edgeIndex], bIdx = (edgeIndex + 1) % n, b = points[bIdx];
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const curLen = Math.hypot(dx, dy);
+  if (curLen < 1e-9) return;
+  const newLenGrid = newLengthMeters / gridScale;
+  points[bIdx] = { x: a.x + (dx / curLen) * newLenGrid, y: a.y + (dy / curLen) * newLenGrid };
+}
+function openEdgeLengthEditor(kind, compartmentId, edgeIndex, midPointGrid, currentLengthM) {
+  const input = document.getElementById('stallplan-edge-length-input');
+  const pos = stallplanScreenPoint(midPointGrid);
+  input.style.left = pos.left + 'px';
+  input.style.top = pos.top + 'px';
+  input.value = currentLengthM.toFixed(2);
+  input.dataset.kind = kind;
+  input.dataset.compartmentId = compartmentId || '';
+  input.dataset.edgeIndex = String(edgeIndex);
+  input.hidden = false;
+  input.focus();
+  input.select();
+}
+function closeEdgeLengthEditor() {
+  document.getElementById('stallplan-edge-length-input').hidden = true;
+}
+function commitEdgeLengthEditor() {
+  const input = document.getElementById('stallplan-edge-length-input');
+  if (input.hidden) return;
+  const plan = activeStallplan();
+  const kind = input.dataset.kind;
+  const compartmentId = input.dataset.compartmentId || null;
+  const edgeIndex = parseInt(input.dataset.edgeIndex, 10);
+  const newLenM = parseDecimalInput(input.value);
+  closeEdgeLengthEditor();
+  if (!plan || !Number.isFinite(newLenM) || newLenM <= 0) return;
+  const points = stallplanPointsFor(plan, kind, compartmentId);
+  pushStallplanerUndo();
+  setEdgeLength(points, edgeIndex, newLenM, plan.gridScale);
+  renderStallplan();
+  renderStallplanerSidebar();
+}
+const stallplanEdgeLengthInput = document.getElementById('stallplan-edge-length-input');
+stallplanEdgeLengthInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); commitEdgeLengthEditor(); }
+  else if (e.key === 'Escape') { e.preventDefault(); closeEdgeLengthEditor(); }
+});
+stallplanEdgeLengthInput.addEventListener('blur', () => commitEdgeLengthEditor());
+stallplanEdgeLengthInput.addEventListener('click', (e) => e.stopPropagation());
+
+// ---- Geführter Vermessen-Modus ----
+// Führt beim Vor-Ort-Termin Kante für Kante durch den ausgewählten Umriss/
+// das Abteil (Reihenfolge wie in der Skizze), sammelt die echten
+// Laser-Maße und baut die Form am Ende in einem Schritt rechtwinklig neu
+// auf (reconstructPolygonFromSketch()) — bewusst erst am Ende, nicht nach
+// jeder einzelnen Kante, da die Zwischenzustände sonst bei jedem Schritt
+// sichtbar "hin- und herspringen" würden, obwohl der Drehsinn ohnehin erst
+// mit allen Kanten zusammen feststeht.
+function startStallplanMeasureWalk(kind, compartmentId, points) {
+  if (points.length < 3) return;
+  stallplanerMeasureTargetKind = kind;
+  stallplanerMeasureTargetId = compartmentId;
+  stallplanerMeasureOriginalPoints = points.map(p => ({ ...p }));
+  stallplanerMeasureLengths = [];
+  stallplanerMeasureIndex = 0;
+  focusStallplanShape(points);
+  showStallplanMeasureStep();
+}
+function currentStallplanMeasureEdge() {
+  const n = stallplanerMeasureOriginalPoints.length;
+  return [stallplanerMeasureOriginalPoints[stallplanerMeasureIndex], stallplanerMeasureOriginalPoints[(stallplanerMeasureIndex + 1) % n]];
+}
+function showStallplanMeasureStep() {
+  const plan = activeStallplan();
+  const n = stallplanerMeasureOriginalPoints.length;
+  if (stallplanerSheetPanel !== 'stallplaner-measure-panel') openStallplanerSheet('stallplaner-measure-panel', 'Vermessen');
+  document.getElementById('stallplaner-measure-progress').textContent = `Kante ${stallplanerMeasureIndex + 1} von ${n}`;
+  const [a, b] = currentStallplanMeasureEdge();
+  const roughLenM = Math.hypot(b.x - a.x, b.y - a.y) * plan.gridScale;
+  const input = document.getElementById('stallplaner-measure-input');
+  input.value = '';
+  input.placeholder = `≈ ${roughLenM.toFixed(2)} m laut Skizze`;
+  document.getElementById('stallplaner-measure-back').disabled = stallplanerMeasureIndex === 0;
+  renderStallplanMeasureHighlight();
+  renderStallplanerChrome();
+  input.focus();
+}
+// Zeigt im Plan, wo man gerade steht: die zu messende Kante dick und orange
+// (mit dunklem Rand, damit sie auf jeder Füllung auffällt), bereits
+// gemessene Kanten grün mit ihrem eingetragenen Maß. Nutzt die (sonst nur
+// beim Skizzieren aktive) Vorschau-Ebene — kein zusätzlicher SVG-Layer.
+function renderStallplanMeasureHighlight() {
+  const g = document.getElementById('stallplan-draw-preview-layer');
+  g.innerHTML = '';
+  const pts = stallplanerMeasureOriginalPoints;
+  if (!pts) return;
+  const n = pts.length;
+  const edge = (i) => [pts[i], pts[(i + 1) % n]];
+  // Beschriftung neben (nicht auf) die Kante, nach außen weg vom
+  // Flächenmittelpunkt — sonst streicht die Linie den Text durch.
+  const center = polygonCentroid(pts);
+  const label = (a, b, text, cls, px) => {
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    let nx = -(b.y - a.y) / len, ny = (b.x - a.x) / len;
+    if (nx * (mid.x - center.x) + ny * (mid.y - center.y) < 0) { nx = -nx; ny = -ny; }
+    const off = stallplanScreenSize(px + 6);
+    const t = svgEl('text', { x: mid.x + nx * off, y: mid.y + ny * off, class: 'stallplan-edge-label ' + cls, 'font-size': stallplanScreenSize(px) });
+    t.textContent = text;
+    g.appendChild(t);
+  };
+  for (let i = 0; i < stallplanerMeasureIndex; i++) {
+    const [a, b] = edge(i);
+    g.appendChild(svgEl('line', { x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: 'stallplan-measure-done' }));
+    const len = stallplanerMeasureLengths[i];
+    if (len != null) label(a, b, formatStallplanMeters(len) + ' m', 'stallplan-measure-done-label', 12);
+  }
+  const [a, b] = edge(stallplanerMeasureIndex);
+  g.appendChild(svgEl('line', { x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: 'stallplan-measure-halo' }));
+  g.appendChild(svgEl('line', { x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: 'stallplan-measure-highlight' }));
+  [a, b].forEach(p => g.appendChild(svgEl('circle', { cx: p.x, cy: p.y, r: stallplanScreenSize(6), class: 'stallplan-measure-end' })));
+  label(a, b, '? m', 'stallplan-measure-current-label', 15);
+}
+function submitStallplanMeasureStep() {
+  const input = document.getElementById('stallplaner-measure-input');
+  const val = parseDecimalInput(input.value);
+  if (!Number.isFinite(val) || val <= 0) { input.focus(); return; }
+  stallplanerMeasureLengths[stallplanerMeasureIndex] = val;
+  advanceStallplanMeasureStep();
+}
+function skipStallplanMeasureStep() {
+  const plan = activeStallplan();
+  const [a, b] = currentStallplanMeasureEdge();
+  stallplanerMeasureLengths[stallplanerMeasureIndex] = Math.hypot(b.x - a.x, b.y - a.y) * plan.gridScale;
+  advanceStallplanMeasureStep();
+}
+function advanceStallplanMeasureStep() {
+  stallplanerMeasureIndex++;
+  if (stallplanerMeasureIndex < stallplanerMeasureOriginalPoints.length) showStallplanMeasureStep();
+  else finishStallplanMeasureWalk();
+}
+function backStallplanMeasureStep() {
+  if (stallplanerMeasureIndex === 0) return;
+  stallplanerMeasureIndex--;
+  showStallplanMeasureStep();
+  const prevVal = stallplanerMeasureLengths[stallplanerMeasureIndex];
+  if (prevVal != null) document.getElementById('stallplaner-measure-input').value = prevVal;
+}
+function finishStallplanMeasureWalk() {
+  const plan = activeStallplan();
+  const lengthsGrid = stallplanerMeasureLengths.map(l => l / plan.gridScale);
+  const { points: newPoints, misclosure, freeCorners } = reconstructPolygonFromSketch(stallplanerMeasureOriginalPoints, lengthsGrid);
+  pushStallplanerUndo(); // ein einziger Undo-Schritt für die ganze Vermessung
+  if (stallplanerMeasureTargetKind === 'outline') {
+    plan.outline.points = newPoints;
+  } else {
+    const c = plan.compartments.find(x => x.id === stallplanerMeasureTargetId);
+    if (c) c.points = newPoints;
+  }
+  const misclosureM = misclosure * plan.gridScale;
+  closeStallplanMeasurePanel();
+  stallplanerMode = null;
+  renderStallplan();
+  renderStallplanerSidebar();
+  // Schräge Ecken erwähnen — dort stammt der Winkel (angepasst) aus der
+  // Skizze, nicht aus einer Messung.
+  const schraegHinweis = freeCorners ? ` ${freeCorners} schräge ${freeCorners === 1 ? 'Ecke' : 'Ecken'}: Winkel aus der Skizze, an die Maße angepasst.` : '';
+  stallplanerFlash(misclosureM > 0.05
+    ? `Vermessen abgeschlossen — Schlussfehler ${misclosureM.toFixed(2)} m, bitte Maße stichprobenartig prüfen.${schraegHinweis}`
+    : `Vermessen abgeschlossen — Schlussfehler ${misclosureM.toFixed(2)} m.${schraegHinweis}`);
+}
+function cancelStallplanMeasureWalk() {
+  closeStallplanMeasurePanel();
+  stallplanerMode = null;
+  renderStallplanerChrome();
+}
+function closeStallplanMeasurePanel() {
+  if (stallplanerSheetPanel === 'stallplaner-measure-panel') hideStallplanerSheet();
+  document.getElementById('stallplan-draw-preview-layer').innerHTML = '';
+  stallplanerMeasureTargetKind = null;
+  stallplanerMeasureTargetId = null;
+  stallplanerMeasureOriginalPoints = null;
+  stallplanerMeasureLengths = null;
+  stallplanerMeasureIndex = 0;
+}
+document.getElementById('stallplaner-measure-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); submitStallplanMeasureStep(); }
+  else if (e.key === 'Escape') { e.preventDefault(); cancelStallplanMeasureWalk(); }
+});
+document.getElementById('stallplaner-measure-next').addEventListener('click', submitStallplanMeasureStep);
+document.getElementById('stallplaner-measure-skip').addEventListener('click', skipStallplanMeasureStep);
+document.getElementById('stallplaner-measure-back').addEventListener('click', backStallplanMeasureStep);
+document.getElementById('stallplaner-measure-cancel').addEventListener('click', cancelStallplanMeasureWalk);
+
+// ---- Undo/Redo (Snapshot-basiert statt Action-Objekten — siehe Plan:
+// Stallplaner hat ~10 Mutationsarten über 3 Entitätstypen, ein kompletter
+// Plan-Snapshot ist wenige KB JSON und günstiger als 10 Inverse-Aktionen
+// einzeln zu pflegen). ----
+function pushStallplanerUndo() {
+  const plan = activeStallplan();
+  if (!plan) return;
+  stallplanerUndoStack.push(structuredClone(plan));
+  if (stallplanerUndoStack.length > STALLPLANER_UNDO_MAX) stallplanerUndoStack.shift();
+  stallplanerRedoStack.length = 0;
+  renderStallplanerChrome();
+}
+function replaceActiveStallplan(next) {
+  const idx = stallplaene.findIndex(p => p.id === activeStallplanId);
+  if (idx !== -1) stallplaene[idx] = next;
+}
+function undoStallplaner() {
+  const plan = activeStallplan();
+  if (!plan || !stallplanerUndoStack.length) return;
+  stallplanerRedoStack.push(structuredClone(plan));
+  replaceActiveStallplan(stallplanerUndoStack.pop());
+  stallplanerEditTargetKind = null;
+  stallplanerEditTargetId = null;
+  renderStallplan();
+  renderStallplanerSidebar();
+  renderStallplanerChrome();
+}
+function redoStallplaner() {
+  const plan = activeStallplan();
+  if (!plan || !stallplanerRedoStack.length) return;
+  stallplanerUndoStack.push(structuredClone(plan));
+  replaceActiveStallplan(stallplanerRedoStack.pop());
+  stallplanerEditTargetKind = null;
+  stallplanerEditTargetId = null;
+  renderStallplan();
+  renderStallplanerSidebar();
+  renderStallplanerChrome();
+}
+
+// ---- Zeichnen-Zustandsmaschine ----
+// ---- Zeichenhilfen für Abteile (und Umriss/Ausstattung) ----
+// Einrasten in dieser Reihenfolge, jeweils im Fingerbereich
+// (STALLPLAN_SNAP_PX, zoomunabhängig):
+//   1. vorhandene Ecken von Umriss und Abteilen
+//   2. die Wände selbst (Lotfußpunkt) — auf geraden Wänden zusätzlich am
+//      Raster entlang, damit Buchtenbreiten glatte Meter bleiben
+//   3. exakt waagerecht/senkrecht zum vorherigen Punkt
+//   4. sonst das Raster (falls eingeschaltet)
+// exclude: { kind, id } der gerade bearbeiteten Form — beim Verschieben
+// einer Ecke soll sie nicht an sich selbst einrasten.
+const STALLPLAN_SNAP_PX = 18;
+function stallplanSnapShapes(plan, exclude) {
+  const shapes = [];
+  if (plan.outline && !(exclude && exclude.kind === 'outline')) shapes.push(plan.outline.points);
+  plan.compartments.forEach(c => {
+    if (c.wholeStall) return; // liegt deckungsgleich auf dem Umriss
+    if (exclude && exclude.kind === 'compartment' && exclude.id === c.id) return;
+    shapes.push(c.points);
+  });
+  return shapes;
+}
+function projectOnStallplanSegment(p, a, b) {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  if (len2 < 1e-12) return { ...a };
+  const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2));
+  return { x: a.x + dx * t, y: a.y + dy * t };
+}
+function snapStallplanDrawPoint(raw, plan, { prev = null, exclude = null } = {}) {
+  const tol = stallplanScreenSize(STALLPLAN_SNAP_PX);
+  const shapes = stallplanSnapShapes(plan, exclude);
+  let best = null, bestD = tol;
+  shapes.forEach(pts => pts.forEach(v => {
+    const d = Math.hypot(v.x - raw.x, v.y - raw.y);
+    if (d <= bestD) { bestD = d; best = { point: { x: v.x, y: v.y }, kind: 'vertex' }; }
+  }));
+  if (best) return best;
+  shapes.forEach(pts => pts.forEach((a, i) => {
+    const b = pts[(i + 1) % pts.length];
+    const q = projectOnStallplanSegment(raw, a, b);
+    const d = Math.hypot(q.x - raw.x, q.y - raw.y);
+    if (d <= bestD) { bestD = d; best = { point: q, kind: 'edge', a, b }; }
+  }));
+  if (best) {
+    const { a, b } = best;
+    if (plan.gridSnap) {
+      const eps = 1e-9;
+      if (Math.abs(a.y - b.y) < eps) best.point.x = Math.min(Math.max(Math.round(best.point.x), Math.min(a.x, b.x)), Math.max(a.x, b.x));
+      else if (Math.abs(a.x - b.x) < eps) best.point.y = Math.min(Math.max(Math.round(best.point.y), Math.min(a.y, b.y)), Math.max(a.y, b.y));
+    }
+    return { point: best.point, kind: 'edge' };
+  }
+  const p = snapStallplanPoint(raw, plan);
+  if (prev) {
+    const alignX = Math.abs(raw.x - prev.x) <= tol, alignY = Math.abs(raw.y - prev.y) <= tol;
+    if (alignY && (!alignX || Math.abs(raw.y - prev.y) <= Math.abs(raw.x - prev.x))) return { point: { x: p.x, y: prev.y }, kind: 'axis' };
+    if (alignX) return { point: { x: prev.x, y: p.y }, kind: 'axis' };
+  }
+  return { point: p, kind: plan.gridSnap ? 'grid' : null };
+}
+
+// Planare Polygon-Rechnungen über Turf (ohnehin geladen, index.html) — die
+// Rastereinheiten des Stallplans sind ein ebenes Koordinatensystem, das
+// Clipping von Turf (polygon-clipping) rechnet ebenfalls rein planar.
+function stallplanTurfPolygon(points) {
+  const ring = points.map(p => [p.x, p.y]);
+  ring.push(ring[0]);
+  return turf.polygon([ring]);
+}
+// Größtes Teilstück (Außenring) eines Turf-Ergebnisses als Punktliste.
+function stallplanPiecesFromTurf(feature) {
+  if (!feature) return [];
+  const polys = feature.geometry.type === 'Polygon' ? [feature.geometry.coordinates] : feature.geometry.coordinates;
+  return polys.map(poly => {
+    const ring = poly[0].slice(0, -1).map(([x, y]) => ({ x: Math.round(x * 1e6) / 1e6, y: Math.round(y * 1e6) / 1e6 }));
+    const dedup = ring.filter((p, i) => { const n = ring[(i + 1) % ring.length]; return Math.hypot(p.x - n.x, p.y - n.y) > 1e-6; });
+    return dedup.length >= 3 ? simplifyCollinearPoints(dedup) : null;
+  }).filter(Boolean).sort((a, b) => shoelaceArea(b) - shoelaceArea(a));
+}
+
+// Ein grob gezeichnetes Abteil passend machen: auf den Stall-Umriss
+// zuschneiden (über die Wand hinaus gezeichnet) und bereits belegte Fläche
+// anderer Abteile abziehen (Überlappung). Rückgabe { points, adjusted } oder
+// null, wenn nichts übrig bleibt (ganz außerhalb / schon belegt).
+const STALLPLAN_MIN_COMPARTMENT_M2 = 0.05;
+function fitStallplanCompartmentToStall(plan, points, excludeId = null) {
+  if (typeof turf === 'undefined' || !turf.intersect || points.length < 3 || polygonSelfIntersects(points)) {
+    return { points, adjusted: false };
+  }
+  try {
+    let shape = stallplanTurfPolygon(points);
+    if (plan.outline && plan.outline.points.length >= 3 && !polygonSelfIntersects(plan.outline.points)) {
+      shape = turf.intersect(shape, stallplanTurfPolygon(plan.outline.points));
+      if (!shape) return null;
+    }
+    for (const c of plan.compartments) {
+      if (c.id === excludeId || c.wholeStall || c.points.length < 3 || polygonSelfIntersects(c.points)) continue;
+      shape = turf.difference(shape, stallplanTurfPolygon(c.points));
+      if (!shape) return null;
+    }
+    const piece = stallplanPiecesFromTurf(shape)[0];
+    if (!piece || shoelaceArea(piece) * plan.gridScale * plan.gridScale < STALLPLAN_MIN_COMPARTMENT_M2) return null;
+    const adjusted = Math.abs(shoelaceArea(piece) - shoelaceArea(points)) > 1e-6;
+    return { points: adjusted ? piece : points, adjusted };
+  } catch (err) {
+    console.warn('Abteil konnte nicht angepasst werden', err);
+    return { points, adjusted: false };
+  }
+}
+
+// Noch nicht belegte Stallfläche (Umriss minus alle Abteile) als Teilstücke.
+function stallplanRestPieces(plan) {
+  if (!plan.outline || !plan.compartments.length || typeof turf === 'undefined' || !turf.difference) return [];
+  if (plan.compartments.some(c => c.wholeStall) || polygonSelfIntersects(plan.outline.points)) return [];
+  try {
+    let shape = stallplanTurfPolygon(plan.outline.points);
+    for (const c of plan.compartments) {
+      if (c.points.length < 3 || polygonSelfIntersects(c.points)) continue;
+      shape = turf.difference(shape, stallplanTurfPolygon(c.points));
+      if (!shape) return [];
+    }
+    return stallplanPiecesFromTurf(shape)
+      .filter(p => shoelaceArea(p) * plan.gridScale * plan.gridScale >= 0.1);
+  } catch {
+    return [];
+  }
+}
+
+function newStallplanCompartment(plan, points, overrides = {}) {
+  return {
+    id: 'abteil-' + Date.now() + Math.random().toString(36).slice(2),
+    name: `Abteil ${plan.compartments.length + 1}`,
+    points, tierbestand: [], ...overrides
+  };
+}
+
+function addStallplanRestArea() {
+  const plan = activeStallplan();
+  if (!plan) return;
+  const pieces = stallplanRestPieces(plan);
+  if (!pieces.length) { stallplanerFlash('Der ganze Stall ist schon in Abteile eingeteilt.'); return; }
+  pushStallplanerUndo();
+  pieces.forEach((points, i) => {
+    plan.compartments.push(newStallplanCompartment(plan, points, { name: pieces.length > 1 ? `Restfläche ${i + 1}` : 'Restfläche' }));
+  });
+  const m2 = pieces.reduce((s, p) => s + shoelaceArea(p), 0) * plan.gridScale * plan.gridScale;
+  renderStallplan();
+  renderStallplanerSidebar();
+  stallplanerFlash(`Restfläche mit ${m2.toFixed(1).replace('.', ',')} m² als Abteil angelegt — z. B. Futtergang. Antippen zum Umbenennen.`);
+}
+
+// ---- Abteile sind optional: der ganze Stall als eine Fläche ----
+// Viele Ställe (Mobilstall, Offenfront, Laufstall) haben keine Abteile — dann
+// ist der Umriss selbst die Stallfläche. Als eigenes, markiertes Abteil
+// (wholeStall), damit Tiere/Öko-VO-Prüfung/PDF unverändert funktionieren;
+// seine Form folgt immer dem Umriss (syncStallplanWholeStall).
+function stallplanWholeStall(plan) {
+  return plan.compartments.find(c => c.wholeStall) || null;
+}
+function syncStallplanWholeStall(plan) {
+  const c = stallplanWholeStall(plan);
+  if (c && plan.outline) c.points = plan.outline.points.map(p => ({ x: p.x, y: p.y }));
+}
+function useWholeStallAsCompartment() {
+  const plan = activeStallplan();
+  if (!plan) return;
+  if (!plan.outline) { stallplanerFlash('Erst den Umriss anlegen (Schritt 1).'); return; }
+  if (stallplanWholeStall(plan)) { setStallplanerStep('tiere'); return; }
+  const hasAnimals = plan.compartments.some(c => c.tierbestand.length);
+  if (plan.compartments.length && !confirm(`Die ${plan.compartments.length} Abteile werden durch den ganzen Stall ersetzt${hasAnimals ? ' — eingetragene Tiere werden übernommen' : ''}. Fortfahren?`)) return;
+  pushStallplanerUndo();
+  const animals = plan.compartments.flatMap(c => c.tierbestand);
+  plan.compartments = [newStallplanCompartment(plan, plan.outline.points.map(p => ({ ...p })), { name: 'Ganzer Stall', tierbestand: animals, wholeStall: true })];
+  const m2 = (shoelaceArea(plan.outline.points) * plan.gridScale * plan.gridScale).toFixed(1).replace('.', ',');
+  setStallplanerStep('tiere');
+  stallplanerFlash(`Ganzer Stall (${m2} m²) als eine Fläche — jetzt Tiere eintragen.`);
+}
+// Sobald doch einzelne Abteile entstehen sollen, macht "Ganzer Stall" Platz
+// (sonst lägen beide übereinander). false = abgebrochen.
+function releaseStallplanWholeStall(plan) {
+  const whole = stallplanWholeStall(plan);
+  if (!whole) return true;
+  if (whole.tierbestand.length && !confirm('„Ganzer Stall“ hat eingetragene Tiere. Durch einzelne Abteile ersetzen? Die Tierangaben gehen dabei verloren.')) return false;
+  plan.compartments = plan.compartments.filter(c => c !== whole);
+  return true;
+}
+
+function finishStallplanDraw() {
+  const plan = activeStallplan();
+  const isEquip = stallplanerMode === 'place-equipment';
+  const minPoints = (isEquip && stallplanerEquipGeometryKind === 'line') ? 2 : 3;
+  if (!plan || !stallplanerDrawPoints || stallplanerDrawPoints.length < minPoints) { cancelStallplanDraw(); return; }
+  let compartmentMsg = null;
+  if (stallplanerMode === 'draw-compartment') {
+    if (!releaseStallplanWholeStall(plan)) { cancelStallplanDraw(); return; }
+    const fitted = fitStallplanCompartmentToStall(plan, stallplanerDrawPoints);
+    if (!fitted) {
+      stallplanerFlash('Das Abteil liegt außerhalb des Stalls oder auf schon belegter Fläche.');
+      cancelStallplanDraw();
+      return;
+    }
+    if (fitted.adjusted) compartmentMsg = `Abteil an Stallwand/Nachbarabteile angepasst: ${(shoelaceArea(fitted.points) * plan.gridScale * plan.gridScale).toFixed(1).replace('.', ',')} m².`;
+    stallplanerDrawPoints = fitted.points;
+  }
+  pushStallplanerUndo();
+  if (stallplanerMode === 'draw-outline') {
+    plan.outline = { points: stallplanerDrawPoints };
+  } else if (stallplanerMode === 'draw-compartment') {
+    plan.compartments.push(newStallplanCompartment(plan, stallplanerDrawPoints));
+  } else if (isEquip) {
+    plan.equipment.push({
+      id: 'eq-' + Date.now() + Math.random().toString(36).slice(2),
+      type: stallplanerEquipType, geometryKind: stallplanerEquipGeometryKind,
+      points: stallplanerDrawPoints, rotationDeg: 0, label: ''
+    });
+  }
+  stallplanerDrawPoints = null;
+  const finishedOutline = stallplanerMode === 'draw-outline';
+  // Ausstattung bleibt scharf, damit sich gleich die nächste Linie/Fläche
+  // desselben Typs zeichnen lässt (wie beim Punkt-Setzen auch schon).
+  if (!isEquip) stallplanerMode = null;
+  if (finishedOutline) stallplanerStep = 'abteile';
+  renderStallplanerChrome();
+  renderStallplan();
+  // renderStallplan() lässt die Zeichenvorschau-Ebene unangetastet (sie
+  // gehört nicht zu den Plan-Daten) — ohne diesen Aufruf bliebe die
+  // gestrichelte Vorschaulinie/die Punkt-Marker des letzten Klicks über
+  // dem fertigen Umriss/Abteil liegen.
+  renderStallplanDrawPreview(null);
+  renderStallplanerSidebar();
+  if (compartmentMsg) stallplanerFlash(compartmentMsg);
+}
+function cancelStallplanDraw() {
+  stallplanerDrawPoints = null;
+  renderStallplanDrawPreview(null);
+  renderStallplanerChrome();
+}
+function disableStallplanerDrawing() {
+  resetStallplanerInteraction();
+  renderStallplanerChrome();
+}
+
+const stallplanSvgEl = document.getElementById('stallplan-svg');
+// Nach einem Verschieben/Pinch feuert der Browser noch einen click — der
+// darf weder einen Punkt setzen noch etwas auswählen (Capture-Phase, damit
+// auch die Klick-Handler der Ebenen darunter nichts davon mitbekommen).
+let stallplanSuppressClick = false;
+let stallplanSuppressTimer = null;
+function suppressNextStallplanClick() {
+  stallplanSuppressClick = true;
+  clearTimeout(stallplanSuppressTimer);
+  stallplanSuppressTimer = setTimeout(() => { stallplanSuppressClick = false; }, 400);
+}
+stallplanSvgEl.addEventListener('click', (e) => {
+  if (!stallplanSuppressClick) return;
+  stallplanSuppressClick = false;
+  e.stopPropagation();
+  e.preventDefault();
+}, true);
+
+stallplanSvgEl.addEventListener('click', (e) => {
+  const plan = activeStallplan();
+  if (!plan) return;
+  const task = stallplanerTask;
+  if (task && task.target === 'compartment' && (task.type === 'rect' || (task.type === 'walls' && !task.segments.length))) {
+    task.start = pickStallplanStartPoint(stallplanSvgPoint(e), plan);
+    renderStallplan();
+    return;
+  }
+  if (task) return;
+  if (stallplanerMode === 'place-equipment' && stallplanerEquipGeometryKind === 'point') {
+    const p = snapStallplanPoint(stallplanSvgPoint(e), plan);
+    pushStallplanerUndo();
+    plan.equipment.push({ id: 'eq-' + Date.now() + Math.random().toString(36).slice(2), type: stallplanerEquipType, geometryKind: 'point', points: [p], rotationDeg: 0, label: '' });
+    renderStallplan();
+    renderStallplanerChrome();
+    return;
+  }
+  if (stallplanDrawModeActive()) {
+    const raw = stallplanSvgPoint(e);
+    if (isNearStallplanDrawStart(raw)) { finishStallplanDraw(); return; }
+    const prev = stallplanerDrawPoints && stallplanerDrawPoints[stallplanerDrawPoints.length - 1];
+    const snap = snapStallplanDrawPoint(raw, plan, { prev });
+    stallplanerDrawPoints = stallplanerDrawPoints || [];
+    stallplanerDrawPoints.push(snap.point);
+    renderStallplan();
+    renderStallplanDrawPreview(snap.point, snap.kind);
+    return;
+  }
+  // Tipp ins Leere ohne Werkzeug hebt eine Auswahl auf (Formen selbst
+  // behandeln ihre Klicks in den Ebenen-Handlern weiter unten).
+  if (stallplanerMode === null && stallplanerSelection &&
+      !e.target.closest('#stallplan-outline-layer, #stallplan-compartments-layer, #stallplan-equipment-layer')) {
+    selectStallplanItem(null);
+  }
+});
+stallplanSvgEl.addEventListener('pointermove', (e) => {
+  if (e.pointerType !== 'mouse' || stallplanPointers.size > 1) return;
+  if (stallplanDrawModeActive() && stallplanerDrawPoints && stallplanerDrawPoints.length) {
+    const plan = activeStallplan();
+    if (!plan) return;
+    const snap = snapStallplanDrawPoint(stallplanSvgPoint(e), plan, { prev: stallplanerDrawPoints[stallplanerDrawPoints.length - 1] });
+    renderStallplanDrawPreview(snap.point, snap.kind);
+  }
+});
+stallplanSvgEl.addEventListener('dblclick', (e) => {
+  if (stallplanDrawModeActive()) { e.preventDefault(); finishStallplanDraw(); }
+});
+// Rechtsklick entfernt beim Zeichnen den zuletzt gesetzten Punkt wieder
+// (Desktop — auf Touch übernimmt das der Button "Letzter Punkt").
+stallplanSvgEl.addEventListener('contextmenu', (e) => {
+  if (stallplanDrawModeActive() && stallplanerDrawPoints && stallplanerDrawPoints.length) {
+    e.preventDefault();
+    stallplanerDrawPoints.pop();
+    const plan = activeStallplan();
+    renderStallplanDrawPreview(plan ? snapStallplanPoint(stallplanSvgPoint(e), plan) : null);
+  }
+});
+
+// ---- Zoomen (Mausrad, Zwei-Finger-Pinch — jederzeit) + Verschieben (ein
+// Finger/Maus nur ohne aktives Werkzeug, sonst wäre der Tipp schon für
+// Zeichnen/Platzieren belegt; zwei Finger immer). ----
+function zoomStallplanAround(anchorGrid, anchorScreenFrac, newW, startBox) {
+  const w = clampStallplanZoomWidth(newW);
+  const h = startBox.h * (w / startBox.w);
+  stallplanerViewBox = { x: anchorGrid.x - anchorScreenFrac.x * w, y: anchorGrid.y - anchorScreenFrac.y * h, w, h };
+  stallplanerViewLocked = true;
+  applyStallplanerViewBox();
+  renderStallplanGrid();
+  rescaleStallplanDynamicElements();
+}
+stallplanSvgEl.addEventListener('wheel', (e) => {
+  const plan = activeStallplan();
+  if (!plan) return;
+  e.preventDefault();
+  const rect = stallplanSvgEl.getBoundingClientRect();
+  const vb = stallplanDisplayBox();
+  const frac = { x: (e.clientX - rect.left) / rect.width, y: (e.clientY - rect.top) / rect.height };
+  const anchor = { x: vb.x + frac.x * vb.w, y: vb.y + frac.y * vb.h };
+  zoomStallplanAround(anchor, frac, vb.w * (e.deltaY > 0 ? 1.15 : 1 / 1.15), vb);
+}, { passive: false });
+
+const stallplanPointers = new Map(); // pointerId -> { x, y } (Bildschirm)
+let stallplanGesture = null; // { type: 'pan'|'pinch', ... }
+function stallplanPinchState() {
+  const [a, b] = [...stallplanPointers.values()];
+  return { dist: Math.hypot(b.x - a.x, b.y - a.y) || 1, mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
+}
+stallplanSvgEl.addEventListener('pointerdown', (e) => {
+  if (e.pointerType === 'mouse' && e.button > 0) return;
+  stallplanPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  const rect = stallplanSvgEl.getBoundingClientRect();
+  if (stallplanPointers.size === 2) {
+    // Zweiter Finger: laufende Skizze/Verschieben pausieren, Pinch starten.
+    const { dist, mid } = stallplanPinchState();
+    const box = stallplanDisplayBox();
+    const frac = { x: (mid.x - rect.left) / rect.width, y: (mid.y - rect.top) / rect.height };
+    stallplanGesture = { type: 'pinch', rect, startDist: dist, startBox: box, anchor: { x: box.x + frac.x * box.w, y: box.y + frac.y * box.h } };
+    return;
+  }
+  if (stallplanPointers.size === 1 && stallplanerMode === null && !stallplanerTask) {
+    e.preventDefault();
+    stallplanGesture = { type: 'pan', rect, startX: e.clientX, startY: e.clientY, startBox: stallplanDisplayBox(), moved: false };
+    stallplanSvgEl.style.cursor = 'grabbing';
+  }
+});
+document.addEventListener('pointermove', (e) => {
+  if (!stallplanPointers.has(e.pointerId)) return;
+  stallplanPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  const g = stallplanGesture;
+  if (!g) return;
+  if (g.type === 'pinch' && stallplanPointers.size >= 2) {
+    const { dist, mid } = stallplanPinchState();
+    const frac = { x: (mid.x - g.rect.left) / g.rect.width, y: (mid.y - g.rect.top) / g.rect.height };
+    scheduleStallplanFrame(() => zoomStallplanAround(g.anchor, frac, g.startBox.w * (g.startDist / dist), g.startBox));
+  } else if (g.type === 'pan') {
+    const dxPx = e.clientX - g.startX, dyPx = e.clientY - g.startY;
+    if (!g.moved && Math.hypot(dxPx, dyPx) < 4) return; // Zittern beim Tippen ist kein Verschieben
+    g.moved = true;
+    scheduleStallplanFrame(() => {
+      stallplanerViewBox = {
+        x: g.startBox.x - (dxPx / g.rect.width) * g.startBox.w,
+        y: g.startBox.y - (dyPx / g.rect.height) * g.startBox.h,
+        w: g.startBox.w, h: g.startBox.h
+      };
+      applyStallplanerViewBox();
+      renderStallplanGrid();
+    });
+  }
+});
+function endStallplanPointer(e) {
+  if (!stallplanPointers.has(e.pointerId)) return;
+  stallplanPointers.delete(e.pointerId);
+  const g = stallplanGesture;
+  if (!g) return;
+  flushStallplanFrame();
+  if (g.type === 'pinch') {
+    if (stallplanPointers.size < 2) { stallplanGesture = null; suppressNextStallplanClick(); }
+  } else if (g.type === 'pan') {
+    stallplanGesture = null;
+    renderStallplanerChrome(); // setzt den Cursor zurück
+    if (g.moved) { stallplanerViewLocked = true; suppressNextStallplanClick(); }
+  }
+}
+document.addEventListener('pointerup', endStallplanPointer);
+document.addEventListener('pointercancel', endStallplanPointer);
+
+// Größe der Zeichenfläche ändert sich z.B., wenn das Sheet auf- oder
+// zugeht oder das Handy gedreht wird — viewBox-Seitenverhältnis und
+// Griffgrößen hängen daran.
+new ResizeObserver(() => {
+  if (document.getElementById('stallplaner-view').hidden) return;
+  applyStallplanerViewBox();
+  renderStallplanGrid();
+  rescaleStallplanDynamicElements();
+}).observe(stallplanSvgEl);
+
+document.addEventListener('keydown', (e) => {
+  if (document.getElementById('stallplaner-view').hidden) return;
+  if (e.key === 'Escape' && stallplanDrawModeActive()) cancelStallplanDraw();
+  else if (e.key === 'Enter' && stallplanDrawModeActive()) finishStallplanDraw();
+});
+
+document.getElementById('stallplan-outline-layer').addEventListener('click', (e) => {
+  if (e.target.tagName !== 'polygon' || stallplanerTask) return;
+  const plan = activeStallplan();
+  if (!plan) return;
+  if (stallplanerMode === null) {
+    e.stopPropagation();
+    selectStallplanItem('outline');
+  } else if (stallplanerMode === 'edit-vertex') {
+    // Nur beim tatsächlichen Wechsel der Auswahl neu fokussieren — sonst
+    // würde ein erneuter Klick auf die bereits ausgewählte Form eine evtl.
+    // zusätzlich manuell nachjustierte Zoomstufe wieder verwerfen.
+    const changed = stallplanerEditTargetKind !== 'outline';
+    stallplanerEditTargetKind = 'outline';
+    stallplanerEditTargetId = null;
+    if (changed) focusStallplanShape(plan.outline.points);
+    renderStallplan();
+  } else if (stallplanerMode === 'measure') {
+    startStallplanMeasureWalk('outline', null, plan.outline.points);
+  } else if (stallplanerMode === 'delete') {
+    if (!confirm('Umriss wirklich löschen?')) return;
+    pushStallplanerUndo();
+    plan.outline = null;
+    stallplanerStep = 'umriss';
+    renderStallplan();
+    renderStallplanerSidebar();
+  }
+});
+document.getElementById('stallplan-compartments-layer').addEventListener('click', (e) => {
+  const wrap = e.target.closest('.stallplan-compartment');
+  if (!wrap || stallplanerTask) return;
+  const plan = activeStallplan();
+  if (!plan) return;
+  const id = wrap.getAttribute('data-id');
+  if (stallplanerMode === null) {
+    e.stopPropagation();
+    selectStallplanItem('compartment', id);
+  } else if (stallplanerMode === 'edit-vertex') {
+    const changed = stallplanerEditTargetKind !== 'compartment' || stallplanerEditTargetId !== id;
+    stallplanerEditTargetKind = 'compartment';
+    stallplanerEditTargetId = id;
+    if (changed) {
+      const target = plan.compartments.find(c => c.id === id);
+      if (target) focusStallplanShape(target.points);
+    }
+    renderStallplan();
+  } else if (stallplanerMode === 'measure') {
+    const target = plan.compartments.find(c => c.id === id);
+    if (target) startStallplanMeasureWalk('compartment', id, target.points);
+  } else if (stallplanerMode === 'delete') {
+    pushStallplanerUndo();
+    plan.compartments = plan.compartments.filter(c => c.id !== id);
+    renderStallplan();
+    renderStallplanerSidebar();
+  }
+});
+document.getElementById('stallplan-equipment-layer').addEventListener('click', (e) => {
+  const wrap = e.target.closest('.stallplan-equipment');
+  if (!wrap || stallplanerTask) return;
+  const plan = activeStallplan();
+  if (!plan) return;
+  const id = wrap.getAttribute('data-id');
+  const item = plan.equipment.find(x => x.id === id);
+  if (!item) return;
+  if (stallplanerMode === null) {
+    e.stopPropagation();
+    selectStallplanItem('equipment', id);
+    return;
+  }
+  // Nur Linie/Fläche haben mehrere Eckpunkte, die sich einzeln auswählen/
+  // bearbeiten lassen — ein Punkt-Element lässt sich direkt per Ganz-
+  // Element-Drag verschieben (siehe wireStallplanEquipmentBodyDrag()).
+  if (stallplanerMode === 'edit-vertex' && item.geometryKind !== 'point') {
+    const changed = stallplanerEditTargetKind !== 'equipment' || stallplanerEditTargetId !== id;
+    stallplanerEditTargetKind = 'equipment';
+    stallplanerEditTargetId = id;
+    if (changed) focusStallplanShape(item.points);
+    renderStallplan();
+  } else if (stallplanerMode === 'delete') {
+    pushStallplanerUndo();
+    plan.equipment = plan.equipment.filter(x => x.id !== id);
+    renderStallplan();
+  }
+});
+
+// ---- Vor-Ort-Oberfläche: Schrittleiste, Aktionsleiste, Hinweis, Startkarte ----
+// Der Stallplan wird im Stall mit Handy/Tablet erfasst: statt einer Leiste
+// unbeschrifteter Icons führt eine feste Schrittfolge (Umriss → Abteile →
+// Ausstattung → Tiere) durch den Plan, die untere Leiste zeigt nur die im
+// aktuellen Schritt sinnvollen Aktionen, und der Hinweis oben sagt immer
+// genau, was als Nächstes zu tun ist.
+const STALLPLANER_STEPS = ['umriss', 'abteile', 'ausstattung', 'tiere'];
+const STALLPLANER_TASK_PANELS = ['stallplaner-panel-rect', 'stallplaner-panel-walls', 'stallplaner-panel-split', 'stallplaner-measure-panel'];
+const STALLPLANER_EQUIP_LABELS = {
+  traenke: 'Tränke', raufe: 'Raufe', futterautomat: 'Futterautomat', nest: 'Nest',
+  sitzstange: 'Sitzstange', tuer: 'Tür', fenster: 'Fenster', futtergang: 'Futtergang'
+};
+
+function isWideStallplanerLayout() {
+  return window.matchMedia('(min-width: 861px)').matches;
+}
+
+function stallplanerFlash(msg) {
+  document.getElementById('stallplaner-status').textContent = msg;
+  stallplanerFlashMsg = msg;
+  clearTimeout(stallplanerFlashTimer);
+  stallplanerFlashTimer = setTimeout(() => { stallplanerFlashMsg = null; renderStallplanerChrome(); }, 5000);
+  renderStallplanerChrome();
+}
+
+function stallplanerHintText(plan) {
+  if (stallplanerFlashMsg) return stallplanerFlashMsg;
+  if (!plan) return '';
+  const task = stallplanerTask;
+  if (task && task.type === 'walls') {
+    if (task.target === 'compartment' && !task.segments.length) return 'Tippe die Ecke an, an der das Abteil beginnt (orange) — oder gib gleich die erste Wand ein.';
+    return 'Länge der nächsten Wand eintippen, dann die Richtung antippen.';
+  }
+  if (task && task.type === 'rect' && task.target === 'compartment') return 'Startecke antippen (orange). Das Abteil wird von dort ins Stallinnere aufgespannt.';
+  if (task) return '';
+  if (stallplanerMeasureOriginalPoints) {
+    return `Kante ${stallplanerMeasureIndex + 1} von ${stallplanerMeasureOriginalPoints.length} messen (orange markiert) und unten eintragen.`;
+  }
+  if (stallplanDrawModeActive()) {
+    if (stallplanerMode === 'place-equipment' && stallplanerEquipGeometryKind === 'line') return 'Anfang und Ende antippen, dann „Fertig".';
+    return 'Ecken nacheinander antippen. Zum Schließen den ersten Punkt antippen oder „Fertig".';
+  }
+  switch (stallplanerMode) {
+    case 'place-equipment': return `${STALLPLANER_EQUIP_LABELS[stallplanerEquipType] || 'Ausstattung'}: Stelle im Plan antippen — auch mehrmals nacheinander.`;
+    case 'edit-vertex': return 'Form antippen, dann Ecken ziehen oder eine Maßzahl antippen, um sie zu ändern.';
+    case 'measure': return 'Umriss oder Abteil antippen, das du vermessen willst.';
+    case 'delete': return 'Antippen, was gelöscht werden soll.';
+  }
+  const m2 = (pts) => (shoelaceArea(pts) * plan.gridScale * plan.gridScale).toFixed(1).replace('.', ',');
+  if (stallplanerStep === 'umriss') return plan.outline ? `Stall: ${m2(plan.outline.points)} m². Weiter mit „2 Abteile" — oder „Vermessen", um Maße zu korrigieren.` : '';
+  if (stallplanerStep === 'abteile') {
+    if (stallplanWholeStall(plan)) return 'Der ganze Stall ist eine Fläche. Für einzelne Buchten „Teilen“ oder „Abteil“.';
+    return plan.compartments.length
+      ? 'Abteil antippen für Details. Weiter mit „3 Ausstattung" oder „4 Tiere".'
+      : '„Teilen" legt Buchten an, „Abteil" ein einzelnes — ohne Abteile: „Ganzer Stall".';
+  }
+  if (stallplanerStep === 'ausstattung') return '„Platzieren" antippen, Art wählen und im Plan antippen. Antippen einer Ausstattung zeigt sie an.';
+  if (stallplanerStep === 'tiere') {
+    if (!plan.compartments.length) return plan.outline ? 'Keine Abteile? „Ganzer Stall“ nimmt den Umriss als eine Fläche.' : 'Erst den Umriss anlegen (Schritt 1).';
+    return isWideStallplanerLayout() ? 'Links je Abteil „+ Tiere“: Tierart, Kategorie und Anzahl.' : 'Unten je Abteil „+ Tiere“: Tierart, Kategorie und Anzahl.';
+  }
+  return '';
+}
+
+function renderStallplanerChrome() {
+  const plan = activeStallplan();
+  const done = {
+    umriss: !!(plan && plan.outline),
+    abteile: !!(plan && plan.compartments.length),
+    ausstattung: !!(plan && plan.equipment.length),
+    tiere: !!(plan && plan.compartments.some(c => c.tierbestand.some(tb => tb.kategorieId && tb.tieranzahl)))
+  };
+  document.querySelectorAll('.stallplaner-step').forEach(btn => {
+    const step = btn.getAttribute('data-step');
+    btn.classList.toggle('active', step === stallplanerStep);
+    btn.classList.toggle('done', done[step]);
+    btn.querySelector('.stallplaner-step-num').textContent = done[step] ? '✓' : String(STALLPLANER_STEPS.indexOf(step) + 1);
+    btn.disabled = !plan;
+  });
+
+  const drawing = stallplanDrawModeActive();
+  const hasGeometry = !!plan && !!(plan.outline || plan.compartments.length || plan.equipment.length);
+  const visibleByKey = {
+    'drawing': drawing,
+    'create-outline': stallplanerStep === 'umriss' && !!plan && !plan.outline,
+    'abteile': stallplanerStep === 'abteile',
+    // Abteile sind optional: ohne Abteile den Umriss als ganze Stallfläche
+    'whole-stall': (stallplanerStep === 'abteile' || stallplanerStep === 'tiere') && !!plan && !!plan.outline && !plan.compartments.length,
+    'rest-area': stallplanerStep === 'abteile' && !!plan && stallplanRestPieces(plan).length > 0,
+    'ausstattung': stallplanerStep === 'ausstattung',
+    'tiere': stallplanerStep === 'tiere',
+    'geometry': stallplanerStep !== 'tiere' && hasGeometry,
+    'measure': stallplanerStep !== 'tiere' && !!plan && !!(plan.outline || plan.compartments.length)
+  };
+  document.querySelectorAll('#stallplaner-actions .stallplaner-act').forEach(btn => {
+    const key = btn.getAttribute('data-show');
+    btn.hidden = drawing ? key !== 'drawing' : !visibleByKey[key];
+  });
+  document.querySelectorAll('#stallplaner-view [data-tool]').forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('data-tool') === stallplanerMode);
+  });
+  // Ein aktives Ausstattungs-Werkzeug beendet man mit demselben Button —
+  // "Fertig" sagt das deutlicher als ein nur hervorgehobenes "Platzieren".
+  document.querySelector('#stallplaner-tool-equipment span:last-child').textContent = stallplanerMode === 'place-equipment' ? 'Fertig' : 'Platzieren';
+  document.getElementById('stallplaner-actionbar').hidden = !plan || STALLPLANER_TASK_PANELS.includes(stallplanerSheetPanel);
+  document.getElementById('stallplaner-undo').disabled = !stallplanerUndoStack.length;
+  document.getElementById('stallplaner-redo').disabled = !stallplanerRedoStack.length;
+
+  const startCard = document.getElementById('stallplaner-start-card');
+  const showOutlineStart = !!plan && stallplanerStep === 'umriss' && !plan.outline && !plan.compartments.length &&
+    !plan.equipment.length && stallplanerMode === null && !stallplanerSheetPanel;
+  startCard.hidden = !!plan && !showOutlineStart;
+  document.getElementById('stallplaner-start-noplan').hidden = !!plan;
+  document.getElementById('stallplaner-start-outline').hidden = !showOutlineStart;
+
+  const hint = document.getElementById('stallplaner-draw-hint');
+  const text = startCard.hidden ? stallplanerHintText(plan) : '';
+  hint.textContent = text;
+  hint.hidden = !text;
+  hint.classList.toggle('flash', !!stallplanerFlashMsg);
+
+  const cursors = {
+    'draw-outline': 'crosshair', 'draw-compartment': 'crosshair',
+    'place-equipment': 'copy', 'measure': 'crosshair', 'delete': 'not-allowed'
+  };
+  // Kein Werkzeug aktiv -> Ziehen verschiebt die Ansicht, "grab" signalisiert das.
+  stallplanSvgEl.style.cursor = stallplanerTask ? 'crosshair' : (cursors[stallplanerMode] || (stallplanerMode === 'edit-vertex' ? 'default' : 'grab'));
+}
+
+// ---- Bottom Sheet (ein gemeinsamer Platz für alle Eingaben) ----
+function openStallplanerSheet(panelId, title) {
+  document.querySelectorAll('#stallplaner-sheet .stallplaner-panel').forEach(p => { p.hidden = p.id !== panelId; });
+  if (panelId !== 'stallplaner-panel-selection') document.getElementById('stallplaner-panel-selection').innerHTML = '';
+  if (panelId !== 'stallplaner-panel-animals') document.getElementById('stallplaner-animals-list').innerHTML = '';
+  document.getElementById('stallplaner-sheet-title').textContent = title;
+  document.getElementById('stallplaner-sheet').hidden = false;
+  stallplanerSheetPanel = panelId;
+  renderStallplanerChrome();
+}
+// Nur ausblenden, ohne Seiteneffekte — Aufräumen der jeweiligen Aufgabe
+// übernimmt cancelStallplanerSheet() bzw. die Aufgabe selbst.
+function hideStallplanerSheet() {
+  document.getElementById('stallplaner-sheet').hidden = true;
+  document.querySelectorAll('#stallplaner-sheet .stallplaner-panel').forEach(p => { p.hidden = true; });
+  // Dynamisch gerenderte Karten leeren — sonst lägen veraltete, versteckte
+  // Kopien derselben Abteil-Karte weiter im DOM.
+  document.getElementById('stallplaner-panel-selection').innerHTML = '';
+  document.getElementById('stallplaner-animals-list').innerHTML = '';
+  stallplanerSheetPanel = null;
+  renderStallplanerChrome();
+}
+function cancelStallplanerSheet() {
+  const panel = stallplanerSheetPanel;
+  if (panel === 'stallplaner-measure-panel') { cancelStallplanMeasureWalk(); return; }
+  if (panel === 'stallplaner-panel-equipment' && stallplanerMode === 'place-equipment') {
+    cancelStallplanDraw();
+    stallplanerMode = null;
+  }
+  if (panel === 'stallplaner-panel-selection') stallplanerSelection = null;
+  endStallplanTask();
+  hideStallplanerSheet();
+  renderStallplan();
+  renderStallplanerSidebar();
+}
+document.getElementById('stallplaner-sheet-close').addEventListener('click', cancelStallplanerSheet);
+document.querySelectorAll('#stallplaner-sheet [data-sheet-cancel]').forEach(btn => btn.addEventListener('click', cancelStallplanerSheet));
+
+// Beendet Werkzeug, laufende Skizze, Aufgabe (Rechteck/Wände/Teilen),
+// Vermessen und Auswahl — Ausgangspunkt für jede neue Aktion.
+function resetStallplanerInteraction() {
+  if (stallplanerDrawPoints) cancelStallplanDraw();
+  if (stallplanerMeasureOriginalPoints) closeStallplanMeasurePanel();
+  endStallplanTask();
+  stallplanerMode = null;
+  stallplanerEditTargetKind = null;
+  stallplanerEditTargetId = null;
+  stallplanerSelection = null;
+  closeEdgeLengthEditor();
+  document.getElementById('stallplaner-more-menu').hidden = true;
+  if (stallplanerSheetPanel) hideStallplanerSheet();
+}
+
+function setStallplanerStep(step) {
+  resetStallplanerInteraction();
+  stallplanerStep = step;
+  if (step === 'tiere' && !isWideStallplanerLayout() && activeStallplan()) openStallplanerAnimalsPanel();
+  renderStallplan();
+  renderStallplanerSidebar();
+}
+document.querySelectorAll('.stallplaner-step').forEach(btn => {
+  btn.addEventListener('click', () => setStallplanerStep(btn.getAttribute('data-step')));
+});
+
+function activateStallplanerTool(tool) {
+  const next = stallplanerMode === tool ? null : tool;
+  resetStallplanerInteraction();
+  stallplanerMode = next;
+  // Eine neu gestartete Zeichnung soll immer sichtbar mitwachsen, auch
+  // wenn die Ansicht vorher manuell weggezoomt/verschoben war.
+  if (next === 'draw-outline' || next === 'draw-compartment') stallplanerViewLocked = false;
+  if (next === 'place-equipment') openStallplanerSheet('stallplaner-panel-equipment', 'Ausstattung platzieren');
+  renderStallplanerChrome();
+  renderStallplan();
+}
+document.querySelectorAll('#stallplaner-view [data-tool]').forEach(btn => {
+  btn.addEventListener('click', () => activateStallplanerTool(btn.getAttribute('data-tool')));
+});
+
+function updateStallplanerEquipGeometryToggle() {
+  document.querySelectorAll('#stallplaner-equip-geometry-toggle [data-geometry]').forEach(b => {
+    b.classList.toggle('active', b.getAttribute('data-geometry') === stallplanerEquipGeometryKind);
+  });
+}
+document.querySelectorAll('#stallplaner-equip-grid [data-equip]').forEach(btn => {
+  if (btn.getAttribute('data-equip') === stallplanerEquipType) btn.classList.add('active');
+  btn.addEventListener('click', () => {
+    if (stallplanerDrawPoints) cancelStallplanDraw();
+    stallplanerEquipType = btn.getAttribute('data-equip');
+    // Schlägt eine zum Typ passende Form vor (z.B. Sitzstange -> Linie),
+    // bleibt aber jederzeit über den Formen-Umschalter überschreibbar.
+    stallplanerEquipGeometryKind = STALLPLANER_EQUIP_DEFAULT_GEOMETRY[stallplanerEquipType] || 'point';
+    document.querySelectorAll('#stallplaner-equip-grid [data-equip]').forEach(b => b.classList.toggle('active', b === btn));
+    updateStallplanerEquipGeometryToggle();
+    renderStallplanerChrome();
+  });
+});
+document.querySelectorAll('#stallplaner-equip-geometry-toggle [data-geometry]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (stallplanerDrawPoints) cancelStallplanDraw();
+    stallplanerEquipGeometryKind = btn.getAttribute('data-geometry');
+    updateStallplanerEquipGeometryToggle();
+    renderStallplanerChrome();
+  });
+});
+updateStallplanerEquipGeometryToggle();
+
+// Skizzieren ohne Doppelklick/Rechtsklick (Touch hat beides nicht).
+document.getElementById('stallplaner-draw-finish').addEventListener('click', () => finishStallplanDraw());
+document.getElementById('stallplaner-draw-cancel').addEventListener('click', () => {
+  cancelStallplanDraw();
+  stallplanerMode = null;
+  renderStallplanerChrome();
+  renderStallplan();
+});
+document.getElementById('stallplaner-draw-undo-point').addEventListener('click', () => {
+  if (!stallplanerDrawPoints || !stallplanerDrawPoints.length) return;
+  stallplanerDrawPoints.pop();
+  if (!stallplanerDrawPoints.length) stallplanerDrawPoints = null;
+  renderStallplanDrawPreview(null);
+});
+
+document.getElementById('stallplaner-undo').addEventListener('click', undoStallplaner);
+document.getElementById('stallplaner-redo').addEventListener('click', redoStallplaner);
+document.getElementById('stallplaner-fit-view').addEventListener('click', fitStallplanerView);
+document.getElementById('stallplaner-act-pdf').addEventListener('click', () => exportStallplanPDF());
+
+const stallplanerMoreMenu = document.getElementById('stallplaner-more-menu');
+document.getElementById('stallplaner-more-btn').addEventListener('click', (e) => {
+  e.stopPropagation();
+  stallplanerMoreMenu.hidden = !stallplanerMoreMenu.hidden;
+  document.getElementById('stallplaner-more-btn').setAttribute('aria-expanded', String(!stallplanerMoreMenu.hidden));
+});
+stallplanerMoreMenu.addEventListener('click', (e) => e.stopPropagation());
+document.addEventListener('click', () => {
+  if (!stallplanerMoreMenu.hidden) {
+    stallplanerMoreMenu.hidden = true;
+    document.getElementById('stallplaner-more-btn').setAttribute('aria-expanded', 'false');
+  }
+});
+
+document.getElementById('stallplaner-start-new-plan').addEventListener('click', () => {
+  document.getElementById('stallplaner-new-plan').click();
+});
+
+document.querySelectorAll('#stallplaner-view [data-act]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const act = btn.getAttribute('data-act');
+    if (act === 'rect-outline') openStallplanRectPanel('outline');
+    else if (act === 'sketch-outline') activateStallplanerTool('draw-outline');
+    else if (act === 'rect-compartment') openStallplanRectPanel('compartment');
+    else if (act === 'walls-outline') openStallplanWallsPanel('outline');
+    else if (act === 'walls-compartment') openStallplanWallsPanel('compartment');
+    else if (act === 'whole-stall') useWholeStallAsCompartment();
+    else if (act === 'rest-area') addStallplanRestArea();
+    else if (act === 'add-compartment') {
+      resetStallplanerInteraction();
+      openStallplanerSheet('stallplaner-panel-add-compartment', 'Abteil hinzufügen');
+    } else if (act === 'split') {
+      const sel = stallplanerSelection;
+      openStallplanSplitPanel(sel && sel.kind === 'compartment' ? { kind: 'compartment', id: sel.id } : { kind: 'outline' });
+    } else if (act === 'animals') {
+      resetStallplanerInteraction();
+      openStallplanerAnimalsPanel();
+    }
+  });
+});
+
+// ---- Aufgaben mit Maß-Eingabe (Rechteck, Wand für Wand, Buchten teilen) ----
+function endStallplanTask() {
+  if (!stallplanerTask) return;
+  stallplanerTask = null;
+  document.getElementById('stallplan-draw-preview-layer').innerHTML = '';
+}
+
+function defaultStallplanCompartmentStart(plan) {
+  return plan.outline ? { ...plan.outline.points[0] } : { x: 0, y: 0 };
+}
+
+// Tippen während einer Aufgabe wählt die Startecke: rastet auf die nächste
+// vorhandene Ecke (Umriss/Abteile) im Fingerbereich ein, sonst aufs Raster.
+function pickStallplanStartPoint(raw, plan) {
+  return snapStallplanDrawPoint(raw, plan).point;
+}
+
+// Stellt ein im Plan-Koordinatensystem (Rastereinheiten) aus Metern
+// gemessenes Rechteck an der Startecke auf — bei Abteilen in den Quadranten,
+// der im Stallinneren liegt (Startecke kann jede Umriss-Ecke sein).
+function stallplanRectFromStart(plan, start, lengthM, widthM, target) {
+  const w = lengthM / plan.gridScale, h = widthM / plan.gridScale;
+  const make = (sx, sy) => [
+    { x: start.x, y: start.y }, { x: start.x + sx * w, y: start.y },
+    { x: start.x + sx * w, y: start.y + sy * h }, { x: start.x, y: start.y + sy * h }
+  ];
+  if (target === 'compartment' && plan.outline) {
+    for (const [sx, sy] of [[1, 1], [-1, 1], [1, -1], [-1, -1]]) {
+      const pts = make(sx, sy);
+      if (pointInPolygon(polygonCentroid(pts), plan.outline.points)) return pts;
+    }
+  }
+  return make(1, 1);
+}
+
+function openStallplanRectPanel(target) {
+  const plan = activeStallplan();
+  if (!plan) return;
+  resetStallplanerInteraction();
+  stallplanerTask = { type: 'rect', target, start: target === 'compartment' ? defaultStallplanCompartmentStart(plan) : { x: 0, y: 0 } };
+  document.getElementById('stallplaner-rect-length').value = '';
+  document.getElementById('stallplaner-rect-width').value = '';
+  document.getElementById('stallplaner-rect-error').hidden = true;
+  document.getElementById('stallplaner-rect-hint').textContent = target === 'outline'
+    ? 'Innenmaße des Stalls. Die Länge wird waagerecht gezeichnet.'
+    : 'Startecke im Plan antippen (orange), dann Maße eingeben.';
+  openStallplanerSheet('stallplaner-panel-rect', target === 'outline' ? 'Rechteckiger Stall' : 'Rechteckiges Abteil');
+  renderStallplan();
+  document.getElementById('stallplaner-rect-length').focus();
+}
+
+function readStallplanRectInputs() {
+  return {
+    lengthM: parseDecimalInput(document.getElementById('stallplaner-rect-length').value),
+    widthM: parseDecimalInput(document.getElementById('stallplaner-rect-width').value)
+  };
+}
+
+function applyStallplanRect() {
+  const plan = activeStallplan();
+  const task = stallplanerTask;
+  if (!plan || !task || task.type !== 'rect') return;
+  const { lengthM, widthM } = readStallplanRectInputs();
+  const errorEl = document.getElementById('stallplaner-rect-error');
+  if (!(lengthM > 0) || !(widthM > 0)) {
+    errorEl.textContent = 'Bitte Länge und Breite in Metern eingeben, z.B. 24,5.';
+    errorEl.hidden = false;
+    return;
+  }
+  const points = stallplanRectFromStart(plan, task.start, lengthM, widthM, task.target);
+  commitStallplanTaskShape(plan, task.target, points);
+}
+document.getElementById('stallplaner-rect-apply').addEventListener('click', applyStallplanRect);
+['stallplaner-rect-length', 'stallplaner-rect-width'].forEach(id => {
+  const input = document.getElementById(id);
+  input.addEventListener('input', () => {
+    document.getElementById('stallplaner-rect-error').hidden = true;
+    renderStallplan();
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    if (id === 'stallplaner-rect-length') document.getElementById('stallplaner-rect-width').focus();
+    else applyStallplanRect();
+  });
+});
+
+// Übernimmt eine per Maß-Eingabe entstandene Form als Umriss bzw. neues
+// Abteil — ein Undo-Schritt, danach automatisch weiter zum nächsten Schritt.
+function commitStallplanTaskShape(plan, target, points) {
+  let adjusted = false;
+  if (target !== 'outline') {
+    if (!releaseStallplanWholeStall(plan)) return;
+    const fitted = fitStallplanCompartmentToStall(plan, points);
+    if (!fitted) { stallplanerFlash('Das Abteil liegt außerhalb des Stalls oder auf schon belegter Fläche.'); return; }
+    points = fitted.points;
+    adjusted = fitted.adjusted;
+  }
+  pushStallplanerUndo();
+  if (target === 'outline') {
+    plan.outline = { points };
+  } else {
+    plan.compartments.push(newStallplanCompartment(plan, points));
+  }
+  endStallplanTask();
+  hideStallplanerSheet();
+  stallplanerViewLocked = false;
+  const areaM2 = (shoelaceArea(points) * plan.gridScale * plan.gridScale).toFixed(1).replace('.', ',');
+  if (target === 'outline') {
+    stallplanerStep = 'abteile';
+    fitStallplanerView();
+    renderStallplan();
+    renderStallplanerSidebar();
+    stallplanerFlash(`Stall mit ${areaM2} m² angelegt. Abteile anlegen — oder „Ganzer Stall“, wenn es keine gibt.`);
+  } else {
+    renderStallplan();
+    renderStallplanerSidebar();
+    stallplanerFlash(adjusted ? `Abteil an Stallwand/Nachbarabteile angepasst: ${areaM2} m².` : `Abteil mit ${areaM2} m² angelegt.`);
+  }
+}
+
+const STALLPLAN_WALL_DIRS = { right: { x: 1, y: 0 }, left: { x: -1, y: 0 }, down: { x: 0, y: 1 }, up: { x: 0, y: -1 } };
+const STALLPLAN_WALL_DIR_OPPOSITE = { right: 'left', left: 'right', up: 'down', down: 'up' };
+
+function openStallplanWallsPanel(target) {
+  const plan = activeStallplan();
+  if (!plan) return;
+  resetStallplanerInteraction();
+  stallplanerTask = { type: 'walls', target, start: target === 'compartment' ? defaultStallplanCompartmentStart(plan) : { x: 0, y: 0 }, segments: [] };
+  document.getElementById('stallplaner-walls-length').value = '';
+  document.getElementById('stallplaner-walls-error').hidden = true;
+  document.getElementById('stallplaner-walls-hint').textContent = target === 'outline'
+    ? 'An einer Stallecke beginnen und einmal im Kreis messen — Länge eintippen, Richtung antippen, nächste Wand.'
+    : 'Ab der orangen Startecke Wand für Wand um das Abteil herum messen.';
+  updateStallplanWallsSummary();
+  openStallplanerSheet('stallplaner-panel-walls', target === 'outline' ? 'Stall Wand für Wand' : 'Abteil Wand für Wand');
+  renderStallplan();
+  document.getElementById('stallplaner-walls-length').focus();
+}
+
+function stallplanWallsPoints(task, plan) {
+  const pts = [{ ...task.start }];
+  task.segments.forEach(seg => {
+    const last = pts[pts.length - 1];
+    const d = STALLPLAN_WALL_DIRS[seg.dir];
+    pts.push({ x: last.x + d.x * seg.lengthM / plan.gridScale, y: last.y + d.y * seg.lengthM / plan.gridScale });
+  });
+  return pts;
+}
+
+function formatStallplanMeters(m) {
+  return (Math.round(m * 100) / 100).toFixed(2).replace('.', ',');
+}
+
+function updateStallplanWallsSummary() {
+  const task = stallplanerTask;
+  const plan = activeStallplan();
+  const el = document.getElementById('stallplaner-walls-summary');
+  if (!task || !plan) { el.textContent = ''; return; }
+  document.getElementById('stallplaner-walls-undo').disabled = !task.segments.length;
+  document.getElementById('stallplaner-walls-close').disabled = task.segments.length < 2;
+  if (!task.segments.length) { el.textContent = 'Noch keine Wand eingegeben.'; return; }
+  const pts = stallplanWallsPoints(task, plan);
+  const end = pts[pts.length - 1];
+  const gapM = Math.hypot(end.x - task.start.x, end.y - task.start.y) * plan.gridScale;
+  el.textContent = `${task.segments.length} ${task.segments.length === 1 ? 'Wand' : 'Wände'} · bis zum Startpunkt fehlen ${formatStallplanMeters(gapM)} m`;
+}
+
+// Hält die bisher eingegebenen Wände mittig im Bild — der Stall wächst beim
+// Eintippen sonst aus dem sichtbaren Bereich bzw. unter den Hinweis.
+function focusStallplanWalls() {
+  const plan = activeStallplan();
+  const task = stallplanerTask;
+  if (!plan || !task || task.type !== 'walls') return;
+  const pts = stallplanWallsPoints(task, plan);
+  if (pts.length > 1) focusStallplanShape(pts);
+}
+function addStallplanWall(dir) {
+  const task = stallplanerTask;
+  if (!task || task.type !== 'walls') return;
+  const input = document.getElementById('stallplaner-walls-length');
+  const errorEl = document.getElementById('stallplaner-walls-error');
+  const lengthM = parseDecimalInput(input.value);
+  if (!(lengthM > 0)) {
+    errorEl.textContent = 'Erst die Länge der Wand in Metern eintippen, dann die Richtung.';
+    errorEl.hidden = false;
+    input.focus();
+    return;
+  }
+  const last = task.segments[task.segments.length - 1];
+  if (last && STALLPLAN_WALL_DIR_OPPOSITE[last.dir] === dir) {
+    errorEl.textContent = 'Diese Richtung läuft auf der letzten Wand zurück — bitte eine andere Richtung wählen.';
+    errorEl.hidden = false;
+    return;
+  }
+  errorEl.hidden = true;
+  task.segments.push({ dir, lengthM });
+  input.value = '';
+  input.focus();
+  updateStallplanWallsSummary();
+  focusStallplanWalls();
+  renderStallplan();
+  renderStallplanerChrome();
+}
+document.querySelectorAll('#stallplaner-walls-pad [data-dir]').forEach(btn => {
+  btn.addEventListener('click', () => addStallplanWall(btn.getAttribute('data-dir')));
+});
+document.getElementById('stallplaner-walls-length').addEventListener('input', () => {
+  document.getElementById('stallplaner-walls-error').hidden = true;
+});
+document.getElementById('stallplaner-walls-undo').addEventListener('click', () => {
+  const task = stallplanerTask;
+  if (!task || task.type !== 'walls' || !task.segments.length) return;
+  const removed = task.segments.pop();
+  document.getElementById('stallplaner-walls-length').value = String(removed.lengthM).replace('.', ',');
+  updateStallplanWallsSummary();
+  focusStallplanWalls();
+  renderStallplan();
+});
+
+function closeStallplanWalls() {
+  const plan = activeStallplan();
+  const task = stallplanerTask;
+  if (!plan || !task || task.type !== 'walls') return;
+  const errorEl = document.getElementById('stallplaner-walls-error');
+  if (task.segments.length < 2) {
+    errorEl.textContent = 'Mindestens zwei Wände eingeben.';
+    errorEl.hidden = false;
+    return;
+  }
+  const pts = stallplanWallsPoints(task, plan);
+  const end = pts[pts.length - 1];
+  const dxM = (task.start.x - end.x) * plan.gridScale, dyM = (task.start.y - end.y) * plan.gridScale;
+  const eps = 0.005;
+  let points = pts;
+  let note = '';
+  if (Math.abs(dxM) < eps && Math.abs(dyM) < eps) {
+    points = pts.slice(0, -1); // letzte Wand endet genau am Start
+  } else if (Math.abs(dxM) < eps || Math.abs(dyM) < eps) {
+    note = ` Letzte Wand (${formatStallplanMeters(Math.hypot(dxM, dyM))} m) automatisch ergänzt.`;
+  } else if (!confirm(`Die Wände treffen den Startpunkt nicht (${formatStallplanMeters(Math.abs(dxM))} m waagerecht und ${formatStallplanMeters(Math.abs(dyM))} m senkrecht daneben). Mit einer schrägen Wand schließen?`)) {
+    return;
+  }
+  points = simplifyCollinearPoints(points);
+  if (points.length < 3) {
+    errorEl.textContent = 'Die Wände ergeben keine Fläche — bitte prüfen.';
+    errorEl.hidden = false;
+    return;
+  }
+  commitStallplanTaskShape(plan, task.target, points);
+  if (note) stallplanerFlash(document.getElementById('stallplaner-status').textContent + note);
+}
+document.getElementById('stallplaner-walls-close').addEventListener('click', closeStallplanWalls);
+
+// Buchten teilen: nur für achsenparallele Rechtecke (typische Buchtenreihe),
+// Breiten entlang der gewählten Richtung, Rest wird die letzte Bucht.
+function stallplanSplitTargetPoints(plan, target) {
+  if (!target) return null;
+  if (target.kind === 'outline') return plan.outline ? plan.outline.points : null;
+  const c = plan.compartments.find(x => x.id === target.id);
+  return c ? c.points : null;
+}
+
+function openStallplanSplitPanel(target) {
+  const plan = activeStallplan();
+  if (!plan) return;
+  let points = stallplanSplitTargetPoints(plan, target);
+  // Kein Umriss, aber genau ein Abteil -> das ist offensichtlich gemeint.
+  if (!points && target.kind === 'outline' && plan.compartments.length === 1) {
+    target = { kind: 'compartment', id: plan.compartments[0].id };
+    points = plan.compartments[0].points;
+  }
+  if (!points) { stallplanerFlash('Zum Teilen zuerst den Stall-Umriss anlegen.'); return; }
+  const bounds = axisAlignedRectBounds(points);
+  if (!bounds) { stallplanerFlash('Teilen geht nur bei rechteckigen Flächen — ein Abteil lässt sich sonst über „Abteil" einzeln anlegen.'); return; }
+  resetStallplanerInteraction();
+  const wM = (bounds.maxX - bounds.minX) * plan.gridScale, hM = (bounds.maxY - bounds.minY) * plan.gridScale;
+  stallplanerTask = { type: 'split', target, bounds, dir: wM >= hM ? 'x' : 'y' };
+  const name = target.kind === 'outline' ? 'Ganzer Stall' : (plan.compartments.find(c => c.id === target.id) || {}).name;
+  document.getElementById('stallplaner-split-target').textContent = `${name}: ${formatStallplanMeters(wM)} m × ${formatStallplanMeters(hM)} m`;
+  document.getElementById('stallplaner-split-widths').value = '';
+  document.getElementById('stallplaner-split-count').value = '';
+  document.getElementById('stallplaner-split-error').hidden = true;
+  updateStallplanSplitDirButtons();
+  openStallplanerSheet('stallplaner-panel-split', 'In Buchten teilen');
+  renderStallplan();
+}
+
+function updateStallplanSplitDirButtons() {
+  const task = stallplanerTask;
+  document.querySelectorAll('#stallplaner-panel-split [data-split-dir]').forEach(b => {
+    b.classList.toggle('active', !!task && b.getAttribute('data-split-dir') === task.dir);
+  });
+}
+document.querySelectorAll('#stallplaner-panel-split [data-split-dir]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (!stallplanerTask || stallplanerTask.type !== 'split') return;
+    stallplanerTask.dir = btn.getAttribute('data-split-dir');
+    updateStallplanSplitDirButtons();
+    renderStallplanTaskPreview();
+  });
+});
+
+// Liefert { widths } oder { error } — Breiten in Metern entlang der
+// Teilungsrichtung. Erlaubt "4; 4; 3,5", "4 4 3,5", "3 × 4" oder eine
+// Anzahl gleich breiter Buchten.
+function parseStallplanSplitWidths(totalM) {
+  const countRaw = document.getElementById('stallplaner-split-count').value.trim();
+  const widthsRaw = document.getElementById('stallplaner-split-widths').value.trim();
+  if (countRaw) {
+    const n = parseInt(countRaw, 10);
+    if (!(n >= 2) || String(n) !== countRaw) return { error: 'Anzahl bitte als ganze Zahl ab 2 eingeben.' };
+    return { widths: Array(n).fill(totalM / n) };
+  }
+  if (!widthsRaw) return { error: 'Breiten oder Anzahl der Buchten eingeben.' };
+  let widths;
+  const times = widthsRaw.match(/^(\d+)\s*[x×*]\s*([\d.,]+)\s*m?$/i);
+  if (times) {
+    const w = parseDecimalInput(times[2]);
+    widths = Array(parseInt(times[1], 10)).fill(w);
+  } else {
+    widths = widthsRaw.split(/[;+\s]+/).filter(Boolean).map(s => parseDecimalInput(s.replace(/m$/i, '')));
+  }
+  if (!widths.length || widths.some(w => !(w > 0))) return { error: 'Breiten bitte als Meter eingeben, z.B. „4; 4; 3,5".' };
+  const sum = widths.reduce((s, w) => s + w, 0);
+  if (sum > totalM + 0.01) return { error: `Die Breiten ergeben ${formatStallplanMeters(sum)} m — mehr als die ${formatStallplanMeters(totalM)} m, die zur Verfügung stehen.` };
+  if (totalM - sum > 0.05) widths.push(totalM - sum);
+  if (widths.length < 2) return { error: 'Das ergibt nur eine Bucht — bitte mindestens zwei.' };
+  return { widths };
+}
+
+function stallplanSplitRects(plan, task, widths) {
+  const b = task.bounds;
+  const rects = [];
+  let pos = task.dir === 'x' ? b.minX : b.minY;
+  widths.forEach(wM => {
+    const w = wM / plan.gridScale;
+    const next = pos + w;
+    rects.push(task.dir === 'x'
+      ? [{ x: pos, y: b.minY }, { x: next, y: b.minY }, { x: next, y: b.maxY }, { x: pos, y: b.maxY }]
+      : [{ x: b.minX, y: pos }, { x: b.maxX, y: pos }, { x: b.maxX, y: next }, { x: b.minX, y: next }]);
+    pos = next;
+  });
+  return rects;
+}
+
+function stallplanSplitTotalM(plan, task) {
+  const b = task.bounds;
+  return (task.dir === 'x' ? b.maxX - b.minX : b.maxY - b.minY) * plan.gridScale;
+}
+
+function applyStallplanSplit() {
+  const plan = activeStallplan();
+  const task = stallplanerTask;
+  if (!plan || !task || task.type !== 'split') return;
+  const errorEl = document.getElementById('stallplaner-split-error');
+  const result = parseStallplanSplitWidths(stallplanSplitTotalM(plan, task));
+  if (result.error) { errorEl.textContent = result.error; errorEl.hidden = false; return; }
+  const original = task.target.kind === 'compartment' ? plan.compartments.find(c => c.id === task.target.id) : null;
+  if (task.target.kind === 'outline' && !releaseStallplanWholeStall(plan)) return;
+  if (original && original.tierbestand.length &&
+      !confirm(`„${original.name}" hat eingetragene Tiere — beim Teilen gehen diese Angaben verloren. Trotzdem teilen?`)) return;
+  pushStallplanerUndo();
+  let insertAt = plan.compartments.length;
+  if (original) {
+    insertAt = plan.compartments.indexOf(original);
+    plan.compartments.splice(insertAt, 1);
+  }
+  const rects = stallplanSplitRects(plan, task, result.widths);
+  const firstNumber = plan.compartments.length + 1;
+  const newCompartments = rects.map((points, i) => ({
+    id: 'abteil-' + Date.now() + Math.random().toString(36).slice(2),
+    name: `Bucht ${firstNumber + i}`,
+    points, tierbestand: []
+  }));
+  plan.compartments.splice(insertAt, 0, ...newCompartments);
+  endStallplanTask();
+  hideStallplanerSheet();
+  stallplanerStep = 'abteile';
+  renderStallplan();
+  renderStallplanerSidebar();
+  stallplanerFlash(`${rects.length} Buchten angelegt. Antippen, um sie umzubenennen oder Tiere einzutragen.`);
+}
+document.getElementById('stallplaner-split-apply').addEventListener('click', applyStallplanSplit);
+['stallplaner-split-widths', 'stallplaner-split-count'].forEach(id => {
+  const input = document.getElementById(id);
+  input.addEventListener('input', () => {
+    document.getElementById('stallplaner-split-error').hidden = true;
+    renderStallplanTaskPreview();
+  });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); applyStallplanSplit(); } });
+});
+
+// Vorschau der laufenden Aufgabe in der (sonst beim Skizzieren genutzten)
+// Vorschau-Ebene — wird bei jedem renderStallplan() neu gezeichnet.
+function renderStallplanTaskPreview() {
+  const g = document.getElementById('stallplan-draw-preview-layer');
+  const plan = activeStallplan();
+  const task = stallplanerTask;
+  g.innerHTML = '';
+  if (!plan || !task) return;
+  const marker = (p, cls) => g.appendChild(svgEl('circle', { cx: p.x, cy: p.y, r: stallplanScreenSize(8), class: cls }));
+  const wallLabel = (a, b, lengthM) => {
+    const t = svgEl('text', { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, class: 'stallplan-edge-label', 'font-size': stallplanScreenSize(12) });
+    t.textContent = formatStallplanMeters(lengthM) + ' m';
+    g.appendChild(t);
+  };
+  if (task.type === 'rect') {
+    const { lengthM, widthM } = readStallplanRectInputs();
+    if (lengthM > 0 && widthM > 0) {
+      const pts = stallplanRectFromStart(plan, task.start, lengthM, widthM, task.target);
+      g.appendChild(svgEl('polygon', { points: pointsAttr(pts), class: 'stallplan-walls-closing' }));
+    }
+    if (task.target === 'compartment') marker(task.start, 'stallplan-walls-start');
+  } else if (task.type === 'walls') {
+    const pts = stallplanWallsPoints(task, plan);
+    if (pts.length > 1) {
+      g.appendChild(svgEl('polyline', { points: pointsAttr(pts), class: 'stallplan-walls-line' }));
+      g.appendChild(svgEl('line', { x1: pts[pts.length - 1].x, y1: pts[pts.length - 1].y, x2: task.start.x, y2: task.start.y, class: 'stallplan-walls-closing' }));
+      task.segments.forEach((seg, i) => wallLabel(pts[i], pts[i + 1], seg.lengthM));
+    }
+    marker(task.start, 'stallplan-walls-start');
+    if (pts.length > 1) marker(pts[pts.length - 1], 'stallplan-walls-end');
+  } else if (task.type === 'split') {
+    const b = task.bounds;
+    g.appendChild(svgEl('polygon', { points: pointsAttr([{ x: b.minX, y: b.minY }, { x: b.maxX, y: b.minY }, { x: b.maxX, y: b.maxY }, { x: b.minX, y: b.maxY }]), class: 'stallplan-walls-line' }));
+    const result = parseStallplanSplitWidths(stallplanSplitTotalM(plan, task));
+    if (result.widths) {
+      stallplanSplitRects(plan, task, result.widths).slice(0, -1).forEach(r => {
+        const [a, b2] = task.dir === 'x' ? [r[1], r[2]] : [r[3], r[2]];
+        g.appendChild(svgEl('line', { x1: a.x, y1: a.y, x2: b2.x, y2: b2.y, class: 'stallplan-walls-closing' }));
+      });
+    }
+  }
+}
+
+function stallplanTaskPoints(plan) {
+  const task = stallplanerTask;
+  if (!task) return [];
+  if (task.type === 'walls') return stallplanWallsPoints(task, plan);
+  if (task.type === 'rect') {
+    const { lengthM, widthM } = readStallplanRectInputs();
+    return lengthM > 0 && widthM > 0 ? stallplanRectFromStart(plan, task.start, lengthM, widthM, task.target) : [task.start];
+  }
+  return [];
+}
+
+// ---- Auswahl: Antippen ohne Werkzeug zeigt Details ----
+function selectStallplanItem(kind, id) {
+  stallplanerSelection = kind ? { kind, id: id || null } : null;
+  renderStallplan();
+  if (!kind || (kind === 'compartment' && isWideStallplanerLayout())) {
+    // Breite Ansicht: Abteile stehen ohnehin in der Seitenleiste — dort
+    // hervorheben statt dieselbe Karte ein zweites Mal im Sheet zu zeigen.
+    if (stallplanerSheetPanel === 'stallplaner-panel-selection') hideStallplanerSheet();
+    renderStallplanerSidebar();
+    const card = kind && document.querySelector(`#stallplaner-abteile-list .stallplan-abteil-row[data-id="${CSS.escape(id)}"]`);
+    if (card) card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    return;
+  }
+  renderStallplanSelectionPanel();
+}
+
+function renderStallplanSelectionPanel() {
+  const plan = activeStallplan();
+  const sel = stallplanerSelection;
+  const panel = document.getElementById('stallplaner-panel-selection');
+  if (!plan || !sel) return;
+  let title = '';
+  if (sel.kind === 'compartment') {
+    const c = plan.compartments.find(x => x.id === sel.id);
+    if (!c) { cancelStallplanerSheet(); return; }
+    title = c.name;
+    renderStallplanAbteilCards(panel, plan, [c]);
+  } else if (sel.kind === 'outline') {
+    if (!plan.outline) { cancelStallplanerSheet(); return; }
+    title = 'Stall-Umriss';
+    const pts = plan.outline.points;
+    const area = shoelaceArea(pts) * plan.gridScale * plan.gridScale;
+    const walls = pts.map((p, i) => formatStallplanMeters(Math.hypot(pts[(i + 1) % pts.length].x - p.x, pts[(i + 1) % pts.length].y - p.y) * plan.gridScale)).join(' · ');
+    panel.innerHTML = `
+      <p class="stallplaner-panel-hint"><strong>${area.toFixed(1).replace('.', ',')} m²</strong> — Wände: ${escapeHtml(walls)} m</p>
+      <div class="stallplaner-panel-actions">
+        <button type="button" class="stallplaner-panel-btn" data-sel-act="measure"><span class="material-symbols-rounded icon">straighten</span> Maße</button>
+        ${axisAlignedRectBounds(pts) ? '<button type="button" class="stallplaner-panel-btn" data-sel-act="split"><span class="material-symbols-rounded icon">view_week</span> Teilen</button>' : ''}
+        <button type="button" class="stallplaner-panel-btn" data-sel-act="delete"><span class="material-symbols-rounded icon">delete</span> Löschen</button>
+      </div>`;
+    panel.querySelectorAll('[data-sel-act]').forEach(btn => btn.addEventListener('click', () => {
+      const act = btn.getAttribute('data-sel-act');
+      if (act === 'measure') { resetStallplanerInteraction(); stallplanerMode = 'measure'; startStallplanMeasureWalk('outline', null, plan.outline.points); }
+      else if (act === 'split') openStallplanSplitPanel({ kind: 'outline' });
+      else if (act === 'delete' && confirm('Umriss wirklich löschen?')) {
+        pushStallplanerUndo();
+        plan.outline = null;
+        resetStallplanerInteraction();
+        stallplanerStep = 'umriss';
+        renderStallplan();
+        renderStallplanerSidebar();
+      }
+    }));
+  } else if (sel.kind === 'equipment') {
+    const item = plan.equipment.find(x => x.id === sel.id);
+    if (!item) { cancelStallplanerSheet(); return; }
+    title = STALLPLANER_EQUIP_LABELS[item.type] || 'Ausstattung';
+    const form = { point: 'Punkt', line: 'Linie', area: 'Fläche' }[item.geometryKind] || '';
+    panel.innerHTML = `
+      <p class="stallplaner-panel-hint">${escapeHtml(form)} — zum Verschieben „Bearbeiten" wählen und ziehen.</p>
+      <div class="stallplaner-panel-actions">
+        <button type="button" class="stallplaner-panel-btn" data-sel-act="delete"><span class="material-symbols-rounded icon">delete</span> Löschen</button>
+      </div>`;
+    panel.querySelector('[data-sel-act="delete"]').addEventListener('click', () => {
+      pushStallplanerUndo();
+      plan.equipment = plan.equipment.filter(x => x.id !== item.id);
+      resetStallplanerInteraction();
+      renderStallplan();
+      renderStallplanerSidebar();
+    });
+  }
+  if (stallplanerSheetPanel !== 'stallplaner-panel-selection') openStallplanerSheet('stallplaner-panel-selection', title);
+  else document.getElementById('stallplaner-sheet-title').textContent = title;
+}
+
+function openStallplanerAnimalsPanel() {
+  renderStallplanAnimalsPanel();
+  openStallplanerSheet('stallplaner-panel-animals', 'Tiere je Abteil');
+}
+function renderStallplanAnimalsPanel() {
+  const plan = activeStallplan();
+  if (!plan) return;
+  const list = document.getElementById('stallplaner-animals-list');
+  if (!plan.compartments.length) {
+    // Abteile sind optional — ohne sie direkt den ganzen Stall belegen.
+    list.innerHTML = plan.outline
+      ? `<p class="stallplaner-panel-hint">Keine Abteile angelegt. Tiere für den ganzen Stall eintragen?</p>
+         <button type="button" class="stallplaner-big-btn primary" id="stallplaner-animals-whole-stall">
+           <span class="material-symbols-rounded icon">crop_free</span>
+           <span><strong>Ganzer Stall</strong><small>Umriss als eine Fläche nehmen</small></span>
+         </button>`
+      : '<p class="stallplaner-panel-hint">Erst den Umriss anlegen (Schritt 1).</p>';
+    const btn = document.getElementById('stallplaner-animals-whole-stall');
+    if (btn) btn.addEventListener('click', useWholeStallAsCompartment);
+    return;
+  }
+  renderStallplanAbteilCards(list, plan, plan.compartments);
+}
+
+// ---- Bildschirm anlassen, solange der Stallplaner offen ist ----
+// Wake Lock API: sonst geht das Display beim Messen mit dem Zollstock aus.
+async function requestStallplanerWakeLock() {
+  try {
+    if (!('wakeLock' in navigator) || stallplanerWakeLock || document.visibilityState !== 'visible') return;
+    stallplanerWakeLock = await navigator.wakeLock.request('screen');
+    stallplanerWakeLock.addEventListener('release', () => { stallplanerWakeLock = null; });
+  } catch {
+    stallplanerWakeLock = null;
+  }
+}
+function releaseStallplanerWakeLock() {
+  if (!stallplanerWakeLock) return;
+  stallplanerWakeLock.release().catch(() => {});
+  stallplanerWakeLock = null;
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && !document.getElementById('stallplaner-view').hidden) requestStallplanerWakeLock();
+});
+
+// ---- Sidebar + Abteil-Karten ----
+function renderStallplanerPlanPicker() {
+  const select = document.getElementById('stallplaner-plan-select');
+  select.innerHTML = stallplaene.map(p => `<option value="${p.id}"${p.id === activeStallplanId ? ' selected' : ''}>${escapeHtml(p.name)}</option>`).join('');
+  document.getElementById('stallplaner-empty-hint').hidden = stallplaene.length > 0;
+  document.getElementById('stallplaner-settings').hidden = !activeStallplanId;
+  document.getElementById('stallplaner-footer').hidden = !activeStallplanId;
+}
+
+// Eine Abteil-Karte (Name, Fläche, Tierbestand, Öko-VO-Ampel, Aktionen) —
+// dieselbe Quelle für Seitenleiste, Auswahl-Sheet und Tiere-Sheet, damit
+// alle drei immer gleich aussehen und sich gleich verhalten. Ein Abteil
+// kann mehrere Tier-Kategorien gleichzeitig beherbergen (z.B. Kälber +
+// Milchkühe im selben Abteil) — daher eine verschachtelte Liste von
+// Kategorie-Zeilen je Abteil statt nur eines einzelnen Kategorie-Felds.
+function stallplanAbteilCardHtml(plan, c) {
+  const area = shoelaceArea(c.points) * plan.gridScale * plan.gridScale;
+  const benoetigt = compartmentHasCountedAnimals(c) ? compartmentBenoetigteFlaeche(c) : null;
+  const badge = benoetigt == null ? ''
+    : area >= benoetigt
+      ? `<span class="stallplan-badge ok">✓ ${(area - benoetigt).toFixed(1)} m² Reserve</span>`
+      : `<span class="stallplan-badge fail">✗ ${(benoetigt - area).toFixed(1)} m² fehlend</span>`;
+  const tbRows = c.tierbestand.map(tb => {
+    const kategorie = OEKO_VO_KATEGORIEN.find(k => k.id === tb.kategorieId);
+    const showWeight = kategorie && kategorie.indoorKgJeQm != null;
+    const kategorien = OEKO_VO_KATEGORIEN.filter(k => k.tierart === tb.tierart);
+    return `
+      <div class="stallplan-tb-row">
+        <select class="stallplan-tb-tierart" data-c="${c.id}" data-tb="${tb.id}" aria-label="Tierart">
+          <option value="">– Tierart –</option>
+          ${STALLPLANER_TIERARTEN.map(t => `<option value="${t.id}"${t.id === tb.tierart ? ' selected' : ''}>${escapeHtml(t.label)}</option>`).join('')}
+        </select>
+        <select class="stallplan-tb-kategorie" data-c="${c.id}" data-tb="${tb.id}" aria-label="Kategorie"${tb.tierart ? '' : ' disabled'}>
+          <option value="">– Kategorie –</option>
+          ${kategorien.map(k => `<option value="${k.id}"${k.id === tb.kategorieId ? ' selected' : ''}>${escapeHtml(k.label)}</option>`).join('')}
+        </select>
+        <input type="number" inputmode="numeric" min="0" class="stallplan-tb-anzahl" data-c="${c.id}" data-tb="${tb.id}" value="${tb.tieranzahl || 0}" placeholder="Tierzahl" aria-label="Tierzahl">
+        ${showWeight ? `<input type="text" inputmode="decimal" class="stallplan-tb-gewicht" data-c="${c.id}" data-tb="${tb.id}" value="${tb.avgGewichtKg ? String(tb.avgGewichtKg).replace('.', ',') : ''}" placeholder="Ø-Gewicht kg" aria-label="Durchschnittsgewicht in kg">` : ''}
+        <button type="button" class="stallplan-tb-remove" data-c="${c.id}" data-tb="${tb.id}" title="Tiere entfernen" aria-label="Tiere entfernen"><span class="material-symbols-rounded icon">close</span></button>
+      </div>`;
+  }).join('');
+  const selected = stallplanerSelection && stallplanerSelection.kind === 'compartment' && stallplanerSelection.id === c.id;
+  return `
+    <div class="stallplan-abteil-row${selected ? ' selected' : ''}${c.wholeStall ? ' whole-stall' : ''}" data-id="${c.id}">
+      <input type="text" class="stallplan-abteil-name" data-id="${c.id}" value="${escapeHtml(c.name)}" aria-label="Name des Abteils">
+      <span class="stallplan-abteil-area">${area.toFixed(1)} m²</span>
+      <div class="stallplan-tierbestand-list">${tbRows || '<p class="stallplan-tb-empty">Noch keine Tiere eingetragen.</p>'}</div>
+      <button type="button" class="stallplan-tb-add" data-c="${c.id}"><span class="material-symbols-rounded icon">add</span> Tiere</button>
+      ${badge}
+      <div class="stallplan-abteil-actions">
+        <button type="button" class="stallplan-abteil-act" data-card-act="measure" data-id="${c.id}"><span class="material-symbols-rounded icon">straighten</span> Maße</button>
+        ${axisAlignedRectBounds(c.points) ? `<button type="button" class="stallplan-abteil-act" data-card-act="split" data-id="${c.id}"><span class="material-symbols-rounded icon">view_week</span> Teilen</button>` : ''}
+        <button type="button" class="stallplan-abteil-act stallplan-abteil-remove" data-id="${c.id}" title="Abteil löschen"><span class="material-symbols-rounded icon">delete</span> Löschen</button>
+      </div>
+    </div>`;
+}
+
+// Nach jeder Änderung an einer Karte alle Stellen neu zeichnen, an denen
+// Abteil-Daten sichtbar sind (Plan, Seitenleiste, offenes Sheet).
+function refreshStallplanAfterCardChange() {
+  renderStallplan();
+  renderStallplanerSidebar();
+}
+
+function renderStallplanAbteilCards(container, plan, compartments) {
+  container.innerHTML = compartments.map(c => stallplanAbteilCardHtml(plan, c)).join('');
+  const findC = (el) => plan.compartments.find(x => x.id === (el.getAttribute('data-c') || el.getAttribute('data-id')));
+  const findTb = (el) => { const c = findC(el); return c && c.tierbestand.find(x => x.id === el.getAttribute('data-tb')); };
+  container.querySelectorAll('.stallplan-abteil-name').forEach(input => input.addEventListener('change', () => {
+    const c = findC(input);
+    if (!c) return;
+    pushStallplanerUndo();
+    c.name = input.value.trim() || c.name;
+    refreshStallplanAfterCardChange();
+  }));
+  container.querySelectorAll('.stallplan-tb-add').forEach(btn => btn.addEventListener('click', () => {
+    const c = findC(btn);
+    if (!c) return;
+    pushStallplanerUndo();
+    c.tierbestand.push(newTierbestandEntry(suggestStallplanTierart(plan, c)));
+    refreshStallplanAfterCardChange();
+  }));
+  container.querySelectorAll('.stallplan-tb-tierart').forEach(sel => sel.addEventListener('change', () => {
+    const tb = findTb(sel);
+    if (!tb) return;
+    pushStallplanerUndo();
+    tb.tierart = sel.value || null;
+    // Kategorie gehört zur alten Tierart — sonst stünde z. B. "Milchkühe"
+    // unter "Schweine".
+    const kategorie = OEKO_VO_KATEGORIEN.find(k => k.id === tb.kategorieId);
+    if (!kategorie || kategorie.tierart !== tb.tierart) { tb.kategorieId = null; tb.avgGewichtKg = null; }
+    refreshStallplanAfterCardChange();
+  }));
+  container.querySelectorAll('.stallplan-tb-remove').forEach(btn => btn.addEventListener('click', () => {
+    const c = findC(btn);
+    if (!c) return;
+    pushStallplanerUndo();
+    c.tierbestand = c.tierbestand.filter(tb => tb.id !== btn.getAttribute('data-tb'));
+    refreshStallplanAfterCardChange();
+  }));
+  container.querySelectorAll('.stallplan-tb-kategorie').forEach(sel => sel.addEventListener('change', () => {
+    const tb = findTb(sel);
+    if (!tb) return;
+    pushStallplanerUndo();
+    tb.kategorieId = sel.value || null;
+    refreshStallplanAfterCardChange();
+  }));
+  container.querySelectorAll('.stallplan-tb-anzahl').forEach(input => input.addEventListener('change', () => {
+    const tb = findTb(input);
+    if (!tb) return;
+    pushStallplanerUndo();
+    tb.tieranzahl = Math.max(0, parseInt(input.value, 10) || 0);
+    refreshStallplanAfterCardChange();
+  }));
+  container.querySelectorAll('.stallplan-tb-gewicht').forEach(input => input.addEventListener('change', () => {
+    const tb = findTb(input);
+    if (!tb) return;
+    pushStallplanerUndo();
+    const kg = parseDecimalInput(input.value);
+    tb.avgGewichtKg = kg > 0 ? kg : null;
+    refreshStallplanAfterCardChange();
+  }));
+  container.querySelectorAll('.stallplan-abteil-remove').forEach(btn => btn.addEventListener('click', () => {
+    const c = findC(btn);
+    if (!c) return;
+    if (c.tierbestand.length && !confirm(`„${c.name}" mit eingetragenen Tieren löschen?`)) return;
+    pushStallplanerUndo();
+    plan.compartments = plan.compartments.filter(x => x.id !== c.id);
+    if (stallplanerSelection && stallplanerSelection.id === c.id) {
+      stallplanerSelection = null;
+      if (stallplanerSheetPanel === 'stallplaner-panel-selection') hideStallplanerSheet();
+    }
+    refreshStallplanAfterCardChange();
+  }));
+  container.querySelectorAll('[data-card-act]').forEach(btn => btn.addEventListener('click', () => {
+    const c = findC(btn);
+    if (!c) return;
+    if (btn.getAttribute('data-card-act') === 'measure') {
+      resetStallplanerInteraction();
+      stallplanerMode = 'measure';
+      startStallplanMeasureWalk('compartment', c.id, c.points);
+    } else {
+      openStallplanSplitPanel({ kind: 'compartment', id: c.id });
+    }
+  }));
+}
+
+function renderStallplanerSidebar() {
+  renderStallplanerPlanPicker();
+  const plan = activeStallplan();
+  if (!plan) { renderStallplanerChrome(); return; }
+  document.getElementById('stallplaner-name-input').value = plan.name;
+  document.getElementById('stallplaner-grid-scale').value = String(plan.gridScale);
+  document.getElementById('stallplaner-grid-snap').checked = plan.gridSnap;
+
+  const abteileArea = plan.compartments.reduce((s, c) => s + shoelaceArea(c.points) * plan.gridScale * plan.gridScale, 0);
+  const outlineArea = plan.outline ? shoelaceArea(plan.outline.points) * plan.gridScale * plan.gridScale : 0;
+  document.getElementById('stallplaner-total-area').textContent = plan.outline
+    ? `— Umriss ${outlineArea.toFixed(1)} m², Abteile gesamt ${abteileArea.toFixed(1)} m²`
+    : '';
+
+  document.getElementById('stallplaner-abteile-empty-hint').hidden = plan.compartments.length > 0;
+  renderStallplanAbteilCards(document.getElementById('stallplaner-abteile-list'), plan, plan.compartments);
+
+  // Offene Sheets mit Abteil-Daten gleich mitaktualisieren.
+  if (stallplanerSheetPanel === 'stallplaner-panel-animals') renderStallplanAnimalsPanel();
+  else if (stallplanerSheetPanel === 'stallplaner-panel-selection') renderStallplanSelectionPanel();
+  renderStallplanerChrome();
+}
+
+// Vorschlag für eine neue Tier-Zeile: die Tierart der letzten Zeile in
+// dieser Bucht, sonst die im Stall häufigste — meist stehen gleiche Tiere
+// nebeneinander, eine andere Tierart ist aber jederzeit wählbar.
+function suggestStallplanTierart(plan, c) {
+  const own = c.tierbestand.filter(tb => tb.tierart);
+  if (own.length) return own[own.length - 1].tierart;
+  const counts = {};
+  plan.compartments.forEach(x => x.tierbestand.forEach(tb => { if (tb.tierart) counts[tb.tierart] = (counts[tb.tierart] || 0) + 1; }));
+  const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+  return best ? best[0] : null;
+}
+
+// ---- Plan-Verwaltung ----
+function setActiveStallplan(id) {
+  resetStallplanerInteraction();
+  activeStallplanId = id;
+  stallplanerUndoStack = [];
+  stallplanerRedoStack = [];
+  const plan = activeStallplan();
+  stallplanerStep = plan && plan.outline ? 'abteile' : 'umriss';
+  resetStallplanerViewBox();
+  if (plan) fitStallplanerView();
+  renderStallplan();
+  renderStallplanerSidebar();
+}
+document.getElementById('stallplaner-new-plan').addEventListener('click', () => {
+  const plan = createEmptyStallplan(`Stallplan ${stallplaene.length + 1}`);
+  stallplaene.push(plan);
+  setActiveStallplan(plan.id);
+});
+document.getElementById('stallplaner-plan-select').addEventListener('change', (e) => setActiveStallplan(e.target.value));
+document.getElementById('stallplaner-name-input').addEventListener('change', (e) => {
+  const plan = activeStallplan();
+  if (!plan) return;
+  plan.name = e.target.value.trim() || plan.name;
+  renderStallplanerPlanPicker();
+});
+document.getElementById('stallplaner-grid-scale').addEventListener('change', (e) => {
+  const plan = activeStallplan();
+  if (!plan) return;
+  plan.gridScale = parseFloat(e.target.value) || 1;
+  renderStallplan();
+  renderStallplanerSidebar();
+});
+document.getElementById('stallplaner-grid-snap').addEventListener('change', (e) => {
+  const plan = activeStallplan();
+  if (plan) plan.gridSnap = e.target.checked;
+});
+document.getElementById('btn-stallplaner-delete-plan').addEventListener('click', () => {
+  const plan = activeStallplan();
+  if (!plan) return;
+  if (!confirm(`Stallplan "${plan.name}" wirklich löschen?`)) return;
+  stallplaene = stallplaene.filter(p => p.id !== plan.id);
+  setActiveStallplan(stallplaene.length ? stallplaene[0].id : null);
+});
+
+// ---- Datei-Export/-Import (.json, editierbares Format zusätzlich zum
+// automatischen Cloud-Sync über serializeWorkspace/restoreWorkspace) ----
+document.getElementById('btn-stallplaner-export-json').addEventListener('click', () => {
+  const plan = activeStallplan();
+  if (!plan) return;
+  downloadBlob(JSON.stringify(plan, null, 2), zuordnungFileName(plan.name || 'Stallplan', 'json') || `stallplan_${plan.id}.json`, 'application/json');
+  document.getElementById('stallplaner-status').textContent = 'Als Datei gespeichert.';
+});
+document.getElementById('stallplaner-import-input').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  const statusEl = document.getElementById('stallplaner-status');
+  try {
+    const data = JSON.parse(await file.text());
+    if (!data || !Array.isArray(data.compartments) || !Array.isArray(data.equipment)) {
+      throw new Error('Datei enthält keinen gültigen Stallplan.');
+    }
+    data.id = newStallplanId(); // Kollision mit vorhandener Id vermeiden
+    data.compartments = data.compartments.map(c => normalizeCompartment(c, data.tierart));
+    data.equipment = data.equipment.map(normalizeEquipment);
+    stallplaene.push(data);
+    setActiveStallplan(data.id);
+    statusEl.textContent = 'Stallplan geladen.';
+  } catch (err) {
+    statusEl.textContent = 'Fehler: ' + (err.message || 'Datei konnte nicht geladen werden.');
+  }
+});
+
+// ---- Hintergrund des Plans im PDF ----
+// Weiß (druckfreundlich, Standard) oder dunkel wie am Bildschirm. Gilt nur
+// für den Export — die Zeichenfläche selbst bleibt dunkel. Eigenes
+// Farbschema je Hintergrund (style.css .stallplaner-export-light/-dark),
+// sonst wären z. B. die hellen Beschriftungen auf Weiß unlesbar.
+const STALLPLAN_EXPORT_BG_KEY = 'feldfolio-stallplan-export-bg';
+const STALLPLAN_EXPORT_BG_COLORS = { light: '#ffffff', dark: '#10140f' };
+let stallplanExportBg = 'light';
+try { if (localStorage.getItem(STALLPLAN_EXPORT_BG_KEY) === 'dark') stallplanExportBg = 'dark'; } catch {}
+function setStallplanExportBg(bg) {
+  stallplanExportBg = bg === 'dark' ? 'dark' : 'light';
+  try { localStorage.setItem(STALLPLAN_EXPORT_BG_KEY, stallplanExportBg); } catch {}
+  updateStallplanExportBgControls();
+}
+function updateStallplanExportBgControls() {
+  document.querySelectorAll('#stallplaner-export-bg [data-bg]').forEach(b => {
+    b.setAttribute('aria-checked', String(b.getAttribute('data-bg') === stallplanExportBg));
+  });
+  document.getElementById('stallplaner-export-bg-select').value = stallplanExportBg;
+}
+document.querySelectorAll('#stallplaner-export-bg [data-bg]').forEach(b => {
+  b.addEventListener('click', () => setStallplanExportBg(b.getAttribute('data-bg')));
+});
+document.getElementById('stallplaner-export-bg-select').addEventListener('change', (e) => setStallplanExportBg(e.target.value));
+updateStallplanExportBgControls();
+
+// html2canvas zeichnet das SVG als eigenständiges Bild — dort ist die
+// Icon-Schrift der Seite nicht geladen, Ausstattungs-Symbole erschienen im
+// PDF als Text ("water_drop"). Für den Export wird die Schrift deshalb als
+// data:-URL direkt ins SVG eingebettet (einmal geladen, dann zwischengespeichert).
+let stallplanIconFontDataUrl = null;
+async function stallplanIconFontStyle() {
+  if (!stallplanIconFontDataUrl) {
+    const blob = await (await fetch(iconFontUrl)).blob();
+    stallplanIconFontDataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  }
+  const style = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+  style.textContent = `@font-face { font-family: 'Material Symbols Rounded'; font-style: normal; font-weight: 400; src: url(${stallplanIconFontDataUrl}) format('woff2'); }`;
+  return style;
+}
+
+// ---- PDF-Export (Seite 1: Plan, Seite 2: Abteilgrößen-Tabelle) ----
+async function exportStallplanPDF() {
+  const plan = activeStallplan();
+  const statusEl = document.getElementById('stallplaner-status');
+  if (!plan) return;
+  if (typeof html2canvas === 'undefined' || typeof window.jspdf === 'undefined') {
+    statusEl.textContent = 'PDF-Export nicht verfügbar (Bibliothek konnte nicht geladen werden).';
+    return;
+  }
+  if (!plan.outline) { stallplanerFlash('Noch kein Umriss angelegt — erst Schritt 1.'); return; }
+
+  const btn = document.getElementById('btn-export-stallplaner-pdf');
+  btn.disabled = true;
+  stallplanerFlash('PDF wird erstellt …');
+  try {
+    // Vertex-Griffe/Zeichenvorschau würden sonst mit ins Screenshot-Bild
+    // rutschen (gleiches Problem wie bei Hofplans Kartenscreenshot,
+    // captureHofplanScreenshot) — vor dem Capture ausgeblendet.
+    const wrap = document.getElementById('stallplaner-canvas');
+    const themeClass = 'stallplaner-export-' + stallplanExportBg;
+    let fontStyle = null;
+    try { fontStyle = await stallplanIconFontStyle(); } catch {} // ohne Schrift: Export trotzdem
+    if (fontStyle) document.getElementById('stallplan-svg').prepend(fontStyle);
+    wrap.classList.add('stallplaner-exporting', themeClass);
+    let canvas;
+    try {
+      canvas = await html2canvas(wrap, { backgroundColor: STALLPLAN_EXPORT_BG_COLORS[stallplanExportBg], logging: false });
+    } finally {
+      wrap.classList.remove('stallplaner-exporting', themeClass);
+      if (fontStyle) fontStyle.remove();
+    }
+    if (import.meta.env.DEV) window.__ffTestLastStallplanCanvas = canvas;
+
+    const doc = new window.jspdf.jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+    const pageW = doc.internal.pageSize.getWidth(), pageH = doc.internal.pageSize.getHeight();
+    const margin = 12;
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(15);
+    doc.text(`Stallplan – ${plan.name}`, margin, margin + 4);
+    const imageTop = margin + 10;
+    const maxW = pageW - margin * 2, maxH = pageH - imageTop - margin;
+    const scale = Math.min(maxW / canvas.width, maxH / canvas.height);
+    const imgW = canvas.width * scale, imgH = canvas.height * scale;
+    doc.addImage(canvas.toDataURL('image/jpeg', 0.9), 'JPEG', (pageW - imgW) / 2, imageTop, imgW, imgH);
+
+    doc.addPage();
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(15);
+    doc.text(`${plan.name} – Abteilgrößen`, margin, margin + 4);
+    const rows = plan.compartments.map(c => {
+      const area = shoelaceArea(c.points) * plan.gridScale * plan.gridScale;
+      // Mehrere Kategorien je Abteil möglich — Kategorie-Spalte listet alle
+      // mit ihrer jeweiligen Tierzahl auf, Tierzahl-Spalte zeigt die Summe.
+      const kategorieText = c.tierbestand.length
+        ? c.tierbestand.map(tb => {
+            const k = OEKO_VO_KATEGORIEN.find(x => x.id === tb.kategorieId);
+            return k ? `${k.label} (${tb.tieranzahl || 0})` : null;
+          }).filter(Boolean).join(', ') || '–'
+        : '–';
+      const gesamtTierzahl = c.tierbestand.reduce((s, tb) => s + (tb.tieranzahl || 0), 0);
+      const benoetigt = compartmentHasCountedAnimals(c) ? compartmentBenoetigteFlaeche(c) : null;
+      const status = benoetigt == null ? '–' : (area >= benoetigt ? 'OK' : 'zu klein');
+      return [c.name, kategorieText, String(gesamtTierzahl), area.toFixed(1), benoetigt == null ? '–' : benoetigt.toFixed(1), status];
+    });
+    doc.autoTable({
+      startY: margin + 10,
+      head: [['Abteil', 'Kategorie', 'Tierzahl', 'Fläche (m²)', 'Benötigt (m²)', 'Öko-VO']],
+      body: rows,
+      styles: { fontSize: 9 },
+      headStyles: { fillColor: [79, 184, 175] },
+      margin: { left: margin, right: margin }
+    });
+    doc.setFontSize(8);
+    doc.text(
+      'Flächenwerte laut Anhang I VO (EU) 2018/848 i.d.F. DVO (EU) 2020/464 — keine Rechtsberatung, im Zweifel Originaltext prüfen.',
+      margin, doc.internal.pageSize.getHeight() - 6
+    );
+
+    stampFeldFolioLogo(doc, await getFeldFolioLogoDataUrl());
+    doc.save(zuordnungFileName(plan.name || 'Stallplan', 'pdf') || `stallplan_${plan.id}.pdf`);
+    stallplanerFlash('Als PDF gespeichert.');
+  } catch (err) {
+    stallplanerFlash('Fehler beim PDF-Export: ' + (err.message || ''));
+  } finally {
+    btn.disabled = false;
+  }
+}
+document.getElementById('btn-export-stallplaner-pdf').addEventListener('click', exportStallplanPDF);
+
+function initStallplaner() {
+  if (stallplanerInitDone) return;
+  stallplanerInitDone = true;
+  applyStallplanerViewBox();
+  renderStallplanGrid();
+  renderStallplanerSidebar();
+}
+
+// Dev-only Testhaken (analog window.__ffTestMap/__ffTestTk) — rohes
+// SVG-Pointer-Drag ist laut AGENTS.md Punkt 2 genauso wenig zuverlässig per
+// synthetischem Maus-Event simulierbar wie Leaflet.draw.
+if (import.meta.env.DEV) {
+  window.__ffTestStallplaner = {
+    createPlan(overrides = {}) {
+      const plan = { ...createEmptyStallplan(overrides.name), ...overrides };
+      stallplaene.push(plan);
+      setActiveStallplan(plan.id);
+      return plan.id;
+    },
+    getActivePlan() { return activeStallplan(); },
+    // Direkter Zugriff auf die reine Rekonstruktions-Mathematik, ohne den
+    // UI-Ablauf des geführten Vermessen-Modus durchzuspielen — für einen
+    // gezielten Test der Geometrie (rechtwinklige Ecken, Schlussfehler-
+    // Ausgleich).
+    reconstructRectilinear(points, lengths) { return reconstructPolygonFromSketch(points, lengths); },
+    // Zeichenhilfen: Einrasten und Zuschneiden direkt prüfen.
+    snap(raw, opts) { const plan = activeStallplan(); return plan ? snapStallplanDrawPoint(raw, plan, opts) : null; },
+    fitCompartment(points) { const plan = activeStallplan(); return plan ? fitStallplanCompartmentToStall(plan, points) : null; },
+    // Bildschirmposition (clientX/Y) eines Plan-Punkts — damit Tests gezielt
+    // "ein paar Pixel neben eine Wand" klicken können.
+    clientPoint(x, y) {
+      const rect = document.getElementById('stallplan-svg').getBoundingClientRect();
+      const vb = stallplanDisplayBox();
+      return { x: rect.left + ((x - vb.x) / vb.w) * rect.width, y: rect.top + ((y - vb.y) / vb.h) * rect.height };
+    },
+    // Rundlauf-Test für die Workspace-Persistenz (serializeWorkspace/
+    // restoreWorkspace sind modul-intern, nicht auf window) — ruft exakt
+    // dieselben Funktionen auf, die auch beim echten Cloud-Speichern/Laden
+    // laufen.
+    serializeStallplaene() { return serializeWorkspace().stallplaene; },
+    restoreStallplaene(data) { restoreWorkspace({ stallplaene: data }); },
+    setOutline(points) {
+      const plan = activeStallplan();
+      if (!plan) return;
+      pushStallplanerUndo();
+      plan.outline = { points };
+      renderStallplan();
+      renderStallplanerSidebar();
+    },
+    addCompartment(points, overrides = {}) {
+      const plan = activeStallplan();
+      if (!plan) return null;
+      pushStallplanerUndo();
+      const c = {
+        id: 'abteil-' + Date.now() + Math.random().toString(36).slice(2),
+        name: `Abteil ${plan.compartments.length + 1}`,
+        points, tierbestand: [], ...overrides
+      };
+      plan.compartments.push(c);
+      renderStallplan();
+      renderStallplanerSidebar();
+      return c.id;
+    },
+    addEquipment(type, x, y) {
+      const plan = activeStallplan();
+      if (!plan) return null;
+      pushStallplanerUndo();
+      const item = { id: 'eq-' + Date.now() + Math.random().toString(36).slice(2), type, geometryKind: 'point', points: [{ x, y }], rotationDeg: 0, label: '' };
+      plan.equipment.push(item);
+      renderStallplan();
+      renderStallplanerSidebar();
+      return item.id;
+    },
+    // Für Linien-/Flächen-Ausstattung (Sitzstange, Tür/Fenster, Futtergang, …).
+    addEquipmentShape(type, geometryKind, points) {
+      const plan = activeStallplan();
+      if (!plan) return null;
+      pushStallplanerUndo();
+      const item = { id: 'eq-' + Date.now() + Math.random().toString(36).slice(2), type, geometryKind, points, rotationDeg: 0, label: '' };
+      plan.equipment.push(item);
+      renderStallplan();
+      renderStallplanerSidebar();
+      return item.id;
+    },
+    setVertex(kind, ownerId, index, x, y) {
+      const plan = activeStallplan();
+      if (!plan) return;
+      pushStallplanerUndo();
+      stallplanPointsFor(plan, kind, ownerId)[index] = { x, y };
+      renderStallplan();
+      renderStallplanerSidebar();
+    }
+  };
+}
+
+// ---------- FeldFolio Plus: Probenahmeprotokoll (Terminkalender-Anhänge) ----------
+// Füllt das amtliche Probenahmeprotokoll (FB.09.06.01 V7) je Termin aus und
+// exportiert es unverändert im Originallayout als PDF — public/
+// probenahmeprotokoll-vorlage.pdf wird zur Laufzeit über pdf-lib geladen und
+// ihre echten AcroForm-Felder befüllt (siehe exportProbenprotokollPdf), statt
+// wie die übrigen Exporte dieser App das Layout mit jsPDF nachzubauen.
+// Feldnamen/-typen/-koordinaten wurden per Node/pdf-lib aus der Originaldatei
+// ausgelesen — exakte Übernahme inkl. vorhandener Tippfehler/Doppel-
+// Leerzeichen im Original nötig, sonst schlägt form.getField(name) beim
+// Export fehl.
+//
+// Protokolle gehören zu einem konkreten Termin (ev.probenprotokolle, analog
+// ev.attachments) statt zu einem Betrieb-Workspace — ein Termin kennt Kunde/
+// Adresse/Kundennummer bereits selbst, eine globale Betrieb-Zuordnung ist
+// dafür nicht nötig. Bedienung läuft komplett aus dem Terminkalender-
+// Detailpanel heraus (renderTerminkalenderDetail, siehe dort): eine Liste
+// direkt unter "Fotos & Dateien", "Neues Protokoll" öffnet das große
+// Formular als Modal-Overlay. Der fertige Export wird NICHT heruntergeladen,
+// sondern über uploadTerminkalenderAttachment() direkt als Anhang bei
+// "Fotos & Dateien" desselben Termins gespeichert — exakt das bestehende
+// Verhalten des Dokumentenscanners (buildPdfFromScanPages weiter unten).
+//
+// Seit dem Cross-Check-Formular (FB.09.06.10) ist das Ganze ein kleines
+// Formular-System: TK_FORMULARE (weiter unten) beschreibt je Formular
+// Vorlage, Felder, Unterschriften und Listen-Texte; Modal, Pflichtfeld-
+// Prüfung, Unterschriften, Anlagen und Export sind für alle Formulare
+// dieselben Funktionen. activeProbenprotokollKind sagt, welches gerade offen
+// ist (Namen der Funktionen/IDs stammen noch aus der Zeit mit nur einem
+// Formular und wurden bewusst beibehalten).
+const PROBENEHMER_NAME_STORAGE_KEY = 'feldfolio-probenehmer-name';
+let activeProbenprotokollKind = 'probenprotokoll';
+let activeProbenprotokollEventId = null;
+let activeProbenprotokollId = null;
+
+// Treibt sowohl das Formular-Rendering als auch den PDF-Export — beide
+// verwenden dieselbe Quelle, damit Feldnamen nie auseinanderlaufen können.
+const PROBENPROTOKOLL_SECTIONS = [
+  {
+    title: 'Kopfdaten',
+    fields: [
+      { name: 'Nr Analysenproben', label: 'Nr. Analyseproben', type: 'text', required: true, scan: true },
+      { name: 'Nr der Gegenproben', label: 'Nr. Gegenproben', type: 'text', scan: true },
+      { name: 'Name des Unternehmens', label: 'Name des Unternehmens', type: 'text', required: true },
+      { name: 'Straße Hausnummer', label: 'Straße, Hausnummer', type: 'text', required: true },
+      { name: 'PLZ  Ort', label: 'PLZ, Ort', type: 'text', required: true },
+      { name: 'Kundennummer', label: 'Kundennummer', type: 'text', required: true },
+      { name: 'Bundesland', label: 'Bundesland', type: 'text', required: true }
+    ]
+  },
+  {
+    title: 'Beprobtes Produkt',
+    fields: [
+      { name: 'Probe', label: 'Beprobtes Produkt', type: 'text' },
+      { name: 'Group10', label: 'Herkunft', type: 'radio', options: [
+        { value: 'Auswahl1', label: 'Eigene Produktion' },
+        { value: 'Auswahl 2', label: 'Zukaufs- und Handelsware' }
+      ] }
+    ]
+  },
+  {
+    title: 'Zukaufs- und Handelsware',
+    fields: [
+      { name: 'Lieferant', label: 'Lieferant', type: 'text' },
+      { name: 'Lieferdatum', label: 'Lieferdatum', type: 'text' },
+      { name: 'Liefermenge', label: 'Liefermenge', type: 'text' },
+      { name: 'Lagermenge Lieferung', label: 'Davon noch lagernd am Betrieb', type: 'text' }
+    ]
+  },
+  {
+    title: 'Eigene Produktion',
+    fields: [
+      { name: 'Produktionsmenge', label: 'Datum Produktion/Ernte/Abfüllung', type: 'text' },
+      { name: 'Charge', label: 'Chargennummer/MHD', type: 'text' },
+      { name: 'Menge', label: 'Menge der Charge/Ernte', type: 'text' },
+      { name: 'Lagermenge', label: 'Davon noch lagernd am Betrieb', type: 'text' }
+    ]
+  },
+  {
+    title: 'Probenahmeort',
+    fields: [
+      { name: 'Probeort1', label: 'Lagerbezeichnung', type: 'checkbox', textField: 'Ort Lager' },
+      { name: 'Probeort2', label: 'Produktionsstätte', type: 'checkbox', textField: 'Ort Produktion' },
+      { name: 'Probeort3', label: 'Feldstücksname', type: 'checkbox', textField: 'Feldstück' },
+      { name: 'Probeort4', label: 'Bienenstandorte', type: 'checkbox', textField: 'Ort Bienen' },
+      { name: 'Probeort5', label: 'Sonstiges', type: 'checkbox', textField: 'sonstiger Ort' }
+    ]
+  },
+  {
+    title: 'Probenahme',
+    fields: [
+      { name: 'DatumZeitpunkt und Ort der Probenahme', label: 'Datum', type: 'text', required: true },
+      { name: 'UhrzeitZeitpunkt und Ort der Probenahme', label: 'Uhrzeit', type: 'text', required: true },
+      { name: 'Probenmenge', label: 'Probenmenge', type: 'text' },
+      { name: 'Analyse (Wirkstoff)', label: 'Ggf. zu analysierender Wirkstoff', type: 'text' }
+    ]
+  },
+  {
+    title: 'Grund der Probenahme',
+    fields: [
+      { name: 'Group9', label: 'Grund', type: 'radio', options: [
+        { value: 'Auswahl1', label: 'Routine' },
+        { value: 'Auswahl2', label: 'Verdacht' },
+        { value: 'Auswahl3', label: 'Sonstiges' }
+      ] },
+      { name: 'Grund sonst', label: 'Sonstiges — Erläuterung', type: 'text' },
+      { name: 'Abdift', label: 'Bei Abdrift', type: 'checkbox' }
+    ]
+  },
+  {
+    title: 'Anlagen',
+    fields: [
+      { name: 'Anlage1', label: 'Rezeptur/Mischprotokoll', type: 'checkbox' },
+      { name: 'Anlage2', label: 'Etikett/Foto der Charge', type: 'checkbox' },
+      { name: 'Anlage3', label: 'Zukaufsbeleg', type: 'checkbox' },
+      { name: 'Anlage4', label: 'Flurkarte/Skizze', type: 'checkbox' },
+      { name: 'Anlage5', label: 'Sonstiges', type: 'checkbox', textField: 'Anlage sonst' }
+    ]
+  },
+  {
+    title: 'Anmerkungen',
+    fields: [
+      // unterUeberschrift: Feld schließt die vorgedruckte Überschrift ein -> Text eine Zeile tiefer
+      { name: 'Erläuterung zur Probenahme Flurstücksname u nummer bzw Gebäudebezeichnung LagerChargennummer', label: 'Anmerkungen zur Probenahme', type: 'textarea', unterUeberschrift: true }
+    ]
+  },
+  {
+    title: 'Bestätigungen',
+    hint: 'Die drei Erklärungen des Betriebsleiters sind Pflicht — außer „Die Annahme und Verwahrung wurde abgelehnt“ ist angekreuzt.',
+    fields: [
+      { name: 'Probenehmer Name', label: 'Name Probenehmer', type: 'text', required: true },
+      { name: 'Der Beauftragung eines akkreditierten Labors als Unterauftragnehmer der Kontrollstelle wird zugestimmt', label: 'Der Beauftragung eines akkreditierten Labors als Unterauftragnehmer der Kontrollstelle wird zugestimmt', type: 'checkbox', requiredUnless: 'Die Annahme und Verwahrung wurde abgelehnt', shortLabel: 'Zustimmung zur Laborbeauftragung' },
+      { name: 'Über die Bedeutung der Gegenprobe und Lagerung der Gegenproben wurde ich informiert', label: 'Über die Bedeutung der Gegenprobe und Lagerung der Gegenproben wurde ich informiert', type: 'checkbox', requiredUnless: 'Die Annahme und Verwahrung wurde abgelehnt', shortLabel: 'Information über die Gegenprobe' },
+      { name: 'Die Annahme und Verwahrung wurde abgelehnt', label: 'Die Annahme und Verwahrung wurde abgelehnt', type: 'checkbox' },
+      { name: 'Die genannten Angaben werden bestätigt', label: 'Die genannten Angaben werden bestätigt', type: 'checkbox', requiredUnless: 'Die Annahme und Verwahrung wurde abgelehnt', shortLabel: 'Bestätigung der Angaben' },
+      { name: 'Text1', label: 'Ort, Datum', type: 'text' }
+    ]
+  }
+];
+
+// Flache Sicht auf alle Feldnamen (inkl. der an eine Checkbox gekoppelten
+// Text-Felder wie "Ort Lager") — Grundlage für Vorbefüllung, Werte-Objekt-
+// Initialisierung und den PDF-Export-Durchlauf.
+function formularAllFields(sections) {
+  const out = [];
+  sections.forEach(sec => sec.fields.forEach(f => {
+    out.push({ name: f.name, type: f.type, options: f.options, dependsOn: f.dependsOn });
+    if (f.textField) out.push({ name: f.textField, type: 'text', dependsOn: f.dependsOn });
+  }));
+  return out;
+}
+const PROBENPROTOKOLL_ALL_FIELDS = formularAllFields(PROBENPROTOKOLL_SECTIONS);
+
+// Beide Unterschriften werden als PNG (Canvas-Signaturpad) direkt auf die
+// Seite gezeichnet — die Vorlage enthält bewusst KEIN Signaturfeld mehr (das
+// ursprüngliche "Signaturfeld 1" war eine kryptographische PDF-Signatur und
+// wurde beim Bereinigen der Vorlage entfernt). Koordinaten per pdf.js aus den
+// Beschriftungen der Vorlage gemessen: "Unterschrift des Probenehmers" endet
+// bei x≈373 (Zeile y≈148–178), "Unterschrift des Betriebsinhabers …" steht
+// bei y≈42 unter der Linie, die Unterschrift gehört darüber.
+const PROBENPROTOKOLL_SIGNATURE_BOXES = {
+  signatureProbenehmer: { x: 380, y: 148, width: 175, height: 30 },
+  signatureBetriebsinhaber: { x: 240, y: 54, width: 220, height: 34 }
+};
+
+// ---------- Cross Check (FB.09.06.10, Anfrage an eine andere Kontrollstelle) ----------
+// public/crosscheck-vorlage.pdf ist das Originalformular V07 unverändert
+// (enthält keine Vorbelegung/Unterschrift). Feldnamen per Node/pdf-lib
+// ausgelesen; Radio-Werte je Kästchen über die /AP-Schlüssel der Widgets
+// zugeordnet (Group1: Auswahl1 = Empfänger, Auswahl2 = Lieferant; Group2:
+// Auswahl1 = Lieferantenprüfung, Auswahl2 = Empfängerprüfung; Group3:
+// Auswahl1 = zeitnahe Beleg-Prüfung, Auswahl2 = Routineprüfung).
+// "Bearbeitungsnummer" und "Ergebnis der Prüfung" füllt die angefragte
+// Kontrollstelle aus — dafür gibt es bewusst keine Eingaben.
+const CROSSCHECK_EMPFAENGERPRUEFUNG = { field: 'Group2', value: 'Auswahl2' };
+const CROSSCHECK_SECTIONS = [
+  {
+    title: 'Anfrage an die Kontrollstelle',
+    fields: [
+      { name: 'Kontrollstelle', label: 'Kontrollstelle', type: 'text', required: true },
+      { name: 'Codenummer', label: 'Codenummer (z. B. DE-ÖKO-006)', shortLabel: 'Codenummer', type: 'text', required: true }
+    ]
+  },
+  {
+    title: 'ÖkoP-kontrolliertes Unternehmen',
+    fields: [
+      { name: 'Name', label: 'Name', shortLabel: 'Name des Unternehmens', type: 'text', required: true },
+      { name: 'Anschrift', label: 'Adresse', shortLabel: 'Adresse des Unternehmens', type: 'textarea', rows: 2, required: true }
+    ]
+  },
+  {
+    title: 'Empfänger bzw. Lieferant',
+    fields: [
+      { name: 'Group1', label: 'Angaben zum', shortLabel: 'Empfänger oder Lieferant', type: 'radio', required: true, options: [
+        { value: 'Auswahl1', label: 'Empfänger' },
+        { value: 'Auswahl2', label: 'Lieferanten' }
+      ] },
+      { name: 'Name_2', label: 'Name', shortLabel: 'Name Empfänger/Lieferant', type: 'text', required: true },
+      { name: 'Anschrift_2', label: 'Adresse', shortLabel: 'Adresse Empfänger/Lieferant', type: 'textarea', rows: 2 }
+    ]
+  },
+  {
+    title: 'Angaben zur Lieferung',
+    fields: [
+      { name: 'ProduktRow1', label: 'Produkt', type: 'textarea', rows: 3, required: true },
+      { name: 'Lieferdatum  LieferzeitraumRow1', label: 'Lieferdatum / Lieferzeitraum', type: 'textarea', rows: 3, required: true },
+      { name: 'MengeRow1', label: 'Menge', type: 'textarea', rows: 3, required: true },
+      { name: 'Nummer und Datum Lieferschein  RechnungRow1', label: 'Nummer und Datum Lieferschein / Rechnung', shortLabel: 'Lieferschein/Rechnung', type: 'textarea', rows: 3, required: true }
+    ]
+  },
+  {
+    title: 'Anlagen',
+    fields: [
+      { name: 'Lieferschein', label: 'Lieferschein', type: 'checkbox' },
+      { name: 'Rechnung', label: 'Rechnung', type: 'checkbox' },
+      { name: 'Gutschrift', label: 'Gutschrift', type: 'checkbox' },
+      { name: 'Sonstige', label: 'sonstiges', type: 'checkbox', textField: 'sonstiges' }
+    ]
+  },
+  {
+    title: 'Zentrale Fragestellung',
+    hint: 'Bei der Empfängerprüfung mindestens eine der beiden Fragen ankreuzen.',
+    fields: [
+      { name: 'Group2', label: 'Prüfung', shortLabel: 'Zentrale Fragestellung', type: 'radio', required: true, options: [
+        { value: 'Auswahl1', label: 'Lieferantenprüfung — stammt die Lieferung vom Kunden, als Warenausgang verbucht?' },
+        { value: 'Auswahl2', label: 'Empfängerprüfung' }
+      ] },
+      { name: 'Check Box2', label: 'Empfängerprüfung: die Lieferung verbucht wurde', type: 'checkbox', dependsOn: CROSSCHECK_EMPFAENGERPRUEFUNG },
+      { name: 'Check Box3', label: 'Empfängerprüfung: noch weitere Lieferungen dieses Produktes in Empfang genommen wurden', type: 'checkbox', dependsOn: CROSSCHECK_EMPFAENGERPRUEFUNG }
+    ]
+  },
+  {
+    title: 'Weitergehende Fragestellung',
+    fields: [
+      { name: 'weitergehende Fragestellung', label: 'Weitergehende Fragestellung', type: 'textarea' }
+    ]
+  },
+  {
+    title: 'Mit der Bitte um',
+    fields: [
+      { name: 'Group3', label: 'Art der Prüfung', shortLabel: 'Mit der Bitte um', type: 'radio', required: true, options: [
+        { value: 'Auswahl1', label: 'zeitnahe Beleg-Prüfung (begründete Zweifel, kurzfristige Rücksendung)' },
+        { value: 'Auswahl2', label: 'Routineprüfung (Rückmeldung nur, falls Bio-Status nicht bestätigt)' }
+      ] },
+      { name: 'Datum', label: 'Datum', type: 'text', required: true }
+    ]
+  }
+];
+const CROSSCHECK_ALL_FIELDS = formularAllFields(CROSSCHECK_SECTIONS);
+
+// Unterschrift auf der Linie "Datum, Unterschrift Kontrolleur / Kontroll-
+// stelle" (Unterstriche bei y≈212 von x≈47 bis ≈385), rechts neben dem
+// Datumsfeld (x 46–159) — per pdf.js aus der Vorlage gemessen.
+const CROSSCHECK_SIGNATURE_BOX = { x: 172, y: 211, width: 200, height: 26 };
+
+// Die Vorlagen haben nur formularweit Schriftgröße "auto" (0 Tf) — pdf-lib setzt
+// Texte dann so groß wie das Feld hoch ist (riesig, abgeschnitten, verrutscht).
+// Feste Größe passend zur Feldhöhe; einzeilige Texte werden verkleinert, bis sie
+// in die Feldbreite passen. Gilt für alle Formulare (Cross Check, Probenahme).
+function formularSchriftgroesse(field, text, font) {
+  const r = field.acroField.getWidgets()[0].getRectangle();
+  if (field.isMultiline()) return r.height < 30 ? 8 : 9;
+  let size = Math.max(7, Math.min(9.5, r.height - 3));
+  const breite = r.width - 4;
+  while (size > 5.5 && font.widthOfTextAtSize(String(text || ''), size) > breite) size -= 0.5;
+  return size;
+}
+
+// Alle Formulare, die an einem Termin hängen können. listKey = Array am
+// Termin (ev.probenprotokolle / ev.crossChecks), idPrefix = Präfix der
+// Listen-IDs im Detailpanel (#tk-<idPrefix>-new/-list).
+const TK_FORMULARE = {
+  probenprotokoll: {
+    listKey: 'probenprotokolle',
+    idPrefix: 'probenprotokoll',
+    containerId: 'tk-probenprotokolle',
+    title: 'Probenahmeprotokoll',
+    listTitle: 'Probenahmeprotokolle',
+    newLabel: 'Neues Protokoll',
+    emptyText: 'Noch keine Protokolle.',
+    deleteLabel: 'Protokoll löschen',
+    deleteConfirm: 'Protokoll wirklich löschen?',
+    icon: 'description',
+    // Relativ zur App (BASE_URL) — sie läuft ggf. unter einem Unterpfad.
+    template: `${import.meta.env.BASE_URL}probenahmeprotokoll-vorlage.pdf`,
+    fileArt: 'Probenahmeprotokoll',
+    sections: PROBENPROTOKOLL_SECTIONS,
+    allFields: PROBENPROTOKOLL_ALL_FIELDS,
+    anlagenSection: 'Anlagen',
+    signatureHint: 'Keine Rechtsberatung — bitte im Zweifel das amtliche Formular gegenprüfen.',
+    signatures: [
+      { key: 'signatureProbenehmer', label: 'Unterschrift des Probenehmers', canvasId: 'pp-sig-probenehmer', box: PROBENPROTOKOLL_SIGNATURE_BOXES.signatureProbenehmer, own: true },
+      { key: 'signatureBetriebsinhaber', label: 'Unterschrift des Betriebsinhabers', fullLabel: 'Unterschrift des Betriebsinhabers oder seines Stellvertreters', canvasId: 'pp-sig-betriebsinhaber', box: PROBENPROTOKOLL_SIGNATURE_BOXES.signatureBetriebsinhaber }
+    ],
+    prefill(ev, values) {
+      let rememberedName = '';
+      try { rememberedName = localStorage.getItem(PROBENEHMER_NAME_STORAGE_KEY) || ''; } catch {}
+      values['Name des Unternehmens'] = ev.kunde;
+      values['Straße Hausnummer'] = ev.strasse || '';
+      values['PLZ  Ort'] = [ev.plz, ev.ort].filter(Boolean).join(' ');
+      values['Kundennummer'] = ev.kundennummer || '';
+      values['DatumZeitpunkt und Ort der Probenahme'] = new Date().toLocaleDateString('de-DE');
+      // Profil (FeldFolio+ Konto) hat Vorrang vor dem zuletzt getippten Namen.
+      values['Probenehmer Name'] = kontoProfil.name || rememberedName;
+    },
+    onInput(p, name, value) {
+      if (name === 'Probenehmer Name') {
+        try { localStorage.setItem(PROBENEHMER_NAME_STORAGE_KEY, value); } catch {}
+      }
+    },
+    rowTitle: p => p.values['Probe'] || '(kein Produkt angegeben)',
+    rowDate: p => p.values['DatumZeitpunkt und Ort der Probenahme']
+  },
+  crosscheck: {
+    listKey: 'crossChecks',
+    idPrefix: 'crosscheck',
+    containerId: 'tk-crosschecks',
+    title: 'Cross Check',
+    listTitle: 'Cross Checks',
+    newLabel: 'Neuer Cross Check',
+    emptyText: 'Noch keine Cross Checks.',
+    deleteLabel: 'Cross Check löschen',
+    deleteConfirm: 'Cross Check wirklich löschen?',
+    icon: 'fact_check',
+    template: `${import.meta.env.BASE_URL}crosscheck-vorlage.pdf`,
+    fileArt: 'Cross Check',
+    sections: CROSSCHECK_SECTIONS,
+    allFields: CROSSCHECK_ALL_FIELDS,
+    anlagenSection: 'Anlagen',
+    signatureHint: 'Unterschrift erscheint auf der Linie „Datum, Unterschrift Kontrolleur / Kontrollstelle“ der Anfrage. Den Teil „Ergebnis der Prüfung“ füllt die angefragte Kontrollstelle aus.',
+    signatures: [
+      { key: 'signatureKontrolleur', label: 'Unterschrift Kontrolleur / Kontrollstelle', canvasId: 'cc-sig-kontrolleur', box: CROSSCHECK_SIGNATURE_BOX, own: true }
+    ],
+    prefill(ev, values) {
+      values['Name'] = ev.kunde;
+      values['Anschrift'] = [ev.strasse, [ev.plz, ev.ort].filter(Boolean).join(' ')].filter(Boolean).join('\n');
+      values['Datum'] = new Date().toLocaleDateString('de-DE');
+    },
+    // Wer angefragt wird, bestimmt die Prüfung: beim Empfänger die
+    // Empfängerprüfung, beim Lieferanten die Lieferantenprüfung — wird
+    // vorgeschlagen, solange noch keine gewählt ist.
+    onInput(p, name, value) {
+      if (name === 'Group1' && !p.values['Group2']) {
+        p.values['Group2'] = value === 'Auswahl1' ? 'Auswahl2' : 'Auswahl1';
+        const radio = document.querySelector(`#probenprotokoll-modal-form [data-field="Group2"][value="${p.values['Group2']}"]`);
+        if (radio) radio.checked = true;
+      }
+    },
+    extraMissing(p) {
+      if (p.values['Group2'] === 'Auswahl2' && !p.values['Check Box2'] && !p.values['Check Box3']) {
+        return [{ field: 'Check Box2', label: 'Frage zur Empfängerprüfung' }];
+      }
+      return [];
+    },
+    rowTitle: p => p.values['Name_2'] || '(kein Empfänger/Lieferant)',
+    rowDate: p => p.values['Datum']
+  }
+};
+
+function tkFormularDef(kind) { return TK_FORMULARE[kind]; }
+
+// Ein Feld mit dependsOn (z. B. die beiden Fragen der Empfängerprüfung) zählt
+// nur, solange die übergeordnete Auswahl passt — sonst ist es im Formular
+// ausgegraut und wird im Export leer gelassen.
+function formularFieldActive(f, values) {
+  return !f.dependsOn || values[f.dependsOn.field] === f.dependsOn.value;
+}
+
+function createFormular(ev, kind) {
+  const def = tkFormularDef(kind);
+  const values = {};
+  def.allFields.forEach(f => { values[f.name] = f.type === 'checkbox' ? false : ''; });
+  def.prefill(ev, values);
+
+  const now = new Date().toISOString();
+  const p = {
+    id: (kind === 'probenprotokoll' ? 'protokoll-' : kind + '-') + Date.now() + Math.random().toString(36).slice(2),
+    betrieb: ev.kunde,
+    terminId: ev.id,
+    createdAt: now, updatedAt: now,
+    values,
+    anlagenDateien: []
+  };
+  def.signatures.forEach(s => { p[s.key] = null; });
+  ev[def.listKey] = ev[def.listKey] || [];
+  ev[def.listKey].push(p);
+  return p;
+}
+
+function createProbenprotokoll(ev) {
+  return createFormular(ev, 'probenprotokoll');
+}
+
+function deleteFormular(ev, kind, id) {
+  const def = tkFormularDef(kind);
+  const p = (ev[def.listKey] || []).find(x => x.id === id);
+  if (!p) return;
+  if (!confirm(def.deleteConfirm)) return;
+  ev[def.listKey] = ev[def.listKey].filter(x => x.id !== id);
+  if (activeProbenprotokollKind === kind && activeProbenprotokollEventId === ev.id && activeProbenprotokollId === id) closeProbenprotokollModal();
+  if (terminkalenderSelectedId === ev.id) renderTerminkalenderDetail(ev);
+  refreshKontrolleBetrieb();
+}
+
+// Rendert den Listen-Ausschnitt eines Formulars (Probenahmeprotokolle, Cross
+// Checks) innerhalb des Terminkalender-Detailpanels — Aufruf und
+// Verdrahtung analog zu renderTerminkalenderAttachments()/den dortigen
+// Button-Listenern (main.js, renderTerminkalenderDetail).
+function formularSectionHtml(ev, kind) {
+  const def = tkFormularDef(kind);
+  const list = ev[def.listKey] || [];
+  const rows = list.slice().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(p => {
+    const complete = probenprotokollMissing(p, kind).length === 0;
+    const datum = def.rowDate(p) || '–';
+    return `<div class="probenprotokoll-row">
+      <button type="button" class="probenprotokoll-row-main" data-action="open-protokoll" data-id="${escapeHtml(p.id)}">
+        <span class="probenprotokoll-row-title">${escapeHtml(def.rowTitle(p))}</span>
+        <span class="probenprotokoll-row-sub">${escapeHtml(datum)} · ${complete ? 'vollständig' : 'unvollständig'}</span>
+      </button>
+      <button type="button" class="probenprotokoll-row-delete" data-action="delete-protokoll" data-id="${escapeHtml(p.id)}" title="Löschen">
+        <span class="material-symbols-rounded icon">delete</span>
+      </button>
+    </div>`;
+  }).join('');
+  return `
+    <div class="tk-attachments" id="${def.containerId}">
+      <div class="tk-attachments-head">${escapeHtml(def.listTitle)}</div>
+      <div id="tk-${def.idPrefix}-list">${rows || `<p class="empty-hint">${escapeHtml(def.emptyText)}</p>`}</div>
+      <div class="tk-attachments-actions">
+        <button type="button" class="tk-attachment-btn tk-attachment-btn-primary" id="tk-${def.idPrefix}-new">
+          <span class="material-symbols-rounded icon">${def.icon}</span> ${escapeHtml(def.newLabel)}
+        </button>
+      </div>
+    </div>`;
+}
+
+// ---------- Tierbestand (HIT-Bestandsregister) ----------
+// Eigene Ansicht (#tiere-view): Auszug aus der HI-Tier-Datenbank laden,
+// Bestand/Zu-/Abgänge, Altersklassen, Stickstoffanfall und Tierbesatz,
+// Zuordnung zu Stallabteilen. Rechenlogik und Parser: src/tierbestand.js.
+// Daten je Betrieb (tierbestandData, siehe serializeWorkspace). Aus dem
+// Auszug werden nur Tierzeilen und Zeitraum übernommen — keine Kopfdaten
+// (Name, Anschrift, Telefon, Betriebsnummer).
+let tbFilter = 'bestand';
+let tbSearch = '';
+const tbNum = (n, d = 0) => (Number.isFinite(n) ? n : 0).toLocaleString('de-DE', { minimumFractionDigits: d, maximumFractionDigits: d });
+
+function tbFlaechenHa() {
+  const { rows } = collectGesamtFlaechen();
+  return rows.reduce((s, r) => s + r.ha, 0);
+}
+function tbResult() {
+  const d = tierbestandData;
+  const lfAuto = tbFlaechenHa();
+  const lf = d.lfHa != null ? d.lfHa : (lfAuto > 0 ? Math.round(lfAuto * 100) / 100 : null);
+  return { r: computeTierbestand(d, { kuhNutzung: d.kuhNutzung || 'mutterkuh', lfHa: lf }), lf, lfAuto };
+}
+function setTbStatus(text, isError = false) {
+  const el = document.getElementById('tb-status');
+  el.textContent = text;
+  el.classList.toggle('is-error', isError);
+}
+async function loadTierbestandFile(file) {
+  if (!file) return;
+  setTbStatus('Lese ' + file.name + ' …');
+  try {
+    await ensurePdfJs();
+    const parsed = await parseHitPdf(await file.arrayBuffer(), window.pdfjsLib);
+    if (!parsed.von || !parsed.tiere.length) {
+      setTbStatus('In dieser Datei wurde kein HIT-Bestandsregister erkannt (PDF „Bestandsregister“ aus HI-Tier).', true);
+      return;
+    }
+    if (tierbestandData && !confirm('Den vorhandenen Tierbestand durch diesen Auszug ersetzen? Die Zuordnung zu Stallabteilen bleibt erhalten.')) { setTbStatus(''); return; }
+    tierbestandData = {
+      von: parsed.von, bis: parsed.bis, tiere: parsed.tiere, kontrolle: parsed.kontrolle,
+      importiertAm: new Date().toISOString(),
+      lfHa: tierbestandData ? tierbestandData.lfHa : null,
+      kuhNutzung: tierbestandData ? tierbestandData.kuhNutzung : 'mutterkuh'
+    };
+    tbFilter = 'bestand'; tbSearch = '';
+    markToolHintDone('tiere');
+    setTbStatus(`${parsed.tiere.length} Tiere gelesen (${tbFmtDate(parsed.von)} – ${tbFmtDate(parsed.bis)}).`);
+    persistLocalState().catch(() => {});
+    renderTierbestand(true);
+  } catch (err) {
+    console.error(err);
+    setTbStatus('Datei konnte nicht gelesen werden — ' + (err.message || 'unbekannter Fehler'), true);
+  }
+}
+document.querySelectorAll('#tb-file, #tb-file-empty').forEach(input => input.addEventListener('change', (e) => {
+  const f = e.target.files[0];
+  e.target.value = '';
+  loadTierbestandFile(f);
+}));
+document.getElementById('btn-tb-delete').addEventListener('click', () => {
+  if (!tierbestandData || !confirm('Tierbestand dieses Betriebs löschen? Die Stallpläne bleiben erhalten.')) return;
+  tierbestandData = null;
+  setTbStatus('');
+  persistLocalState().catch(() => {});
+  renderTierbestand();
+});
+
+// Stallabteile mit Rindern (Zuordnung): alle Abteile aller Stallpläne.
+function tbStallAbteile() {
+  return stallplaene.flatMap(plan => (plan.compartments || []).map(c => ({ plan, c })));
+}
+const tbRinderIn = (c) => (c.tierbestand || []).filter(tb => tb.tierart === 'rinder').reduce((s, tb) => s + (Number(tb.tieranzahl) || 0), 0);
+
+// Animationen nur beim Öffnen der Ansicht und nach dem Laden eines Auszugs
+// (animate = true): Kacheln und Karten schweben gestaffelt ein, Zahlen zählen
+// hoch, Balken und Säulen wachsen. Bei "weniger Bewegung" alles sofort fertig.
+let tbAnimTimer = null;
+function tbAnimate(animate) {
+  const view = document.getElementById('tiere-view');
+  clearTimeout(tbAnimTimer);
+  view.classList.remove('ue-animating');
+  if (!animate || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  void view.offsetWidth; // Neustart der CSS-Animationen
+  view.classList.add('ue-animating');
+  view.querySelectorAll('[data-grow]').forEach((el, i) => {
+    const prop = el.dataset.grow, ziel = el.style[prop];
+    el.style.transition = 'none';
+    el.style[prop] = '0%';
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      el.style.transition = '';
+      el.style.transitionDelay = (250 + Math.min(i, 40) * 28) + 'ms';
+      el.style[prop] = ziel;
+    }));
+  });
+  view.querySelectorAll('.tb-count').forEach((el, i) => countUp(el, Number(el.dataset.v), { decimals: Number(el.dataset.d) || 0, delay: 120 + (i % 8) * 70 }));
+  // danach wieder aus, damit spätere Aktualisierungen (Filter, Eingaben) nicht erneut einblenden
+  tbAnimTimer = setTimeout(() => view.classList.remove('ue-animating'), 2400);
+}
+const tbCount = (n, d = 0) => `<span class="tb-count" data-v="${Number.isFinite(n) ? n : 0}" data-d="${d}">${tbNum(n, d)}</span>`;
+
+function renderTierbestand(animate = false) {
+  const has = !!tierbestandData;
+  document.getElementById('tb-empty').hidden = has;
+  document.getElementById('tb-content').hidden = !has;
+  document.getElementById('btn-tb-delete').hidden = !has;
+  document.getElementById('btn-tb-xlsx').hidden = !has;
+  const betrieb = activeZuordnung ? activeZuordnung.betrieb : 'Kein Betrieb zugeordnet';
+  document.getElementById('tb-subtitle').textContent = has
+    ? `${betrieb} · Zeitraum ${tbFmtDate(tierbestandData.von)} – ${tbFmtDate(tierbestandData.bis)}`
+    : betrieb;
+  if (!has) { tbAnimate(animate); return; }
+  const d = tierbestandData;
+  const { r, lf, lfAuto } = tbResult();
+
+  // Kennzahlen
+  let kpiNr = 0;
+  const kpi = (label, value, unit, sub, icon, cls = '') => `<div class="ue-kpi${cls} ue-anim" style="--i:${kpiNr++}">
+      <span class="material-symbols-rounded icon ue-kpi-icon" aria-hidden="true">${icon}</span>
+      <span class="ue-kpi-label">${escapeHtml(label)}</span>
+      <span class="ue-kpi-value">${value}${unit ? `<small>${unit}</small>` : ''}</span>
+      <span class="ue-kpi-sub">${escapeHtml(sub)}</span>
+    </div>`;
+  document.getElementById('tb-kpis').innerHTML =
+    kpi('Bestand am ' + tbFmtDate(r.bis), tbCount(r.endbestand), 'Tiere', `${tbNum(r.gvStichtag, 1)} GV am Stichtag`, 'pets', ' primary') +
+    kpi('Zugänge', tbCount(r.zugaenge.n), '', `davon ${r.zugaenge.geburten} Geburten`, 'add_box') +
+    kpi('Abgänge', tbCount(r.abgaenge.n), '', r.abgaenge.verluste ? `davon ${r.abgaenge.verluste} verendet/tot` : 'keine Verluste', 'logout') +
+    kpi('Ø Bestand im Zeitraum', tbCount(r.gvSchnitt, 1), 'GV', `${tbNum(r.schnitt, 1)} Tiere im Durchschnitt`, 'balance');
+
+  // Kontrollsummen des Auszugs
+  const k = d.kontrolle || {};
+  const checks = [];
+  if (k.datensaetze != null) checks.push([k.datensaetze === r.anzahl, `${r.anzahl} von ${k.datensaetze} Datensätzen gelesen`]);
+  if (k.endbestand != null) checks.push([k.endbestand === r.endbestand, `Endbestand ${r.endbestand} (Auszug: ${k.endbestand})`]);
+  if (k.gve != null) checks.push([Math.abs(k.gve - r.gvDatei) < 0.05, `GVE ${tbNum(r.gvDatei, 3)} (Auszug: ${tbNum(k.gve, 3)})`]);
+  const allOk = checks.every(c => c[0]);
+  document.getElementById('tb-check').innerHTML = checks.length
+    ? `<span class="tb-check ${allOk ? 'is-ok' : 'is-warn'}"><span class="material-symbols-rounded icon" aria-hidden="true">${allOk ? 'task_alt' : 'warning'}</span>${allOk ? 'Kontrollsummen des Auszugs stimmen' : 'Abweichung zu den Kontrollsummen des Auszugs — bitte prüfen'}: ${checks.map(c => escapeHtml(c[1])).join(' · ')}</span>`
+    : '';
+
+  // Bestandsentwicklung
+  const artList = (arten, total) => arten.length ? arten.map(a => `<div class="tb-art" data-art="${escapeHtml(a.art)}">
+      <span class="tb-art-label">${escapeHtml(a.label)}</span>
+      <span class="tb-art-track"><span data-grow="width" style="width:${total ? a.n / total * 100 : 0}%"></span></span>
+      <span class="tb-art-n">${a.n}</span></div>`).join('') : '<p class="kb-tile-empty">keine</p>';
+  const betriebe = (list, text) => list.length ? `<p class="ue-hint-line">${text}: ${list.slice(0, 6).map(([nr, n]) => `<span class="tb-betrieb">${escapeHtml(nr)} · ${n}</span>`).join(' ')}${list.length > 6 ? ` und ${list.length - 6} weitere` : ''}</p>` : '';
+  const maxMon = Math.max(1, ...r.monate.map(m => Math.max(m.zu, m.ab)));
+  document.getElementById('tb-bewegung').innerHTML = `
+    <div class="tb-bilanz" id="tb-bilanz">
+      <div><b>${tbCount(r.anfang)}</b><span>Anfangsbestand<br>${tbFmtDate(r.von)}</span></div><i>+</i>
+      <div class="is-zu"><b>${tbCount(r.zugaenge.n)}</b><span>Zugänge</span></div><i>−</i>
+      <div class="is-ab"><b>${tbCount(r.abgaenge.n)}</b><span>Abgänge</span></div><i>=</i>
+      <div class="is-end"><b>${tbCount(r.endbestand)}</b><span>Bestand<br>${tbFmtDate(r.bis)}</span></div>
+    </div>
+    <div class="ue-grid2 tb-arten">
+      <div><h4>Zugänge nach Art</h4><div id="tb-zugaenge">${artList(r.zugaenge.arten, r.zugaenge.n)}</div>${betriebe(r.zugaenge.vorbesitzer, 'Von Betrieb (Nr. · Tiere)')}</div>
+      <div><h4>Abgänge nach Art</h4><div id="tb-abgaenge">${artList(r.abgaenge.arten, r.abgaenge.n)}</div>${betriebe(r.abgaenge.uebernehmer, 'An Betrieb (Nr. · Tiere)')}
+        ${r.verlustrate != null ? `<p class="ue-hint-line">Verluste (verendet/tot): ${r.abgaenge.verluste} Tiere = ${tbNum(r.verlustrate, 1)} % des Durchschnittsbestands.</p>` : ''}</div>
+    </div>
+    <h4>Zu- und Abgänge je Monat</h4>
+    <div class="tb-monate">${r.monate.map(m => `<div class="tb-monat" title="${m.monat.slice(5)}/${m.monat.slice(0, 4)}: ${m.zu} Zugänge, ${m.ab} Abgänge">
+        <span class="tb-monat-bars"><span class="is-zu" data-grow="height" style="height:${m.zu / maxMon * 100}%"></span><span class="is-ab" data-grow="height" style="height:${m.ab / maxMon * 100}%"></span></span>
+        <span class="tb-monat-label">${m.monat.slice(5)}/${m.monat.slice(2, 4)}</span></div>`).join('')}</div>
+    <p class="ue-hint-line"><span class="tb-legend is-zu"></span>Zugänge <span class="tb-legend is-ab"></span>Abgänge</p>`;
+
+  // Altersklassen am Stichtag
+  document.getElementById('tb-klassen-title').textContent = 'Bestand nach Alter und Geschlecht am ' + tbFmtDate(r.bis);
+  document.getElementById('tb-klassen').innerHTML = `<thead><tr><th>Klasse</th><th class="num" title="männlich">m</th><th class="num" title="weiblich">w</th><th class="num">gesamt</th><th class="num">GV</th></tr></thead>
+    <tbody>${r.klassen.map((c, i) => `<tr data-klasse="${c.key}" class="ue-row-anim" style="--i:${i * 3}"><td>${escapeHtml(c.label)}</td><td class="num">${c.m || '–'}</td><td class="num">${c.w || '–'}</td><td class="num"><b>${c.anzahl}</b></td><td class="num">${tbNum(c.gvStichtag, 1)}</td></tr>`).join('')}</tbody>
+    <tfoot><tr><td>Summe</td><td class="num">${r.klassen.reduce((s, c) => s + c.m, 0)}</td><td class="num">${r.klassen.reduce((s, c) => s + c.w, 0)}</td><td class="num">${r.endbestand}</td><td class="num">${tbNum(r.gvStichtag, 1)}</td></tr></tfoot>`;
+
+  // Düngung und Tierbesatz
+  const lfInput = document.getElementById('tb-lf');
+  if (document.activeElement !== lfInput) lfInput.value = lf != null ? String(lf).replace('.', ',') : '';
+  document.getElementById('tb-lf-hint').innerHTML = d.lfHa != null
+    ? `von Hand eingetragen${lfAuto > 0 ? ` — <button type="button" class="ko-link-btn" id="tb-lf-reset">Flächenübersicht verwenden (${tbNum(lfAuto, 2)} ha)</button>` : ''}`
+    : (lfAuto > 0 ? 'aus der Flächenübersicht übernommen' : 'keine Flächen geladen — bitte eintragen');
+  document.getElementById('tb-kuh').value = d.kuhNutzung || 'mutterkuh';
+  const pct = r.nAuslastung;
+  const level = pct == null ? '' : pct > 100 ? ' is-bad' : pct > 90 ? ' is-warn' : ' is-ok';
+  document.getElementById('tb-duengung').innerHTML = `
+    <div class="tb-n${level}" id="tb-n">
+      <div class="tb-n-main">
+        <span class="tb-n-value">${r.nJeHa != null ? tbCount(r.nJeHa, 1) : '–'}<small>kg N/ha</small></span>
+        <span class="tb-n-text">${pct == null ? 'Fläche eintragen, um den Stickstoffanfall je Hektar zu berechnen.'
+          : pct > 100 ? `Die Grenze von ${TB_N_GRENZE} kg N je Hektar und Jahr ist überschritten (${tbNum(pct, 0)} %).`
+            : `${tbNum(pct, 0)} % der Grenze von ${TB_N_GRENZE} kg N je Hektar und Jahr.`}</span>
+      </div>
+      <div class="tb-n-bar" role="img" aria-label="Auslastung der Stickstoffgrenze"><span data-grow="width" style="width:${Math.min(100, pct || 0)}%"></span><i></i></div>
+      <div class="tb-n-facts">
+        <span><b>${tbNum(r.nJahr, 0)} kg N</b> Anfall je Jahr</span>
+        <span><b>${tbNum(r.nMaxHa, 2)} ha</b> Mindestfläche für diesen Bestand</span>
+        <span id="tb-besatz"><b>${r.gvJeHa != null ? tbNum(r.gvJeHa, 2) : '–'} GV/ha</b> Tierbesatz (Ø im Zeitraum)</span>
+      </div>
+    </div>
+    <div class="ue-table-wrap"><table class="tb-table" id="tb-n-table"><thead><tr><th>Klasse</th><th class="num" title="Durchschnittsbestand im Zeitraum">Ø Tiere</th><th class="num" title="kg Stickstoff je Tier und Jahr">kg N/Tier</th><th class="num" title="kg Stickstoff je Jahr">kg N/Jahr</th></tr></thead>
+      <tbody>${r.klassen.filter(c => c.schnitt > 0).map(c => `<tr><td>${escapeHtml(c.label)}</td><td class="num">${tbNum(c.schnitt, 1)}</td><td class="num">${tbNum(c.nFaktor, 1)}</td><td class="num">${tbNum(c.nJahr, 0)}</td></tr>`).join('')}</tbody>
+      <tfoot><tr><td>Summe</td><td class="num">${tbNum(r.schnitt, 1)}</td><td></td><td class="num">${tbNum(r.nJahr, 0)}</td></tr></tfoot></table></div>`;
+
+  renderTbStall(r);
+  renderTbTiere(r);
+  tbAnimate(animate);
+}
+
+// Zuordnung zu Stallabteilen: Tiere landen im Stallplan (Abteil › Tiere) und
+// zählen dort in die Flächenprüfung nach Öko-VO.
+function renderTbStall(r) {
+  const el = document.getElementById('tb-stall');
+  const abteile = tbStallAbteile();
+  if (!abteile.length) {
+    el.innerHTML = `<div class="ko-empty ko-empty-small"><span class="material-symbols-rounded icon" aria-hidden="true">space_dashboard</span><p>Noch kein Stallplan mit Abteilen. Lege im Stallplaner den Stall und seine Abteile an — dann lassen sich die Tiere hier zuordnen.</p></div>
+      <button type="button" class="betrieb-btn" data-tb-goto="stallplaner"><span class="material-symbols-rounded icon" aria-hidden="true">space_dashboard</span>Zum Stallplaner</button>`;
+    return;
+  }
+  const zugeordnet = abteile.reduce((s, x) => s + tbRinderIn(x.c), 0);
+  const offen = r.endbestand - zugeordnet;
+  const kats = OEKO_VO_KATEGORIEN.filter(kat => kat.tierart === 'rinder');
+  el.innerHTML = `<div class="tb-stall-sum${offen < 0 ? ' is-bad' : offen === 0 ? ' is-ok' : ''}" id="tb-stall-sum">
+      <b>${zugeordnet}</b> von <b>${r.endbestand}</b> Rindern einem Abteil zugeordnet · ${offen > 0 ? `<b>${offen}</b> noch ohne Abteil` : offen === 0 ? 'alle zugeordnet' : `<b>${-offen}</b> mehr zugeordnet als im Bestand`}
+    </div>
+    ${abteile.map(({ plan, c }) => {
+      const area = shoelaceArea(c.points) * plan.gridScale * plan.gridScale;
+      const benoetigt = compartmentHasCountedAnimals(c) ? compartmentBenoetigteFlaeche(c) : null;
+      const badge = benoetigt == null ? '' : area >= benoetigt
+        ? `<span class="stallplan-badge ok">✓ ${(area - benoetigt).toFixed(1)} m² Reserve</span>`
+        : `<span class="stallplan-badge fail">✗ ${(benoetigt - area).toFixed(1)} m² fehlend</span>`;
+      const chips = (c.tierbestand || []).filter(tb => tb.kategorieId && tb.tieranzahl).map(tb => {
+        const kat = OEKO_VO_KATEGORIEN.find(x => x.id === tb.kategorieId);
+        return `<span class="tb-stall-chip">${tb.tieranzahl} × ${escapeHtml(kat ? kat.label : 'Tiere')}<button type="button" data-tb-unassign="${escapeHtml(tb.id)}" data-c="${escapeHtml(c.id)}" title="Zuordnung entfernen" aria-label="Zuordnung entfernen"><span class="material-symbols-rounded icon" aria-hidden="true">close</span></button></span>`;
+      }).join('');
+      return `<div class="tb-stall-row" data-tb-abteil="${escapeHtml(c.id)}">
+        <div class="tb-stall-head"><strong>${escapeHtml(c.name || 'Abteil')}</strong><span>${escapeHtml(plan.name || 'Stallplan')} · ${area.toFixed(1)} m²</span>${badge}</div>
+        <div class="tb-stall-chips">${chips || '<span class="kb-tile-empty">Noch keine Tiere zugeordnet.</span>'}</div>
+        <div class="tb-stall-form">
+          <select aria-label="Kategorie">${kats.map(kat => `<option value="${kat.id}">${escapeHtml(kat.label)}</option>`).join('')}</select>
+          <input type="number" min="1" inputmode="numeric" placeholder="Anzahl" aria-label="Anzahl">
+          <button type="button" class="betrieb-btn" data-tb-assign="${escapeHtml(c.id)}"><span class="material-symbols-rounded icon" aria-hidden="true">add</span>Zuordnen</button>
+        </div>
+      </div>`;
+    }).join('')}
+    <p class="ue-hint-line">Die Zuordnung steht auch im Stallplaner beim Abteil unter „Tiere“ und zählt dort in die Flächenprüfung nach Öko-Verordnung. Die Kategorien richten sich dort nach dem Gewicht — der Auszug kennt nur das Alter.</p>`;
+}
+function tbFindAbteil(id) {
+  return tbStallAbteile().find(x => x.c.id === id) || null;
+}
+
+function tbVisibleTiere(r) {
+  const d = tierbestandData;
+  const q = tbSearch.trim().toLowerCase();
+  return d.tiere.filter(t => {
+    const st = tbStatus(t, d.von, d.bis);
+    if (tbFilter === 'bestand' && st === 'abgang') return false;
+    if (tbFilter === 'zugang' && !(t.zugang.datum >= d.von)) return false;
+    if (tbFilter === 'abgang' && st !== 'abgang') return false;
+    return !q || `${t.ohrmarke} ${t.rasse} ${t.zugang.betrieb} ${t.abgang ? t.abgang.betrieb : ''}`.toLowerCase().includes(q);
+  });
+}
+function renderTbTiere(r) {
+  const d = tierbestandData;
+  document.querySelectorAll('#tb-filter [data-tb-filter]').forEach(b => b.setAttribute('aria-checked', String(b.dataset.tbFilter === tbFilter)));
+  const rows = tbVisibleTiere(r);
+  document.getElementById('tb-tiere-count').textContent = rows.length;
+  document.getElementById('tb-tiere').innerHTML = `<thead><tr><th>Ohrmarke</th><th>Geboren</th><th>Alter</th><th>Geschl.</th><th>Rasse</th><th>Zugang</th><th>Abgang</th></tr></thead>
+    <tbody>${rows.length ? rows.map((t, ti) => {
+      const bisDatum = t.abgang && t.abgang.datum <= d.bis ? t.abgang.datum : d.bis;
+      return `<tr class="is-${tbStatus(t, d.von, d.bis)}${ti < 30 ? ' ue-row-anim' : ''}" style="--i:${Math.min(ti, 30) + 12}"><td>${escapeHtml(t.ohrmarke)}</td><td>${tbFmtDate(t.geb)}</td><td>${tbAlterText(t.geb, bisDatum)}</td><td>${t.sex === 'M' ? 'm' : 'w'}</td><td>${escapeHtml(t.rasse)}</td>
+        <td>${tbFmtDate(t.zugang.datum)} · ${escapeHtml(t.zugang.art === 'GE' ? 'Geburt' : (TB_ZUGANG_ARTEN[t.zugang.art] || t.zugang.art).split(' (')[0])}${t.zugang.betrieb ? ` <small>von ${escapeHtml(t.zugang.betrieb)}</small>` : ''}</td>
+        <td>${t.abgang ? `${tbFmtDate(t.abgang.datum)} · ${escapeHtml((TB_ABGANG_ARTEN[t.abgang.art] || t.abgang.art).split(' (')[0])}${t.abgang.betrieb ? ` <small>an ${escapeHtml(t.abgang.betrieb)}</small>` : ''}` : '–'}</td></tr>`;
+    }).join('') : '<tr><td colspan="7" style="color:var(--muted); padding:14px;">Keine Tiere in dieser Auswahl.</td></tr>'}</tbody>`;
+}
+function exportTierbestand() {
+  if (!tierbestandData) return;
+  const d = tierbestandData;
+  const headers = ['Ohrmarke', 'Geboren', 'Geschlecht', 'Rasse', 'Zugang', 'Zugang Art', 'Vorbesitzer', 'Abgang', 'Abgang Art', 'Übernehmer', 'GVE'];
+  const data = tbVisibleTiere().map(t => [t.ohrmarke, tbFmtDate(t.geb), t.sex === 'M' ? 'm' : 'w', t.rasse, tbFmtDate(t.zugang.datum), TB_ZUGANG_ARTEN[t.zugang.art] || t.zugang.art, t.zugang.betrieb,
+    t.abgang ? tbFmtDate(t.abgang.datum) : '', t.abgang ? (TB_ABGANG_ARTEN[t.abgang.art] || t.abgang.art) : '', t.abgang ? t.abgang.betrieb : '', t.gve]);
+  exportXlsx(headers, data, zuordnungFileName('Tierbestand', 'xlsx') || `tierbestand_${d.bis}.xlsx`, 'Tierbestand');
+}
+document.getElementById('btn-tb-xlsx').addEventListener('click', exportTierbestand);
+
+document.getElementById('tiere-view').addEventListener('click', (e) => {
+  const t = e.target.closest('button');
+  if (!t) return;
+  if (t.dataset.tbFilter) { tbFilter = t.dataset.tbFilter; renderTbTiere(); return; }
+  if (t.id === 'tb-wfp') { openBestandsentwicklungWfp(); return; }
+  if (t.dataset.tbGoto) { setActiveSegment(t.dataset.tbGoto); return; }
+  if (t.id === 'tb-lf-reset') { tierbestandData.lfHa = null; persistLocalState().catch(() => {}); renderTierbestand(); return; }
+  if (t.dataset.tbAssign) {
+    const x = tbFindAbteil(t.dataset.tbAssign);
+    const row = t.closest('.tb-stall-row');
+    const n = parseInt(row.querySelector('input').value, 10);
+    if (!x || !(n > 0)) { row.querySelector('input').focus(); return; }
+    const entry = newTierbestandEntry('rinder');
+    entry.kategorieId = row.querySelector('select').value;
+    entry.tieranzahl = n;
+    x.c.tierbestand = x.c.tierbestand || [];
+    x.c.tierbestand.push(entry);
+    persistLocalState().catch(() => {});
+    renderTierbestand();
+    return;
+  }
+  if (t.dataset.tbUnassign) {
+    const x = tbFindAbteil(t.dataset.c);
+    if (!x) return;
+    x.c.tierbestand = (x.c.tierbestand || []).filter(tb => tb.id !== t.dataset.tbUnassign);
+    persistLocalState().catch(() => {});
+    renderTierbestand();
+  }
+});
+document.getElementById('tb-search').addEventListener('input', (e) => { tbSearch = e.target.value; renderTbTiere(); });
+document.getElementById('tb-lf').addEventListener('change', (e) => {
+  if (!tierbestandData) return;
+  const v = parseFloat(String(e.target.value).replace(/\./g, '').replace(',', '.'));
+  tierbestandData.lfHa = Number.isFinite(v) && v > 0 ? v : null;
+  persistLocalState().catch(() => {});
+  renderTierbestand();
+});
+document.getElementById('tb-kuh').addEventListener('change', (e) => {
+  if (!tierbestandData) return;
+  tierbestandData.kuhNutzung = e.target.value;
+  persistLocalState().catch(() => {});
+  renderTierbestand();
+});
+function refreshTierbestandIfOpen() {
+  if (document.body.dataset.view === 'tiere') renderTierbestand();
+}
+
+// ---- Warenflussprüfungen am Termin (Logik/Oberfläche: src/warenfluss.js) ----
+function warenflussSectionHtml(ev) {
+  const list = ev.warenfluss || [];
+  const rows = list.slice().sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))).map(chk => {
+    const info = warenflussRowInfo(chk);
+    const s = info.summary;
+    const badge = s.bad ? `<span class="wf-status is-bad"><span class="wf-dot"></span>${s.bad} auffällig</span>`
+      : s.warn ? `<span class="wf-status is-warn"><span class="wf-dot"></span>${s.warn} prüfen</span>`
+        : s.ok ? `<span class="wf-status is-ok"><span class="wf-dot"></span>plausibel</span>` : '<span class="wf-status">noch leer</span>';
+    return `<div class="probenprotokoll-row wf-list-row">
+      <button type="button" class="probenprotokoll-row-main" data-wf-open="${escapeHtml(chk.id)}">
+        <span class="probenprotokoll-row-title"><span class="material-symbols-rounded icon wf-list-icon" aria-hidden="true">${info.icon}</span>${escapeHtml(info.titel)}</span>
+        <span class="probenprotokoll-row-sub">${info.pfad ? `${escapeHtml(info.pfad)} · ` : ''}Zeitraum ${escapeHtml(info.zeitraum || '–')} · ${badge}</span>
+      </button>
+      <button type="button" class="probenprotokoll-row-delete" data-wf-del="${escapeHtml(chk.id)}" title="Warenflussprüfung löschen" aria-label="Warenflussprüfung ${escapeHtml(info.titel)} löschen">
+        <span class="material-symbols-rounded icon">delete</span>
+      </button>
+    </div>`;
+  }).join('');
+  return `<div class="tk-attachments" id="tk-warenfluss">
+    <div class="tk-attachments-head">Warenflussprüfungen</div>
+    <div id="tk-warenfluss-list">${rows || '<p class="empty-hint">Noch keine Warenflussprüfung.</p>'}</div>
+    <div class="tk-attachments-actions">
+      <button type="button" class="tk-attachment-btn tk-attachment-btn-primary" id="tk-warenfluss-new" aria-expanded="false">
+        <span class="material-symbols-rounded icon">balance</span> Neue Warenflussprüfung
+      </button>
+    </div>
+    <div class="wf-module-picker" id="tk-warenfluss-picker" hidden>
+      ${Object.entries(WF_MODULE).map(([key, mod]) => `<button type="button" class="wf-module-btn" data-wf-new="${key}">
+        <span class="material-symbols-rounded icon" aria-hidden="true">${mod.icon}</span>
+        <span><strong>${escapeHtml(mod.label)}</strong><small>${escapeHtml(mod.sub)}</small></span>
+      </button>`).join('')}
+    </div>
+  </div>`;
+}
+function wireWarenflussSection(ev) {
+  initWarenflussUi();
+  const newBtn = document.getElementById('tk-warenfluss-new');
+  const picker = document.getElementById('tk-warenfluss-picker');
+  if (!newBtn) return;
+  newBtn.addEventListener('click', () => {
+    picker.hidden = !picker.hidden;
+    newBtn.setAttribute('aria-expanded', String(!picker.hidden));
+  });
+  picker.querySelectorAll('[data-wf-new]').forEach(btn => btn.addEventListener('click', () => {
+    const chk = createWarenfluss(btn.dataset.wfNew);
+    ev.warenfluss = ev.warenfluss || [];
+    ev.warenfluss.push(chk);
+    openWarenflussFor(ev, chk);
+  }));
+  document.querySelectorAll('#tk-warenfluss-list [data-wf-open]').forEach(btn => btn.addEventListener('click', () => {
+    const chk = (ev.warenfluss || []).find(c => c.id === btn.dataset.wfOpen);
+    if (chk) openWarenflussFor(ev, chk);
+  }));
+  document.querySelectorAll('#tk-warenfluss-list [data-wf-del]').forEach(btn => btn.addEventListener('click', () => {
+    const chk = (ev.warenfluss || []).find(c => c.id === btn.dataset.wfDel);
+    if (!chk) return;
+    const info = warenflussRowInfo(chk);
+    if (!confirm(`Warenflussprüfung „${info.titel}"${info.zeitraum ? ` (${info.zeitraum})` : ''} wirklich löschen? Das lässt sich nicht rückgängig machen.`)) return;
+    ev.warenfluss = ev.warenfluss.filter(x => x.id !== chk.id);
+    persistLocalState().catch(() => {});
+    renderTerminkalenderDetail(ev);
+  }));
+}
+// Kulturen mit summierten Hektar aus der Flächenübersicht für die
+// Warenflussprüfung — nur wenn die geladenen Flächen zum Betrieb des Termins
+// gehören (sonst kämen die Hektar eines anderen Betriebs in die Prüfung).
+function warenflussFlaechenCtx(ev) {
+  const passt = activeZuordnung && kbKey(activeZuordnung.betrieb) === kbKey(ev.kunde);
+  if (!passt) return { flaechen: null, flaechenHinweis: `Flächen aus der Flächenübersicht werden übernommen, sobald „${ev.kunde}“ als Betrieb gewählt ist.` };
+  const { rows } = collectGesamtFlaechen();
+  if (!rows.length) return { flaechen: null, flaechenHinweis: 'Für diesen Betrieb sind noch keine Flächen geladen — dann werden die Hektar je Kultur automatisch übernommen.' };
+  return {
+    flaechen: summarizeGesamtKulturen(rows).all.filter(k => k.label !== 'Ohne Angabe').map(k => ({ label: k.label, ha: k.value, count: k.count })),
+    flaechenHinweis: ''
+  };
+}
+// Auswertung des Tierbestands (HIT-Auszug) für die Warenflussprüfung
+// "Bestandsentwicklung Rinder" — wie bei den Flächen nur, wenn der geladene
+// Tierbestand zum Betrieb des Termins gehört.
+function warenflussBestandCtx(ev) {
+  const passt = activeZuordnung && kbKey(activeZuordnung.betrieb) === kbKey(ev.kunde);
+  if (!passt) return { bestand: null, bestandHinweis: `Der Tierbestand wird übernommen, sobald „${ev.kunde}“ als Betrieb gewählt ist.` };
+  if (!tierbestandData) return { bestand: null, bestandHinweis: 'Für diesen Betrieb ist noch kein Tierbestand geladen — unter „Tierbestand“ das Bestandsregister aus HI-Tier laden.' };
+  const { r } = tbResult();
+  return {
+    bestandHinweis: '',
+    bestand: {
+      von: r.von, bis: r.bis, anfang: r.anfang, endbestand: r.endbestand, bilanzOk: r.bilanzOk,
+      zugaenge: { n: r.zugaenge.n, arten: r.zugaenge.arten },
+      abgaenge: { n: r.abgaenge.n, arten: r.abgaenge.arten, verluste: r.abgaenge.verluste },
+      verlustrate: r.verlustrate, gvSchnitt: r.gvSchnitt,
+      klassen: r.klassen.map(k => ({ label: k.label, anzahl: k.anzahl }))
+    }
+  };
+}
+// Aus der Ansicht "Tierbestand": Prüfung "Bestandsentwicklung Rinder" am
+// aktuellen Termin des Betriebs anlegen (oder die vorhandene öffnen).
+function openBestandsentwicklungWfp() {
+  const status = document.getElementById('tb-wfp-status');
+  if (!(isSupabaseConfigured && accountSession)) { status.textContent = 'Warenflussprüfungen gehören zur Kontrolle — bitte zuerst anmelden.'; return; }
+  const g = kbCurrent();
+  if (!g) { status.textContent = 'Die Prüfung wird an einem Termin gespeichert — bitte oben einen Betrieb mit Termin wählen.'; return; }
+  status.textContent = '';
+  const ev = g.primary;
+  let chk = (ev.warenfluss || []).find(c => c.modul === 'bestand');
+  if (!chk) {
+    chk = createWarenfluss('bestand');
+    ev.warenfluss = ev.warenfluss || [];
+    ev.warenfluss.push(chk);
+  }
+  initWarenflussUi();
+  openWarenflussFor(ev, chk);
+}
+function openWarenflussFor(ev, chk) {
+  openWarenfluss(chk, {
+    ctx: { betrieb: ev.kunde, datum: tkFmtDate(ev.date), kontrolleur: kontoProfil.name || '', ...warenflussFlaechenCtx(ev), ...warenflussBestandCtx(ev) },
+    onChange: () => { /* Speicherung über den regulären lokalen Abgleich (persistLocalState) */ },
+    onDelete: (c) => {
+      ev.warenfluss = (ev.warenfluss || []).filter(x => x.id !== c.id);
+      persistLocalState().catch(() => {});
+      if (terminkalenderSelectedId) renderTerminkalenderDetail(ev);
+      refreshKontrolleBetrieb();
+    },
+    onClose: () => {
+      persistLocalState().catch(() => {});
+      if (terminkalenderSelectedId) renderTerminkalenderDetail(ev);
+      refreshKontrolleBetrieb();
+    }
+  });
+}
+
+function formularSectionsHtml(ev) {
+  return Object.keys(TK_FORMULARE).map(kind => formularSectionHtml(ev, kind)).join('');
+}
+
+function wireFormularSections(ev) {
+  Object.keys(TK_FORMULARE).forEach(kind => {
+    const def = tkFormularDef(kind);
+    document.getElementById(`tk-${def.idPrefix}-new`).addEventListener('click', () => {
+      const p = createFormular(ev, kind);
+      openFormular(kind, ev.id, p.id);
+    });
+    document.getElementById(`tk-${def.idPrefix}-list`).addEventListener('click', (e) => {
+      const delBtn = e.target.closest('[data-action="delete-protokoll"]');
+      if (delBtn) { deleteFormular(ev, kind, delBtn.getAttribute('data-id')); return; }
+      const openBtn = e.target.closest('[data-action="open-protokoll"]');
+      if (openBtn) openFormular(kind, ev.id, openBtn.getAttribute('data-id'));
+    });
+  });
+}
+
+function getActiveProbenprotokoll() {
+  const ev = terminkalenderEvents.find(e => e.id === activeProbenprotokollEventId);
+  if (!ev) return null;
+  const def = tkFormularDef(activeProbenprotokollKind);
+  const p = (ev[def.listKey] || []).find(x => x.id === activeProbenprotokollId);
+  return p ? { ev, p, def, kind: activeProbenprotokollKind } : null;
+}
+
+function openFormular(kind, evId, id) {
+  const def = tkFormularDef(kind);
+  activeProbenprotokollKind = kind;
+  activeProbenprotokollEventId = evId;
+  activeProbenprotokollId = id;
+  document.getElementById('probenprotokoll-modal-title').textContent = def.title;
+  document.getElementById('probenprotokoll-modal-delete-label').textContent = def.deleteLabel;
+  document.getElementById('probenprotokoll-modal-overlay').hidden = false;
+  renderProbenprotokollForm();
+}
+
+function openProbenprotokoll(evId, id) {
+  openFormular('probenprotokoll', evId, id);
+}
+
+function closeProbenprotokollModal() {
+  const evId = activeProbenprotokollEventId;
+  activeProbenprotokollEventId = null;
+  activeProbenprotokollId = null;
+  document.getElementById('probenprotokoll-modal-overlay').hidden = true;
+  document.getElementById('probenprotokoll-modal-form').innerHTML = '';
+  // Neu angelegte/bearbeitete Formulare ändern Titel/Status der Zeile in
+  // der Liste (siehe formularSectionHtml) — die wurde beim Öffnen nicht neu
+  // gerendert, muss also spätestens beim Schließen aktualisiert werden,
+  // sonst zeigt sie einen veralteten Stand.
+  if (evId === terminkalenderSelectedId) {
+    const ev = terminkalenderEvents.find(e => e.id === evId);
+    if (ev) renderTerminkalenderDetail(ev);
+  }
+  refreshKontrolleBetrieb();
+}
+
+// Fehlende Pflichtangaben eines Formulars — { field } für Formularfelder,
+// { signature } für Unterschriften. Erklärungen mit requiredUnless entfallen,
+// sobald das genannte Feld (Annahme abgelehnt) angekreuzt ist.
+function probenprotokollMissing(p, kind = activeProbenprotokollKind) {
+  const def = tkFormularDef(kind);
+  const missing = [];
+  def.sections.forEach(sec => sec.fields.forEach(f => {
+    const v = p.values[f.name];
+    const filled = typeof v === 'string' ? v.trim() !== '' : !!v;
+    const needed = f.required || (f.requiredUnless && !p.values[f.requiredUnless]);
+    if (needed && !filled) missing.push({ field: f.name, label: f.shortLabel || f.label });
+  }));
+  if (def.extraMissing) missing.push(...def.extraMissing(p));
+  def.signatures.forEach(s => {
+    if (!p[s.key]) missing.push({ signature: s.key, canvasId: s.canvasId, label: s.label });
+  });
+  return missing;
+}
+
+// Markiert fehlende Felder im offenen Formular und zeigt die Liste über den
+// Aktions-Buttons. Läuft erst nach dem ersten Export-Versuch
+// (probenprotokollValidationShown), danach bei jeder Eingabe erneut, damit
+// die Markierung verschwindet, sobald ein Feld ausgefüllt ist.
+let probenprotokollValidationShown = false;
+function markProbenprotokollMissing(p) {
+  const form = document.getElementById('probenprotokoll-modal-form');
+  const errorEl = document.getElementById('probenprotokoll-modal-error');
+  form.querySelectorAll('.pp-invalid').forEach(el => el.classList.remove('pp-invalid'));
+  const missing = probenprotokollMissing(p);
+  missing.forEach(m => {
+    const el = m.field
+      ? form.querySelector(`[data-field="${CSS.escape(m.field)}"]`)?.closest('.pp-field')
+      : document.getElementById(m.canvasId)?.closest('.pp-signature-block');
+    if (el) el.classList.add('pp-invalid');
+  });
+  errorEl.hidden = missing.length === 0;
+  errorEl.textContent = missing.length ? 'Bitte noch ausfüllen: ' + missing.map(m => m.label).join(', ') + '.' : '';
+  return missing;
+}
+
+function refreshProbenprotokollValidation(p) {
+  if (probenprotokollValidationShown) markProbenprotokollMissing(p);
+}
+
+// Graut abhängige Felder (dependsOn) aus, solange die übergeordnete Auswahl
+// nicht passt.
+function updateFormularDependencies(p) {
+  const ref = getActiveProbenprotokoll();
+  if (!ref) return;
+  const form = document.getElementById('probenprotokoll-modal-form');
+  ref.def.allFields.forEach(f => {
+    if (!f.dependsOn) return;
+    const active = formularFieldActive(f, p.values);
+    form.querySelectorAll(`[data-field="${CSS.escape(f.name)}"]`).forEach(el => {
+      el.disabled = !active;
+      el.closest('.pp-field')?.classList.toggle('pp-field-inactive', !active);
+    });
+  });
+}
+
+function probenprotokollFieldRowHtml(f, values) {
+  const id = 'pp-field-' + f.name.replace(/[^a-zA-Z0-9]/g, '_');
+  const req = (f.required || f.requiredUnless) ? ' <span class="pp-required" title="Pflichtfeld">*</span>' : '';
+  if (f.type === 'text') {
+    const input = `<input type="text" id="${id}" class="account-input" data-field="${escapeHtml(f.name)}" value="${escapeHtml(values[f.name] || '')}">`;
+    // scan: Knopf für den Barcode-Scanner direkt neben dem Feld.
+    const control = f.scan
+      ? `<div class="pp-input-with-action">${input}<button type="button" class="pp-scan-btn" data-scan-field="${escapeHtml(f.name)}" title="Barcode scannen" aria-label="${escapeHtml(f.label)} per Barcode scannen"><span class="material-symbols-rounded icon">barcode_scanner</span></button></div>`
+      : input;
+    return `<div class="pp-field">
+      <label class="compare-label" for="${id}">${escapeHtml(f.label)}${req}</label>
+      ${control}
+    </div>`;
+  }
+  if (f.type === 'textarea') {
+    return `<div class="pp-field pp-field-wide">
+      <label class="compare-label" for="${id}">${escapeHtml(f.label)}${req}</label>
+      <textarea id="${id}" class="account-input" rows="${f.rows || 4}" data-field="${escapeHtml(f.name)}">${escapeHtml(values[f.name] || '')}</textarea>
+    </div>`;
+  }
+  if (f.type === 'checkbox') {
+    const textHtml = f.textField
+      ? `<input type="text" class="account-input" placeholder="Bezeichnung" data-field="${escapeHtml(f.textField)}" value="${escapeHtml(values[f.textField] || '')}">`
+      : '';
+    return `<div class="pp-field pp-checkbox-row modal-checkbox-row">
+      <label><input type="checkbox" data-field="${escapeHtml(f.name)}" ${values[f.name] ? 'checked' : ''}> ${escapeHtml(f.label)}${req}</label>
+      ${textHtml}
+    </div>`;
+  }
+  if (f.type === 'radio') {
+    return `<div class="pp-field pp-field-wide">
+      <span class="compare-label">${escapeHtml(f.label)}${req}</span>
+      <div class="pp-radio-group">
+        ${f.options.map(o => `<label class="pp-radio-option"><input type="radio" name="pp-radio-${id}" data-field="${escapeHtml(f.name)}" value="${escapeHtml(o.value)}" ${values[f.name] === o.value ? 'checked' : ''}> ${escapeHtml(o.label)}</label>`).join('')}
+      </div>
+    </div>`;
+  }
+  return '';
+}
+
+// Anlagen-Dateien (Foto/Dokument) hängen an das Protokoll, nicht an den
+// Termin — eigenes kleines Array statt ev.attachments, damit sie beim
+// PDF-Export gezielt als zusätzliche Seiten eingebettet werden können (siehe
+// exportProbenprotokollPdf), statt einfach nur als weiterer Termin-Anhang
+// danebenzuliegen. Rendering/Upload-Mechanik ist bewusst identisch zu
+// renderTerminkalenderAttachments()/uploadTerminkalenderAttachment()
+// (main.js) — gleiche .tk-attachment*-CSS-Klassen, gleiches Signed-URL-
+// Ladeschema.
+async function renderProbenprotokollAnlagenGrid(p) {
+  const grid = document.getElementById('pp-anlagen-grid');
+  if (!grid) return;
+  const files = p.anlagenDateien || [];
+  if (!files.length) { grid.innerHTML = '<p class="empty-hint">Keine Anlagen-Dateien.</p>'; return; }
+  grid.innerHTML = files.map(() => '<div class="tk-attachment tk-attachment-loading"></div>').join('');
+  const urls = await Promise.all(files.map(a => getPhotoUrl(a.path, a.name).catch(() => null)));
+  grid.innerHTML = attachmentTilesHtml(files, urls);
+  grid.querySelectorAll('[data-dv-index]').forEach(btn => {
+    btn.addEventListener('click', () => openDocViewer(
+      files.map((a, i) => ({ name: a.name, type: a.type, size: a.size, path: a.path, thumb: urls[i] })),
+      Number(btn.dataset.dvIndex)
+    ));
+  });
+  grid.querySelectorAll('.tk-attachment-remove').forEach(btn => {
+    btn.addEventListener('click', () => removeProbenprotokollAnlage(p, btn.getAttribute('data-path')));
+  });
+}
+
+async function addProbenprotokollAnlage(p, file) {
+  const statusEl = document.getElementById('pp-anlage-status');
+  if (!file) return;
+  try {
+    const path = await uploadPhoto(file);
+    p.anlagenDateien = p.anlagenDateien || [];
+    p.anlagenDateien.push({ path, name: file.name, size: file.size, type: file.type || '' });
+    p.updatedAt = new Date().toISOString();
+    renderProbenprotokollAnlagenGrid(p);
+  } catch (err) {
+    if (statusEl) statusEl.textContent = 'Fehler: ' + (err.message || 'Datei konnte nicht hochgeladen werden.');
+  }
+}
+
+async function removeProbenprotokollAnlage(p, path) {
+  const statusEl = document.getElementById('pp-anlage-status');
+  try {
+    await deletePhoto(path);
+    p.anlagenDateien = (p.anlagenDateien || []).filter(a => a.path !== path);
+    p.updatedAt = new Date().toISOString();
+    renderProbenprotokollAnlagenGrid(p);
+  } catch (err) {
+    if (statusEl) statusEl.textContent = 'Fehler: ' + (err.message || 'Löschen fehlgeschlagen.');
+  }
+}
+
+function probenprotokollAnlagenFilesHtml() {
+  return `
+    <div class="tk-attachments pp-anlagen-files">
+      <div class="tk-attachments-head">Anlagen-Dateien (werden beim Export als zusätzliche Seiten eingefügt)</div>
+      <div class="tk-attachments-grid" id="pp-anlagen-grid"></div>
+      <div class="tk-attachments-actions">
+        <label class="tk-attachment-btn">
+          <input type="file" id="pp-anlage-file-input" hidden>
+          <span class="material-symbols-rounded icon">attach_file</span> Foto/Dokument hinzufügen
+        </label>
+        <button type="button" class="tk-attachment-btn" id="pp-anlage-scan">
+          <span class="material-symbols-rounded icon">document_scanner</span> Dokument scannen
+        </button>
+      </div>
+      <p class="modal-hint" id="pp-anlage-status"></p>
+    </div>`;
+}
+
+function renderProbenprotokollForm() {
+  const ref = getActiveProbenprotokoll();
+  if (!ref) return;
+  const { p, def } = ref;
+  probenprotokollValidationShown = false;
+  const errorEl = document.getElementById('probenprotokoll-modal-error');
+  errorEl.hidden = true;
+  errorEl.textContent = '';
+  const sectionsHtml = def.sections.map(sec => `
+    <fieldset class="pp-section">
+      <legend>${escapeHtml(sec.title)}</legend>
+      ${sec.hint ? `<p class="modal-hint">${escapeHtml(sec.hint)}</p>` : ''}
+      <div class="pp-section-grid">${sec.fields.map(f => probenprotokollFieldRowHtml(f, p.values)).join('')}</div>
+      ${sec.title === def.anlagenSection ? probenprotokollAnlagenFilesHtml() : ''}
+    </fieldset>`).join('');
+  const signaturesHtml = `
+    <fieldset class="pp-section">
+      <legend>${def.signatures.length > 1 ? 'Unterschriften' : 'Unterschrift'}</legend>
+      <p class="modal-hint">${escapeHtml(def.signatureHint)}</p>
+      <div class="pp-signature-grid">
+        ${def.signatures.map(s => `
+        <div class="pp-signature-block">
+          <span class="compare-label">${escapeHtml(s.fullLabel || s.label)} <span class="pp-required" title="Pflichtfeld">*</span></span>
+          <canvas class="pp-signature-pad" id="${s.canvasId}" width="480" height="140"></canvas>
+          <div class="pp-signature-actions">
+            <button type="button" class="pp-signature-big" data-sig-big="${s.key}" title="Unterschriftenfeld groß öffnen">
+              <span class="material-symbols-rounded icon">open_in_full</span> Vergrößern
+            </button>
+            ${s.own && kontoProfil.signatur ? `<button type="button" class="pp-signature-own" data-sig-own="${s.key}" title="Unterschrift aus deinem Profil (FeldFolio+ Konto)">
+              <span class="material-symbols-rounded icon">draw</span> Meine Unterschrift einsetzen
+            </button>` : ''}
+            <button type="button" class="pp-signature-clear" data-sig="${s.key}">
+              <span class="material-symbols-rounded icon">refresh</span> Löschen
+            </button>
+          </div>
+        </div>`).join('')}
+      </div>
+    </fieldset>`;
+  document.getElementById('probenprotokoll-modal-form').innerHTML = sectionsHtml + signaturesHtml;
+  wireProbenprotokollFormInputs(p, def);
+  updateFormularDependencies(p);
+  def.signatures.forEach(s => setupSignaturePad(s.canvasId, p, s.key, s));
+  renderProbenprotokollAnlagenGrid(p);
+  document.getElementById('pp-anlage-file-input').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    addProbenprotokollAnlage(p, file);
+  });
+  // Scan direkt als Anlage des Protokolls (wird beim Export als Seiten angehängt)
+  document.getElementById('pp-anlage-scan').addEventListener('click', () => {
+    openScanModal(ref.ev, { onFertig: (file) => addProbenprotokollAnlage(p, new File([file], `Scan_${def.fileArt}_${new Date().toISOString().slice(0, 10)}.pdf`, { type: 'application/pdf' })) });
+  });
+}
+
+function wireProbenprotokollFormInputs(p, def) {
+  const form = document.getElementById('probenprotokoll-modal-form');
+  form.querySelectorAll('[data-field]').forEach(el => {
+    const name = el.getAttribute('data-field');
+    const isCheckOrRadio = el.type === 'checkbox' || el.type === 'radio';
+    el.addEventListener(isCheckOrRadio ? 'change' : 'input', () => {
+      if (el.type === 'checkbox') p.values[name] = el.checked;
+      else if (el.type === 'radio') { if (el.checked) p.values[name] = el.value; }
+      else p.values[name] = el.value;
+      p.updatedAt = new Date().toISOString();
+      if (def.onInput) def.onInput(p, name, p.values[name]);
+      updateFormularDependencies(p);
+      refreshProbenprotokollValidation(p);
+    });
+  });
+  form.querySelectorAll('[data-scan-field]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const input = form.querySelector(`input[data-field="${CSS.escape(btn.getAttribute('data-scan-field'))}"]`);
+      openBarcodeScanner(code => applyScannedCode(input, code));
+    });
+  });
+}
+
+// Freihändiges Zeichnen per Pointer Events (kein Vorbild in dieser App — der
+// Dokumentenscanner nutzt Canvas nur zum Video-Frame-Halten/4-Eck-Zuschnitt,
+// keine Tinte). Pointer Capture direkt auf dem Canvas statt des sonst in
+// dieser App üblichen document-weiten Drag-Musters, da ein einzelner
+// durchgehender Strichzug gezeichnet wird, nicht ein einzelner Punkt verschoben.
+function setupSignaturePad(canvasId, protokoll, key, sig = {}) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  ctx.strokeStyle = '#1a1a1a';
+  ctx.lineWidth = 2;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  let drawing = false;
+  let lastX = 0, lastY = 0;
+
+  function pointerPos(e) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left) * (canvas.width / rect.width),
+      y: (e.clientY - rect.top) * (canvas.height / rect.height)
+    };
+  }
+  canvas.addEventListener('pointerdown', (e) => {
+    drawing = true;
+    const pos = pointerPos(e);
+    lastX = pos.x; lastY = pos.y;
+    canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (!drawing) return;
+    const pos = pointerPos(e);
+    ctx.beginPath();
+    ctx.moveTo(lastX, lastY);
+    ctx.lineTo(pos.x, pos.y);
+    ctx.stroke();
+    lastX = pos.x; lastY = pos.y;
+  });
+  const endStroke = () => {
+    if (!drawing) return;
+    drawing = false;
+    protokoll[key] = canvas.toDataURL('image/png');
+    refreshProbenprotokollValidation(protokoll);
+  };
+  canvas.addEventListener('pointerup', endStroke);
+  canvas.addEventListener('pointercancel', endStroke);
+
+  if (protokoll[key]) {
+    const img = new Image();
+    img.onload = () => ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    img.src = protokoll[key];
+  }
+
+  // Gespeicherte Unterschrift aus dem Profil per Knopfdruck einsetzen.
+  const ownBtn = document.querySelector(`.pp-signature-own[data-sig-own="${key}"]`);
+  if (ownBtn) {
+    ownBtn.addEventListener('click', () => {
+      if (!kontoProfil.signatur) return;
+      protokoll[key] = kontoProfil.signatur;
+      drawSignatureOnCanvas(canvas, kontoProfil.signatur);
+      refreshProbenprotokollValidation(protokoll);
+    });
+  }
+  // Großes Unterschriftenfeld (Popout) — Ergebnis ersetzt die Unterschrift.
+  const bigBtn = document.querySelector(`.pp-signature-big[data-sig-big="${key}"]`);
+  if (bigBtn) {
+    bigBtn.addEventListener('click', () => openSignaturePopout({
+      title: sig.fullLabel || sig.label || 'Unterschrift',
+      sub: protokoll.values && (protokoll.values['Name des Unternehmens'] || protokoll.values['Name']) || '',
+      dataUrl: protokoll[key],
+      own: !!(sig.own && kontoProfil.signatur),
+      onApply: (dataUrl) => {
+        protokoll[key] = dataUrl;
+        drawSignatureOnCanvas(canvas, dataUrl);
+        refreshProbenprotokollValidation(protokoll);
+      }
+    }));
+  }
+  const clearBtn = document.querySelector(`.pp-signature-clear[data-sig="${key}"]`);
+  if (clearBtn) {
+    clearBtn.addEventListener('click', () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      protokoll[key] = null;
+      refreshProbenprotokollValidation(protokoll);
+    });
+  }
+}
+
+// ---- Unterschrift groß (Popout) ----
+// Bildschirmfüllendes Feld im selben Seitenverhältnis wie das kleine
+// (480 : 140 = Kasten im PDF), intern in doppelter Auflösung — die
+// Unterschrift wird dadurch schärfer und sitzt im PDF genauso
+// (drawSignatureFitted skaliert in den Kasten).
+let sigPopout = null; // { onApply, hasInk }
+const sigCanvas = document.getElementById('sigpad-canvas');
+(function setupSignaturePopoutInk() {
+  const ctx = sigCanvas.getContext('2d');
+  let drawing = false, lastX = 0, lastY = 0;
+  const pos = (e) => {
+    const r = sigCanvas.getBoundingClientRect();
+    return { x: (e.clientX - r.left) * (sigCanvas.width / r.width), y: (e.clientY - r.top) * (sigCanvas.height / r.height) };
+  };
+  sigCanvas.addEventListener('pointerdown', (e) => {
+    if (!sigPopout) return;
+    drawing = true;
+    const p = pos(e);
+    lastX = p.x; lastY = p.y;
+    // Punkt auch bei einem kurzen Tippen (i-Punkt)
+    ctx.strokeStyle = '#1a1a1a'; ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x + 0.1, p.y + 0.1); ctx.stroke();
+    try { sigCanvas.setPointerCapture(e.pointerId); } catch {}
+  });
+  sigCanvas.addEventListener('pointermove', (e) => {
+    if (!drawing) return;
+    const p = pos(e);
+    ctx.beginPath(); ctx.moveTo(lastX, lastY); ctx.lineTo(p.x, p.y); ctx.stroke();
+    lastX = p.x; lastY = p.y;
+  });
+  const end = () => {
+    if (!drawing) return;
+    drawing = false;
+    if (sigPopout) { sigPopout.hasInk = true; updateSignaturePopoutButtons(); }
+  };
+  sigCanvas.addEventListener('pointerup', end);
+  sigCanvas.addEventListener('pointercancel', end);
+})();
+function updateSignaturePopoutButtons() {
+  document.getElementById('sigpad-apply').disabled = !sigPopout;
+  document.getElementById('sigpad-empty').hidden = !!(sigPopout && sigPopout.hasInk);
+}
+function openSignaturePopout({ title, sub = '', dataUrl = null, own = false, onApply }) {
+  sigPopout = { onApply, hasInk: !!dataUrl };
+  document.getElementById('sigpad-title').textContent = title;
+  document.getElementById('sigpad-sub').textContent = sub;
+  document.getElementById('sigpad-own').hidden = !own;
+  drawSignatureOnCanvas(sigCanvas, dataUrl);
+  updateSignaturePopoutButtons();
+  document.getElementById('sigpad-overlay').hidden = false;
+}
+function closeSignaturePopout(apply) {
+  if (!sigPopout) return;
+  const s = sigPopout;
+  sigPopout = null;
+  document.getElementById('sigpad-overlay').hidden = true;
+  if (apply) s.onApply(s.hasInk ? sigCanvas.toDataURL('image/png') : null);
+}
+document.getElementById('sigpad-apply').addEventListener('click', () => closeSignaturePopout(true));
+document.getElementById('sigpad-cancel').addEventListener('click', () => closeSignaturePopout(false));
+document.getElementById('sigpad-close').addEventListener('click', () => closeSignaturePopout(false));
+document.getElementById('sigpad-clear').addEventListener('click', () => {
+  if (!sigPopout) return;
+  sigCanvas.getContext('2d').clearRect(0, 0, sigCanvas.width, sigCanvas.height);
+  sigPopout.hasInk = false;
+  updateSignaturePopoutButtons();
+});
+document.getElementById('sigpad-own').addEventListener('click', () => {
+  if (!sigPopout || !kontoProfil.signatur) return;
+  drawSignatureOnCanvas(sigCanvas, kontoProfil.signatur);
+  sigPopout.hasInk = true;
+  updateSignaturePopoutButtons();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && sigPopout) { e.stopImmediatePropagation(); closeSignaturePopout(false); }
+}, true);
+
+document.getElementById('probenprotokoll-modal-close').addEventListener('click', closeProbenprotokollModal);
+document.getElementById('probenprotokoll-modal-overlay').addEventListener('click', (e) => {
+  if (e.target === document.getElementById('probenprotokoll-modal-overlay')) closeProbenprotokollModal();
+});
+document.getElementById('probenprotokoll-modal-delete').addEventListener('click', () => {
+  const ref = getActiveProbenprotokoll();
+  if (ref) deleteFormular(ref.ev, ref.kind, ref.p.id);
+});
+
+// ---------- Barcode-Scanner (Nr. Analyseproben / Gegenproben) ----------
+// Probenbeutel tragen die Probenummer als Barcode. Wo der Browser einen
+// eigenen Erkenner hat (BarcodeDetector, Chrome auf Android), wird der
+// genutzt; sonst (iPhone, Desktop) @zxing/browser. ZXing ist per npm
+// gebündelt und wird erst beim ersten Scannen nachgeladen — als Teil des
+// Builds hält der Service Worker es vor, der Scanner geht also auch ohne
+// Empfang im Stall.
+const BARCODE_NATIVE_FORMATS = ['code_128', 'code_39', 'code_93', 'codabar', 'ean_13', 'ean_8', 'itf', 'upc_a', 'upc_e', 'qr_code', 'data_matrix'];
+const barcodeOverlay = document.getElementById('barcode-overlay');
+const barcodeVideo = document.getElementById('barcode-video');
+const barcodeStatusEl = document.getElementById('barcode-status');
+const barcodeTorchBtn = document.getElementById('barcode-torch');
+let barcodeStream = null;
+let barcodeStopDecode = null;
+// Zählt jedes Öffnen/Schließen hoch — ein währenddessen geschlossener oder
+// neu geöffneter Scanner macht nach einem await nicht mit altem Zustand weiter.
+let barcodeSession = 0;
+
+// Startet die Erkennung auf dem laufenden Video; ruft onCode genau einmal
+// auf. Rückgabe: Funktion zum Abbrechen.
+async function startBarcodeDecoding(video, onCode) {
+  if ('BarcodeDetector' in window) {
+    try {
+      const supported = await window.BarcodeDetector.getSupportedFormats();
+      const formats = BARCODE_NATIVE_FORMATS.filter(f => supported.includes(f));
+      if (formats.length) {
+        const detector = new window.BarcodeDetector({ formats });
+        let stopped = false;
+        const tick = async () => {
+          if (stopped) return;
+          try {
+            if (video.readyState >= 2) {
+              const codes = await detector.detect(video);
+              const code = codes.find(c => c.rawValue);
+              if (code && !stopped) { stopped = true; onCode(code.rawValue); return; }
+            }
+          } catch {}
+          setTimeout(tick, 120);
+        };
+        tick();
+        return () => { stopped = true; };
+      }
+    } catch {}
+  }
+  const { BrowserMultiFormatReader } = await import('@zxing/browser');
+  const reader = new BrowserMultiFormatReader(undefined, { delayBetweenScanAttempts: 120 });
+  let done = false;
+  let controls = null;
+  controls = await reader.decodeFromVideoElement(video, (result) => {
+    if (!result || done) return;
+    done = true;
+    if (controls) controls.stop();
+    onCode(result.getText());
+  });
+  if (done) controls.stop();
+  return () => { done = true; controls.stop(); };
+}
+
+async function openBarcodeScanner(onCode) {
+  const session = ++barcodeSession;
+  barcodeOverlay.hidden = false;
+  barcodeOverlay.classList.remove('found');
+  barcodeTorchBtn.hidden = true;
+  barcodeTorchBtn.setAttribute('aria-pressed', 'false');
+  barcodeStatusEl.textContent = 'Kamera wird gestartet …';
+  let stream;
+  try {
+    stream = import.meta.env.DEV && window.__ffTestBarcodeStream
+      ? window.__ffTestBarcodeStream()
+      : await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+      });
+  } catch (err) {
+    console.error('Kamerazugriff fehlgeschlagen', err);
+    if (session === barcodeSession) barcodeStatusEl.textContent = 'Kein Kamerazugriff — bitte die Nummer von Hand eintippen.';
+    return;
+  }
+  if (session !== barcodeSession) { stream.getTracks().forEach(t => t.stop()); return; }
+  barcodeStream = stream;
+  barcodeVideo.srcObject = stream;
+  try { await barcodeVideo.play(); } catch {}
+
+  // Taschenlampe (dunkle Ställe) — nur anbieten, wenn die Kamera sie kann.
+  const track = stream.getVideoTracks()[0];
+  const caps = track && track.getCapabilities ? track.getCapabilities() : {};
+  barcodeTorchBtn.hidden = !caps.torch;
+
+  barcodeStatusEl.textContent = 'Barcode in den Rahmen halten.';
+  let stop;
+  try {
+    stop = await startBarcodeDecoding(barcodeVideo, (code) => {
+      if (session !== barcodeSession) return;
+      if (navigator.vibrate) navigator.vibrate(60);
+      closeBarcodeScanner();
+      onCode(String(code).trim());
+    });
+  } catch (err) {
+    console.error('Barcode-Erkennung konnte nicht gestartet werden', err);
+    if (session === barcodeSession) barcodeStatusEl.textContent = 'Barcode-Erkennung nicht verfügbar — bitte die Nummer von Hand eintippen.';
+    return;
+  }
+  if (session !== barcodeSession) { stop(); return; }
+  barcodeStopDecode = stop;
+}
+
+function closeBarcodeScanner() {
+  barcodeSession++;
+  if (barcodeStopDecode) { barcodeStopDecode(); barcodeStopDecode = null; }
+  if (barcodeStream) { barcodeStream.getTracks().forEach(t => t.stop()); barcodeStream = null; }
+  barcodeVideo.srcObject = null;
+  barcodeOverlay.hidden = true;
+}
+
+document.getElementById('barcode-close').addEventListener('click', closeBarcodeScanner);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !barcodeOverlay.hidden) closeBarcodeScanner();
+});
+barcodeTorchBtn.addEventListener('click', async () => {
+  const track = barcodeStream && barcodeStream.getVideoTracks()[0];
+  if (!track) return;
+  const on = barcodeTorchBtn.getAttribute('aria-pressed') !== 'true';
+  try {
+    await track.applyConstraints({ advanced: [{ torch: on }] });
+    barcodeTorchBtn.setAttribute('aria-pressed', String(on));
+  } catch {}
+});
+
+// Gescannte Nummer ins Feld übernehmen. Mehrere Proben = mehrere Nummern:
+// ist schon etwas eingetragen, wird die neue Nummer mit Komma angehängt
+// (doppelt gescannte Nummern nicht zweimal).
+function applyScannedCode(input, code) {
+  if (!code || !input) return;
+  const parts = input.value.split(',').map(s => s.trim()).filter(Boolean);
+  if (!parts.includes(code)) parts.push(code);
+  input.value = parts.join(', ');
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  const field = input.closest('.pp-field');
+  if (field) {
+    field.classList.add('pp-scanned');
+    setTimeout(() => field.classList.remove('pp-scanned'), 1200);
+  }
+}
+
+// Dev-only: echter Decoder-Durchlauf im Test — ein Canvas mit QR-Code dient
+// als "Kamera" (window.__ffTestBarcodeStream), der Rest läuft unverändert.
+if (import.meta.env.DEV) {
+  window.__ffTestBarcode = {
+    async qrCanvas(text, size = 360) {
+      const { QRCodeWriter, BarcodeFormat } = await import('@zxing/library');
+      const matrix = new QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, size, size, new Map());
+      const canvas = document.createElement('canvas');
+      canvas.width = matrix.getWidth();
+      canvas.height = matrix.getHeight();
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = '#000';
+      for (let y = 0; y < matrix.getHeight(); y++) {
+        for (let x = 0; x < matrix.getWidth(); x++) {
+          if (matrix.get(x, y)) ctx.fillRect(x, y, 1, 1);
+        }
+      }
+      return canvas;
+    },
+    isOpen: () => !barcodeOverlay.hidden,
+    streamActive: () => !!barcodeStream && barcodeStream.getTracks().some(t => t.readyState === 'live')
+  };
+}
+
+// Zeichnet ein Unterschrift-PNG seitenverhältnistreu zentriert in eine feste
+// Box (statt zu verzerren) — dasselbe Scale-to-fit-Muster wie beim Logo-/
+// Hofplan-Übersicht-Einbetten in bestehenden PDF-Exporten dieser App.
+function drawSignatureFitted(page, img, box) {
+  const scale = Math.min(box.width / img.width, box.height / img.height);
+  const w = img.width * scale;
+  const h = img.height * scale;
+  const x = box.x + (box.width - w) / 2;
+  const y = box.y + (box.height - h) / 2;
+  page.drawImage(img, { x, y, width: w, height: h });
+}
+
+// Holt die rohen Bytes einer Anlagen-Datei (für die Einbettung als
+// zusätzliche PDF-Seite) — Produktionscode über die ohnehin für die Anzeige
+// genutzte Signed URL (getPhotoUrl), dev-only Override analog
+// window.__ffTestUploadPhotoOverride (supabase.js), damit Playwright-Tests
+// ohne echtes Supabase-Storage auskommen.
+async function getAttachmentBytes(path) {
+  if (import.meta.env.DEV && window.__ffTestFetchBytesOverride) {
+    return window.__ffTestFetchBytesOverride(path);
+  }
+  const url = await getPhotoUrl(path);
+  const resp = await fetch(url);
+  return new Uint8Array(await resp.arrayBuffer());
+}
+
+// A4 in pdf-lib-Punkten (595.28 x 841.89) — für angehängte Bild-Seiten, da
+// die Vorlage selbst ebenfalls A4 ist (595 x 842, siehe Node/pdf-lib-
+// Inspektion der Originaldatei).
+const PROBENPROTOKOLL_A4 = [595.28, 841.89];
+
+async function embedProbenprotokollAnlage(pdfDoc, anlage) {
+  const bytes = await getAttachmentBytes(anlage.path);
+  const type = anlage.type || '';
+  if (type === 'application/pdf') {
+    const srcDoc = await PDFLib.PDFDocument.load(bytes);
+    const copied = await pdfDoc.copyPages(srcDoc, srcDoc.getPageIndices());
+    copied.forEach(pg => pdfDoc.addPage(pg));
+    return;
+  }
+  if (!type.startsWith('image/')) return; // unbekannter Typ — bleibt reine Datei-Referenz, wird nicht eingebettet
+  const img = type === 'image/png' ? await pdfDoc.embedPng(bytes) : await pdfDoc.embedJpg(bytes);
+  const page = pdfDoc.addPage(PROBENPROTOKOLL_A4);
+  const margin = 20;
+  const maxW = page.getWidth() - margin * 2;
+  const maxH = page.getHeight() - margin * 2;
+  const scale = Math.min(maxW / img.width, maxH / img.height);
+  const w = img.width * scale, h = img.height * scale;
+  page.drawImage(img, { x: (page.getWidth() - w) / 2, y: (page.getHeight() - h) / 2, width: w, height: h });
+}
+
+async function exportProbenprotokollPdf(ev, p, def = tkFormularDef('probenprotokoll')) {
+  if (typeof PDFLib === 'undefined') { showError('PDF-Export nicht verfügbar (Bibliothek konnte nicht geladen werden).'); return; }
+  try {
+    const templateBytes = await fetch(def.template).then(r => r.arrayBuffer());
+    const pdfDoc = await PDFLib.PDFDocument.load(templateBytes);
+    const form = pdfDoc.getForm();
+    const helv = await pdfDoc.embedFont(PDFLib.StandardFonts.Helvetica);
+
+    def.allFields.forEach(f => {
+      // Abhängige Felder (z. B. Fragen der Empfängerprüfung bei gewählter
+      // Lieferantenprüfung) bleiben leer, auch wenn sie vorher mal gesetzt waren.
+      const value = formularFieldActive(f, p.values) ? p.values[f.name] : (f.type === 'checkbox' ? false : '');
+      if (f.type === 'checkbox') {
+        const box = form.getCheckBox(f.name);
+        if (value) box.check(); else box.uncheck();
+      } else if (f.type === 'radio') {
+        const group = form.getRadioGroup(f.name);
+        if (value) group.select(value); else group.clear();
+      } else {
+        const field = form.getTextField(f.name);
+        // Felder ohne eigenes /DA (nur formularweit, auto-Größe): Darstellung
+        // je Feld setzen — setFontSize() verlangt ein vorhandenes /DA.
+        field.acroField.setDefaultAppearance(`/Helv ${formularSchriftgroesse(field, value, helv)} Tf 0 g`);
+        // Niedrige "mehrzeilige" Felder mit einzeiligem Wert (z.B. Name im Cross Check)
+        // senkrecht zentrieren statt oben an den Rand zu setzen.
+        if (field.isMultiline() && value && !String(value).includes('\n') && field.acroField.getWidgets()[0].getRectangle().height < 30) field.disableMultiline();
+        // Feld schließt die vorgedruckte Überschrift ein -> Text eine Zeile tiefer
+        field.setText(value ? (f.unterUeberschrift ? '\n' + value : value) : '');
+      }
+    });
+
+    const page = pdfDoc.getPage(0);
+    for (const s of def.signatures) {
+      if (!p[s.key]) continue;
+      const img = await pdfDoc.embedPng(p[s.key]);
+      drawSignatureFitted(page, img, s.box);
+    }
+
+    form.updateFieldAppearances(helv);
+    form.flatten();
+
+    for (const anlage of (p.anlagenDateien || [])) {
+      await embedProbenprotokollAnlage(pdfDoc, anlage);
+    }
+
+    const bytes = await pdfDoc.save();
+    const name = `${ev.date.getFullYear()}_${sanitizeFileNamePart(ev.kunde)}_${def.fileArt}.pdf`;
+    const file = new File([bytes], name, { type: 'application/pdf' });
+    await uploadTerminkalenderAttachment(ev, file, def.fileArt);
+    closeProbenprotokollModal();
+  } catch (err) {
+    showError('PDF-Export fehlgeschlagen: ' + (err.message || String(err)));
+  }
+}
+
+document.getElementById('probenprotokoll-modal-export').addEventListener('click', () => {
+  const ref = getActiveProbenprotokoll();
+  if (!ref) return;
+  probenprotokollValidationShown = true;
+  const missing = markProbenprotokollMissing(ref.p);
+  if (missing.length) {
+    document.querySelector('#probenprotokoll-modal-form .pp-invalid')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    return;
+  }
+  exportProbenprotokollPdf(ref.ev, ref.p, ref.def);
+});
+
+// Dev-only Testhaken (analog window.__ffTestMap/__ffTestStallplaner) — echtes
+// Canvas-Pointer-Zeichnen ist laut AGENTS.md Punkt 2 genauso wenig
+// zuverlässig per synthetischem Maus-Event simulierbar wie SVG-Vertex-Drag.
+// Je Formular ein Haken mit derselben Schnittstelle.
+if (import.meta.env.DEV) {
+  const formularTestHook = (kind) => {
+    const hook = {
+      create(eventId) {
+        const ev = terminkalenderEvents.find(e => e.id === eventId);
+        if (!ev) return null;
+        return createFormular(ev, kind).id;
+      },
+      getActive() {
+        const ref = getActiveProbenprotokoll();
+        return ref && ref.kind === kind ? ref.p : null;
+      },
+      get(eventId, id) {
+        const ev = terminkalenderEvents.find(e => e.id === eventId);
+        return ev ? (ev[tkFormularDef(kind).listKey] || []).find(x => x.id === id) || null : null;
+      },
+      setValue(eventId, id, name, value) {
+        const p = hook.get(eventId, id);
+        if (p) p.values[name] = value;
+      },
+      setSignature(eventId, id, key, dataUrl) {
+        const p = hook.get(eventId, id);
+        if (p) p[key] = dataUrl;
+      },
+      missing(eventId, id) {
+        const p = hook.get(eventId, id);
+        return p ? probenprotokollMissing(p, kind) : null;
+      }
+    };
+    return hook;
+  };
+  window.__ffTestProbenprotokoll = formularTestHook('probenprotokoll');
+  window.__ffTestCrossCheck = formularTestHook('crosscheck');
+}
+
